@@ -1,0 +1,3 @@
+# Use a standing autonomy policy for unattended work
+
+The Voice Agent and its Subagents may act without per-action approval only within a Standing Autonomy Policy: unattended changes must be recoverable, scoped, auditable, and automatically verified. The initial policy forbids force-pushing, destroying uncommitted work, changing credentials or SSH access, weakening security controls, expanding the agent's own authority, and incurring uncapped spending; deleting production data or backups requires explicit approval. Policy limits can be changed only through an authenticated policy editor. This favors a hands-free telephone workflow while keeping exceptional and irreversible authority outside ordinary conversation.

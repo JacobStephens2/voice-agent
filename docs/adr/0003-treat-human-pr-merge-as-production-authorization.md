@@ -1,0 +1,3 @@
+# Treat a human PR merge as production authorization
+
+Subagents may edit, commit, push, and update non-production branches, but they may not write directly to the production branch. Every human merge into a registered application's `main` branch authorizes and triggers automatic deployment, including merges unrelated to Voice Agent work and even when the repository has no CI checks. Each application must supply a Deployment Contract, and every deployment must still be audited, automatically verified, and rolled back on failed verification. This makes the human merge the single production-acceptance boundary without requiring a separate approval during a hands-free session.

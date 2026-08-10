@@ -1,0 +1,3 @@
+# Separate personal subscription authentication from commercial authentication
+
+The Personal Prototype may run locally installed coding-agent CLIs authenticated with its owner's eligible subscriptions. Any future product for companies or additional users must instead use provider-supported customer, enterprise, or API authentication and must never route their work through the owner's consumer credentials. This preserves a fast, inexpensive personal experiment without embedding a legally and operationally unsuitable credential model into a commercial product.
