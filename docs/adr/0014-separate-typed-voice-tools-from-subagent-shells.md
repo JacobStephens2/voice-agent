@@ -1,0 +1,3 @@
+# Separate typed Voice Agent tools from Subagent shells
+
+The Voice Agent will be technically unable to execute arbitrary shell commands and will receive only typed Code Inquiry, Delegation, and Operations Broker capabilities whose inputs and outputs are code-enforced. A Subagent may use a shell only inside its Delegated Worktree under a separate restricted identity without sudo, production-directory access, or direct service-control authority. This sacrifices the apparent flexibility of a shared administrative shell to make the Standing Autonomy Policy an operating-system and capability boundary rather than a prompt instruction.

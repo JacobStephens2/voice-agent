@@ -1,0 +1,3 @@
+# Instrument the agent on the existing monitoring stack
+
+The Voice Agent will publish structured metrics to the Agent Host's existing Prometheus and Grafana installation for calls, speech and model stages, Operations, Delegations, callbacks, Promotions, policy denials, and host and service resource health. Enrolled applications use explicit application and API probes rather than homepage-only checks. The PWA and Evidence Record distinguish same-host telemetry from independent monitoring: this installation can diagnose partial failures but cannot reliably detect or notify about loss of the entire Agent Host or its network.

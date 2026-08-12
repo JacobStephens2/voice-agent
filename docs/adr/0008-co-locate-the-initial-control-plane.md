@@ -1,0 +1,3 @@
+# Run the Voice Agent on `stephens.page`
+
+The Voice Agent, PWA backend, durable work queue, Standing Autonomy Policy, Evidence Records, restricted Subagent Runners, and the applications being operated will share the Agent Host at `stephens.page`, while LiveKit Cloud handles realtime media and Telnyx handles telephone connectivity. This favors development velocity and a single-server personal system over host-level fault isolation. A whole-host or host-network failure can therefore make both the applications and Voice Agent unavailable, and independent-host recovery is outside the current product scope rather than a planned migration milestone.

@@ -1,0 +1,3 @@
+# Retain and test encrypted off-host backups
+
+A Fresh Passkey Action may activate a versioned backup-lifecycle policy that provides explicit advance approval for scheduled expiration while leaving ad hoc production-data and backup deletion forbidden. When off-host backup hardening is introduced, the policy will retain 35 encrypted daily SQLite backups and 12 encrypted monthly backups, verify backup integrity, periodically test restoration, and record every lifecycle deletion as an auditable policy execution. Backup retention is separate from the 90-day live Evidence Record window because backups support disaster recovery rather than ordinary browsing. Selection and implementation of the backup destination are deferred beyond the initial product destination by ADR 0031.

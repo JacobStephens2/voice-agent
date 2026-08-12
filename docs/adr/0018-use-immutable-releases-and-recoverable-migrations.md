@@ -1,0 +1,3 @@
+# Use immutable Releases and recoverable migrations
+
+Each Human Merge will be built from its exact commit into a new immutable Release outside the live checkout, and Promotion will atomically switch production to that Release only after its declared preflight succeeds. The previous Release remains available for automatic rollback. Unattended database migrations are allowed only when the active Deployment Contract supplies an automatic backup, bounded verification, and a tested rollback or restoration path; destructive or irreversible production-data changes require explicit approval outside the Standing Autonomy Policy.

@@ -1,0 +1,3 @@
+# Fix the PWA origin and passkey boundary
+
+The PWA will use `https://voice.stephens.page` as its permanent origin from the first vertical slice, with an explicit DNS record and a WebAuthn relying-party boundary scoped to that host. Passkeys will be implemented locally with standards-based WebAuthn, server-side challenge and credential state in SQLite, and secure `HttpOnly`, `SameSite=Strict` sessions rather than an identity SaaS. State changes require CSRF protection; the origin uses a restrictive Content Security Policy and HSTS and loads no analytics or third-party JavaScript. Notification-destination and delivery-preference changes require a Fresh Passkey Action.

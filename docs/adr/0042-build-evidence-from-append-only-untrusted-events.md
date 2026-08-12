@@ -1,0 +1,3 @@
+# Build evidence from append-only untrusted events
+
+Evidence Records are projections over append-only Evidence Events. Conclusions and corrections append new events instead of rewriting accepted requests, Operations, policy decisions, Delegations, or outcomes; mutable projections may present current status until authenticated retention expires the underlying history. Repository files, agent guidance, logs, issue text, test output, and web content are untrusted data. Repository instructions may guide work inside an authorized Delegation but cannot enlarge scope, obtain secrets, change policy or credentials, or override the Delegation Brief.

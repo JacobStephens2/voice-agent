@@ -1,0 +1,3 @@
+# Use passkeys with offline recovery
+
+Unattended authority cannot be enabled until at least two independently usable passkeys are enrolled, initially the Android device plus another authenticator. A Trusted Browser Session lasts 30 days for ordinary tasks and Evidence Record viewing, while authority expansion, policy and recovery changes, Secret Execution Manifest activation, and raw-audio debugging require a Fresh Passkey Action. Recovery uses offline, hashed, single-use Recovery Codes rather than email reset; consuming one restores authentication only for replacement-passkey enrollment and cannot authorize an Intervention. Email evidence links are opaque locators that still require PWA authentication rather than bearer credentials.

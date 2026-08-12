@@ -1,0 +1,3 @@
+# Permit safe non-self-authorizing agent upgrades
+
+The Voice Agent's own Registered Codebase may be changed by a Subagent through the same isolated branch, verification, pull request, Human Merge, immutable Release, and automatic Promotion workflow used for other applications. Repository changes may propose policy and Deployment Contract revisions but cannot activate authority, credentials, or runtime policy data merely by merging code. Self-Promotion briefly stops admission of new calls and waits for active Telephone Sessions and non-interruptible Operations to reach safe boundaries before atomic switching, health verification, and automatic rollback; it does not terminate a live call to deploy sooner.

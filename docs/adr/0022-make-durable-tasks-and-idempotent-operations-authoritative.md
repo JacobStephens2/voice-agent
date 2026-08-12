@@ -1,0 +1,3 @@
+# Make Durable Tasks and idempotent Operations authoritative
+
+One Durable Task will retain the same identity across telephone calls, PWA interactions, emails, callbacks, and Subagent execution, and its database state plus Evidence Record—not any model's memory—will be authoritative. Every state-changing tool invocation is an idempotent Operation with a durable identifier, so retries return the recorded result or current state instead of repeating an external effect. If a call or process ends, accepted Operations and background work continue according to policy, incomplete conversational turns stop safely, and later channels reconstruct sanitized context from the same task history.

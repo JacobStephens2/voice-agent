@@ -1,0 +1,3 @@
+# Confirm and focus state-changing telephone work
+
+Before accepting a state-changing Durable Task or Delegation, the Voice Agent gives a brief Task Confirmation naming the application, environment, and intended outcome and requires verbal confirmation. This confirms the task once rather than adding per-Operation approval inside the Standing Autonomy Policy. A Telephone Session has at most one actively discussed state-changing Durable Task; another request receives a separate identity and is queued or continued through a later callback, while narrow read-only side questions may remain in the current conversation.

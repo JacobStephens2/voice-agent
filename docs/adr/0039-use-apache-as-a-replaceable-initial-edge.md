@@ -1,0 +1,3 @@
+# Use Apache as a replaceable initial edge
+
+The Personal Prototype will reuse the Agent Host's existing Apache installation for TLS termination, static PWA delivery, and reverse proxying only the required public API and verified-webhook routes to Fastify on localhost. The telephone worker, Operations Broker, metrics, SQLite, and Subagent control surfaces expose no public service ports. Apache is a velocity choice rather than a permanent architectural dependency: application services depend on standard HTTP and forwarded-request contracts so a later authenticated infrastructure change may replace the edge without redesigning the domain.

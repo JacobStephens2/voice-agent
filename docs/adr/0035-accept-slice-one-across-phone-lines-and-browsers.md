@@ -1,0 +1,3 @@
+# Accept slice one across phone lines and browsers
+
+Initial PWA acceptance covers installed use in Android Chrome and ordinary desktop Chromium browsers without promising iOS, Safari, or native-wrapper behavior. Telephone slice one is accepted only after five consecutive end-to-end runs across the owner's AT&T and Tello lines, including at least one outdoor walking call, without manual server intervention. Each run completes the Callback Handshake, answers the Bountywell health inquiry correctly, creates a complete Evidence Record, and delivers any requested Silent Notification. Latency, interruption, and transcription measurements are recorded for later gates but are not slice-one pass/fail thresholds.

@@ -1,0 +1,3 @@
+# Cap initial spend and defer provider failover
+
+The Personal Prototype has a combined $50 monthly ceiling for metered API, telephone, and realtime-media usage, with warnings at $25 and $40. At the ceiling it rejects new paid sessions while allowing safe cleanup and already-accepted Operations to reach a bounded terminal state; changing the ceiling requires a Fresh Passkey Action. Each speech and coordinator stage initially uses only its selected primary provider. Interfaces preserve later provider substitution, but automatic cross-provider failover is deferred until its disclosure, behavior, cost, and latency consequences have been evaluated.

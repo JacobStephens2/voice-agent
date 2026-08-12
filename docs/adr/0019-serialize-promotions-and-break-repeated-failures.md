@@ -1,0 +1,3 @@
+# Serialize Promotions and break repeated failures
+
+Every Human Merge will create its own Promotion Attempt, queued per application in GitHub order without coalescing. Each attempt uses the application-specific health semantics in its active Deployment Contract, so an expected non-`200` response may prove health when explicitly declared. A failed attempt automatically restores the previous Release and records its evidence. Three consecutive failures open a per-application Deployment Circuit Breaker; a later Human Merge receives one half-open recovery attempt, and a fresh passkey action may also resume the queue after review.

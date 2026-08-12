@@ -1,0 +1,3 @@
+# Onboard Keeplore before feature delegation
+
+Keeplore will not be enrolled until its live working tree has been reconciled and preserved. A separate Human Merge will first establish minimal CI, production-branch protection, a versioned Deployment Contract, immutable releases, health verification, and rollback so every later human merge into `main` can safely trigger Promotion. The subsequent button trial changes table view only: “Get Rid Of” and “Remove” controls must match in height, vertical padding, typography, and visual weight while retaining content-based widths. Acceptance requires authenticated desktop and mobile screenshots plus computed-style measurements; card view is outside the trial.

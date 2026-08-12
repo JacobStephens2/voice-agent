@@ -1,0 +1,3 @@
+# Use Resend for generic email notifications
+
+The Personal Prototype will send Silent Notifications through Resend's TypeScript SDK from a dedicated verified subdomain such as `notify.stephens.page`, with open and click tracking disabled. Email Operations use their durable Operation identity as the provider idempotency key. Messages contain only generic status and an opaque Evidence Record locator that still requires PWA authentication; they contain no code, diagnostic evidence, secrets, or authority-bearing links. Changing the destination, sender identity, or delivery preferences requires a Fresh Passkey Action.

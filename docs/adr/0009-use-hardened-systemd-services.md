@@ -1,0 +1,3 @@
+# Use hardened systemd services
+
+The Personal Prototype will run its telephone worker and web API as separate hardened systemd services under a dedicated unprivileged Voice Agent identity, while the Operations Broker and Subagent Runners remain separately isolated. Slice one will not run these components through the host Docker daemon or grant any agent identity access to the Docker socket, because that access would undermine the intended operating-system boundary. This favors a small, auditable single-host deployment and native cgroup controls over container packaging; a later container deployment remains possible without changing the domain interfaces.

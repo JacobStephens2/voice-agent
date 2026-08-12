@@ -1,0 +1,3 @@
+# Keep personal and ETA agent plans separate
+
+This repository's canonical design remains the single-user Personal Prototype and is completed without expanding its destination to ETA infrastructure or company users. A future ETA Voice Agent effort may cite these documents as non-normative inspiration but requires its own domain model, authority policy, threat analysis, provider and commercial-auth decisions, data-handling rules, infrastructure inventory, acceptance criteria, and delivery map. No personal subscription credentials, passkeys, telephone identities, policies, evidence, or Agent Host trust are inherited by the ETA effort merely because the designs share concepts.

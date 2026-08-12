@@ -1,0 +1,3 @@
+# Use an all-TypeScript monorepo
+
+The Voice Agent will use a pnpm TypeScript monorepo containing a LiveKit Agents Node.js telephone worker, a Fastify API, a React/Vite PWA, shared Zod contracts, deterministic domain and policy modules, durable-store adapters, and evaluation tooling. The selected LiveKit speech, turn-detection, noise-control, model, and asynchronous-tool capabilities are available in Node.js, so a Python split would duplicate contracts without providing a required capability. The worker and API will still run as separately hardened systemd services, and Python may be introduced later only behind a narrow interface when a concrete local-ML, audio, or SDK requirement justifies it.

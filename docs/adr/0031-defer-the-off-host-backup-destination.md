@@ -1,0 +1,3 @@
+# Defer the off-host backup destination
+
+Choosing and implementing an independent off-host backup destination is deferred beyond the initial product destination. The AWS VM serving `k3s-demo.stephens.page` is a possible future target, but neither that VM nor AWS S3 is selected now. The SQLite design must preserve a consistent export and restore seam, and later backup work remains bound by ADR 0027's encryption, retention, integrity-verification, restore-testing, lifecycle, and audit requirements. This deferral accepts loss of the Agent Host as an unrecovered initial risk rather than implying that same-host copies are disaster-recovery backups.

@@ -1,0 +1,3 @@
+# Authenticate Telephone Sessions by callback and DTMF
+
+An inbound call from a Registered Telephone may only request a Callback Handshake: it receives a brief callback notice, accepts no commands, and ends. Unknown or rate-limited callers receive no callback or information. The Voice Agent then calls the registered number through the stored Telnyx-to-LiveKit path, uses answering-machine detection, and requires the human recipient to press `1` before enabling conversation or tools. One unanswered retry occurs after 30 seconds before a Silent Notification. This verifies live possession of the passkey-enrolled telephone without treating spoofable inbound caller ID, voicemail, call screening, or speech as sufficient authentication.

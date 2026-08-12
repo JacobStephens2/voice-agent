@@ -1,0 +1,3 @@
+# Run Bountywell as a blind guarded drill
+
+The Bountywell Outage Drill will first verify and arm an independent one-shot systemd timer that restores the exact `bountywell-api.service` unit after ten minutes, then stop only that service while the owner is available. The Voice Agent receives only that Bountywell's API appears unavailable and is not told the injected fault. Success requires identifying the inactive unit, restarting it within the Standing Autonomy Policy, verifying public `/api/health` returns `200` and `/api/data` returns the expected unauthenticated `401`, recording the diagnosis and Operations, reporting completion, and removing the recovery timer after confirmed service health.
