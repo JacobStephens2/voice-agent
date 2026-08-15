@@ -1,0 +1,17 @@
+{
+  "name": "@voice-agent/runtime",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@voice-agent/contracts": "workspace:*",
+    "@voice-agent/durable-store": "workspace:*",
+    "@voice-agent/policy": "workspace:*"
+  }
+}

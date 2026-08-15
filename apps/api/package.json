@@ -1,0 +1,16 @@
+{
+  "name": "@voice-agent/api",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@voice-agent/contracts": "workspace:*",
+    "fastify": "5.12.0"
+  }
+}
