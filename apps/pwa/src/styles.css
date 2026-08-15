@@ -1,0 +1,87 @@
+:root {
+  color: #17221c;
+  background: #f4f0e8;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+}
+
+.task-page,
+.message {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 52rem;
+  min-height: 100vh;
+  padding: 2rem 1.25rem 4rem;
+}
+
+.task-header {
+  border-bottom: 1px solid #b8c7bc;
+  padding-bottom: 1.5rem;
+}
+
+.eyebrow,
+.status {
+  color: #386147;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status {
+  background: #d9eddd;
+  border-radius: 999px;
+  display: inline-block;
+  padding: 0.35rem 0.7rem;
+}
+
+.conclusion {
+  background: #15271f;
+  border-radius: 1rem;
+  color: white;
+  margin: 2rem 0;
+  padding: 1.25rem;
+}
+
+.timeline {
+  list-style: none;
+  padding: 0;
+}
+
+.timeline li {
+  border-left: 3px solid #79a987;
+  margin-left: 0.5rem;
+  padding: 0.25rem 0 1.5rem 1.25rem;
+}
+
+.event-heading {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  justify-content: space-between;
+}
+
+.event-heading h3 {
+  margin: 0;
+}
+
+time {
+  color: #5c685f;
+  font-size: 0.8rem;
+}
+
+details {
+  background: #fffdf8;
+  border: 1px solid #d9d6cd;
+  border-radius: 0.5rem;
+  padding: 0.65rem;
+}
+
+pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+}

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Voice Agent">
+  <rect width="512" height="512" rx="112" fill="#15271f"/>
+  <path d="M152 264v-16M204 320V192M256 360V152M308 320V192M360 264v-16" fill="none" stroke="#d9eddd" stroke-linecap="round" stroke-width="28"/>
+</svg>

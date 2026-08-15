@@ -1,0 +1,22 @@
+{
+  "name": "@voice-agent/scenario",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@voice-agent/api": "workspace:*",
+    "@voice-agent/contracts": "workspace:*",
+    "@voice-agent/pwa": "workspace:*",
+    "@voice-agent/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10"
+  }
+}
