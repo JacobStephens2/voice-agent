@@ -64,7 +64,6 @@ The canonical scope is the single-user Personal Prototype. Any future ETA Voice 
 The workspace requires Node.js 22 or newer and pnpm 11. From a clean checkout:
 
 ```bash
-pnpm install --frozen-lockfile
 pnpm scenario:bountywell
 ```
 

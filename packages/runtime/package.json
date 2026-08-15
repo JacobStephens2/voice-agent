@@ -11,9 +11,7 @@
   },
   "dependencies": {
     "@voice-agent/contracts": "workspace:*",
-    "better-sqlite3": "13.0.3"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "9.6.0"
+    "@voice-agent/durable-store": "workspace:*",
+    "@voice-agent/policy": "workspace:*"
   }
 }

@@ -66,6 +66,9 @@ importers:
       '@voice-agent/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
+      '@voice-agent/sqlite-store':
+        specifier: workspace:*
+        version: link:../../packages/sqlite-store
     devDependencies:
       vitest:
         specifier: 4.1.10
@@ -77,11 +80,38 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
+  packages/durable-store:
+    dependencies:
+      '@voice-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/policy:
+    dependencies:
+      '@voice-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
   packages/runtime:
     dependencies:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@voice-agent/durable-store':
+        specifier: workspace:*
+        version: link:../durable-store
+      '@voice-agent/policy':
+        specifier: workspace:*
+        version: link:../policy
+
+  packages/sqlite-store:
+    dependencies:
+      '@voice-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@voice-agent/durable-store':
+        specifier: workspace:*
+        version: link:../durable-store
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3

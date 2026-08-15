@@ -198,8 +198,10 @@ describe("Bountywell health inquiry scenario", () => {
 
     const firstRecord = await scenario.submit(request);
     const immediateReplay = await scenario.submit(request);
+    const operationReplay = await scenario.replayOperation("operation-replay");
 
     expect(immediateReplay).toEqual(firstRecord);
+    expect(operationReplay).toEqual(firstRecord);
     expect(scenario.brokerRequests).toHaveLength(1);
     await scenario.close();
 
@@ -290,7 +292,14 @@ describe("Bountywell health inquiry scenario", () => {
       ],
       now: "2026-08-15T18:00:00.000Z",
       observation: {
-        checks: [],
+        checks: [
+          {
+            facts: { statusCode: 200 },
+            outcome: "pass",
+            source: "public-health",
+            summary: "The public health endpoint responded successfully.",
+          },
+        ],
         observedAt: "2026-08-15T18:00:00.000Z",
         rejectedEvidenceCount: 0,
       },
@@ -304,6 +313,49 @@ describe("Bountywell health inquiry scenario", () => {
         }),
       ).rejects.toThrow("Unsupported Bountywell health inquiry");
       expect(scenario.brokerRequests).toEqual([]);
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("a passing unrelated check does not support a healthy API conclusion", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-support-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createBountywellHealthScenario({
+      databasePath: join(directory, "tasks.sqlite"),
+      ids: [
+        "task-support",
+        "operation-support",
+        "event-support-1",
+        "event-support-2",
+        "event-support-3",
+        "event-support-4",
+        "event-support-5",
+      ],
+      now: "2026-08-15T19:00:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { diskPressure: false },
+            outcome: "pass",
+            source: "resource-health",
+            summary: "No bounded resource-health check failed.",
+          },
+        ],
+        observedAt: "2026-08-15T19:00:00.000Z",
+        rejectedEvidenceCount: 0,
+      },
+    });
+
+    try {
+      const record = await scenario.submit({
+        question: "Is Bountywell healthy?",
+        requestId: "request-support",
+      });
+
+      expect(record.task.conclusion).toBe(
+        "Bountywell API health could not be confirmed.",
+      );
     } finally {
       await scenario.close();
     }

@@ -1,5 +1,6 @@
 import type {
   BountywellHealthObservation,
+  BountywellHealthInquiryRequest,
   BountywellHealthObservationRequest,
   EvidenceRecordProjection,
 } from "@voice-agent/contracts";
@@ -7,18 +8,19 @@ import { bountywellHealthObservationSchema } from "@voice-agent/contracts";
 import { createTaskApi } from "@voice-agent/api";
 import { renderTaskPage } from "@voice-agent/pwa/server";
 import { createDurableTaskRuntime } from "@voice-agent/runtime";
+import { createSqliteDurableTaskStore } from "@voice-agent/sqlite-store";
 
 export interface BountywellHealthScenario {
   readonly brokerRequests: readonly unknown[];
-  submit(request: {
-    readonly requestId: string;
-    readonly question: string;
-  }): Promise<EvidenceRecordProjection>;
+  submit(request: BountywellHealthInquiryRequest): Promise<EvidenceRecordProjection>;
   readTaskPage(taskId: string): Promise<{
     readonly statusCode: number;
     readonly body: EvidenceRecordProjection;
     readonly html: string;
   }>;
+  replayOperation(
+    operationId: string,
+  ): Promise<EvidenceRecordProjection | undefined>;
   close(): Promise<void>;
 }
 
@@ -39,7 +41,6 @@ export async function createBountywellHealthScenario(
     options.rejectedBrokerMaterial,
   );
   const runtime = createDurableTaskRuntime({
-    databasePath: options.databasePath,
     healthObserver: broker,
     nextId() {
       const id = ids.shift();
@@ -49,6 +50,7 @@ export async function createBountywellHealthScenario(
       return id;
     },
     now: () => options.now,
+    store: createSqliteDurableTaskStore(options.databasePath),
   });
   const api = createTaskApi(runtime);
 
@@ -70,6 +72,8 @@ export async function createBountywellHealthScenario(
         statusCode: response.statusCode,
       };
     },
+    replayOperation: (operationId) =>
+      runtime.replayBountywellHealthOperation(operationId),
     submit: (request) => runtime.submitBountywellHealthInquiry(request),
   };
 }

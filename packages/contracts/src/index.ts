@@ -1,64 +1,24 @@
 import { z } from "zod";
 
-export type TaskStatus = "completed";
+const identifierSchema = z.string().min(1).max(120);
+const timestampSchema = z.iso.datetime();
 
-export interface EvidenceEventProjection {
-  readonly id: string;
-  readonly sequence: number;
-  readonly kind:
-    | "task.accepted"
-    | "operation.accepted"
-    | "evidence.observed"
-    | "operation.completed"
-    | "task.completed";
-  readonly occurredAt: string;
-  readonly summary: string;
-  readonly details: Readonly<Record<string, unknown>>;
-}
-
-export interface EvidenceRecordProjection {
-  readonly task: {
-    readonly id: string;
-    readonly kind: "bountywell.health.inquiry";
-    readonly status: TaskStatus;
-    readonly question: string;
-    readonly conclusion: string;
-    readonly createdAt: string;
-    readonly updatedAt: string;
-  };
-  readonly evidence: readonly EvidenceEventProjection[];
-}
-
-export interface BountywellHealthObservation {
-  readonly observedAt: string;
-  readonly checks: readonly {
-    readonly source:
-      | "public-health"
-      | "authentication-boundary"
-      | "service-state"
-      | "resource-health";
-    readonly outcome: "pass" | "fail";
-    readonly summary: string;
-    readonly facts: Readonly<Record<string, string | number | boolean>>;
-  }[];
-  readonly rejectedEvidenceCount: number;
-}
-
-export interface BountywellHealthObservationRequest {
-  readonly operationId: string;
-  readonly taskId: string;
-}
-
-export interface BountywellHealthObserver {
-  observe(
-    request: BountywellHealthObservationRequest,
-  ): Promise<BountywellHealthObservation>;
-}
-
-export const bountywellHealthInquirySchema = z.object({
-  question: z.literal("Is Bountywell healthy?"),
-  requestId: z.string().min(1).max(120),
+export const bountywellHealthInquiryRequestSchema = z.object({
+  question: z.string().min(1).max(240),
+  requestId: identifierSchema,
 });
+
+export const bountywellHealthInquirySchema =
+  bountywellHealthInquiryRequestSchema.extend({
+    question: z.literal("Is Bountywell healthy?"),
+  });
+
+export type BountywellHealthInquiryRequest = z.infer<
+  typeof bountywellHealthInquiryRequestSchema
+>;
+export type BountywellHealthInquiry = z.infer<
+  typeof bountywellHealthInquirySchema
+>;
 
 const boundedFactValueSchema = z.union([
   z.string().max(200),
@@ -66,52 +26,104 @@ const boundedFactValueSchema = z.union([
   z.boolean(),
 ]);
 
+export const bountywellHealthCheckSchema = z.object({
+  facts: z
+    .record(z.string().min(1).max(60), boundedFactValueSchema)
+    .refine((facts) => Object.keys(facts).length <= 8),
+  outcome: z.enum(["pass", "fail"]),
+  source: z.enum([
+    "public-health",
+    "authentication-boundary",
+    "service-state",
+    "resource-health",
+  ]),
+  summary: z.string().max(240),
+});
+
 export const bountywellHealthObservationSchema = z.object({
-  checks: z
-    .array(
-      z.object({
-        facts: z
-          .record(z.string().min(1).max(60), boundedFactValueSchema)
-          .refine((facts) => Object.keys(facts).length <= 8),
-        outcome: z.enum(["pass", "fail"]),
-        source: z.enum([
-          "public-health",
-          "authentication-boundary",
-          "service-state",
-          "resource-health",
-        ]),
-        summary: z.string().max(240),
-      }),
-    )
-    .max(8),
-  observedAt: z.iso.datetime(),
+  checks: z.array(bountywellHealthCheckSchema).min(1).max(8),
+  observedAt: timestampSchema,
   rejectedEvidenceCount: z.number().int().nonnegative(),
 });
 
-export const evidenceRecordProjectionSchema = z.object({
-  evidence: z.array(
-    z.object({
-      details: z.record(z.string(), z.unknown()),
-      id: z.string().min(1),
-      kind: z.enum([
-        "task.accepted",
-        "operation.accepted",
-        "evidence.observed",
-        "operation.completed",
-        "task.completed",
-      ]),
-      occurredAt: z.iso.datetime(),
-      sequence: z.number().int().positive(),
-      summary: z.string(),
+export type BountywellHealthObservation = z.infer<
+  typeof bountywellHealthObservationSchema
+>;
+
+export const bountywellHealthObservationRequestSchema = z.object({
+  operationId: identifierSchema,
+  taskId: identifierSchema,
+});
+
+export type BountywellHealthObservationRequest = z.infer<
+  typeof bountywellHealthObservationRequestSchema
+>;
+
+export interface BountywellHealthObserver {
+  observe(
+    request: BountywellHealthObservationRequest,
+  ): Promise<BountywellHealthObservation>;
+}
+
+const eventFields = {
+  id: identifierSchema,
+  occurredAt: timestampSchema,
+  sequence: z.number().int().positive(),
+  summary: z.string().max(240),
+};
+
+export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    ...eventFields,
+    details: z.object({ requestId: identifierSchema }),
+    kind: z.literal("task.accepted"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z.object({ operationId: identifierSchema }),
+    kind: z.literal("operation.accepted"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z.object({
+      checks: z.array(bountywellHealthCheckSchema).min(1).max(8),
+      rejectedEvidenceCount: z.number().int().nonnegative(),
     }),
-  ),
+    kind: z.literal("evidence.observed"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z.object({ operationId: identifierSchema }),
+    kind: z.literal("operation.completed"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z.object({}),
+    kind: z.literal("task.completed"),
+  }),
+]);
+
+export type EvidenceEventProjection = z.infer<
+  typeof evidenceEventProjectionSchema
+>;
+
+export const evidenceRecordProjectionSchema = z.object({
+  evidence: z.array(evidenceEventProjectionSchema).max(100),
   task: z.object({
-    conclusion: z.string(),
-    createdAt: z.iso.datetime(),
-    id: z.string().min(1),
+    conclusion: z.enum([
+      "Bountywell API is healthy.",
+      "Bountywell API health could not be confirmed.",
+    ]),
+    createdAt: timestampSchema,
+    id: identifierSchema,
     kind: z.literal("bountywell.health.inquiry"),
-    question: z.string(),
+    question: z.literal("Is Bountywell healthy?"),
     status: z.literal("completed"),
-    updatedAt: z.iso.datetime(),
+    updatedAt: timestampSchema,
   }),
 });
+
+export type EvidenceRecordProjection = z.infer<
+  typeof evidenceRecordProjectionSchema
+>;
+export type TaskStatus = EvidenceRecordProjection["task"]["status"];
