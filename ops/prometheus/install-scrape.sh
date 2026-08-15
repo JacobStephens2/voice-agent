@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ${EUID} -ne 0 ]]; then
+  printf 'Run this Prometheus configuration installer as root.\n' >&2
+  exit 1
+fi
+
+configuration=/etc/prometheus/prometheus.yml
+backup=/etc/prometheus/prometheus.yml.pre-voice-agent
+begin_marker='# BEGIN voice-agent scrape'
+end_marker='# END voice-agent scrape'
+
+verify_live_metrics() {
+  curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:3472/metrics >/dev/null
+  curl --fail --silent --show-error --max-time 5 \
+    http://127.0.0.1:9090/-/ready >/dev/null
+}
+
+if [[ ! -f $configuration ]]; then
+  printf 'Prometheus configuration %s is unavailable.\n' "$configuration" >&2
+  exit 1
+fi
+if grep -Fq "$begin_marker" "$configuration"; then
+  if ! grep -Fq 'targets: ['"'"'127.0.0.1:3472'"'"']' "$configuration"; then
+    printf 'Existing Voice Agent Prometheus block does not target port 3472.\n' >&2
+    exit 1
+  fi
+  promtool check config "$configuration"
+  systemctl reload prometheus
+  verify_live_metrics
+  exit 0
+fi
+if ! grep -Eq '^scrape_configs:[[:space:]]*$' "$configuration"; then
+  printf 'Prometheus configuration has no scrape_configs section.\n' >&2
+  exit 1
+fi
+
+[[ -f $backup ]] || install -o root -g root -m 0644 "$configuration" "$backup"
+candidate=$(mktemp /etc/prometheus/.prometheus.yml.XXXXXX)
+cleanup() {
+  rm -f -- "$candidate"
+}
+trap cleanup EXIT
+cp "$configuration" "$candidate"
+printf '\n%s\n' "$begin_marker" >> "$candidate"
+printf '  - job_name: voice-agent\n' >> "$candidate"
+printf '    metrics_path: /metrics\n' >> "$candidate"
+printf '    static_configs:\n' >> "$candidate"
+printf '      - targets: ['"'"'127.0.0.1:3472'"'"']\n' >> "$candidate"
+printf '%s\n' "$end_marker" >> "$candidate"
+promtool check config "$candidate"
+install -o root -g root -m 0644 "$candidate" "$configuration"
+systemctl reload prometheus
+verify_live_metrics
+printf 'Prometheus now scrapes private Voice Agent metrics on localhost:3472.\n'

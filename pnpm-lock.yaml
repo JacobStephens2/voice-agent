@@ -35,12 +35,21 @@ importers:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@voice-agent/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@voice-agent/sqlite-store':
         specifier: workspace:*
         version: link:../../packages/sqlite-store
       fastify:
         specifier: 5.12.0
         version: 5.12.0
+
+  apps/broker:
+    dependencies:
+      '@voice-agent/operations-broker':
+        specifier: workspace:*
+        version: link:../../packages/operations-broker
 
   apps/pwa:
     dependencies:
@@ -101,6 +110,18 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@26.2.0)(vite@8.2.1(@types/node@26.2.0)(terser@5.50.0))
 
+  apps/worker:
+    dependencies:
+      '@voice-agent/operations-broker':
+        specifier: workspace:*
+        version: link:../../packages/operations-broker
+      '@voice-agent/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
+      '@voice-agent/sqlite-store':
+        specifier: workspace:*
+        version: link:../../packages/sqlite-store
+
   packages/auth:
     dependencies:
       '@simplewebauthn/server':
@@ -124,6 +145,22 @@ importers:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/operations-broker:
+    dependencies:
+      '@voice-agent/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      better-sqlite3:
+        specifier: 13.0.3
+        version: 13.0.3
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: 9.6.0
+        version: 9.6.0
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@26.2.0)(vite@8.2.1(@types/node@26.2.0)(terser@5.50.0))
 
   packages/policy:
     dependencies:
@@ -154,6 +191,9 @@ importers:
       '@voice-agent/durable-store':
         specifier: workspace:*
         version: link:../durable-store
+      '@voice-agent/policy':
+        specifier: workspace:*
+        version: link:../policy
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3

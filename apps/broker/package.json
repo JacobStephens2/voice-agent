@@ -1,0 +1,13 @@
+{
+  "name": "@voice-agent/broker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "serve": "node --experimental-strip-types src/server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@voice-agent/operations-broker": "workspace:*"
+  }
+}

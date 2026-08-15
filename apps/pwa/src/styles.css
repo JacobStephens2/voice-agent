@@ -104,6 +104,18 @@ input {
   padding: 0;
 }
 
+.bountywell-control {
+  background: #fffdf8;
+  border: 1px solid #d9d6cd;
+  border-radius: 1rem;
+  margin: 1.5rem 0;
+  padding: 1.25rem;
+}
+
+.bountywell-control h2 {
+  margin-top: 0.25rem;
+}
+
 .task-list a {
   background: #fffdf8;
   border: 1px solid #d9d6cd;

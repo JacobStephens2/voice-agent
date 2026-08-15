@@ -4,6 +4,7 @@ import { registerSW } from "virtual:pwa-register";
 
 import {
   type AuthenticationStatus,
+  type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
 } from "@voice-agent/contracts";
@@ -12,11 +13,15 @@ import {
   enrollBootstrapPasskey,
   enrollReplacementPasskey,
   loadAuthenticationStatus,
+  loadBountywellRegistration,
   loadProtectedContent as fetchProtectedContent,
   loginWithPasskey,
   performFreshPasskeyAction as requestFreshPasskeyAction,
   readCsrfCookie,
+  registerBountywell,
+  resumePromotionQueue,
   startRecovery,
+  submitBountywellHealthInquiry,
 } from "./api-client.ts";
 import {
   ActionFooter,
@@ -34,10 +39,15 @@ import "./styles.css";
 
 registerSW({ immediate: true });
 
+const pendingBountywellRequestIdKey =
+  "voice-agent.pending-bountywell-inquiry-request-id";
+
 function App() {
   const [status, setStatus] = useState<AuthenticationStatus>();
   const [tasks, setTasks] = useState<readonly EvidenceRecordSummary[]>();
   const [record, setRecord] = useState<EvidenceRecordProjection>();
+  const [bountywellRegistration, setBountywellRegistration] =
+    useState<BountywellRegistration>();
   const [csrfToken, setCsrfToken] = useState<string | undefined>(readCsrfCookie);
   const [recoveryConfirmation, setRecoveryConfirmation] = useState<{
     readonly codes: readonly string[];
@@ -46,6 +56,8 @@ function App() {
   const [offline, setOffline] = useState(!navigator.onLine);
   const [message, setMessage] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [pendingBountywellRequestId, setPendingBountywellRequestId] =
+    useState(readPendingBountywellRequestId);
 
   const loadProtectedContent = useCallback(async () => {
     const taskId = new URLSearchParams(window.location.search).get("task");
@@ -58,12 +70,23 @@ function App() {
     if (content.kind === "tasks") {
       setTasks(content.tasks);
       setRecord(undefined);
+      setBountywellRegistration(await loadBountywellRegistration());
     } else {
       setRecord(content.record);
       setTasks(undefined);
     }
     return true;
   }, []);
+
+  useEffect(() => {
+    if (record?.task.status !== "pending") return;
+    const timeout = window.setTimeout(() => {
+      void fetchProtectedContent(record.task.id).then((content) => {
+        if (content.kind === "record") setRecord(content.record);
+      });
+    }, 1_000);
+    return () => window.clearTimeout(timeout);
+  }, [record]);
 
   const refresh = useCallback(async () => {
     try {
@@ -162,6 +185,53 @@ function App() {
     });
   }
 
+  async function enrollBountywell() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before registering Bountywell.");
+      return;
+    }
+    await run(async () => {
+      setBountywellRegistration(await registerBountywell(csrfToken));
+      setMessage("Bountywell read-only access is registered.");
+    });
+  }
+
+  async function resumePromotions() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before resuming Promotions.");
+      return;
+    }
+    await run(async () => {
+      const result = await resumePromotionQueue(csrfToken);
+      setMessage(
+        `Promotion queue resume requested for reviewed commit ${result.commit.slice(0, 12)}.`,
+      );
+    });
+  }
+
+  async function runBountywellInquiry() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before running an inquiry.");
+      return;
+    }
+    await run(async () => {
+      const requestId = pendingBountywellRequestId ?? crypto.randomUUID();
+      if (pendingBountywellRequestId === undefined) {
+        setPendingBountywellRequestId(requestId);
+        writePendingBountywellRequestId(requestId);
+      }
+      const accepted = await submitBountywellHealthInquiry(
+        csrfToken,
+        requestId,
+      );
+      setPendingBountywellRequestId(undefined);
+      clearPendingBountywellRequestId(requestId);
+      window.history.replaceState(null, "", `/?task=${encodeURIComponent(accepted.task.id)}`);
+      setRecord(accepted);
+      setTasks(undefined);
+    });
+  }
+
   if (offline) return <OfflineView />;
   if (status === undefined) return <Shell message={message}>Checking authentication…</Shell>;
   if (recoveryConfirmation !== undefined) {
@@ -218,17 +288,56 @@ function App() {
     return (
       <>
         <TaskPage record={record} />
-        <ActionFooter busy={busy} onFresh={freshPasskeyAction} />
+        <ActionFooter
+          busy={busy}
+          onFresh={freshPasskeyAction}
+          onResumePromotions={resumePromotions}
+        />
       </>
     );
   }
   return (
-    <TaskList tasks={tasks ?? []} message={message} busy={busy} onFresh={freshPasskeyAction} />
+    <TaskList
+      bountywellRegistration={bountywellRegistration}
+      tasks={tasks ?? []}
+      message={message}
+      busy={busy}
+      onFresh={freshPasskeyAction}
+      onResumePromotions={resumePromotions}
+      onRegisterBountywell={enrollBountywell}
+      onRunBountywell={runBountywellInquiry}
+    />
   );
 }
 
 function errorMessage(reason: unknown): string {
   return reason instanceof Error ? reason.message : "The request could not be completed.";
+}
+
+function readPendingBountywellRequestId(): string | undefined {
+  try {
+    return localStorage.getItem(pendingBountywellRequestIdKey) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writePendingBountywellRequestId(requestId: string): void {
+  try {
+    localStorage.setItem(pendingBountywellRequestIdKey, requestId);
+  } catch {
+    // React state still preserves retry identity for this page lifetime.
+  }
+}
+
+function clearPendingBountywellRequestId(requestId: string): void {
+  try {
+    if (localStorage.getItem(pendingBountywellRequestIdKey) === requestId) {
+      localStorage.removeItem(pendingBountywellRequestIdKey);
+    }
+  } catch {
+    // Nothing durable remains to clear when storage is unavailable.
+  }
 }
 
 const root = document.getElementById("root");

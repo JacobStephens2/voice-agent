@@ -7,14 +7,18 @@ import {
 
 import {
   authenticationStatusSchema,
+  bountywellRegistrationSchema,
+  bountywellRegistrationStatusSchema,
   evidenceRecordProjectionSchema,
   evidenceRecordSummaryListSchema,
   freshPasskeyActionResponseSchema,
   passkeyEnrollmentResultSchema,
+  promotionResumeResponseSchema,
   recoverySessionResponseSchema,
   trustedBrowserSessionResponseSchema,
   webAuthnOptionsSchema,
   type AuthenticationStatus,
+  type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
   type PasskeyEnrollmentResult,
@@ -33,6 +37,53 @@ export async function loadAuthenticationStatus(): Promise<AuthenticationStatus> 
   const response = await fetch("/api/auth/status");
   if (!response.ok) throw new Error("Authentication status is unavailable.");
   return authenticationStatusSchema.parse(await response.json());
+}
+
+export async function loadBountywellRegistration(): Promise<
+  BountywellRegistration | undefined
+> {
+  const response = await fetch("/api/applications/bountywell");
+  if (response.status === 401) return undefined;
+  if (!response.ok) throw new Error("Bountywell registration is unavailable.");
+  const result = bountywellRegistrationStatusSchema.parse(await response.json());
+  return result.registration ?? undefined;
+}
+
+export async function registerBountywell(
+  csrfToken: string,
+): Promise<BountywellRegistration> {
+  const response = await fetch("/api/applications/bountywell/registration", {
+    body: JSON.stringify({ csrfToken }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before registering Bountywell."
+        : "Bountywell registration could not be completed.",
+    );
+  }
+  return bountywellRegistrationSchema.parse(await response.json());
+}
+
+export async function submitBountywellHealthInquiry(
+  csrfToken: string,
+  requestId: string,
+): Promise<EvidenceRecordProjection> {
+  const response = await fetch("/api/tasks/bountywell-health", {
+    body: JSON.stringify({ csrfToken, requestId }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 409
+        ? "Register Bountywell before running an inquiry."
+        : "The Bountywell inquiry could not be accepted.",
+    );
+  }
+  return evidenceRecordProjectionSchema.parse(await response.json());
 }
 
 export async function loadProtectedContent(
@@ -117,6 +168,16 @@ export async function performFreshPasskeyAction(
     "/api/auth/fresh/verify",
     { ceremonyId: options.challenge, response },
     freshPasskeyActionResponseSchema,
+  );
+}
+
+export function resumePromotionQueue(
+  csrfToken: string,
+): Promise<{ readonly commit: string; readonly status: "queued" }> {
+  return postJson(
+    "/api/operations/promotions/resume",
+    { csrfToken },
+    promotionResumeResponseSchema,
   );
 }
 

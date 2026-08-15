@@ -16,6 +16,7 @@
     "@fastify/static": "10.1.2",
     "@voice-agent/auth": "workspace:*",
     "@voice-agent/contracts": "workspace:*",
+    "@voice-agent/runtime": "workspace:*",
     "@voice-agent/sqlite-store": "workspace:*",
     "fastify": "5.12.0"
   }

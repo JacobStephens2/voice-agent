@@ -8,10 +8,13 @@ import {
   createSqliteDurableTaskStore,
 } from "@voice-agent/sqlite-store";
 import staticFiles from "@fastify/static";
+import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
+import { open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { createVoiceApi } from "./index.ts";
+import { createDurableTaskRuntime } from "@voice-agent/runtime";
 
 const databasePath = process.env.VOICE_AGENT_DATABASE_PATH;
 if (databasePath === undefined || databasePath.length === 0) {
@@ -30,6 +33,12 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
+const runtime = createDurableTaskRuntime({
+  applicationRegistry: taskStore,
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  store: taskStore,
+});
 const authentication = createAuthenticationLifecycle({
   now: () => new Date().toISOString(),
   ownerUserId: process.env.VOICE_AGENT_OWNER_ID ?? "personal-owner",
@@ -42,12 +51,22 @@ const authentication = createAuthenticationLifecycle({
   store: authenticationStore,
 });
 const api = createVoiceApi({
+  additionalMetrics: () => readAdditionalMetrics(
+    process.env.VOICE_AGENT_PROMOTION_METRICS_PATH ??
+      "/var/lib/voice-agent-promotions/promotions.prom",
+  ),
   authentication,
+  controls: runtime,
   origin,
-  records: {
-    getEvidenceRecord: (taskId) => taskStore.findByTaskId(taskId),
-    listEvidenceRecords: () => taskStore.listTasks(),
+  promotionControl: {
+    requestResume: () => requestPromotionResume(
+      process.env.VOICE_AGENT_PROMOTION_RESUME_PATH ??
+        "/var/lib/voice-agent-promotion-resume/resume.request",
+      process.env.VOICE_AGENT_PROMOTION_STATE_PATH ??
+        "/var/lib/voice-agent-promotions/state.tsv",
+    ),
   },
+  records: runtime,
 });
 await api.register(staticFiles, {
   root: fileURLToPath(new URL("../../pwa/dist", import.meta.url)),
@@ -56,12 +75,65 @@ await api.register(staticFiles, {
 const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
-  await taskStore.close();
+  await runtime.close();
 };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 
 await api.listen({
   host: "127.0.0.1",
-  port: Number(process.env.VOICE_AGENT_PORT ?? "3470"),
+  port: Number(process.env.VOICE_AGENT_PORT ?? "3472"),
 });
+
+async function requestPromotionResume(
+  path: string,
+  statePath: string,
+): Promise<string> {
+  let stateContents: string;
+  try {
+    stateContents = await readFile(statePath, "utf8");
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error("No open Deployment Circuit Breaker");
+    }
+    throw error;
+  }
+  const state = stateContents.trim().split("\t");
+  const circuitState = state[1];
+  const commit = state[2];
+  if (circuitState !== "open" || commit === undefined || !/^[0-9a-f]{40}$/u.test(commit)) {
+    throw new Error("No open Deployment Circuit Breaker");
+  }
+  try {
+    const request = await open(path, "wx", 0o640);
+    try {
+      await request.writeFile(`${commit}\n`, "utf8");
+    } finally {
+      await request.close();
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+      const queuedCommit = (await readFile(path, "utf8")).trim();
+      if (/^[0-9a-f]{40}$/u.test(queuedCommit)) return queuedCommit;
+    } else {
+      throw error;
+    }
+    throw new Error("Promotion resume request is invalid");
+  }
+  return commit;
+}
+
+async function readAdditionalMetrics(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return "";
+    }
+    throw error;
+  }
+}

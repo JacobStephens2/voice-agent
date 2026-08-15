@@ -141,6 +141,10 @@ export interface AuthenticationLifecycle {
     readonly label: string;
     readonly sessionToken: string;
   }): Promise<unknown>;
+  canChangeState(input: {
+    readonly csrfToken: string;
+    readonly sessionToken: string;
+  }): Promise<boolean>;
   canViewEvidence(sessionToken: string): Promise<boolean>;
   confirmRecoveryCodes(input: {
     readonly confirmationToken: string;
@@ -422,6 +426,19 @@ export function createAuthenticationLifecycle(
           options.now(),
         );
       return session?.kind === "trusted";
+    },
+
+    async canChangeState(input) {
+      const snapshot = await readState();
+      const session = findActiveSession(
+        snapshot.state,
+        options.secrets.digest(input.sessionToken),
+        options.now(),
+      );
+      return (
+        session?.kind === "trusted" &&
+        session.csrfTokenDigest === options.secrets.digest(input.csrfToken)
+      );
     },
 
     async hasFreshPasskeyAction(sessionToken) {

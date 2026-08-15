@@ -1,0 +1,16 @@
+{
+  "name": "@voice-agent/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "serve": "node --experimental-strip-types src/server.ts",
+    "smoke": "node --experimental-strip-types src/smoke.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@voice-agent/operations-broker": "workspace:*",
+    "@voice-agent/runtime": "workspace:*",
+    "@voice-agent/sqlite-store": "workspace:*"
+  }
+}
