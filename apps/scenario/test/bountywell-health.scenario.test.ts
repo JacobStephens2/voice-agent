@@ -257,9 +257,22 @@ describe("Bountywell health inquiry scenario", () => {
         question: "Is Bountywell healthy?",
         requestId: "request-page",
       });
-      const page = await scenario.readTaskPage(record.task.id);
+      const denied = await scenario.readTaskPage(record.task.id);
+      expect(denied.statusCode).toBe(401);
+      expect(JSON.stringify(denied.body)).not.toContain(record.task.conclusion);
+
+      const page = await scenario.readTaskPage(
+        record.task.id,
+        "scenario-trusted-session",
+      );
 
       expect(page.statusCode).toBe(200);
+      expect(page.headers["content-security-policy"]).toContain(
+        "default-src 'self'",
+      );
+      expect(page.headers["strict-transport-security"]).toContain(
+        "max-age=63072000",
+      );
       expect(page.body).toEqual(record);
       expect(page.html).toContain("Bountywell API is healthy.");
       expect(page.html).toContain("completed");

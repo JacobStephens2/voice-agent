@@ -1,4 +1,7 @@
-import type { EvidenceRecordProjection } from "@voice-agent/contracts";
+import type {
+  EvidenceRecordProjection,
+  EvidenceRecordSummary,
+} from "@voice-agent/contracts";
 
 export interface CompletedInquiryPersistence {
   readonly operationId: string;
@@ -7,6 +10,7 @@ export interface CompletedInquiryPersistence {
 }
 
 export interface DurableTaskStore {
+  listTasks(): Promise<readonly EvidenceRecordSummary[]>;
   findByOperationId(
     operationId: string,
   ): Promise<EvidenceRecordProjection | undefined>;

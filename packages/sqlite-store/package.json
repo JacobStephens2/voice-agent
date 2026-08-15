@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@voice-agent/auth": "workspace:*",
     "@voice-agent/contracts": "workspace:*",
     "@voice-agent/durable-store": "workspace:*",
     "better-sqlite3": "13.0.3"

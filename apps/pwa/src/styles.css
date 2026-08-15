@@ -8,6 +8,125 @@ body {
   margin: 0;
 }
 
+button,
+input {
+  font: inherit;
+}
+
+button {
+  background: #15271f;
+  border: 0;
+  border-radius: 0.65rem;
+  color: white;
+  cursor: pointer;
+  font-weight: 700;
+  min-height: 3rem;
+  padding: 0.7rem 1rem;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+button.quiet {
+  background: transparent;
+  color: #244b34;
+  text-decoration: underline;
+}
+
+.auth-shell {
+  box-sizing: border-box;
+  margin: 0 auto;
+  max-width: 34rem;
+  min-height: 100vh;
+  padding: clamp(2rem, 8vw, 5rem) 1.25rem;
+}
+
+.auth-shell h1 {
+  font-size: clamp(2.3rem, 9vw, 4rem);
+  letter-spacing: -0.055em;
+  line-height: 0.95;
+  margin: 0.5rem 0 2rem;
+}
+
+form {
+  display: grid;
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+label {
+  display: grid;
+  font-size: 0.85rem;
+  font-weight: 700;
+  gap: 0.4rem;
+}
+
+input {
+  background: #fffdf8;
+  border: 1px solid #819486;
+  border-radius: 0.55rem;
+  min-height: 3rem;
+  padding: 0 0.75rem;
+}
+
+.muted,
+.offline p {
+  color: #53645a;
+}
+
+.notice,
+.offline {
+  background: #e4ecdf;
+  border-left: 4px solid #386147;
+  border-radius: 0.35rem;
+  padding: 0.85rem 1rem;
+}
+
+.recovery-codes {
+  background: #fffdf8;
+  border: 1px solid #d9d6cd;
+  border-radius: 0.75rem;
+  columns: 2;
+  padding: 1.25rem 1.25rem 1.25rem 2.75rem;
+}
+
+.recovery-codes li {
+  break-inside: avoid;
+  padding: 0.3rem;
+}
+
+.task-list {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  padding: 0;
+}
+
+.task-list a {
+  background: #fffdf8;
+  border: 1px solid #d9d6cd;
+  border-radius: 0.75rem;
+  color: inherit;
+  display: grid;
+  gap: 0.35rem;
+  padding: 1rem;
+  text-decoration: none;
+}
+
+.task-list span,
+.task-list time {
+  color: #53645a;
+}
+
+.action-footer {
+  box-sizing: border-box;
+  margin: 1rem auto;
+  max-width: 52rem;
+  padding: 0 1.25rem 2rem;
+}
+
 .task-page,
 .message {
   box-sizing: border-box;
