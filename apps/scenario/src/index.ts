@@ -1,5 +1,6 @@
 import type {
   BountywellHealthObservation,
+  BountywellHealthObserver,
   BountywellHealthInquiryRequest,
   BountywellHealthObservationRequest,
   EvidenceRecordProjection,
@@ -11,7 +12,7 @@ import { createDurableTaskRuntime } from "@voice-agent/runtime";
 import { createSqliteDurableTaskStore } from "@voice-agent/sqlite-store";
 
 export interface BountywellHealthScenario {
-  readonly brokerRequests: readonly unknown[];
+  readonly brokerRequests: readonly BountywellHealthObservationRequest[];
   submit(request: BountywellHealthInquiryRequest): Promise<EvidenceRecordProjection>;
   readTaskPage(taskId: string): Promise<{
     readonly statusCode: number;
@@ -78,7 +79,7 @@ export async function createBountywellHealthScenario(
   };
 }
 
-class DeterministicBountywellHealthBroker {
+class DeterministicBountywellHealthBroker implements BountywellHealthObserver {
   readonly requests: BountywellHealthObservationRequest[] = [];
   readonly #observation: BountywellHealthObservation;
 

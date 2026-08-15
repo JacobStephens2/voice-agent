@@ -20,25 +20,33 @@ export type BountywellHealthInquiry = z.infer<
   typeof bountywellHealthInquirySchema
 >;
 
-const boundedFactValueSchema = z.union([
-  z.string().max(200),
-  z.number().finite(),
-  z.boolean(),
-]);
-
-export const bountywellHealthCheckSchema = z.object({
-  facts: z
-    .record(z.string().min(1).max(60), boundedFactValueSchema)
-    .refine((facts) => Object.keys(facts).length <= 8),
+const checkFields = {
   outcome: z.enum(["pass", "fail"]),
-  source: z.enum([
-    "public-health",
-    "authentication-boundary",
-    "service-state",
-    "resource-health",
-  ]),
   summary: z.string().max(240),
-});
+};
+
+export const bountywellHealthCheckSchema = z.discriminatedUnion("source", [
+  z.object({
+    ...checkFields,
+    facts: z.object({ statusCode: z.number().int().min(100).max(599) }),
+    source: z.literal("public-health"),
+  }),
+  z.object({
+    ...checkFields,
+    facts: z.object({ statusCode: z.number().int().min(100).max(599) }),
+    source: z.literal("authentication-boundary"),
+  }),
+  z.object({
+    ...checkFields,
+    facts: z.object({ active: z.boolean() }),
+    source: z.literal("service-state"),
+  }),
+  z.object({
+    ...checkFields,
+    facts: z.object({ diskPressure: z.boolean() }),
+    source: z.literal("resource-health"),
+  }),
+]);
 
 export const bountywellHealthObservationSchema = z.object({
   checks: z.array(bountywellHealthCheckSchema).min(1).max(8),
