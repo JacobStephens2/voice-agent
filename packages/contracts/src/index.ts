@@ -134,4 +134,3 @@ export const evidenceRecordProjectionSchema = z.object({
 export type EvidenceRecordProjection = z.infer<
   typeof evidenceRecordProjectionSchema
 >;
-export type TaskStatus = EvidenceRecordProjection["task"]["status"];
