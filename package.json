@@ -6,12 +6,15 @@
     "node": ">=22"
   },
   "scripts": {
+    "auth:bootstrap": "pnpm --filter @voice-agent/api bootstrap-code --",
+    "browser:test": "playwright test",
     "build": "pnpm -r --if-present build",
     "scenario:bountywell": "pnpm install --frozen-lockfile && pnpm --filter @voice-agent/scenario test --run",
     "test": "pnpm -r --if-present test --run",
     "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@types/node": "26.2.0",
     "typescript": "7.0.2",
     "vitest": "4.1.10"

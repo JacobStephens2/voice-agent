@@ -3,6 +3,7 @@ import {
   type BountywellHealthInquiryRequest,
   type BountywellHealthObserver,
   type EvidenceRecordProjection,
+  type EvidenceRecordSummary,
 } from "@voice-agent/contracts";
 import type { DurableTaskStore } from "@voice-agent/durable-store";
 import {
@@ -11,6 +12,7 @@ import {
 } from "@voice-agent/policy";
 
 export interface DurableTaskRuntime {
+  listEvidenceRecords(): Promise<readonly EvidenceRecordSummary[]>;
   submitBountywellHealthInquiry(
     request: BountywellHealthInquiryRequest,
   ): Promise<EvidenceRecordProjection>;
@@ -35,6 +37,8 @@ export function createDurableTaskRuntime(
     close: () => options.store.close(),
 
     getEvidenceRecord: (taskId) => options.store.findByTaskId(taskId),
+
+    listEvidenceRecords: () => options.store.listTasks(),
 
     replayBountywellHealthOperation: (operationId) =>
       options.store.findByOperationId(operationId),

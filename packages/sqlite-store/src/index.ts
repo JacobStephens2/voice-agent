@@ -10,6 +10,8 @@ import type {
   DurableTaskStore,
 } from "@voice-agent/durable-store";
 
+export { createSqliteAuthenticationStore } from "./authentication.ts";
+
 interface TaskRow {
   readonly conclusion: string;
   readonly created_at: string;
@@ -68,6 +70,12 @@ export function createSqliteDurableTaskStore(
     FROM evidence_events
     WHERE task_id = ?
     ORDER BY sequence
+  `);
+  const listTasks = database.prepare<[], TaskRow>(`
+    SELECT id, kind, status, question, conclusion, created_at, updated_at
+    FROM durable_tasks
+    ORDER BY updated_at DESC
+    LIMIT 100
   `);
 
   const persistTransaction = database.transaction(
@@ -167,6 +175,19 @@ export function createSqliteDurableTaskStore(
     async findByTaskId(taskId) {
       const task = findTaskById.get(taskId);
       return task === undefined ? undefined : loadRecord(task);
+    },
+    async listTasks() {
+      return listTasks.all().map((task) => ({
+        conclusion: evidenceRecordProjectionSchema.shape.task.shape.conclusion.parse(
+          task.conclusion,
+        ),
+        createdAt: task.created_at,
+        id: task.id,
+        kind: task.kind,
+        question: task.question,
+        status: task.status,
+        updatedAt: task.updated_at,
+      }));
     },
     async persistCompletedInquiry(input) {
       persistTransaction(input);

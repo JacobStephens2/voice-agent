@@ -1,0 +1,17 @@
+{
+  "name": "@voice-agent/auth",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "13.3.2",
+    "@voice-agent/contracts": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

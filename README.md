@@ -2,7 +2,7 @@
 
 A personal, voice-first assistant for discussing codebases, operating Linux services, and delegating deeper work to coding agents while away from a keyboard.
 
-> **Status:** Architecture and product design are complete. The first simulated Durable Task tracer bullet is implemented; telephone and production-service integration remain future slices.
+> **Status:** Architecture and product design are complete. The simulated Durable Task and passkey-protected PWA slices are implemented; telephone and production-service integration remain future slices.
 
 The intended experience begins with a telephone call. The Voice Agent calls back to authenticate the session, carries on a natural conversation, performs narrowly authorized operations, and delegates substantial code investigation or changes to restricted Subagents such as Codex or Claude Code. A PWA provides passkey-protected controls and a visual Evidence Record for every Durable Task.
 
@@ -75,6 +75,15 @@ The CI-ready verification commands are:
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm browser:test
 ```
 
-The PWA lives in `apps/pwa`; the API, scenario harness, contracts, and durable runtime are isolated workspace modules under `apps/` and `packages/`.
+To generate a ten-minute, single-use Bootstrap Code through existing server access, set the production SQLite path and run:
+
+```bash
+VOICE_AGENT_DATABASE_PATH=/path/to/voice-agent.sqlite pnpm auth:bootstrap
+```
+
+The command writes only the code to standard output. It never places the code in repository files or passes it as a shell argument. A new code is required for each of the first two independently enrolled passkeys; bootstrap closes permanently only after the one-time Recovery Codes have been displayed and their receipt confirmed.
+
+The PWA lives in `apps/pwa`; the API, authentication lifecycle, scenario harness, contracts, and durable runtime are isolated workspace modules under `apps/` and `packages/`.

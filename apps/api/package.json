@@ -6,11 +6,17 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "bootstrap-code": "node --experimental-strip-types src/bootstrap-cli.ts",
     "build": "tsc --noEmit -p tsconfig.json",
+    "serve": "node --experimental-strip-types src/server.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/static": "10.1.2",
+    "@voice-agent/auth": "workspace:*",
     "@voice-agent/contracts": "workspace:*",
+    "@voice-agent/sqlite-store": "workspace:*",
     "fastify": "5.12.0"
   }
 }

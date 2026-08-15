@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+export const originSecurityHeaders = {
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  "Referrer-Policy": "no-referrer",
+  "Strict-Transport-Security": "max-age=63072000; includeSubDomains",
+  "X-Content-Type-Options": "nosniff",
+} as const;
+
 const identifierSchema = z.string().min(1).max(120);
 const timestampSchema = z.iso.datetime();
 
@@ -134,3 +142,79 @@ export const evidenceRecordProjectionSchema = z.object({
 export type EvidenceRecordProjection = z.infer<
   typeof evidenceRecordProjectionSchema
 >;
+
+export const evidenceRecordSummarySchema = evidenceRecordProjectionSchema.shape.task;
+export const evidenceRecordSummaryListSchema = z.array(evidenceRecordSummarySchema).max(100);
+export type EvidenceRecordSummary = z.infer<typeof evidenceRecordSummarySchema>;
+
+export const authenticationStatusSchema = z.object({
+  bootstrapAvailable: z.boolean(),
+  passkeyCount: z.number().int().nonnegative(),
+  setup: z.enum([
+    "bootstrap-required",
+    "second-passkey-required",
+    "recovery-confirmation-required",
+    "ready",
+  ]),
+  unattendedAuthorityEnabled: z.boolean(),
+});
+export type AuthenticationStatus = z.infer<typeof authenticationStatusSchema>;
+
+export const bootstrapRegistrationOptionsRequestSchema = z.object({
+  bootstrapCode: z.string().min(8).max(120),
+  label: z.string().min(1).max(80),
+  mode: z.literal("bootstrap"),
+});
+export const recoveryRegistrationOptionsRequestSchema = z.object({
+  csrfToken: z.string().min(16).max(200),
+  label: z.string().min(1).max(80),
+  mode: z.literal("recovery"),
+});
+export const registrationOptionsRequestSchema = z.discriminatedUnion("mode", [
+  bootstrapRegistrationOptionsRequestSchema,
+  recoveryRegistrationOptionsRequestSchema,
+]);
+export const passkeyResponseRequestSchema = z.object({ response: z.unknown() });
+export const passkeyAuthenticationResponseRequestSchema = z.object({
+  ceremonyId: z.string().min(16).max(200),
+  response: z.unknown(),
+});
+export const csrfRequestSchema = z.object({
+  csrfToken: z.string().min(16).max(200),
+});
+export const recoveryRequestSchema = z.object({
+  recoveryCode: z.string().min(8).max(120),
+});
+export const recoveryCodesConfirmationRequestSchema = z.object({
+  confirmationToken: z.string().min(16).max(200),
+});
+
+export const passkeyEnrollmentResultSchema = z.object({
+  recoveryCodes: z.array(z.string().min(8).max(120)).max(50),
+  recoveryConfirmationToken: z.string().min(16).max(200).optional(),
+  status: authenticationStatusSchema,
+});
+export type PasskeyEnrollmentResult = z.infer<
+  typeof passkeyEnrollmentResultSchema
+>;
+export const trustedBrowserSessionResponseSchema = z.object({
+  csrfToken: z.string().min(16).max(200),
+  expiresAt: timestampSchema,
+  freshUntil: timestampSchema.optional(),
+});
+export type TrustedBrowserSessionResponse = z.infer<
+  typeof trustedBrowserSessionResponseSchema
+>;
+export const recoverySessionResponseSchema = z.object({
+  csrfToken: z.string().min(16).max(200),
+  expiresAt: timestampSchema,
+});
+export type RecoverySessionResponse = z.infer<
+  typeof recoverySessionResponseSchema
+>;
+export const freshPasskeyActionResponseSchema = z.object({
+  freshUntil: timestampSchema,
+});
+export const webAuthnOptionsSchema = z.looseObject({
+  challenge: z.string().min(1),
+});

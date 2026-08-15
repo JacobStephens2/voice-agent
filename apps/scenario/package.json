@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@voice-agent/api": "workspace:*",
+    "@voice-agent/auth": "workspace:*",
     "@voice-agent/contracts": "workspace:*",
     "@voice-agent/pwa": "workspace:*",
     "@voice-agent/runtime": "workspace:*",
