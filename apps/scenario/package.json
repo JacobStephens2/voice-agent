@@ -16,9 +16,11 @@
     "@voice-agent/contracts": "workspace:*",
     "@voice-agent/pwa": "workspace:*",
     "@voice-agent/runtime": "workspace:*",
-    "@voice-agent/sqlite-store": "workspace:*"
+    "@voice-agent/sqlite-store": "workspace:*",
+    "better-sqlite3": "13.0.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
     "vitest": "4.1.10"
   }
 }

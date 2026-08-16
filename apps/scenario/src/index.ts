@@ -5,6 +5,8 @@ import type {
   BountywellHealthObservationRequest,
   EvidenceRecordProjection,
 } from "@voice-agent/contracts";
+
+export * from "./human-merge-promotion.ts";
 import { bountywellHealthObservationSchema } from "@voice-agent/contracts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
