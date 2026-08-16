@@ -364,6 +364,8 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
       [failureOneCommit]: 503,
       [failureThreeCommit]: 503,
       [failureTwoCommit]: 503,
+      [missedCommit]: 204,
+      [preOpenCommit]: 204,
       [recoveryCommit]: 204,
     },
     ids: [
@@ -375,6 +377,8 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
       "attempt-failure-3",
       "task-pre-open",
       "attempt-pre-open",
+      "task-missed-pre-open",
+      "attempt-missed-pre-open",
       "task-recovery",
       "attempt-recovery",
     ],
@@ -397,7 +401,7 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
   await deliverSigned(
     scenario,
     "delivery-pre-open",
-    humanMerge(preOpenCommit, failureThreeCommit),
+    humanMerge(preOpenCommit, missedCommit),
   );
 
   await scenario.processNext();
@@ -417,10 +421,17 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
   );
   expect(await scenario.processNext()).toBeUndefined();
 
+  const reconciledPreOpenAncestor = await scenario.reconcile([
+    humanMerge(missedCommit, failureThreeCommit),
+    humanMerge(preOpenCommit, missedCommit),
+  ]);
+  expect(reconciledPreOpenAncestor).toHaveLength(1);
+  expect(await scenario.processNext()).toBeUndefined();
+
   const recovery = await deliverSigned(
     scenario,
     "delivery-recovery",
-    humanMerge(recoveryCommit, failureThreeCommit),
+    humanMerge(recoveryCommit, preOpenCommit),
   );
   expect(recovery.record.promotion.circuit.state).toBe("open");
   const recovered = await scenario.processNext();
@@ -433,6 +444,12 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
       .filter((event) => event.kind === "circuit.changed")
       .map((event) => event.details.state),
   ).toEqual(["half-open", "closed"]);
+  const resumedMissedAncestor = await scenario.processNext();
+  expect(resumedMissedAncestor?.promotion.attempt).toMatchObject({
+    id: "attempt-missed-pre-open",
+    mergeCommit: missedCommit,
+    status: "succeeded",
+  });
   const resumedPreOpen = await scenario.processNext();
   expect(resumedPreOpen?.promotion.attempt).toMatchObject({
     id: "attempt-pre-open",
@@ -542,13 +559,14 @@ test("reconciliation inserts a missed ancestor before its queued descendant", as
       "attempt-missed-ancestor",
     ],
   });
-  const missedAncestor = humanMerge(missedCommit, healthyCommit);
+  const missedAncestor = humanMerge(missedCommit, previousCommit);
   const recordedDescendant = humanMerge(missedDescendantCommit, missedCommit);
   await deliverSigned(
     scenario,
     "delivery-descendant-first",
     recordedDescendant,
   );
+  expect(await scenario.processNext()).toBeUndefined();
 
   const discovered = await scenario.reconcile([
     recordedDescendant,
@@ -571,6 +589,17 @@ test("reconciliation inserts a missed ancestor before its queued descendant", as
       queueSequence: 2,
     }),
   ]);
+  expect((await scenario.getRecord("task-descendant-first"))?.evidence).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        details: {
+          previousQueueSequence: 1,
+          queueSequence: 2,
+        },
+        kind: "promotion.reordered",
+      }),
+    ]),
+  );
   expect((await scenario.processNext())?.promotion.attempt?.mergeCommit).toBe(
     missedCommit,
   );

@@ -21,6 +21,8 @@ import {
 } from "@voice-agent/contracts";
 
 export const fixtureApplicationId = "fixture-production" as const;
+export const fixtureInitialProductionCommit =
+  "1111111111111111111111111111111111111111" as const;
 export const fixtureRepository = "JacobStephens2/fixture-application" as const;
 
 interface RecordRow {
@@ -39,6 +41,7 @@ interface RecordRow {
 }
 
 interface AttemptRow {
+  readonly accepted_sequence: number;
   readonly contract_json: string;
   readonly id: string;
   readonly merge_commit: string;
@@ -61,9 +64,13 @@ interface EvidenceRow {
 }
 
 interface ApplicationStateRow {
-  readonly circuit_opened_queue_sequence: number | null;
+  readonly circuit_opened_accepted_sequence: number | null;
   readonly circuit_state: "closed" | "half-open" | "open";
   readonly consecutive_failures: number;
+}
+
+interface AttemptWithMergeRow extends AttemptRow {
+  readonly merge_json: string;
 }
 
 export interface PromotionStoreInspection {
@@ -140,7 +147,7 @@ export interface PromotionStore {
     readonly reason: string;
     readonly taskId: string;
   }): PromotionEvidenceRecordProjection;
-  reorderQueuedAttempts(): void;
+  reorderQueuedAttempts(now: string): void;
 }
 
 export function createPromotionStore(databasePath: string): PromotionStore {
@@ -176,7 +183,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     return database
       .prepare(`
         SELECT consecutive_failures, circuit_state,
-          circuit_opened_queue_sequence
+          circuit_opened_accepted_sequence
         FROM promotion_application_state
         WHERE application_id = ?
       `)
@@ -202,7 +209,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
   function findAttemptByRecord(recordId: string): AttemptRow | undefined {
     return database
       .prepare(`
-        SELECT id, record_id, merge_commit, queue_sequence, status,
+        SELECT id, record_id, merge_commit, accepted_sequence, queue_sequence, status,
           contract_json, release_json, verification_json, rollback_json,
           previous_release_json
         FROM promotion_attempts
@@ -214,7 +221,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
   function findAttempt(attemptId: string): AttemptRow {
     const attempt = database
       .prepare(`
-        SELECT id, record_id, merge_commit, queue_sequence, status,
+        SELECT id, record_id, merge_commit, accepted_sequence, queue_sequence, status,
           contract_json, release_json, verification_json, rollback_json,
           previous_release_json
         FROM promotion_attempts
@@ -379,6 +386,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
   function activateInitialPolicy(now: string): void {
     const registration: FixtureCodebaseRegistration = {
       applicationId: fixtureApplicationId,
+      initialProductionCommit: fixtureInitialProductionCommit,
       liveCheckoutPath: "/fixture/live",
       productionBranch: "main",
       registeredAt: now,
@@ -485,12 +493,16 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       readonly taskId: string;
     }): PromotionEvidenceRecordProjection => {
       const applicationState = readApplicationState();
-      const sequence = database
+      const sequences = database
         .prepare(`
-          SELECT COALESCE(MAX(queue_sequence), 0) + 1 AS sequence
+          SELECT COALESCE(MAX(queue_sequence), 0) + 1 AS queue_sequence,
+            COALESCE(MAX(accepted_sequence), 0) + 1 AS accepted_sequence
           FROM promotion_attempts
         `)
-        .get() as { readonly sequence: number };
+        .get() as {
+          readonly accepted_sequence: number;
+          readonly queue_sequence: number;
+        };
       const merge = projectMerge(input);
       database
         .prepare(`
@@ -522,16 +534,18 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       database
         .prepare(`
           INSERT INTO promotion_attempts (
-            id, record_id, application_id, merge_commit, queue_sequence,
-            status, contract_json, release_json, verification_json, rollback_json
-          ) VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, NULL, ?)
+            id, record_id, application_id, merge_commit, accepted_sequence,
+            queue_sequence, status, contract_json, release_json,
+            verification_json, rollback_json
+          ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, NULL, NULL, ?)
         `)
         .run(
           input.attemptId,
           input.taskId,
           fixtureApplicationId,
           input.event.commit,
-          sequence.sequence,
+          sequences.accepted_sequence,
+          sequences.queue_sequence,
           JSON.stringify(input.contract),
           JSON.stringify({ performed: false }),
         );
@@ -561,7 +575,6 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         {
           attemptId: input.attemptId,
           contractRevision: input.contract.revision,
-          queueSequence: sequence.sequence,
         },
       );
       return requireRecord(findRecord(input.taskId));
@@ -635,9 +648,9 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     const claimTransaction = database.transaction(() => {
       const running = database
         .prepare(`
-          SELECT id, record_id, merge_commit, queue_sequence, status,
-            contract_json, release_json, verification_json, rollback_json,
-            previous_release_json
+          SELECT id, record_id, merge_commit, accepted_sequence,
+            queue_sequence, status, contract_json, release_json,
+            verification_json, rollback_json, previous_release_json
           FROM promotion_attempts
           WHERE status = 'running'
           ORDER BY queue_sequence
@@ -647,24 +660,47 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       if (running !== undefined) return running;
       const applicationState = readApplicationState();
       if (applicationState.circuit_state === "half-open") return undefined;
-      const attempt = database
+      const attempts = database
         .prepare(`
-          SELECT id, record_id, merge_commit, queue_sequence, status,
-            contract_json, release_json, verification_json, rollback_json,
-            previous_release_json
+          SELECT promotion_attempts.id, promotion_attempts.record_id,
+            promotion_attempts.merge_commit,
+            promotion_attempts.accepted_sequence,
+            promotion_attempts.queue_sequence, promotion_attempts.status,
+            promotion_attempts.contract_json, promotion_attempts.release_json,
+            promotion_attempts.verification_json,
+            promotion_attempts.rollback_json,
+            promotion_attempts.previous_release_json,
+            promotion_records.merge_json
           FROM promotion_attempts
-          WHERE status = 'queued'
-            AND (
-              ? != 'open'
-              OR queue_sequence > ?
-            )
-          ORDER BY queue_sequence
-          LIMIT 1
+          JOIN promotion_records
+            ON promotion_records.id = promotion_attempts.record_id
+          ORDER BY promotion_attempts.queue_sequence
         `)
-        .get(
-          applicationState.circuit_state,
-          applicationState.circuit_opened_queue_sequence ?? Number.MAX_SAFE_INTEGER,
-        ) as AttemptRow | undefined;
+        .all() as AttemptWithMergeRow[];
+      const mergesByCommit = new Map(
+        attempts.map((attempt) => {
+          const merge = parseStored(
+            attempt.merge_json,
+            promotionMergeProjectionSchema,
+          );
+          return [merge.commit, merge] as const;
+        }),
+      );
+      const queued = attempts.filter((attempt) => attempt.status === "queued");
+      const attempt =
+        applicationState.circuit_state === "open"
+          ? findHalfOpenCandidate(
+              queued,
+              attempts,
+              mergesByCommit,
+              applicationState.circuit_opened_accepted_sequence,
+            )
+          : findNextAncestryReadyAttempt(
+              queued,
+              attempts,
+              mergesByCommit,
+              findRegistration().initialProductionCommit,
+            );
       if (attempt === undefined) return undefined;
       const claim = database
         .prepare(`
@@ -851,7 +887,8 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         .prepare(`
           UPDATE promotion_application_state
           SET active_release_json = ?, consecutive_failures = 0,
-            circuit_state = 'closed', circuit_opened_queue_sequence = NULL
+            circuit_state = 'closed',
+            circuit_opened_accepted_sequence = NULL
           WHERE application_id = ?
         `)
         .run(JSON.stringify(input.release), fixtureApplicationId);
@@ -898,11 +935,11 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       const circuitState = consecutiveFailures >= 3 ? "open" : "closed";
       const latestAcceptedSequence = database
         .prepare(`
-          SELECT COALESCE(MAX(queue_sequence), 0) AS queue_sequence
+          SELECT COALESCE(MAX(accepted_sequence), 0) AS accepted_sequence
           FROM promotion_attempts
           WHERE application_id = ?
         `)
-        .get(fixtureApplicationId) as { readonly queue_sequence: number };
+        .get(fixtureApplicationId) as { readonly accepted_sequence: number };
       const restoredRelease =
         attempt.previous_release_json === null
           ? undefined
@@ -934,14 +971,14 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         .prepare(`
           UPDATE promotion_application_state
           SET active_release_json = ?, consecutive_failures = ?,
-            circuit_state = ?, circuit_opened_queue_sequence = ?
+            circuit_state = ?, circuit_opened_accepted_sequence = ?
           WHERE application_id = ?
         `)
         .run(
           attempt.previous_release_json,
           consecutiveFailures,
           circuitState,
-          circuitState === "open" ? latestAcceptedSequence.queue_sequence : null,
+          circuitState === "open" ? latestAcceptedSequence.accepted_sequence : null,
           fixtureApplicationId,
         );
       const conclusion =
@@ -1025,11 +1062,11 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     };
   }
 
-  const reorderQueuedAttemptsTransaction = database.transaction(() => {
+  const reorderQueuedAttemptsTransaction = database.transaction((now: string) => {
     const queued = database
       .prepare(`
-        SELECT promotion_attempts.id, promotion_attempts.queue_sequence,
-          promotion_records.merge_json
+        SELECT promotion_attempts.id, promotion_attempts.record_id,
+          promotion_attempts.queue_sequence, promotion_records.merge_json
         FROM promotion_attempts
         JOIN promotion_records
           ON promotion_records.id = promotion_attempts.record_id
@@ -1040,6 +1077,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       readonly id: string;
       readonly merge_json: string;
       readonly queue_sequence: number;
+      readonly record_id: string;
     }>;
     const remaining = queued.map((attempt) => ({
       ...attempt,
@@ -1059,13 +1097,9 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       const [next] = remaining.splice(nextIndex, 1);
       if (next !== undefined) ordered.push(next);
     }
-    const terminal = database
-      .prepare(`
-        SELECT COALESCE(MAX(queue_sequence), 0) AS queue_sequence
-        FROM promotion_attempts
-        WHERE status != 'queued'
-      `)
-      .get() as { readonly queue_sequence: number };
+    const availableSequences = queued
+      .map((attempt) => attempt.queue_sequence)
+      .sort((left, right) => left - right);
     database
       .prepare(`
         UPDATE promotion_attempts
@@ -1079,7 +1113,24 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       WHERE id = ? AND status = 'queued'
     `);
     ordered.forEach((attempt, index) => {
-      updateSequence.run(terminal.queue_sequence + index + 1, attempt.id);
+      const queueSequence = availableSequences[index];
+      if (queueSequence === undefined) {
+        throw new Error("Promotion Attempt queue sequence is unavailable");
+      }
+      updateSequence.run(queueSequence, attempt.id);
+      if (queueSequence !== attempt.queue_sequence) {
+        appendEvidence(
+          attempt.record_id,
+          `${attempt.id}:queue:${queueSequence}`,
+          "promotion.reordered",
+          now,
+          `Promotion Attempt ${attempt.id} moved to preserve GitHub merge ancestry.`,
+          {
+            previousQueueSequence: attempt.queue_sequence,
+            queueSequence,
+          },
+        );
+      }
     });
   });
 
@@ -1112,10 +1163,86 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     persistDenied(input) {
       return persistDeniedTransaction.immediate(input);
     },
-    reorderQueuedAttempts() {
-      reorderQueuedAttemptsTransaction.immediate();
+    reorderQueuedAttempts(now) {
+      reorderQueuedAttemptsTransaction.immediate(now);
     },
   };
+}
+
+function findNextAncestryReadyAttempt(
+  queued: readonly AttemptWithMergeRow[],
+  attempts: readonly AttemptWithMergeRow[],
+  mergesByCommit: ReadonlyMap<
+    string,
+    PromotionEvidenceRecordProjection["promotion"]["merge"]
+  >,
+  initialProductionCommit: string,
+): AttemptWithMergeRow | undefined {
+  const readyPredecessors = new Set([
+    initialProductionCommit,
+    ...attempts
+      .filter(
+        (attempt) =>
+          attempt.status === "rolled-back" || attempt.status === "succeeded",
+      )
+      .map((attempt) => attempt.merge_commit),
+  ]);
+  return [...queued]
+    .sort((left, right) => left.queue_sequence - right.queue_sequence)
+    .find((attempt) => {
+      const merge = mergesByCommit.get(attempt.merge_commit);
+      return merge !== undefined && readyPredecessors.has(merge.beforeCommit);
+    });
+}
+
+function findHalfOpenCandidate(
+  queued: readonly AttemptWithMergeRow[],
+  attempts: readonly AttemptWithMergeRow[],
+  mergesByCommit: ReadonlyMap<
+    string,
+    PromotionEvidenceRecordProjection["promotion"]["merge"]
+  >,
+  circuitOpenedAcceptedSequence: number | null,
+): AttemptWithMergeRow | undefined {
+  if (circuitOpenedAcceptedSequence === null) return undefined;
+  const commitsAcceptedBeforeCircuitOpened = attempts
+    .filter(
+      (attempt) => attempt.accepted_sequence <= circuitOpenedAcceptedSequence,
+    )
+    .map((attempt) => attempt.merge_commit);
+  return [...queued]
+    .filter(
+      (attempt) =>
+        attempt.accepted_sequence > circuitOpenedAcceptedSequence &&
+        !isAncestorOfAny(
+          attempt.merge_commit,
+          commitsAcceptedBeforeCircuitOpened,
+          mergesByCommit,
+        ),
+    )
+    .sort((left, right) => left.accepted_sequence - right.accepted_sequence)[0];
+}
+
+function isAncestorOfAny(
+  possibleAncestor: string,
+  descendants: readonly string[],
+  mergesByCommit: ReadonlyMap<
+    string,
+    PromotionEvidenceRecordProjection["promotion"]["merge"]
+  >,
+): boolean {
+  for (const descendant of descendants) {
+    const visited = new Set<string>();
+    let commit: string | undefined = descendant;
+    while (commit !== undefined && !visited.has(commit)) {
+      visited.add(commit);
+      const beforeCommit: string | undefined =
+        mergesByCommit.get(commit)?.beforeCommit;
+      if (beforeCommit === possibleAncestor) return true;
+      commit = beforeCommit;
+    }
+  }
+  return false;
 }
 
 function createPromotionSchema(database: Database.Database): void {
@@ -1165,6 +1292,7 @@ function createPromotionSchema(database: Database.Database): void {
       record_id TEXT NOT NULL UNIQUE REFERENCES promotion_records(id),
       application_id TEXT NOT NULL,
       merge_commit TEXT NOT NULL,
+      accepted_sequence INTEGER NOT NULL UNIQUE,
       queue_sequence INTEGER NOT NULL UNIQUE,
       status TEXT NOT NULL,
       contract_json TEXT NOT NULL,
@@ -1198,7 +1326,7 @@ function createPromotionSchema(database: Database.Database): void {
       active_release_json TEXT,
       consecutive_failures INTEGER NOT NULL,
       circuit_state TEXT NOT NULL,
-      circuit_opened_queue_sequence INTEGER
+      circuit_opened_accepted_sequence INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS promotion_environment (

@@ -9,6 +9,7 @@ const eventLabels: Record<
   "delivery.duplicate": "Duplicate delivery ignored",
   "merge.accepted": "Human Merge accepted",
   "promotion.queued": "Promotion Attempt queued",
+  "promotion.reordered": "Promotion Attempt reordered",
   "reconciliation.discovered": "Missed Human Merge discovered",
   "release.built": "Release built",
   "release.preflighted": "Preflight completed",

@@ -366,7 +366,7 @@ export async function createHumanMergePromotionScenario(
           }),
         });
       }
-      store.reorderQueuedAttempts();
+      store.reorderQueuedAttempts(options.now);
       return discovered.map((result) => ({
         ...result,
         record: requirePromotionRecord(

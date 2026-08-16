@@ -28,6 +28,7 @@ export const fixtureGitHubEventSchema = z
 export const fixtureCodebaseRegistrationSchema = z
   .object({
     applicationId: z.literal("fixture-production"),
+    initialProductionCommit: promotionCommitSchema,
     liveCheckoutPath: promotionPathSchema,
     productionBranch: z.literal("main"),
     registeredAt: promotionTimestampSchema,
@@ -86,6 +87,7 @@ export const promotionEvidenceEventProjectionSchema = z
       "delivery.duplicate",
       "merge.accepted",
       "promotion.queued",
+      "promotion.reordered",
       "reconciliation.discovered",
       "release.built",
       "release.preflighted",
@@ -204,146 +206,22 @@ export const promotionOperationProjectionSchema = z
   })
   .strict();
 
-export interface FixtureGitHubEvent {
-  readonly action: "closed" | "opened" | "synchronize";
-  readonly beforeCommit: string;
-  readonly branch: string;
-  readonly commit: string;
-  readonly event: "pull_request" | "push";
-  readonly merged: boolean;
-  readonly mergedBy: {
-    readonly login: string;
-    readonly type: "Bot" | "Organization" | "User";
-  } | null;
-  readonly repository: string;
-}
-
-export interface FixtureCodebaseRegistration {
-  readonly applicationId: "fixture-production";
-  readonly liveCheckoutPath: string;
-  readonly productionBranch: "main";
-  readonly registeredAt: string;
-  readonly repository: "JacobStephens2/fixture-application";
-  readonly sourceCheckoutRoot: string;
-}
-
-export interface FixtureDeploymentContract {
-  readonly activatedAt: string;
-  readonly activatedBy: "fresh-passkey-action";
-  readonly applicationId: "fixture-production";
-  readonly buildCommand: string;
-  readonly health: {
-    readonly expectedStatus: number;
-    readonly path: string;
-  };
-  readonly preflightCommand: string;
-  readonly releaseRoot: string;
-  readonly revision: number;
-  readonly source: "voice-agent-policy";
-}
-
-export type PromotionAttemptStatus =
-  | "queued"
-  | "running"
-  | "rolled-back"
-  | "succeeded";
-
-export interface PromotionEvidenceEventProjection {
-  readonly details: Readonly<Record<string, boolean | number | string | null>>;
-  readonly id: string;
-  readonly kind:
-    | "circuit.changed"
-    | "delivery.denied"
-    | "delivery.duplicate"
-    | "merge.accepted"
-    | "promotion.queued"
-    | "reconciliation.discovered"
-    | "release.built"
-    | "release.preflighted"
-    | "release.rolled-back"
-    | "release.switched"
-    | "release.verified";
-  readonly occurredAt: string;
-  readonly sequence: number;
-  readonly summary: string;
-}
-
-export interface PromotionEvidenceRecordProjection {
-  readonly evidence: readonly PromotionEvidenceEventProjection[];
-  readonly promotion: {
-    readonly attempt?:
-      | {
-      readonly id: string;
-      readonly mergeCommit: string;
-      readonly queueSequence: number;
-      readonly status: PromotionAttemptStatus;
-        }
-      | undefined;
-    readonly circuit: {
-      readonly consecutiveFailures: number;
-      readonly state: "closed" | "half-open" | "open";
-    };
-    readonly contract?:
-      | {
-      readonly activatedAt: string;
-      readonly revision: number;
-      readonly source: "voice-agent-policy";
-        }
-      | undefined;
-    readonly denialReason?: string | undefined;
-    readonly merge: {
-      readonly actor: string;
-      readonly beforeCommit: string;
-      readonly branch: string;
-      readonly commit: string;
-      readonly deliveryId: string;
-      readonly repository: string;
-      readonly source: "reconciliation" | "webhook";
-    };
-    readonly release?:
-      | {
-      readonly commit: string;
-      readonly id: string;
-      readonly path: string;
-        }
-      | undefined;
-    readonly rollback: {
-      readonly attemptedReleaseId?: string | undefined;
-      readonly performed: boolean;
-      readonly restoredReleaseId?: string | undefined;
-    };
-    readonly verification?:
-      | {
-      readonly actualStatus: number;
-      readonly expectedStatus: number;
-      readonly outcome: "healthy" | "unhealthy";
-      readonly path: string;
-        }
-      | undefined;
-  };
-  readonly task: {
-    readonly conclusion: string;
-    readonly createdAt: string;
-    readonly id: string;
-    readonly kind: "human-merge.promotion";
-    readonly question: string;
-    readonly status: "completed" | "denied" | "pending" | "running";
-    readonly updatedAt: string;
-  };
-}
-
-export interface PromotionOperationProjection {
-  readonly actualStatus?: number | undefined;
-  readonly command?: string | undefined;
-  readonly kind:
-    | "release.build"
-    | "release.preflight"
-    | "release.rollback"
-    | "release.switch"
-    | "release.verify";
-  readonly operationId: string;
-  readonly outcome: "completed" | "healthy" | "passed" | "unhealthy";
-  readonly releasePath?: string | undefined;
-  readonly restoredReleaseId?: string | undefined;
-  readonly sourcePath?: string | undefined;
-}
+export type FixtureGitHubEvent = z.infer<typeof fixtureGitHubEventSchema>;
+export type FixtureCodebaseRegistration = z.infer<
+  typeof fixtureCodebaseRegistrationSchema
+>;
+export type FixtureDeploymentContract = z.infer<
+  typeof fixtureDeploymentContractSchema
+>;
+export type PromotionAttemptStatus = z.infer<
+  typeof promotionAttemptStatusSchema
+>;
+export type PromotionEvidenceEventProjection = z.infer<
+  typeof promotionEvidenceEventProjectionSchema
+>;
+export type PromotionEvidenceRecordProjection = z.infer<
+  typeof promotionEvidenceRecordProjectionSchema
+>;
+export type PromotionOperationProjection = z.infer<
+  typeof promotionOperationProjectionSchema
+>;
