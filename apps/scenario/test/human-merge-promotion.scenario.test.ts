@@ -21,6 +21,8 @@ const failureTwoCommit = "cccccccccccccccccccccccccccccccccccccccc";
 const failureThreeCommit = "dddddddddddddddddddddddddddddddddddddddd";
 const recoveryCommit = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const missedCommit = "ffffffffffffffffffffffffffffffffffffffff";
+const preOpenCommit = "1414141414141414141414141414141414141414";
+const missedDescendantCommit = "1515151515151515151515151515151515151515";
 
 afterEach(async () => {
   await Promise.all(
@@ -128,8 +130,12 @@ test("a Human Merge promotes its exact commit through the active Deployment Cont
   expect(page.statusCode).toBe(200);
   expect(page.html).toContain("Human Merge Promotion");
   expect(page.html).toContain(healthyCommit);
+  expect(page.html).toContain("Webhook delivery delivery-healthy");
+  expect(page.html).toContain("Promotion Attempt attempt-healthy");
   expect(page.html).toContain("Deployment Contract revision 1");
+  expect(page.html).toContain(`Release fixture-production-${healthyCommit}`);
   expect(page.html).toContain("Verification healthy");
+  expect(page.html).toContain("Rollback not required");
   expect(page.html).toContain("Circuit closed");
 
   await scenario.close();
@@ -328,6 +334,14 @@ test("Promotion Attempts remain serial and an unhealthy Release restores the pri
     kind: "release.rollback",
     restoredReleaseId: `fixture-production-${serialHealthyCommit}`,
   });
+  const rollbackPage = await scenario.readTaskPage(
+    second.record.task.id,
+    "scenario-trusted-session",
+  );
+  expect(rollbackPage.html).toContain("Rollback performed");
+  expect(rollbackPage.html).toContain(
+    `Restored fixture-production-${serialHealthyCommit}`,
+  );
 
   const final = await scenario.processNext();
   expect(final?.promotion.attempt).toMatchObject({
@@ -359,6 +373,8 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
       "attempt-failure-2",
       "task-failure-3",
       "attempt-failure-3",
+      "task-pre-open",
+      "attempt-pre-open",
       "task-recovery",
       "attempt-recovery",
     ],
@@ -377,6 +393,11 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
     scenario,
     "delivery-failure-3",
     humanMerge(failureThreeCommit, failureTwoCommit),
+  );
+  await deliverSigned(
+    scenario,
+    "delivery-pre-open",
+    humanMerge(preOpenCommit, failureThreeCommit),
   );
 
   await scenario.processNext();
@@ -412,6 +433,12 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
       .filter((event) => event.kind === "circuit.changed")
       .map((event) => event.details.state),
   ).toEqual(["half-open", "closed"]);
+  const resumedPreOpen = await scenario.processNext();
+  expect(resumedPreOpen?.promotion.attempt).toMatchObject({
+    id: "attempt-pre-open",
+    mergeCommit: preOpenCommit,
+    status: "succeeded",
+  });
 
   await scenario.close();
 });
@@ -423,10 +450,16 @@ test("reconciliation discovers a missed Human Merge exactly once", async () => {
       "attempt-recorded",
       "task-missed",
       "attempt-missed",
+      "task-missed-descendant",
+      "attempt-missed-descendant",
     ],
   });
   const recordedEvent = humanMerge(healthyCommit, previousCommit);
   const missedEvent = humanMerge(missedCommit, healthyCommit);
+  const missedDescendantEvent = humanMerge(
+    missedDescendantCommit,
+    missedCommit,
+  );
   const wrongBranchEvent: FixtureGitHubEvent = {
     ...humanMerge(serialHealthyCommit, missedCommit),
     branch: "develop",
@@ -434,11 +467,12 @@ test("reconciliation discovers a missed Human Merge exactly once", async () => {
   await deliverSigned(scenario, "delivery-recorded", recordedEvent);
 
   const discovered = await scenario.reconcile([
-    recordedEvent,
+    missedDescendantEvent,
     missedEvent,
+    recordedEvent,
     wrongBranchEvent,
   ]);
-  expect(discovered).toHaveLength(1);
+  expect(discovered).toHaveLength(2);
   expect(discovered[0]).toMatchObject({
     outcome: "accepted",
     record: {
@@ -460,16 +494,39 @@ test("reconciliation discovers a missed Human Merge exactly once", async () => {
   expect(discovered[0]?.record.evidence[0]).toMatchObject({
     kind: "reconciliation.discovered",
   });
-  expect(await scenario.reconcile([recordedEvent, missedEvent])).toEqual([]);
+  expect(discovered[1]).toMatchObject({
+    record: {
+      promotion: {
+        attempt: {
+          id: "attempt-missed-descendant",
+          mergeCommit: missedDescendantCommit,
+          queueSequence: 3,
+        },
+      },
+    },
+  });
+  expect(
+    await scenario.reconcile([
+      missedDescendantEvent,
+      recordedEvent,
+      missedEvent,
+    ]),
+  ).toEqual([]);
   expect((await scenario.inspect()).attempts.map((attempt) => attempt.mergeCommit)).toEqual([
     healthyCommit,
     missedCommit,
+    missedDescendantCommit,
   ]);
 
   await scenario.processNext();
   const reconciled = await scenario.processNext();
   expect(reconciled?.promotion.attempt).toMatchObject({
     mergeCommit: missedCommit,
+    status: "succeeded",
+  });
+  const reconciledDescendant = await scenario.processNext();
+  expect(reconciledDescendant?.promotion.attempt).toMatchObject({
+    mergeCommit: missedDescendantCommit,
     status: "succeeded",
   });
 
@@ -534,6 +591,50 @@ test("recorded external effects are not repeated after simulated process loss", 
   await resumed.close();
 });
 
+test("an unhealthy persisted verification still rolls back after process loss", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-promotion-verify-loss-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "scenario.sqlite");
+  const interrupted = await createHumanMergePromotionScenario({
+    databasePath,
+    healthStatusByCommit: { [serialUnhealthyCommit]: 503 },
+    ids: ["task-verify-loss", "attempt-verify-loss"],
+    now: "2026-08-15T12:00:00.000Z",
+    processLossAfterEffect: "release.verify",
+    webhookSecret,
+  });
+  await deliverSigned(
+    interrupted,
+    "delivery-verify-loss",
+    humanMerge(serialUnhealthyCommit, previousCommit),
+  );
+  await expect(interrupted.processNext()).rejects.toThrow(
+    "Simulated process loss after release.verify",
+  );
+  await interrupted.close();
+
+  const resumed = await createHumanMergePromotionScenario({
+    databasePath,
+    ids: [],
+    now: "2026-08-15T12:00:01.000Z",
+    webhookSecret,
+  });
+  const completed = await resumed.processNext();
+  expect(completed?.promotion).toMatchObject({
+    attempt: { status: "rolled-back" },
+    rollback: { performed: true },
+    verification: { actualStatus: 503, outcome: "unhealthy" },
+  });
+  expect((await resumed.inspect()).effects.map((effect) => effect.kind)).toEqual([
+    "release.build",
+    "release.preflight",
+    "release.switch",
+    "release.verify",
+    "release.rollback",
+  ]);
+  await resumed.close();
+});
+
 test("Deployment Contract revisions activate independently and remain fixed per attempt", async () => {
   const contractTwoCommit = "1212121212121212121212121212121212121212";
   const scenario = await createScenario({
@@ -553,13 +654,23 @@ test("Deployment Contract revisions activate independently and remain fixed per 
     "delivery-contract-1",
     humanMerge(healthyCommit, previousCommit),
   );
+  await expect(
+    scenario.activateContract({
+      buildCommand: "pnpm build:fixture",
+      health: { expectedStatus: 418, path: "/ready" },
+      preflightCommand: "pnpm fixture:preflight",
+      releaseRoot: "/fixture/releases",
+      revision: 2,
+      sessionToken: "not-fresh",
+    }),
+  ).rejects.toThrow("Fresh Passkey Action required");
   const activated = await scenario.activateContract({
-    activatedBy: "fresh-passkey-action",
     buildCommand: "pnpm build:fixture",
     health: { expectedStatus: 418, path: "/ready" },
     preflightCommand: "pnpm fixture:preflight",
     releaseRoot: "/fixture/releases",
     revision: 2,
+    sessionToken: "fresh-contract-session",
   });
   const revisionTwo = await deliverSigned(
     scenario,
@@ -578,12 +689,12 @@ test("Deployment Contract revisions activate independently and remain fixed per 
 
   await expect(
     scenario.activateContract({
-      activatedBy: "fresh-passkey-action",
       buildCommand: "malicious repository proposal",
       health: { expectedStatus: 200, path: "/changed" },
       preflightCommand: "skip",
       releaseRoot: "/tmp/live-checkout",
       revision: 2,
+      sessionToken: "fresh-contract-session",
     }),
   ).rejects.toThrow("Deployment Contract revision 2 already exists");
 
@@ -607,6 +718,11 @@ test("Deployment Contract revisions activate independently and remain fixed per 
 });
 
 async function createScenario(input: {
+  readonly contractActivationAuthority?:
+    | {
+        hasFreshPasskeyAction(sessionToken: string): Promise<boolean>;
+      }
+    | undefined;
   readonly healthStatusByCommit?: Readonly<Record<string, number>>;
   readonly ids: readonly string[];
 }) {
@@ -614,6 +730,13 @@ async function createScenario(input: {
   temporaryDirectories.push(directory);
   return createHumanMergePromotionScenario({
     databasePath: join(directory, "scenario.sqlite"),
+    contractActivationAuthority:
+      input.contractActivationAuthority ??
+      {
+        async hasFreshPasskeyAction(sessionToken) {
+          return sessionToken === "fresh-contract-session";
+        },
+      },
     healthStatusByCommit: input.healthStatusByCommit,
     ids: input.ids,
     now: "2026-08-15T12:00:00.000Z",

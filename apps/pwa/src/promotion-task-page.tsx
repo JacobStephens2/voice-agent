@@ -40,8 +40,25 @@ export function PromotionTaskPage({
       <section aria-labelledby="promotion-heading">
         <h2 id="promotion-heading">Promotion evidence</h2>
         <dl>
+          <dt>Merge provenance</dt>
+          <dd>
+            {record.promotion.merge.source === "webhook"
+              ? `Webhook delivery ${record.promotion.merge.deliveryId}`
+              : `Reconciliation ${record.promotion.merge.deliveryId}`} by{" "}
+            {record.promotion.merge.actor} into {record.promotion.merge.branch} of{" "}
+            {record.promotion.merge.repository}
+          </dd>
           <dt>Merge commit</dt>
           <dd>{record.promotion.merge.commit}</dd>
+          {record.promotion.attempt === undefined ? null : (
+            <>
+              <dt>Promotion Attempt</dt>
+              <dd>
+                Promotion Attempt {record.promotion.attempt.id}, queue{" "}
+                {record.promotion.attempt.queueSequence}, {record.promotion.attempt.status}
+              </dd>
+            </>
+          )}
           {record.promotion.contract === undefined ? null : (
             <>
               <dt>Deployment Contract</dt>
@@ -54,6 +71,24 @@ export function PromotionTaskPage({
               <dd>Verification {record.promotion.verification.outcome}</dd>
             </>
           )}
+          {record.promotion.release === undefined ? null : (
+            <>
+              <dt>Release</dt>
+              <dd>
+                Release {record.promotion.release.id} at {record.promotion.release.path}
+              </dd>
+            </>
+          )}
+          <dt>Rollback</dt>
+          <dd>
+            {record.promotion.rollback.performed
+              ? `Rollback performed${
+                  record.promotion.rollback.restoredReleaseId === undefined
+                    ? " with no prior Release"
+                    : `. Restored ${record.promotion.rollback.restoredReleaseId}`
+                }`
+              : "Rollback not required"}
+          </dd>
           <dt>Deployment Circuit Breaker</dt>
           <dd>Circuit {record.promotion.circuit.state}</dd>
         </dl>
