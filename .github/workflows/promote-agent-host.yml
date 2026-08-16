@@ -13,17 +13,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Check out the exact merged commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Authenticate the exact Human Merge
         env:
           GH_TOKEN: ${{ github.token }}
           MERGED_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            "repos/$GITHUB_REPOSITORY/commits/$MERGED_COMMIT/pulls" \
-            | jq -e --arg commit "$MERGED_COMMIT" \
-              'any(.[]; .merge_commit_sha == $commit and .merged_at != null and .base.ref == "main" and .merged_by.type == "User")'
+          ./ops/release/verify-human-merge.sh \
+            "$GITHUB_REPOSITORY" "$MERGED_COMMIT"
 
       - name: Configure restricted SSH identity
         env:
