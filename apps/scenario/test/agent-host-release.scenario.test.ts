@@ -118,9 +118,6 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
   expect(brokerUnit).toContain("SupplementaryGroups=voice-broker-client");
-  expect(brokerUnit).toContain(
-    "ExecStartPre=/usr/bin/chmod 2770 /run/voice-agent-broker",
-  );
   expect(brokerUnit).toContain("StateDirectoryMode=0750");
   expect(installer).not.toContain("usermod");
   expect(installer).not.toContain("safe.directory");
@@ -159,4 +156,27 @@ test("the Agent Host release preserves its private ports and service boundaries"
     promotion.lastIndexOf("mv -Tf \"$candidate\" /opt/voice-agent/current"),
   );
   expect(preflight).toContain("systemd-analyze verify");
+});
+
+test("the isolated release builder does not depend on a global pnpm shim", async () => {
+  const installer = await readFile(
+    join(repositoryRoot, "ops/release/install-release.sh"),
+    "utf8",
+  );
+
+  expect(installer).toContain("corepack pnpm -r --if-present build");
+});
+
+test("the broker prepares its shared socket directory before dropping privileges", async () => {
+  const brokerUnit = await readFile(
+    join(repositoryRoot, "ops/systemd/voice-agent-broker.service"),
+    "utf8",
+  );
+
+  expect(brokerUnit).toContain(
+    "ExecStartPre=+/usr/bin/chgrp voice-broker-client /run/voice-agent-broker",
+  );
+  expect(brokerUnit).toContain(
+    "ExecStartPre=+/usr/bin/chmod 2770 /run/voice-agent-broker",
+  );
 });

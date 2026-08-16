@@ -80,7 +80,7 @@ if [[ ! -d "$release" ]]; then
     COREPACK_HOME=/var/lib/voice-agent-builder/corepack \
     PATH=/usr/local/bin:/usr/bin:/bin \
     /bin/bash -c \
-      'cd "$1" && corepack pnpm install --frozen-lockfile && corepack pnpm build' \
+      'cd "$1" && corepack pnpm install --frozen-lockfile && corepack pnpm -r --if-present build' \
       voice-agent-builder-build "$staging"
   printf '%s\n' "$commit" > "$staging/.voice-agent-release"
   chown -R root:root "$staging"
