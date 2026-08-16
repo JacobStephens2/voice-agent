@@ -50,7 +50,12 @@ interface AttemptRow {
   readonly record_id: string;
   readonly release_json: string | null;
   readonly rollback_json: string;
-  readonly status: "queued" | "rolled-back" | "running" | "succeeded";
+  readonly status:
+    | "included-in-recovery"
+    | "queued"
+    | "rolled-back"
+    | "running"
+    | "succeeded";
   readonly verification_json: string | null;
 }
 
@@ -232,6 +237,26 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       .get(attemptId) as AttemptRow | undefined;
     if (attempt === undefined) throw new Error("Promotion Attempt is unavailable");
     return attempt;
+  }
+
+  function readAttemptsWithMerges(): AttemptWithMergeRow[] {
+    return database
+      .prepare(`
+        SELECT promotion_attempts.id, promotion_attempts.record_id,
+          promotion_attempts.merge_commit,
+          promotion_attempts.accepted_sequence,
+          promotion_attempts.queue_sequence, promotion_attempts.status,
+          promotion_attempts.contract_json, promotion_attempts.release_json,
+          promotion_attempts.verification_json,
+          promotion_attempts.rollback_json,
+          promotion_attempts.previous_release_json,
+          promotion_records.merge_json
+        FROM promotion_attempts
+        JOIN promotion_records
+          ON promotion_records.id = promotion_attempts.record_id
+        ORDER BY promotion_attempts.queue_sequence
+      `)
+      .all() as AttemptWithMergeRow[];
   }
 
   function findRecord(taskId: string): PromotionEvidenceRecordProjection | undefined {
@@ -663,23 +688,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       if (running !== undefined) return running;
       const applicationState = readApplicationState();
       if (applicationState.circuit_state === "half-open") return undefined;
-      const attempts = database
-        .prepare(`
-          SELECT promotion_attempts.id, promotion_attempts.record_id,
-            promotion_attempts.merge_commit,
-            promotion_attempts.accepted_sequence,
-            promotion_attempts.queue_sequence, promotion_attempts.status,
-            promotion_attempts.contract_json, promotion_attempts.release_json,
-            promotion_attempts.verification_json,
-            promotion_attempts.rollback_json,
-            promotion_attempts.previous_release_json,
-            promotion_records.merge_json
-          FROM promotion_attempts
-          JOIN promotion_records
-            ON promotion_records.id = promotion_attempts.record_id
-          ORDER BY promotion_attempts.queue_sequence
-        `)
-        .all() as AttemptWithMergeRow[];
+      const attempts = readAttemptsWithMerges();
       const mergesByCommit = new Map(
         attempts.map((attempt) => {
           const merge = parseStored(
@@ -868,6 +877,71 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     return operation;
   }
 
+  function includeQueuedAncestorsInRecovery(
+    recoveryAttempt: AttemptRow,
+    recoveryRelease: NonNullable<
+      PromotionEvidenceRecordProjection["promotion"]["release"]
+    >,
+    now: string,
+  ): void {
+    const attempts = readAttemptsWithMerges();
+    const attemptsByCommit = new Map(
+      attempts.map((attempt) => [attempt.merge_commit, attempt] as const),
+    );
+    const storedRecoveryAttempt = attemptsByCommit.get(
+      recoveryAttempt.merge_commit,
+    );
+    if (storedRecoveryAttempt === undefined) {
+      throw new Error("Recovery Promotion Attempt is unavailable");
+    }
+    const visited = new Set<string>();
+    let beforeCommit = parseStored(
+      storedRecoveryAttempt.merge_json,
+      promotionMergeProjectionSchema,
+    ).beforeCommit;
+    while (!visited.has(beforeCommit)) {
+      visited.add(beforeCommit);
+      const ancestor = attemptsByCommit.get(beforeCommit);
+      if (ancestor === undefined) break;
+      if (ancestor.status === "queued") {
+        database
+          .prepare(`
+            UPDATE promotion_attempts
+            SET status = 'included-in-recovery'
+            WHERE id = ? AND status = 'queued'
+          `)
+          .run(ancestor.id);
+        database
+          .prepare(`
+            UPDATE promotion_records
+            SET status = 'completed', conclusion = ?, updated_at = ?,
+              circuit_state = 'closed', consecutive_failures = 0
+            WHERE id = ?
+          `)
+          .run(
+            `Merge ${ancestor.merge_commit} is included in healthy recovery Release ${recoveryRelease.id}; no older Release was activated.`,
+            now,
+            ancestor.record_id,
+          );
+        appendEvidence(
+          ancestor.record_id,
+          `${ancestor.id}:included:${recoveryAttempt.id}`,
+          "promotion.included",
+          now,
+          `Merge ${ancestor.merge_commit} was included in recovery Release ${recoveryRelease.id} without activating an older Release.`,
+          {
+            recoveryAttemptId: recoveryAttempt.id,
+            recoveryReleaseId: recoveryRelease.id,
+          },
+        );
+      }
+      beforeCommit = parseStored(
+        ancestor.merge_json,
+        promotionMergeProjectionSchema,
+      ).beforeCommit;
+    }
+  }
+
   const completeHealthyTransaction = database.transaction(
     (input: {
       readonly attemptId: string;
@@ -881,6 +955,9 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     }): PromotionEvidenceRecordProjection => {
       const attempt = findAttempt(input.attemptId);
       const previousCircuit = readApplicationState();
+      if (previousCircuit.circuit_state === "half-open") {
+        includeQueuedAncestorsInRecovery(attempt, input.release, input.now);
+      }
       database
         .prepare(`
           UPDATE promotion_attempts
@@ -1249,6 +1326,7 @@ function findTerminalPredecessors(
     ...attempts
       .filter(
         (attempt) =>
+          attempt.status === "included-in-recovery" ||
           attempt.status === "rolled-back" || attempt.status === "succeeded",
       )
       .map((attempt) => attempt.merge_commit),

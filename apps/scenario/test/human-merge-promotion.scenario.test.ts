@@ -450,18 +450,26 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
       .filter((event) => event.kind === "circuit.changed")
       .map((event) => event.details.state),
   ).toEqual(["half-open", "closed"]);
-  const resumedMissedAncestor = await scenario.processNext();
-  expect(resumedMissedAncestor?.promotion.attempt).toMatchObject({
+  const includedMissedAncestor = await scenario.getRecord(
+    "task-missed-pre-open",
+  );
+  expect(includedMissedAncestor?.promotion.attempt).toMatchObject({
     id: "attempt-missed-pre-open",
     mergeCommit: missedCommit,
-    status: "succeeded",
+    status: "included-in-recovery",
   });
-  const resumedPreOpen = await scenario.processNext();
-  expect(resumedPreOpen?.promotion.attempt).toMatchObject({
+  expect(includedMissedAncestor?.evidence).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ kind: "promotion.included" }),
+    ]),
+  );
+  const includedPreOpen = await scenario.getRecord("task-pre-open");
+  expect(includedPreOpen?.promotion.attempt).toMatchObject({
     id: "attempt-pre-open",
     mergeCommit: preOpenCommit,
-    status: "succeeded",
+    status: "included-in-recovery",
   });
+  expect(await scenario.processNext()).toBeUndefined();
 
   await scenario.close();
 });
@@ -545,9 +553,12 @@ test("half-open waits for a missing post-breaker merge ancestor", async () => {
     mergeCommit: postOpenParentCommit,
     status: "succeeded",
   });
-  expect((await scenario.processNext())?.promotion.attempt).toMatchObject({
+  expect(
+    (await scenario.getRecord("task-post-order-missed-tip"))?.promotion
+      .attempt,
+  ).toMatchObject({
     mergeCommit: missedCommit,
-    status: "succeeded",
+    status: "included-in-recovery",
   });
   expect((await scenario.processNext())?.promotion.attempt).toMatchObject({
     mergeCommit: postOpenDescendantCommit,
