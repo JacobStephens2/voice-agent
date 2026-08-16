@@ -5,7 +5,9 @@ import { registerSW } from "virtual:pwa-register";
 import {
   type AuthenticationStatus,
   type BountywellRegistration,
-  type EvidenceRecordProjection,
+  type RegisteredTelephone,
+  type RegisteredTelephoneInput,
+  type VoiceAgentEvidenceRecordProjection,
   type EvidenceRecordSummary,
 } from "@voice-agent/contracts";
 import {
@@ -14,11 +16,13 @@ import {
   enrollReplacementPasskey,
   loadAuthenticationStatus,
   loadBountywellRegistration,
+  loadRegisteredTelephone,
   loadProtectedContent as fetchProtectedContent,
   loginWithPasskey,
   performFreshPasskeyAction as requestFreshPasskeyAction,
   readCsrfCookie,
   registerBountywell,
+  registerTelephone,
   resumePromotionQueue,
   startRecovery,
   submitBountywellHealthInquiry,
@@ -34,7 +38,7 @@ import {
   Shell,
   TaskList,
 } from "./auth-views.tsx";
-import { TaskPage } from "./task-page.tsx";
+import { EvidenceRecordPage } from "./evidence-record-page.tsx";
 import "./styles.css";
 
 registerSW({ immediate: true });
@@ -45,9 +49,11 @@ const pendingBountywellRequestIdKey =
 function App() {
   const [status, setStatus] = useState<AuthenticationStatus>();
   const [tasks, setTasks] = useState<readonly EvidenceRecordSummary[]>();
-  const [record, setRecord] = useState<EvidenceRecordProjection>();
+  const [record, setRecord] = useState<VoiceAgentEvidenceRecordProjection>();
   const [bountywellRegistration, setBountywellRegistration] =
     useState<BountywellRegistration>();
+  const [registeredTelephone, setRegisteredTelephone] =
+    useState<RegisteredTelephone>();
   const [csrfToken, setCsrfToken] = useState<string | undefined>(readCsrfCookie);
   const [recoveryConfirmation, setRecoveryConfirmation] = useState<{
     readonly codes: readonly string[];
@@ -70,7 +76,12 @@ function App() {
     if (content.kind === "tasks") {
       setTasks(content.tasks);
       setRecord(undefined);
-      setBountywellRegistration(await loadBountywellRegistration());
+      const [bountywell, telephone] = await Promise.all([
+        loadBountywellRegistration(),
+        loadRegisteredTelephone(),
+      ]);
+      setBountywellRegistration(bountywell);
+      setRegisteredTelephone(telephone);
     } else {
       setRecord(content.record);
       setTasks(undefined);
@@ -196,6 +207,17 @@ function App() {
     });
   }
 
+  async function enrollTelephone(input: RegisteredTelephoneInput) {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before changing the Registered Telephone.");
+      return;
+    }
+    await run(async () => {
+      setRegisteredTelephone(await registerTelephone(csrfToken, input));
+      setMessage("Registered Telephone and Telnyx-to-LiveKit route saved.");
+    });
+  }
+
   async function resumePromotions() {
     if (csrfToken === undefined) {
       setMessage("Sign in again before resuming Promotions.");
@@ -287,7 +309,7 @@ function App() {
   if (record !== undefined) {
     return (
       <>
-        <TaskPage record={record} />
+        <EvidenceRecordPage record={record} />
         <ActionFooter
           busy={busy}
           onFresh={freshPasskeyAction}
@@ -299,12 +321,14 @@ function App() {
   return (
     <TaskList
       bountywellRegistration={bountywellRegistration}
+      registeredTelephone={registeredTelephone}
       tasks={tasks ?? []}
       message={message}
       busy={busy}
       onFresh={freshPasskeyAction}
       onResumePromotions={resumePromotions}
       onRegisterBountywell={enrollBountywell}
+      onRegisterTelephone={enrollTelephone}
       onRunBountywell={runBountywellInquiry}
     />
   );

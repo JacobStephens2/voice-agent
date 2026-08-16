@@ -19,6 +19,7 @@ import type {
 import { createBountywellReadRegistration } from "@voice-agent/policy";
 
 export { createSqliteAuthenticationStore } from "./authentication.ts";
+export { createSqliteCallbackHandshakeStore } from "./callback-handshake.ts";
 export {
   backupSqliteDatabase,
   restoreSqliteDatabase,

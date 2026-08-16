@@ -2,7 +2,7 @@
 
 A personal, voice-first assistant for discussing codebases, operating Linux services, and delegating deeper work to coding agents while away from a keyboard.
 
-> **Status:** The passkey-protected PWA, durable Bountywell inquiry, read-only Operations Broker, and hardened Agent Host release path are implemented. Telephone integration remains a future slice.
+> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake over Telnyx and LiveKit, read-only Operations Broker, and hardened Agent Host release path are implemented. A real PSTN smoke remains part of attended deployment acceptance.
 
 The intended experience begins with a telephone call. The Voice Agent calls back to authenticate the session, carries on a natural conversation, performs narrowly authorized operations, and delegates substantial code investigation or changes to restricted Subagents such as Codex or Claude Code. A PWA provides passkey-protected controls and a visual Evidence Record for every Durable Task.
 
@@ -32,7 +32,7 @@ flowchart LR
     Store --> PWA["Passkey-protected PWA and Evidence Records"]
 ```
 
-The planned implementation is an all-TypeScript pnpm monorepo using LiveKit Agents, Fastify, React and Vite, Zod, and SQLite. Hardened systemd services will run on `stephens.page`; Apache is the replaceable initial TLS and reverse-proxy edge. Prometheus and Grafana provide same-host operational telemetry.
+The implementation is an all-TypeScript pnpm monorepo using LiveKit Agents, Fastify, React and Vite, Zod, and SQLite. Hardened systemd services run on `stephens.page`; Apache is the replaceable initial TLS and reverse-proxy edge. Prometheus and Grafana provide same-host operational telemetry.
 
 The selected modular voice pipeline begins with AssemblyAI speech-to-text, an OpenAI coordinator model, and Inworld text-to-speech. Provider boundaries remain replaceable, and automatic cross-provider failover is intentionally deferred.
 
@@ -65,9 +65,10 @@ The workspace requires Node.js 22 or newer and pnpm 11. From a clean checkout:
 
 ```bash
 pnpm scenario:bountywell
+pnpm scenario:callback
 ```
 
-The scenario needs no credentials or network services. It sends the normalized “Is Bountywell healthy?” inquiry through the policy and orchestration path, uses a deterministic typed read-only broker, persists the Durable Task, Operation, and Evidence Events in a temporary SQLite WAL database, verifies idempotent replay and restart recovery, exercises the Fastify read API, and renders the React Evidence Record view.
+The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. Both persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
 
 The CI-ready verification commands are:
 
@@ -97,14 +98,15 @@ checkout on `stephens.page`:
 ./ops/setup-agent-host.sh
 ```
 
-The wizard installs an immutable release, separate hardened API, worker, and
-broker services, the narrow Apache vhost, passkey bootstrap, fixed Bountywell
-registration, a private Prometheus scrape on the verified-free localhost port
-3472, the ordered Human Merge Promotion trigger, and the bounded production
-smoke. Later pushes to `main` enqueue every verified Human Merge on the Agent
-Host; the host serializes and attempts them in GitHub order. The wizard installs
-a repository-scoped, read-only GitHub App PEM from a local file into a distinct
-root-only source; it never accepts the key contents through a prompt or command
-argument. Other provider credentials remain future setup slices. See
+The wizard installs an immutable release, separate hardened API, telephone
+worker, and broker services, the narrow Apache vhost, passkey bootstrap, fixed
+Bountywell and Registered Telephone revisions, a private Prometheus scrape on
+the verified-free localhost port 3472, the ordered Human Merge Promotion
+trigger, and bounded Callback Handshake and Bountywell production smokes. Later
+pushes to `main` enqueue every verified Human Merge on the Agent Host; the host
+serializes and attempts them in GitHub order. The wizard installs a
+repository-scoped, read-only GitHub App PEM and LiveKit credentials into
+separate root-only sources; it never accepts key contents through command
+arguments. Telnyx SIP credentials remain in the provider configurations. See
 [`docs/operations/agent-host-release.md`](docs/operations/agent-host-release.md)
 for the service boundary, health checks, and automatic/manual rollback path.

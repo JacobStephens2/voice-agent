@@ -20,6 +20,9 @@ import {
   passkeyResponseRequestSchema,
   promotionResumeResponseSchema,
   promotionEvidenceRecordProjectionSchema,
+  registerTelephoneRequestSchema,
+  registeredTelephoneSchema,
+  registeredTelephoneStatusSchema,
   recoveryCodesConfirmationRequestSchema,
   recoveryRequestSchema,
   recoverySessionResponseSchema,
@@ -27,9 +30,12 @@ import {
   registrationOptionsRequestSchema,
   submitBountywellHealthRequestSchema,
   trustedBrowserSessionResponseSchema,
+  telephoneSessionEvidenceRecordProjectionSchema,
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
+  type RegisteredTelephone,
+  type RegisteredTelephoneInput,
   type VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
@@ -81,6 +87,11 @@ export interface BountywellTaskControls {
   registerBountywell(): Promise<BountywellRegistration>;
 }
 
+export interface TelephoneControls {
+  findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
+  registerTelephone(input: RegisteredTelephoneInput): Promise<RegisteredTelephone>;
+}
+
 export interface TaskApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: EvidenceRecordAuthentication;
@@ -90,6 +101,7 @@ export interface TaskApiOptions {
     requestResume(): Promise<string>;
   } | undefined;
   readonly records: EvidenceRecordReader;
+  readonly telephoneControls?: TelephoneControls | undefined;
 }
 
 export interface VoiceApiOptions {
@@ -101,6 +113,7 @@ export interface VoiceApiOptions {
     requestResume(): Promise<string>;
   } | undefined;
   readonly records: EvidenceRecordReader;
+  readonly telephoneControls?: TelephoneControls | undefined;
 }
 
 export interface LoginCeremonyAdmission {
@@ -221,9 +234,13 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       if (record === undefined) {
         return reply.code(404).send({ error: "Task not found" });
       }
-      return record.task.kind === "human-merge.promotion"
-        ? promotionEvidenceRecordProjectionSchema.parse(record)
-        : evidenceRecordProjectionSchema.parse(record);
+      if (record.task.kind === "human-merge.promotion") {
+        return promotionEvidenceRecordProjectionSchema.parse(record);
+      }
+      if (record.task.kind === "callback.handshake") {
+        return telephoneSessionEvidenceRecordProjectionSchema.parse(record);
+      }
+      return evidenceRecordProjectionSchema.parse(record);
     },
   );
   if (options.controls !== undefined && options.origin !== undefined) {
@@ -242,7 +259,62 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       records: options.records,
     });
   }
+  if (options.telephoneControls !== undefined && options.origin !== undefined) {
+    registerTelephoneControlRoutes(api, {
+      authentication: options.authentication,
+      controls: options.telephoneControls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
   return api;
+}
+
+function registerTelephoneControlRoutes(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: TelephoneControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.get("/api/telephone/registration", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return registeredTelephoneStatusSchema.parse({
+      registration: (await options.controls.findRegisteredTelephone()) ?? null,
+    });
+  });
+
+  api.post("/api/telephone/registration", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = registerTelephoneRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    if (
+      options.authentication.hasFreshPasskeyAction === undefined ||
+      !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+    ) {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: "Fresh Passkey Action required" });
+    }
+    return registeredTelephoneSchema.parse(
+      await options.controls.registerTelephone({
+        livekitInboundTrunkId: body.livekitInboundTrunkId,
+        livekitOutboundTrunkId: body.livekitOutboundTrunkId,
+        telephoneNumber: body.telephoneNumber,
+        telnyxNumber: body.telnyxNumber,
+      }),
+    );
+  });
 }
 
 function registerPromotionControlRoute(

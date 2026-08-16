@@ -5,6 +5,8 @@ import type {
   EvidenceRecordSummary,
 } from "@voice-agent/contracts";
 
+export * from "./callback-handshake.ts";
+
 export interface ApplicationRegistry {
   findBountywellRegistration(): Promise<BountywellRegistration | undefined>;
   registerBountywell(

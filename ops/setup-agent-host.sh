@@ -184,7 +184,7 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=8
+TOTAL_STAGES=11
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 banner "Voice Agent host setup"
@@ -258,6 +258,47 @@ fi
 rm -f -- "$github_app_config"
 unset GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_KEY_PATH
 note "The PEM is root-only. Keep or securely remove the downloaded original according to your key-custody policy."
+
+stage "Connect Telnyx SIP to LiveKit Cloud"
+say "The host receives only LiveKit credentials. Telnyx SIP credentials stay inside the Telnyx and LiveKit provider configurations."
+open_url "https://cloud.livekit.io"
+step "Open the personal LiveKit project → Settings. Copy its WebSocket URL, API key, and API secret."
+ask LIVEKIT_URL "LiveKit WebSocket URL (wss://...):"
+ask_secret LIVEKIT_API_KEY "LiveKit API key:"
+ask_secret LIVEKIT_API_SECRET "LiveKit API secret:"
+open_url "https://developers.telnyx.com/docs/voice/sip-trunking/livekit-configuration-guide"
+step "In Telnyx Mission Control, create an FQDN SIP connection pointed at the LiveKit project SIP URI, attach an outbound voice profile, and assign the dedicated number."
+step "Enable credential authentication for outbound calls. Keep that username/password in the provider dashboards; do not place them on the Agent Host."
+step "In LiveKit, create an inbound trunk for the dedicated number restricted to Telnyx SIP addresses, then a dispatch rule for agent voice-agent-telephone."
+step "Create a stored outbound trunk using sip.telnyx.com and the Telnyx credential. Configure X-Telnyx-Username so Telnyx selects credential authentication."
+ask TELNYX_NUMBER "Dedicated Telnyx number in E.164 form (+...):"
+ask LIVEKIT_INBOUND_TRUNK_ID "LiveKit inbound trunk ID (ST_...):"
+ask LIVEKIT_OUTBOUND_TRUNK_ID "LiveKit outbound trunk ID (ST_...):"
+if [[ ! $LIVEKIT_URL =~ ^wss://[A-Za-z0-9.-]+(:[0-9]+)?/?$ || \
+  ! $LIVEKIT_API_KEY =~ ^[A-Za-z0-9_-]+$ || \
+  ! $LIVEKIT_API_SECRET =~ ^[A-Za-z0-9_-]+$ || \
+  ! $TELNYX_NUMBER =~ ^\+[1-9][0-9]{7,14}$ || \
+  ! $LIVEKIT_INBOUND_TRUNK_ID =~ ^ST_[A-Za-z0-9_-]+$ || \
+  ! $LIVEKIT_OUTBOUND_TRUNK_ID =~ ^ST_[A-Za-z0-9_-]+$ ]]; then
+  warn "Provide the exact LiveKit URL/credentials, E.164 Telnyx number, and ST_ trunk IDs."
+  exit 1
+fi
+livekit_environment=$(mktemp)
+printf 'LIVEKIT_URL=%s\nLIVEKIT_API_KEY=%s\nLIVEKIT_API_SECRET=%s\n' \
+  "$LIVEKIT_URL" "$LIVEKIT_API_KEY" "$LIVEKIT_API_SECRET" \
+  > "$livekit_environment"
+if sudo test -e /etc/voice-agent/livekit.env && \
+  ! sudo cmp -s "$livekit_environment" /etc/voice-agent/livekit.env; then
+  confirm "Replace the existing root-owned LiveKit credential source?" || {
+    rm -f -- "$livekit_environment"
+    exit 1
+  }
+fi
+sudo install -o root -g root -m 0600 "$livekit_environment" \
+  /etc/voice-agent/livekit.env
+rm -f -- "$livekit_environment"
+unset LIVEKIT_API_KEY LIVEKIT_API_SECRET
+note "LiveKit credentials are root-owned and injected only into the telephone worker."
 
 stage "Install and promote the immutable release"
 say "This pins reviewed root orchestration, creates unprivileged identities, private state directories, and hardened services."
@@ -422,7 +463,28 @@ step "Choose “Register Bountywell read-only access”."
 step "Confirm the PWA says five read-only capabilities are registered and no restart authority is present."
 pause "Press Enter after the registration is visible."
 
-stage "Run the bounded production smoke"
+stage "Register the owner telephone"
+open_url "https://voice.stephens.page"
+step "Choose “Perform Fresh Passkey Action” and complete the passkey ceremony."
+step "In Registered Telephone, enter the owner telephone in E.164 form."
+step "Enter $TELNYX_NUMBER as the dedicated Telnyx number."
+step "Enter $LIVEKIT_INBOUND_TRUNK_ID and $LIVEKIT_OUTBOUND_TRUNK_ID as the fixed LiveKit route, then save the revision."
+step "Confirm the PWA shows the intended owner number and a new Registered Telephone revision."
+pause "Press Enter after the Registered Telephone is visible."
+
+stage "Complete the real Callback Handshake smoke"
+say "This bounded smoke waits up to three minutes for one new authorized Telephone Session."
+step "When the command begins waiting, ring $TELNYX_NUMBER from the Registered Telephone."
+step "Listen for the fixed callback notice, answer the outbound callback, and press 1 only after the prompt."
+sudo -u voice-agent env \
+  VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite \
+  /usr/bin/node --experimental-strip-types \
+  /opt/voice-agent/current/apps/worker/src/callback-smoke.ts
+open_url "https://voice.stephens.page"
+step "Open the new Callback Handshake Evidence Record and confirm it contains sanitized inbound, callback, machine-detection, DTMF, authorization, and outcome evidence."
+pause "Press Enter after the real PSTN evidence is visible."
+
+stage "Run the bounded Bountywell production smoke"
 say "This creates one real Durable Task and verifies public, local, systemd, and resource evidence."
 sudo -u voice-agent -g voice-broker-client env \
   VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite \

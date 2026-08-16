@@ -15,6 +15,8 @@ import {
   deriveBountywellHealthConclusion,
 } from "@voice-agent/policy";
 
+export * from "./callback-handshake.ts";
+
 const OPERATION_LEASE_MS = 30_000;
 
 export interface DurableTaskRuntime {
