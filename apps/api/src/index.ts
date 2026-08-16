@@ -19,6 +19,7 @@ import {
   passkeyEnrollmentResultSchema,
   passkeyResponseRequestSchema,
   promotionResumeResponseSchema,
+  promotionEvidenceRecordProjectionSchema,
   recoveryCodesConfirmationRequestSchema,
   recoveryRequestSchema,
   recoverySessionResponseSchema,
@@ -29,10 +30,13 @@ import {
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
+  type VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
 export interface EvidenceRecordReader {
-  getEvidenceRecord(taskId: string): Promise<EvidenceRecordProjection | undefined>;
+  getEvidenceRecord(
+    taskId: string,
+  ): Promise<VoiceAgentEvidenceRecordProjection | undefined>;
   listEvidenceRecords?(): Promise<readonly EvidenceRecordSummary[]>;
   readOperationalMetrics?(): Promise<{
     readonly bountywellChecks: readonly {
@@ -217,7 +221,9 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       if (record === undefined) {
         return reply.code(404).send({ error: "Task not found" });
       }
-      return evidenceRecordProjectionSchema.parse(record);
+      return record.task.kind === "human-merge.promotion"
+        ? promotionEvidenceRecordProjectionSchema.parse(record)
+        : evidenceRecordProjectionSchema.parse(record);
     },
   );
   if (options.controls !== undefined && options.origin !== undefined) {

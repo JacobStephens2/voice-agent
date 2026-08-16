@@ -1,4 +1,7 @@
 import { z } from "zod";
+import type { PromotionEvidenceRecordProjection } from "./promotion.ts";
+
+export * from "./promotion.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -215,6 +218,10 @@ export const evidenceRecordProjectionSchema = z.object({
 export type EvidenceRecordProjection = z.infer<
   typeof evidenceRecordProjectionSchema
 >;
+
+export type VoiceAgentEvidenceRecordProjection =
+  | EvidenceRecordProjection
+  | PromotionEvidenceRecordProjection;
 
 export const evidenceRecordSummarySchema = evidenceRecordProjectionSchema.shape.task;
 export const evidenceRecordSummaryListSchema = z.array(evidenceRecordSummarySchema).max(100);
