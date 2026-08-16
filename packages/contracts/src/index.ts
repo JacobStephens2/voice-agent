@@ -232,6 +232,12 @@ export type VoiceAgentEvidenceRecordProjection =
   | PromotionEvidenceRecordProjection
   | TelephoneSessionEvidenceRecordProjection;
 
+export const voiceAgentEvidenceRecordProjectionSchema = z.union([
+  evidenceRecordProjectionSchema,
+  promotionEvidenceRecordProjectionSchema,
+  telephoneSessionEvidenceRecordProjectionSchema,
+]);
+
 export const evidenceRecordSummarySchema = z.discriminatedUnion("kind", [
   evidenceRecordProjectionSchema.shape.task,
   promotionEvidenceRecordProjectionSchema.shape.task,

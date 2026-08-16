@@ -37,6 +37,9 @@ export interface CallbackHandshakeRuntime {
   readEvidenceRecord(
     handshakeId: string,
   ): Promise<TelephoneSessionEvidenceRecordProjection | undefined>;
+  readOperationalMetrics(): ReturnType<
+    CallbackHandshakeStore["readOperationalMetrics"]
+  >;
   receiveInbound(event: InboundTelephoneEvent): Promise<InboundTelephoneResult>;
   receiveProviderEvent(
     handshakeId: string,
@@ -63,7 +66,9 @@ export function createCallbackHandshakeRuntime(
     const event = inboundTelephoneEventSchema.parse(untrustedEvent);
     const duplicate = await options.store.findDelivery(event.deliveryId);
     if (duplicate !== undefined) {
-      return inboundTelephoneResultSchema.parse(duplicate);
+      return suppressDuplicateCallback(
+        inboundTelephoneResultSchema.parse(duplicate),
+      );
     }
     const registration = await options.store.findRegisteredTelephone();
     if (!isAcceptedInbound(event, registration)) {
@@ -168,7 +173,10 @@ export function createCallbackHandshakeRuntime(
       result,
       snapshot,
     });
-    return inboundTelephoneResultSchema.parse(persisted.result);
+    const parsed = inboundTelephoneResultSchema.parse(persisted.result);
+    return persisted.kind === "duplicate"
+      ? suppressDuplicateCallback(parsed)
+      : parsed;
   }
 
   async function receiveProviderEvent(
@@ -341,7 +349,18 @@ export function createCallbackHandshakeRuntime(
     projection: TelephoneSessionEvidenceRecordProjection,
   ) {
     const occurredAt = options.now();
-    const authorized = appendEvent(projection, {
+    const answered = appendEvent(projection, {
+      details: {
+        attempt: projection.session.attempt,
+        outcome: "authorized",
+        providerCorrelation: latestProviderCorrelation(projection),
+      },
+      id: options.nextId(),
+      kind: "telephone.callback.outcome",
+      occurredAt,
+      summary: `Callback attempt ${projection.session.attempt} reached an authorized human.`,
+    });
+    const authorized = appendEvent(answered, {
       details: { telephoneSessionId: snapshot.telephoneSessionId },
       id: options.nextId(),
       kind: "telephone.session.authorized",
@@ -538,7 +557,9 @@ export function createCallbackHandshakeRuntime(
     }> = [];
     for (const original of due) {
       const projection = await options.store.findEvidenceRecord(original.id);
-      const registration = await options.store.findRegisteredTelephone();
+      const registration = await options.store.findRegisteredTelephoneRevision(
+        original.registrationRevision,
+      );
       if (projection === undefined || registration === undefined) continue;
       const eventId = options.nextId();
       const effectId = options.nextId();
@@ -585,7 +606,7 @@ export function createCallbackHandshakeRuntime(
         result,
         snapshot: nextSnapshot,
       });
-      if (applied.kind !== "conflict") {
+      if (applied.kind === "applied") {
         results.push({
           handshakeId: original.id,
           result: callbackActionResultSchema.parse(applied.result),
@@ -602,6 +623,7 @@ export function createCallbackHandshakeRuntime(
     processDueRetries,
     readEvidenceRecord: (handshakeId) =>
       options.store.findEvidenceRecord(handshakeId),
+    readOperationalMetrics: () => options.store.readOperationalMetrics(),
     receiveInbound,
     receiveProviderEvent,
     registerTelephone(input) {
@@ -615,6 +637,17 @@ export function createCallbackHandshakeRuntime(
 
 function rejectedInboundResult(): InboundTelephoneResult {
   return { actions: [], disposition: "reject" };
+}
+
+function suppressDuplicateCallback(
+  result: InboundTelephoneResult,
+): InboundTelephoneResult {
+  return inboundTelephoneResultSchema.parse({
+    ...result,
+    actions: result.actions.filter(
+      (action) => action.kind === "play-inbound-notice-and-end",
+    ),
+  });
 }
 
 function isAcceptedInbound(
@@ -633,6 +666,21 @@ function isAcceptedInbound(
 
 function fingerprint(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function latestProviderCorrelation(
+  projection: TelephoneSessionEvidenceRecordProjection,
+): string {
+  for (let index = projection.evidence.length - 1; index >= 0; index -= 1) {
+    const event = projection.evidence[index];
+    if (
+      event?.kind === "telephone.dtmf.received" ||
+      event?.kind === "telephone.machine.detected"
+    ) {
+      return event.details.providerCorrelation;
+    }
+  }
+  throw new Error("Authorized callback has no provider correlation");
 }
 
 function placeCallbackAction(input: {

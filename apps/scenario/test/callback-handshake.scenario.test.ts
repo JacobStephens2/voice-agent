@@ -32,6 +32,7 @@ test("a registered caller completes one Callback Handshake only after human dete
       "event-machine-001",
       "effect-dtmf-prompt-001",
       "event-dtmf-001",
+      "event-outcome-001",
       "event-authorized-001",
       "effect-confirmation-001",
     ],
@@ -124,6 +125,7 @@ test("a registered caller completes one Callback Handshake only after human dete
       "telephone.callback.requested",
       "telephone.machine.detected",
       "telephone.dtmf.received",
+      "telephone.callback.outcome",
       "telephone.session.authorized",
     ]);
     expect(JSON.stringify(record)).not.toContain("+12155550123");
@@ -147,6 +149,15 @@ test("a registered caller completes one Callback Handshake only after human dete
     expect(ownerPage.html).not.toContain("+12155550123");
     expect(ownerPage.html).not.toContain("raw-inbound-provider-id");
     expect(ownerPage.html).not.toContain("raw-outbound-provider-id");
+    await expect(scenario.readOperationalMetrics()).resolves.toEqual({
+      attempts: 1,
+      handshakes: { authorized: 1, failed: 0, pending: 0 },
+    });
+    const metrics = await scenario.readMetrics();
+    expect(metrics).toContain(
+      'voice_agent_callback_handshakes{outcome="authorized"} 1',
+    );
+    expect(metrics).toContain("voice_agent_callback_attempts 1");
   } finally {
     await scenario.close();
   }
@@ -186,6 +197,13 @@ test("an unanswered callback retries once after 30 seconds then requests one gen
       providerCallId: "retry-outbound-call-1",
     });
 
+    await scenario.registerTelephone({
+      livekitInboundTrunkId: "ST_new_inbound",
+      livekitOutboundTrunkId: "ST_new_outbound",
+      telephoneNumber: "+12675550123",
+      telnyxNumber: "+12675550999",
+    });
+
     scenario.setTime("2026-08-16T15:00:29.999Z");
     expect(await scenario.processDueRetries()).toEqual([]);
 
@@ -199,6 +217,7 @@ test("an unanswered callback retries once after 30 seconds then requests one gen
           {
             attempt: 2,
             destination: "+12155550123",
+            from: "+12155550999",
             kind: "place-callback",
             livekitOutboundTrunkId: "ST_outbound",
           },
@@ -347,7 +366,17 @@ test("reordered and duplicate provider events attach to one authorized Telephone
         inboundTrunkId: "ST_inbound",
         providerCallId: "reordered-inbound-call",
       }),
-    ).resolves.toEqual(inbound);
+    ).resolves.toEqual({
+      actions: [
+        {
+          effectId: inbound.actions[0]!.effectId,
+          kind: "play-inbound-notice-and-end",
+          text: "Thanks. I’ll call your registered telephone back now.",
+        },
+      ],
+      disposition: "notice-and-callback",
+      handshakeId,
+    });
 
     const earlyDtmf = await scenario.receiveProviderEvent(handshakeId, {
       attempt: 1,
@@ -461,6 +490,37 @@ test("speech, bad DTMF, and voicemail never authorize or receive commands", asyn
           event.details.outcome === "voicemail",
       ),
     ).toBe(true);
+  } finally {
+    await scenario.close();
+  }
+});
+
+test("Callback Handshake evidence expires from the authenticated record window after 90 days", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-callback-retention-"));
+  temporaryDirectories.push(directory);
+  const scenario = await createCallbackHandshakeScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    ids: Array.from({ length: 8 }, (_, index) => `expired-id-${index + 1}`),
+    now: "2020-01-01T00:00:00.000Z",
+    registeredTelephone: {
+      livekitInboundTrunkId: "ST_inbound",
+      livekitOutboundTrunkId: "ST_outbound",
+      telephoneNumber: "+12155550123",
+      telnyxNumber: "+12155550999",
+    },
+  });
+
+  try {
+    const inbound = await scenario.receiveInbound({
+      calledNumber: "+12155550999",
+      callerNumber: "+12155550123",
+      deliveryId: "expired-inbound",
+      inboundTrunkId: "ST_inbound",
+      providerCallId: "expired-provider-call",
+    });
+    await expect(
+      scenario.readEvidenceRecord(inbound.handshakeId!),
+    ).resolves.toBeUndefined();
   } finally {
     await scenario.close();
   }

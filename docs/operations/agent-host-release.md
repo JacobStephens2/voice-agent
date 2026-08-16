@@ -41,11 +41,12 @@ The socket-only `voice-broker-client` group cannot read the broker's
 `/var/lib` directories.
 Neither service control, metrics, SQLite, nor the broker has a public port.
 Prometheus scrapes `/metrics` directly on the API's localhost-only port. Those
-metrics cover Durable Tasks, Operations, policy denials, the latest bounded
-Bountywell checks, SQLite bytes/free-disk capacity, and Promotion/circuit-breaker
-state; Apache does not proxy the endpoint. The authenticated live Evidence
-window is bounded to 90 days. Expiry atomically removes the underlying task,
-Operation, and Evidence Events while retaining only the request-ID tombstone
+metrics cover Durable Tasks, Operations, Callback Handshake outcomes and
+attempts, policy denials, the latest bounded Bountywell checks, SQLite
+bytes/free-disk capacity, and Promotion/circuit-breaker state; Apache does not
+proxy the endpoint. The authenticated live Evidence window is bounded to 90
+days. Expiry atomically removes the underlying task, Operation, callback state,
+and Evidence Events while retaining only sanitized delivery/request tombstones
 needed to prevent an old retry from repeating its Operation.
 
 ## First release

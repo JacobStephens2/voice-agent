@@ -19,7 +19,6 @@ import {
   passkeyEnrollmentResultSchema,
   passkeyResponseRequestSchema,
   promotionResumeResponseSchema,
-  promotionEvidenceRecordProjectionSchema,
   registerTelephoneRequestSchema,
   registeredTelephoneSchema,
   registeredTelephoneStatusSchema,
@@ -30,7 +29,7 @@ import {
   registrationOptionsRequestSchema,
   submitBountywellHealthRequestSchema,
   trustedBrowserSessionResponseSchema,
-  telephoneSessionEvidenceRecordProjectionSchema,
+  voiceAgentEvidenceRecordProjectionSchema,
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
@@ -54,6 +53,14 @@ export interface EvidenceRecordReader {
         | "resource-health"
         | "service-state";
     }[];
+    readonly callbacks?: {
+      readonly attempts: number;
+      readonly handshakes: {
+        readonly authorized: number;
+        readonly failed: number;
+        readonly pending: number;
+      };
+    };
     readonly operations: {
       readonly accepted: number;
       readonly completed: number;
@@ -234,13 +241,7 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       if (record === undefined) {
         return reply.code(404).send({ error: "Task not found" });
       }
-      if (record.task.kind === "human-merge.promotion") {
-        return promotionEvidenceRecordProjectionSchema.parse(record);
-      }
-      if (record.task.kind === "callback.handshake") {
-        return telephoneSessionEvidenceRecordProjectionSchema.parse(record);
-      }
-      return evidenceRecordProjectionSchema.parse(record);
+      return voiceAgentEvidenceRecordProjectionSchema.parse(record);
     },
   );
   if (options.controls !== undefined && options.origin !== undefined) {
@@ -658,6 +659,14 @@ function renderOperationalMetrics(
       (check) =>
         `voice_agent_bountywell_check_pass{source="${check.source}"} ${check.outcome === "pass" ? 1 : 0}`,
     ),
+    "# HELP voice_agent_callback_handshakes Current Callback Handshakes by outcome.",
+    "# TYPE voice_agent_callback_handshakes gauge",
+    `voice_agent_callback_handshakes{outcome="pending"} ${metrics.callbacks?.handshakes.pending ?? 0}`,
+    `voice_agent_callback_handshakes{outcome="authorized"} ${metrics.callbacks?.handshakes.authorized ?? 0}`,
+    `voice_agent_callback_handshakes{outcome="failed"} ${metrics.callbacks?.handshakes.failed ?? 0}`,
+    "# HELP voice_agent_callback_attempts Callback attempts retained in the live evidence window.",
+    "# TYPE voice_agent_callback_attempts gauge",
+    `voice_agent_callback_attempts ${metrics.callbacks?.attempts ?? 0}`,
   ];
   if (additionalMetrics.trim().length > 0) {
     lines.push(additionalMetrics.trim());

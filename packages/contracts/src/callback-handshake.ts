@@ -98,6 +98,7 @@ export const telephoneEvidenceEventSchema = z.discriminatedUnion("kind", [
     details: z.object({
       attempt: z.union([z.literal(1), z.literal(2)]),
       outcome: z.enum([
+        "authorized",
         "busy",
         "failed",
         "hangup",

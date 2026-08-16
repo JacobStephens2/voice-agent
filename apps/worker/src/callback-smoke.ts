@@ -24,6 +24,7 @@ try {
           "telephone.callback.requested",
           "telephone.machine.detected",
           "telephone.dtmf.received",
+          "telephone.callback.outcome",
           "telephone.session.authorized",
         ] as const) {
           if (!kinds.has(requiredKind)) {

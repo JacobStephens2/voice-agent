@@ -12,6 +12,15 @@ export type CallbackDeliveryResult =
   | CallbackActionResult
   | InboundTelephoneResult;
 
+export interface CallbackHandshakeOperationalMetrics {
+  readonly attempts: number;
+  readonly handshakes: {
+    readonly authorized: number;
+    readonly failed: number;
+    readonly pending: number;
+  };
+}
+
 export interface CreateCallbackHandshakePersistence {
   readonly acceptedAt: string;
   readonly deliveryId: string;
@@ -58,7 +67,11 @@ export interface CallbackHandshakeStore {
     handshakeId: string,
   ): Promise<CallbackHandshakeSnapshot | undefined>;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
+  readOperationalMetrics(): Promise<CallbackHandshakeOperationalMetrics>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
+  findRegisteredTelephoneRevision(
+    revision: number,
+  ): Promise<RegisteredTelephone | undefined>;
   persistRejectedDelivery(
     deliveryId: string,
     result: InboundTelephoneResult,

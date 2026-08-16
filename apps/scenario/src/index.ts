@@ -43,6 +43,10 @@ export interface CallbackHandshakeScenario {
   readEvidenceRecord(
     handshakeId: string,
   ): Promise<TelephoneSessionEvidenceRecordProjection | undefined>;
+  readOperationalMetrics(): ReturnType<
+    ReturnType<typeof createCallbackHandshakeRuntime>["readOperationalMetrics"]
+  >;
+  readMetrics(): Promise<string>;
   readTaskPage(taskId: string, sessionToken?: string): Promise<{
     readonly body: unknown;
     readonly html: string;
@@ -53,6 +57,9 @@ export interface CallbackHandshakeScenario {
     handshakeId: string,
     event: CallbackProviderEvent,
   ): Promise<CallbackActionResult>;
+  registerTelephone(
+    input: RegisteredTelephoneInput,
+  ): ReturnType<ReturnType<typeof createCallbackHandshakeRuntime>["registerTelephone"]>;
   setTime(now: string): void;
 }
 
@@ -94,6 +101,14 @@ export async function createCallbackHandshakeScenario(
     records: {
       getEvidenceRecord: (taskId) => runtime.readEvidenceRecord(taskId),
       listEvidenceRecords: () => runtime.listEvidenceRecords(),
+      readOperationalMetrics: async () => ({
+        bountywellChecks: [],
+        callbacks: await runtime.readOperationalMetrics(),
+        operations: { accepted: 0, completed: 0, running: 0 },
+        policyDenials: 0,
+        storage: { databaseBytes: 0, filesystemAvailableBytes: 0 },
+        tasks: { completed: 0, pending: 0 },
+      }),
     },
   });
   return {
@@ -104,6 +119,14 @@ export async function createCallbackHandshakeScenario(
     processDueRetries: () => runtime.processDueRetries(),
     readEvidenceRecord: (handshakeId) =>
       runtime.readEvidenceRecord(handshakeId),
+    readOperationalMetrics: () => runtime.readOperationalMetrics(),
+    async readMetrics() {
+      const response = await api.inject({ method: "GET", url: "/metrics" });
+      if (response.statusCode !== 200) {
+        throw new Error("Callback metrics endpoint was unavailable");
+      }
+      return response.body;
+    },
     async readTaskPage(taskId, sessionToken) {
       const request = {
         method: "GET",
@@ -134,6 +157,7 @@ export async function createCallbackHandshakeScenario(
     receiveInbound: (event) => runtime.receiveInbound(event),
     receiveProviderEvent: (handshakeId, event) =>
       runtime.receiveProviderEvent(handshakeId, event),
+    registerTelephone: (input) => runtime.registerTelephone(input),
     setTime(now) {
       currentNow = now;
     },

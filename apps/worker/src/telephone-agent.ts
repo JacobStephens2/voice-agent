@@ -85,21 +85,31 @@ async function handleInbound(
   }
 
   const session = createFixedSpeechSession();
-  await session.start({
-    agent: fixedSpeechAgent(),
-    record: false,
-    room: ctx.room,
-  });
-  const notice = inbound.actions.find(
-    (action) => action.kind === "play-inbound-notice-and-end",
-  );
-  if (notice !== undefined) {
-    await session
-      .say(notice.text, { addToChatCtx: false, allowInterruptions: false })
-      .waitForPlayout();
+  try {
+    await session.start({
+      agent: fixedSpeechAgent(),
+      record: false,
+      room: ctx.room,
+    });
+    const notice = inbound.actions.find(
+      (action) => action.kind === "play-inbound-notice-and-end",
+    );
+    if (notice !== undefined) {
+      await playFixedText(session, notice.text);
+    }
+  } catch {
+    await runtime.receiveProviderEvent(inbound.handshakeId!, {
+      attempt: 1,
+      deliveryId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: inboundCallId,
+    });
+    return;
+  } finally {
+    await session.close().catch(() => undefined);
+    await ctx.deleteRoom().catch(() => undefined);
   }
-  await session.close();
-  await ctx.deleteRoom();
 
   for (const action of inbound.actions) {
     if (action.kind !== "place-callback") continue;
@@ -113,27 +123,32 @@ async function handleOutbound(
   dispatch: OutboundDispatch,
 ): Promise<void> {
   const session = createFixedSpeechSession();
-  await session.start({
-    agent: fixedSpeechAgent(),
-    record: false,
-    room: ctx.room,
-  });
-  const participant = await ctx.waitForParticipant(
-    dispatch.participantIdentity,
-  );
-  const callId = providerCallId(participant);
-  const detector = new voice.AMD(session, {
-    interruptOnMachine: true,
-    llm: "openai/gpt-5.4",
-    participantIdentity: dispatch.participantIdentity,
-    stt: "assemblyai/universal-streaming-multilingual",
-    waitUntilFinished: true,
-  });
-  const disconnected = waitForParticipantDisconnect(
-    ctx.room,
-    participant.identity,
-  );
+  let callId = dispatch.effectId;
+  let detector: voice.AMD | undefined;
+  let disconnected:
+    | ReturnType<typeof waitForParticipantDisconnect>
+    | undefined;
   try {
+    await session.start({
+      agent: fixedSpeechAgent(),
+      record: false,
+      room: ctx.room,
+    });
+    const participant = await ctx.waitForParticipant(
+      dispatch.participantIdentity,
+    );
+    callId = providerCallId(participant);
+    detector = new voice.AMD(session, {
+      interruptOnMachine: true,
+      llm: "openai/gpt-5.4",
+      participantIdentity: dispatch.participantIdentity,
+      stt: "assemblyai/universal-streaming-multilingual",
+      waitUntilFinished: true,
+    });
+    disconnected = waitForParticipantDisconnect(
+      ctx.room,
+      participant.identity,
+    );
     const detection = await Promise.race([
       detector.execute().then((prediction) => ({
         kind: "prediction" as const,
@@ -214,11 +229,19 @@ async function handleOutbound(
       providerCallId: callId,
     });
     await performMediaActions(session, ended);
+  } catch {
+    await runtime.receiveProviderEvent(dispatch.handshakeId, {
+      attempt: dispatch.attempt,
+      deliveryId: `provider-failure:${dispatch.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: callId,
+    });
   } finally {
-    disconnected.cancel();
-    await detector.aclose();
-    await session.close();
-    await ctx.deleteRoom();
+    disconnected?.cancel();
+    await detector?.aclose().catch(() => undefined);
+    await session.close().catch(() => undefined);
+    await ctx.deleteRoom().catch(() => undefined);
   }
 }
 
@@ -250,10 +273,26 @@ async function performMediaActions(
     ) {
       continue;
     }
-    await session
-      .say(action.text, { addToChatCtx: false, allowInterruptions: false })
-      .waitForPlayout();
+    await playFixedText(session, action.text);
   }
+}
+
+async function playFixedText(
+  session: voice.AgentSession,
+  text: string,
+): Promise<void> {
+  let lastFailure: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await session
+        .say(text, { addToChatCtx: false, allowInterruptions: false })
+        .waitForPlayout();
+      return;
+    } catch (error) {
+      lastFailure = error;
+    }
+  }
+  throw lastFailure;
 }
 
 async function placeCallbackOrRecordFailure(

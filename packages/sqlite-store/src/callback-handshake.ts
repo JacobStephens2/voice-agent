@@ -40,6 +40,8 @@ interface CallbackEvidenceRow {
   readonly summary: string;
 }
 
+const liveCallbackEvidenceRetentionDays = 90;
+
 export function createSqliteCallbackHandshakeStore(
   databasePath: string,
 ): CallbackHandshakeStore {
@@ -57,22 +59,32 @@ export function createSqliteCallbackHandshakeStore(
     ORDER BY revision DESC
     LIMIT 1
   `);
+  const findRegistrationRevision = database.prepare<
+    [revision: number],
+    { readonly definition_json: string }
+  >(`
+    SELECT definition_json
+    FROM registered_telephone_revisions
+    WHERE revision = ?
+  `);
   const insertRegistration = database.prepare(`
     INSERT INTO registered_telephone_revisions (
       revision, registered_at, definition_json
     ) VALUES (?, ?, ?)
   `);
   const findDelivery = database.prepare<
-    [deliveryId: string],
+    [activeDeliveryId: string, expiredDeliveryId: string],
     CallbackDeliveryRow
   >(`
-    SELECT result_json
-    FROM callback_provider_deliveries
-    WHERE delivery_id = ?
+    SELECT result_json FROM callback_provider_deliveries WHERE delivery_id = ?
+    UNION ALL
+    SELECT result_json FROM expired_callback_deliveries WHERE delivery_id = ?
+    LIMIT 1
   `);
   const insertDelivery = database.prepare(`
-    INSERT INTO callback_provider_deliveries (delivery_id, result_json)
-    VALUES (?, ?)
+    INSERT INTO callback_provider_deliveries (
+      delivery_id, handshake_id, result_json
+    ) VALUES (?, ?, ?)
   `);
   const findHandshake = database.prepare<
     [handshakeId: string],
@@ -105,6 +117,19 @@ export function createSqliteCallbackHandshakeStore(
     FROM callback_handshakes
     WHERE caller_fingerprint = ? AND accepted_at >= ?
   `);
+  const readHandshakeMetrics = database.prepare<
+    [],
+    { readonly count: number; readonly state: string }
+  >(`
+    SELECT state, COUNT(*) AS count
+    FROM callback_handshakes
+    GROUP BY state
+  `);
+  const readAttemptMetrics = database.prepare<[], { readonly count: number }>(`
+    SELECT COUNT(*) AS count
+    FROM callback_evidence_events
+    WHERE kind = 'telephone.callback.requested'
+  `);
   const insertHandshake = database.prepare(`
     INSERT INTO callback_handshakes (
       id, caller_fingerprint, revision, state, accepted_at, retry_due_at,
@@ -130,6 +155,42 @@ export function createSqliteCallbackHandshakeStore(
     INSERT INTO callback_evidence_events (
       id, handshake_id, sequence, kind, occurred_at, summary, details_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const tombstoneExpiredHandshakes = database.prepare(`
+    INSERT OR IGNORE INTO expired_callback_handshake_ids (handshake_id, expired_at)
+    SELECT id, ? FROM callback_handshakes WHERE accepted_at < ?
+  `);
+  const tombstoneExpiredDeliveries = database.prepare(`
+    INSERT OR IGNORE INTO expired_callback_deliveries (
+      delivery_id, result_json, expired_at
+    )
+    SELECT
+      callback_provider_deliveries.delivery_id,
+      CASE
+        WHEN json_extract(callback_provider_deliveries.result_json, '$.disposition')
+          IS NULL THEN '{"actions":[]}'
+        ELSE '{"actions":[],"disposition":"reject"}'
+      END,
+      ?
+    FROM callback_provider_deliveries
+    JOIN callback_handshakes
+      ON callback_handshakes.id = callback_provider_deliveries.handshake_id
+    WHERE callback_handshakes.accepted_at < ?
+  `);
+  const deleteExpiredDeliveries = database.prepare(`
+    DELETE FROM callback_provider_deliveries
+    WHERE handshake_id IN (
+      SELECT id FROM callback_handshakes WHERE accepted_at < ?
+    )
+  `);
+  const deleteExpiredEvidence = database.prepare(`
+    DELETE FROM callback_evidence_events
+    WHERE handshake_id IN (
+      SELECT id FROM callback_handshakes WHERE accepted_at < ?
+    )
+  `);
+  const deleteExpiredHandshakes = database.prepare(`
+    DELETE FROM callback_handshakes WHERE accepted_at < ?
   `);
 
   function parseDelivery(row: CallbackDeliveryRow): CallbackDeliveryResult {
@@ -209,7 +270,7 @@ export function createSqliteCallbackHandshakeStore(
     (
       input: CreateCallbackHandshakePersistence,
     ): CreateCallbackHandshakeResult => {
-      const duplicate = findDelivery.get(input.deliveryId);
+      const duplicate = findDelivery.get(input.deliveryId, input.deliveryId);
       if (duplicate !== undefined) {
         return { kind: "duplicate", result: parseDelivery(duplicate) };
       }
@@ -220,6 +281,7 @@ export function createSqliteCallbackHandshakeStore(
       if (recent >= input.maximumAcceptedInWindow) {
         insertDelivery.run(
           input.deliveryId,
+          null,
           JSON.stringify(input.rateLimitedResult),
         );
         return { kind: "rate-limited", result: input.rateLimitedResult };
@@ -235,7 +297,11 @@ export function createSqliteCallbackHandshakeStore(
         projectionStateJson(input.projection),
       );
       insertNewEvidence(input.snapshot.id, input.projection);
-      insertDelivery.run(input.deliveryId, JSON.stringify(input.result));
+      insertDelivery.run(
+        input.deliveryId,
+        input.snapshot.id,
+        JSON.stringify(input.result),
+      );
       return { kind: "created", result: input.result };
     },
   );
@@ -244,7 +310,7 @@ export function createSqliteCallbackHandshakeStore(
     (
       input: ApplyCallbackTransitionPersistence,
     ): ApplyCallbackTransitionResult => {
-      const duplicate = findDelivery.get(input.deliveryId);
+      const duplicate = findDelivery.get(input.deliveryId, input.deliveryId);
       if (duplicate !== undefined) {
         return { kind: "duplicate", result: parseDelivery(duplicate) };
       }
@@ -259,37 +325,61 @@ export function createSqliteCallbackHandshakeStore(
       );
       if (updated.changes !== 1) return { kind: "conflict" };
       insertNewEvidence(input.snapshot.id, input.projection);
-      insertDelivery.run(input.deliveryId, JSON.stringify(input.result));
+      insertDelivery.run(
+        input.deliveryId,
+        input.snapshot.id,
+        JSON.stringify(input.result),
+      );
       return { kind: "applied", result: input.result };
     },
   );
 
   const persistRejectedTransaction = database.transaction(
     (deliveryId: string, result: InboundTelephoneResult) => {
-      const existing = findDelivery.get(deliveryId);
+      const existing = findDelivery.get(deliveryId, deliveryId);
       if (existing !== undefined) {
         return inboundTelephoneResultSchema.parse(parseDelivery(existing));
       }
-      insertDelivery.run(deliveryId, JSON.stringify(result));
+      insertDelivery.run(deliveryId, null, JSON.stringify(result));
       return result;
     },
   );
 
+  const expireTransaction = database.transaction((cutoff: string) => {
+    tombstoneExpiredHandshakes.run(cutoff, cutoff);
+    tombstoneExpiredDeliveries.run(cutoff, cutoff);
+    deleteExpiredDeliveries.run(cutoff);
+    deleteExpiredEvidence.run(cutoff);
+    deleteExpiredHandshakes.run(cutoff);
+  });
+  function expireOldEvidence(): void {
+    expireTransaction.immediate(
+      new Date(
+        Date.now() - liveCallbackEvidenceRetentionDays * 24 * 60 * 60 * 1_000,
+      ).toISOString(),
+    );
+  }
+  expireOldEvidence();
+
   return {
     async applyTransition(input) {
+      expireOldEvidence();
       return applyTransitionTransaction.immediate(input);
     },
     async close() {
       database.close();
     },
     async createHandshake(input) {
+      expireOldEvidence();
       return createHandshakeTransaction.immediate(input);
     },
     async findDelivery(deliveryId) {
-      const row = findDelivery.get(deliveryId);
+      expireOldEvidence();
+      const row = findDelivery.get(deliveryId, deliveryId);
       return row === undefined ? undefined : parseDelivery(row);
     },
     async findDueRetries(now) {
+      expireOldEvidence();
       return findDueRetries
         .all(now)
         .map((row) =>
@@ -297,10 +387,12 @@ export function createSqliteCallbackHandshakeStore(
         );
     },
     async findEvidenceRecord(handshakeId) {
+      expireOldEvidence();
       const row = findHandshake.get(handshakeId);
       return row === undefined ? undefined : loadRecord(row, handshakeId);
     },
     async findHandshake(handshakeId) {
+      expireOldEvidence();
       const row = findHandshake.get(handshakeId);
       return row === undefined
         ? undefined
@@ -312,7 +404,14 @@ export function createSqliteCallbackHandshakeStore(
         ? undefined
         : registeredTelephoneSchema.parse(JSON.parse(row.definition_json));
     },
+    async findRegisteredTelephoneRevision(revision) {
+      const row = findRegistrationRevision.get(revision);
+      return row === undefined
+        ? undefined
+        : registeredTelephoneSchema.parse(JSON.parse(row.definition_json));
+    },
     async listEvidenceRecords() {
+      expireOldEvidence();
       return listHandshakes.all().map((row) => {
         const projection = JSON.parse(row.projection_json) as {
           readonly task?: unknown;
@@ -321,7 +420,25 @@ export function createSqliteCallbackHandshakeStore(
       });
     },
     async persistRejectedDelivery(deliveryId, result) {
+      expireOldEvidence();
       return persistRejectedTransaction.immediate(deliveryId, result);
+    },
+    async readOperationalMetrics() {
+      expireOldEvidence();
+      const states = new Map(
+        readHandshakeMetrics.all().map((row) => [row.state, row.count]),
+      );
+      return {
+        attempts: readAttemptMetrics.get()?.count ?? 0,
+        handshakes: {
+          authorized: states.get("authorized") ?? 0,
+          failed: states.get("failed") ?? 0,
+          pending:
+            (states.get("awaiting-machine") ?? 0) +
+            (states.get("awaiting-dtmf") ?? 0) +
+            (states.get("retry-scheduled") ?? 0),
+        },
+      };
     },
     async registerTelephone(input, registeredAt) {
       const revision = (findRegistration.get()?.revision ?? 0) + 1;
@@ -366,7 +483,19 @@ function createCallbackSchema(database: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS callback_provider_deliveries (
       delivery_id TEXT PRIMARY KEY,
+      handshake_id TEXT,
       result_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS expired_callback_handshake_ids (
+      handshake_id TEXT PRIMARY KEY,
+      expired_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS expired_callback_deliveries (
+      delivery_id TEXT PRIMARY KEY,
+      result_json TEXT NOT NULL,
+      expired_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS callback_evidence_events (
@@ -398,10 +527,40 @@ function createCallbackSchema(database: Database.Database): void {
       SELECT RAISE(ABORT, 'Callback Evidence Events are append-only');
     END;
 
-    CREATE TRIGGER IF NOT EXISTS callback_evidence_no_delete
+    DROP TRIGGER IF EXISTS callback_evidence_no_delete;
+
+    CREATE TRIGGER IF NOT EXISTS callback_evidence_retention_delete_only
     BEFORE DELETE ON callback_evidence_events
+    WHEN NOT EXISTS (
+      SELECT 1 FROM expired_callback_handshake_ids
+      WHERE handshake_id = OLD.handshake_id
+    )
     BEGIN
-      SELECT RAISE(ABORT, 'Callback Evidence Events are append-only');
+      SELECT RAISE(ABORT, 'Callback Evidence Events are append-only until retention expiry');
     END;
   `);
+  ensureCallbackColumn(
+    database,
+    "callback_provider_deliveries",
+    "handshake_id",
+    "TEXT",
+  );
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS callback_provider_deliveries_handshake
+      ON callback_provider_deliveries (handshake_id);
+  `);
+}
+
+function ensureCallbackColumn(
+  database: Database.Database,
+  table: string,
+  column: string,
+  declaration: string,
+): void {
+  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    readonly name: string;
+  }>;
+  if (!columns.some((candidate) => candidate.name === column)) {
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
+  }
 }

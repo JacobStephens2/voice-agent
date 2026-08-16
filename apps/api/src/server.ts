@@ -88,7 +88,10 @@ const api = createVoiceApi({
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
         .slice(0, 100);
     },
-    readOperationalMetrics: () => runtime.readOperationalMetrics(),
+    readOperationalMetrics: async () => ({
+      ...(await runtime.readOperationalMetrics()),
+      callbacks: await callbackRuntime.readOperationalMetrics(),
+    }),
     recordPolicyDenial: () => runtime.recordPolicyDenial(),
   },
   telephoneControls: callbackRuntime,

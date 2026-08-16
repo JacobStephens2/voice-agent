@@ -14,10 +14,9 @@ import {
   freshPasskeyActionResponseSchema,
   passkeyEnrollmentResultSchema,
   promotionResumeResponseSchema,
-  promotionEvidenceRecordProjectionSchema,
   recoverySessionResponseSchema,
   trustedBrowserSessionResponseSchema,
-  telephoneSessionEvidenceRecordProjectionSchema,
+  voiceAgentEvidenceRecordProjectionSchema,
   registeredTelephoneSchema,
   registeredTelephoneStatusSchema,
   webAuthnOptionsSchema,
@@ -144,22 +143,7 @@ export async function loadProtectedContent(
 }
 
 function parseEvidenceRecord(value: unknown): VoiceAgentEvidenceRecordProjection {
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    "task" in value &&
-    typeof value.task === "object" &&
-    value.task !== null &&
-    "kind" in value.task
-  ) {
-    if (value.task.kind === "human-merge.promotion") {
-      return promotionEvidenceRecordProjectionSchema.parse(value);
-    }
-    if (value.task.kind === "callback.handshake") {
-      return telephoneSessionEvidenceRecordProjectionSchema.parse(value);
-    }
-  }
-  return evidenceRecordProjectionSchema.parse(value);
+  return voiceAgentEvidenceRecordProjectionSchema.parse(value);
 }
 
 export async function enrollBootstrapPasskey(
