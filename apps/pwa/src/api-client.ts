@@ -16,6 +16,9 @@ import {
   promotionResumeResponseSchema,
   recoverySessionResponseSchema,
   trustedBrowserSessionResponseSchema,
+  voiceAgentEvidenceRecordProjectionSchema,
+  registeredTelephoneSchema,
+  registeredTelephoneStatusSchema,
   webAuthnOptionsSchema,
   type AuthenticationStatus,
   type BountywellRegistration,
@@ -24,13 +27,16 @@ import {
   type PasskeyEnrollmentResult,
   type RecoverySessionResponse,
   type TrustedBrowserSessionResponse,
+  type VoiceAgentEvidenceRecordProjection,
+  type RegisteredTelephone,
+  type RegisteredTelephoneInput,
 } from "@voice-agent/contracts";
 
 const csrfCookieName = "__Host-voice_agent_csrf";
 
 export type ProtectedContent =
   | { readonly kind: "authentication-required" }
-  | { readonly kind: "record"; readonly record: EvidenceRecordProjection }
+  | { readonly kind: "record"; readonly record: VoiceAgentEvidenceRecordProjection }
   | { readonly kind: "tasks"; readonly tasks: readonly EvidenceRecordSummary[] };
 
 export async function loadAuthenticationStatus(): Promise<AuthenticationStatus> {
@@ -65,6 +71,35 @@ export async function registerBountywell(
     );
   }
   return bountywellRegistrationSchema.parse(await response.json());
+}
+
+export async function loadRegisteredTelephone(): Promise<
+  RegisteredTelephone | undefined
+> {
+  const response = await fetch("/api/telephone/registration");
+  if (response.status === 401) return undefined;
+  if (!response.ok) throw new Error("Registered Telephone is unavailable.");
+  const result = registeredTelephoneStatusSchema.parse(await response.json());
+  return result.registration ?? undefined;
+}
+
+export async function registerTelephone(
+  csrfToken: string,
+  input: RegisteredTelephoneInput,
+): Promise<RegisteredTelephone> {
+  const response = await fetch("/api/telephone/registration", {
+    body: JSON.stringify({ csrfToken, ...input }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before changing the Registered Telephone."
+        : "The Registered Telephone could not be saved.",
+    );
+  }
+  return registeredTelephoneSchema.parse(await response.json());
 }
 
 export async function submitBountywellHealthInquiry(
@@ -103,8 +138,12 @@ export async function loadProtectedContent(
       }
     : {
         kind: "record",
-        record: evidenceRecordProjectionSchema.parse(await response.json()),
+        record: parseEvidenceRecord(await response.json()),
       };
+}
+
+function parseEvidenceRecord(value: unknown): VoiceAgentEvidenceRecordProjection {
+  return voiceAgentEvidenceRecordProjectionSchema.parse(value);
 }
 
 export async function enrollBootstrapPasskey(

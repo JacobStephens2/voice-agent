@@ -1,8 +1,9 @@
 # Agent Host release and recovery
 
-Issue #4 introduces one production capability: a read-only Bountywell health
-inquiry. Production activation still follows the Human Merge boundary in
-ADR-0003. Never promote an unmerged branch.
+Issues #4 and #6 introduce the read-only Bountywell health inquiry and its
+Telephone Session entry path: a durable Callback Handshake through Telnyx SIP
+and LiveKit Cloud. Production activation still follows the Human Merge boundary
+in ADR-0003. Never promote an unmerged branch.
 
 ## Fixed authority
 
@@ -32,18 +33,20 @@ capability sets, private devices/tmp, restricted namespaces, and narrow writable
 state directories.
 
 Apache serves `/opt/voice-agent/current/apps/pwa/dist` and proxies only `/api/`
-to `127.0.0.1:3472`. The worker opens no socket. The broker listens only on
+to `127.0.0.1:3472`. The telephone worker connects to LiveKit Cloud and binds
+its worker endpoint only to `127.0.0.1:3473`; it has no public listener. The broker listens only on
 `/run/voice-agent-broker/broker.sock`, whose group permits the worker to connect.
 The socket-only `voice-broker-client` group cannot read the broker's
 `voice-broker`-owned state. SQLite and broker state live under separate private
 `/var/lib` directories.
 Neither service control, metrics, SQLite, nor the broker has a public port.
 Prometheus scrapes `/metrics` directly on the API's localhost-only port. Those
-metrics cover Durable Tasks, Operations, policy denials, the latest bounded
-Bountywell checks, SQLite bytes/free-disk capacity, and Promotion/circuit-breaker
-state; Apache does not proxy the endpoint. The authenticated live Evidence
-window is bounded to 90 days. Expiry atomically removes the underlying task,
-Operation, and Evidence Events while retaining only the request-ID tombstone
+metrics cover Durable Tasks, Operations, Callback Handshake outcomes and
+attempts, policy denials, the latest bounded Bountywell checks, SQLite
+bytes/free-disk capacity, and Promotion/circuit-breaker state; Apache does not
+proxy the endpoint. The authenticated live Evidence window is bounded to 90
+days. Expiry atomically removes the underlying task, Operation, callback state,
+and Evidence Events while retaining only sanitized delivery/request tombstones
 needed to prevent an old retry from repeating its Operation.
 
 ## First release
@@ -54,15 +57,29 @@ From a clean checkout on the Agent Host after the pull request has been merged:
 ./ops/setup-agent-host.sh
 ```
 
-The seven-stage wizard verifies `origin/main`, builds the exact commit outside the
-live path, installs identities and units, obtains the TLS certificate, walks the
-owner through two-passkey bootstrap and Recovery Code confirmation, requires a
-Fresh Passkey Action for registration, configures the restricted Human Merge
-trigger, and runs the real production smoke.
+The eleven-stage wizard verifies `origin/main`, captures the LiveKit project
+credentials and stored Telnyx/LiveKit route identifiers, builds the exact commit
+outside the live path, installs identities and units, obtains the TLS
+certificate, walks the owner through two-passkey bootstrap and Recovery Code
+confirmation, requires Fresh Passkey Actions for Bountywell and Registered
+Telephone revisions, configures the restricted Human Merge trigger, and runs
+the real production smokes.
 Bootstrap and Recovery Codes are shown only to the human and are not written to
 repository or environment files.
 
-The bounded smoke uses `production-smoke-<merge-commit>` as its request ID. A
+LiveKit credentials are installed as root-owned mode `0600`
+`/etc/voice-agent/livekit.env` and are exposed only to the telephone worker.
+Telnyx SIP credentials stay in Telnyx and LiveKit provider configuration; they
+are not copied to the Agent Host, repository, PWA, or shell arguments.
+
+The Callback Handshake smoke waits for a fresh inbound call from the Registered
+Telephone, then requires a human answer and DTMF `1` on the callback leg. It
+passes only when the durable Evidence Record contains the sanitized inbound,
+notice, callback, machine-detection, DTMF, and authorization events. Unknown,
+malformed, wrong-route, rate-limited, machine, and speech-only attempts do not
+authorize a Telephone Session, and the callback leg never leaves voicemail.
+
+The bounded Bountywell smoke uses `production-smoke-<merge-commit>` as its request ID. A
 retry returns the same Durable Task and broker Operation rather than issuing a
 second inquiry. It succeeds only when the Evidence Record contains all five
 registered sources and concludes that Bountywell is healthy. Public health must

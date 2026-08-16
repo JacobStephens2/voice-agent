@@ -1,7 +1,15 @@
 import { z } from "zod";
-import type { PromotionEvidenceRecordProjection } from "./promotion.ts";
+import {
+  promotionEvidenceRecordProjectionSchema,
+  type PromotionEvidenceRecordProjection,
+} from "./promotion.ts";
+import {
+  telephoneSessionEvidenceRecordProjectionSchema,
+  type TelephoneSessionEvidenceRecordProjection,
+} from "./callback-handshake.ts";
 
 export * from "./promotion.ts";
+export * from "./callback-handshake.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -221,9 +229,20 @@ export type EvidenceRecordProjection = z.infer<
 
 export type VoiceAgentEvidenceRecordProjection =
   | EvidenceRecordProjection
-  | PromotionEvidenceRecordProjection;
+  | PromotionEvidenceRecordProjection
+  | TelephoneSessionEvidenceRecordProjection;
 
-export const evidenceRecordSummarySchema = evidenceRecordProjectionSchema.shape.task;
+export const voiceAgentEvidenceRecordProjectionSchema = z.union([
+  evidenceRecordProjectionSchema,
+  promotionEvidenceRecordProjectionSchema,
+  telephoneSessionEvidenceRecordProjectionSchema,
+]);
+
+export const evidenceRecordSummarySchema = z.discriminatedUnion("kind", [
+  evidenceRecordProjectionSchema.shape.task,
+  promotionEvidenceRecordProjectionSchema.shape.task,
+  telephoneSessionEvidenceRecordProjectionSchema.shape.task,
+]);
 export const evidenceRecordSummaryListSchema = z.array(evidenceRecordSummarySchema).max(100);
 export type EvidenceRecordSummary = z.infer<typeof evidenceRecordSummarySchema>;
 

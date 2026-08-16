@@ -4,13 +4,19 @@
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
+    "callback-smoke": "node --experimental-strip-types src/callback-smoke.ts",
     "serve": "node --experimental-strip-types src/server.ts",
     "smoke": "node --experimental-strip-types src/smoke.ts",
+    "test": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@livekit/agents": "1.6.4",
+    "@livekit/rtc-node": "0.13.33",
     "@voice-agent/operations-broker": "workspace:*",
+    "@voice-agent/contracts": "workspace:*",
     "@voice-agent/runtime": "workspace:*",
-    "@voice-agent/sqlite-store": "workspace:*"
+    "@voice-agent/sqlite-store": "workspace:*",
+    "livekit-server-sdk": "2.17.0"
   }
 }

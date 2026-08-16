@@ -3,8 +3,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type {
   EvidenceRecordProjection,
   PromotionEvidenceRecordProjection,
+  TelephoneSessionEvidenceRecordProjection,
   VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
+import { CallbackTaskPage } from "./callback-task-page.tsx";
+import { EvidenceRecordPage } from "./evidence-record-page.tsx";
 import { PromotionTaskPage } from "./promotion-task-page.tsx";
 import { TaskPage } from "./task-page.tsx";
 
@@ -18,16 +21,14 @@ export function renderPromotionTaskPage(
   return renderToStaticMarkup(<PromotionTaskPage record={record} />);
 }
 
+export function renderCallbackTaskPage(
+  record: TelephoneSessionEvidenceRecordProjection,
+): string {
+  return renderToStaticMarkup(<CallbackTaskPage record={record} />);
+}
+
 export function renderEvidenceRecordPage(
   record: VoiceAgentEvidenceRecordProjection,
 ): string {
-  return isPromotionRecord(record)
-    ? renderPromotionTaskPage(record)
-    : renderTaskPage(record);
-}
-
-function isPromotionRecord(
-  record: VoiceAgentEvidenceRecordProjection,
-): record is PromotionEvidenceRecordProjection {
-  return "promotion" in record;
+  return renderToStaticMarkup(<EvidenceRecordPage record={record} />);
 }

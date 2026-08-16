@@ -5,6 +5,7 @@ import {
 } from "@voice-agent/auth";
 import {
   createSqliteAuthenticationStore,
+  createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
 } from "@voice-agent/sqlite-store";
 import staticFiles from "@fastify/static";
@@ -14,7 +15,10 @@ import { open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { createVoiceApi } from "./index.ts";
-import { createDurableTaskRuntime } from "@voice-agent/runtime";
+import {
+  createCallbackHandshakeRuntime,
+  createDurableTaskRuntime,
+} from "@voice-agent/runtime";
 
 const databasePath = process.env.VOICE_AGENT_DATABASE_PATH;
 if (databasePath === undefined || databasePath.length === 0) {
@@ -38,6 +42,11 @@ const runtime = createDurableTaskRuntime({
   nextId: randomUUID,
   now: () => new Date().toISOString(),
   store: taskStore,
+});
+const callbackRuntime = createCallbackHandshakeRuntime({
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  store: createSqliteCallbackHandshakeStore(databasePath),
 });
 const authentication = createAuthenticationLifecycle({
   now: () => new Date().toISOString(),
@@ -66,7 +75,26 @@ const api = createVoiceApi({
         "/var/lib/voice-agent-promotions/state.tsv",
     ),
   },
-  records: runtime,
+  records: {
+    getEvidenceRecord: async (taskId) =>
+      (await callbackRuntime.readEvidenceRecord(taskId)) ??
+      (await runtime.getEvidenceRecord(taskId)),
+    listEvidenceRecords: async () => {
+      const records = [
+        ...(await runtime.listEvidenceRecords()),
+        ...(await callbackRuntime.listEvidenceRecords()),
+      ];
+      return records
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, 100);
+    },
+    readOperationalMetrics: async () => ({
+      ...(await runtime.readOperationalMetrics()),
+      callbacks: await callbackRuntime.readOperationalMetrics(),
+    }),
+    recordPolicyDenial: () => runtime.recordPolicyDenial(),
+  },
+  telephoneControls: callbackRuntime,
 });
 await api.register(staticFiles, {
   root: fileURLToPath(new URL("../../pwa/dist", import.meta.url)),
@@ -75,6 +103,7 @@ await api.register(staticFiles, {
 const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
+  await callbackRuntime.close();
   await runtime.close();
 };
 process.once("SIGINT", () => void shutdown());

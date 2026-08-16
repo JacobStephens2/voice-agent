@@ -3,6 +3,8 @@ import { useState, type ReactNode } from "react";
 import type {
   BountywellRegistration,
   EvidenceRecordSummary,
+  RegisteredTelephone,
+  RegisteredTelephoneInput,
 } from "@voice-agent/contracts";
 
 export function Shell({
@@ -173,12 +175,14 @@ export function RecoveryCodesView(props: {
 
 export function TaskList(props: {
   bountywellRegistration?: BountywellRegistration | undefined;
+  registeredTelephone?: RegisteredTelephone | undefined;
   tasks: readonly EvidenceRecordSummary[];
   message?: string | undefined;
   busy: boolean;
   onFresh(): Promise<void>;
   onResumePromotions(): Promise<void>;
   onRegisterBountywell(): Promise<void>;
+  onRegisterTelephone(input: RegisteredTelephoneInput): Promise<void>;
   onRunBountywell(): Promise<void>;
 }) {
   return (
@@ -188,6 +192,12 @@ export function TaskList(props: {
       {props.message === undefined ? null : (
         <p className="notice" role="status">{props.message}</p>
       )}
+      <TelephoneRegistrationControl
+        key={props.registeredTelephone?.revision ?? 0}
+        busy={props.busy}
+        registration={props.registeredTelephone}
+        onRegister={props.onRegisterTelephone}
+      />
       <section className="bountywell-control" aria-labelledby="bountywell-heading">
         <p className="eyebrow">Registered application</p>
         <h2 id="bountywell-heading">Bountywell production</h2>
@@ -241,6 +251,97 @@ export function TaskList(props: {
         onResumePromotions={props.onResumePromotions}
       />
     </main>
+  );
+}
+
+function TelephoneRegistrationControl(props: {
+  busy: boolean;
+  onRegister(input: RegisteredTelephoneInput): Promise<void>;
+  registration?: RegisteredTelephone | undefined;
+}) {
+  const [telephoneNumber, setTelephoneNumber] = useState(
+    props.registration?.telephoneNumber ?? "",
+  );
+  const [telnyxNumber, setTelnyxNumber] = useState(
+    props.registration?.telnyxNumber ?? "",
+  );
+  const [livekitInboundTrunkId, setLivekitInboundTrunkId] = useState(
+    props.registration?.livekitInboundTrunkId ?? "",
+  );
+  const [livekitOutboundTrunkId, setLivekitOutboundTrunkId] = useState(
+    props.registration?.livekitOutboundTrunkId ?? "",
+  );
+  return (
+    <section className="bountywell-control" aria-labelledby="telephone-heading">
+      <p className="eyebrow">Telephone authority</p>
+      <h2 id="telephone-heading">Registered Telephone</h2>
+      {props.registration === undefined ? (
+        <p>
+          Perform a Fresh Passkey Action, then enroll the owner telephone and
+          its fixed Telnyx-to-LiveKit route.
+        </p>
+      ) : (
+        <p>
+          Revision {props.registration.revision} authorizes callbacks only to{" "}
+          <strong>{props.registration.telephoneNumber}</strong>.
+        </p>
+      )}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void props.onRegister({
+            livekitInboundTrunkId,
+            livekitOutboundTrunkId,
+            telephoneNumber,
+            telnyxNumber,
+          });
+        }}
+      >
+        <label>
+          Owner telephone (E.164)
+          <input
+            autoComplete="tel"
+            pattern="\+[1-9][0-9]{7,14}"
+            required
+            value={telephoneNumber}
+            onChange={(event) => setTelephoneNumber(event.target.value)}
+          />
+        </label>
+        <label>
+          Dedicated Telnyx number (E.164)
+          <input
+            autoComplete="off"
+            pattern="\+[1-9][0-9]{7,14}"
+            required
+            value={telnyxNumber}
+            onChange={(event) => setTelnyxNumber(event.target.value)}
+          />
+        </label>
+        <label>
+          LiveKit inbound trunk ID
+          <input
+            autoComplete="off"
+            required
+            value={livekitInboundTrunkId}
+            onChange={(event) => setLivekitInboundTrunkId(event.target.value)}
+          />
+        </label>
+        <label>
+          LiveKit outbound trunk ID
+          <input
+            autoComplete="off"
+            required
+            value={livekitOutboundTrunkId}
+            onChange={(event) => setLivekitOutboundTrunkId(event.target.value)}
+          />
+        </label>
+        <button disabled={props.busy}>
+          {props.registration === undefined
+            ? "Enroll Registered Telephone"
+            : "Save Registered Telephone revision"}
+        </button>
+      </form>
+    </section>
   );
 }
 

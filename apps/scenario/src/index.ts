@@ -3,7 +3,13 @@ import type {
   BountywellHealthObserver,
   BountywellHealthInquiryRequest,
   BountywellHealthObservationRequest,
+  CallbackActionResult,
+  CallbackProviderEvent,
   EvidenceRecordProjection,
+  InboundTelephoneEvent,
+  InboundTelephoneResult,
+  RegisteredTelephoneInput,
+  TelephoneSessionEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
 export * from "./human-merge-promotion.ts";
@@ -15,12 +21,148 @@ import {
   type AuthenticationSecrets,
   type PasskeyAdapter,
 } from "@voice-agent/auth";
-import { renderTaskPage } from "@voice-agent/pwa/server";
-import { createDurableTaskRuntime } from "@voice-agent/runtime";
+import {
+  renderEvidenceRecordPage,
+  renderTaskPage,
+} from "@voice-agent/pwa/server";
+import {
+  createCallbackHandshakeRuntime,
+  createDurableTaskRuntime,
+} from "@voice-agent/runtime";
 import {
   createSqliteAuthenticationStore,
+  createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
 } from "@voice-agent/sqlite-store";
+
+export interface CallbackHandshakeScenario {
+  close(): Promise<void>;
+  processDueRetries(): ReturnType<
+    ReturnType<typeof createCallbackHandshakeRuntime>["processDueRetries"]
+  >;
+  readEvidenceRecord(
+    handshakeId: string,
+  ): Promise<TelephoneSessionEvidenceRecordProjection | undefined>;
+  readOperationalMetrics(): ReturnType<
+    ReturnType<typeof createCallbackHandshakeRuntime>["readOperationalMetrics"]
+  >;
+  readMetrics(): Promise<string>;
+  readTaskPage(taskId: string, sessionToken?: string): Promise<{
+    readonly body: unknown;
+    readonly html: string;
+    readonly statusCode: number;
+  }>;
+  receiveInbound(event: InboundTelephoneEvent): Promise<InboundTelephoneResult>;
+  receiveProviderEvent(
+    handshakeId: string,
+    event: CallbackProviderEvent,
+  ): Promise<CallbackActionResult>;
+  registerTelephone(
+    input: RegisteredTelephoneInput,
+  ): ReturnType<ReturnType<typeof createCallbackHandshakeRuntime>["registerTelephone"]>;
+  setTime(now: string): void;
+}
+
+export interface CallbackHandshakeScenarioOptions {
+  readonly databasePath: string;
+  readonly ids: readonly string[];
+  readonly maximumAcceptedInWindow?: number;
+  readonly now: string;
+  readonly registeredTelephone: RegisteredTelephoneInput;
+}
+
+export async function createCallbackHandshakeScenario(
+  options: CallbackHandshakeScenarioOptions,
+): Promise<CallbackHandshakeScenario> {
+  const ids = [...options.ids];
+  let currentNow = options.now;
+  const store = createSqliteCallbackHandshakeStore(options.databasePath);
+  const runtime = createCallbackHandshakeRuntime({
+    ...(options.maximumAcceptedInWindow === undefined
+      ? {}
+      : { maximumAcceptedInWindow: options.maximumAcceptedInWindow }),
+    nextId() {
+      const id = ids.shift();
+      if (id === undefined) {
+        throw new Error("The scenario exhausted its deterministic identifiers");
+      }
+      return id;
+    },
+    now: () => currentNow,
+    store,
+  });
+  await runtime.registerTelephone(options.registeredTelephone);
+  const api = createTaskApi({
+    authentication: {
+      async canViewEvidence(sessionToken) {
+        return sessionToken === "scenario-trusted-session";
+      },
+    },
+    records: {
+      getEvidenceRecord: (taskId) => runtime.readEvidenceRecord(taskId),
+      listEvidenceRecords: () => runtime.listEvidenceRecords(),
+      readOperationalMetrics: async () => ({
+        bountywellChecks: [],
+        callbacks: await runtime.readOperationalMetrics(),
+        operations: { accepted: 0, completed: 0, running: 0 },
+        policyDenials: 0,
+        storage: { databaseBytes: 0, filesystemAvailableBytes: 0 },
+        tasks: { completed: 0, pending: 0 },
+      }),
+    },
+  });
+  return {
+    async close() {
+      await api.close();
+      await runtime.close();
+    },
+    processDueRetries: () => runtime.processDueRetries(),
+    readEvidenceRecord: (handshakeId) =>
+      runtime.readEvidenceRecord(handshakeId),
+    readOperationalMetrics: () => runtime.readOperationalMetrics(),
+    async readMetrics() {
+      const response = await api.inject({ method: "GET", url: "/metrics" });
+      if (response.statusCode !== 200) {
+        throw new Error("Callback metrics endpoint was unavailable");
+      }
+      return response.body;
+    },
+    async readTaskPage(taskId, sessionToken) {
+      const request = {
+        method: "GET",
+        url: `/api/tasks/${encodeURIComponent(taskId)}`,
+      } as const;
+      const response = await api.inject(
+        sessionToken === undefined
+          ? request
+          : {
+              ...request,
+              headers: {
+                cookie: `${trustedSessionCookieName}=${sessionToken}`,
+              },
+            },
+      );
+      const body = response.json<unknown>();
+      return {
+        body,
+        html:
+          response.statusCode === 200
+            ? renderEvidenceRecordPage(
+                body as TelephoneSessionEvidenceRecordProjection,
+              )
+            : "",
+        statusCode: response.statusCode,
+      };
+    },
+    receiveInbound: (event) => runtime.receiveInbound(event),
+    receiveProviderEvent: (handshakeId, event) =>
+      runtime.receiveProviderEvent(handshakeId, event),
+    registerTelephone: (input) => runtime.registerTelephone(input),
+    setTime(now) {
+      currentNow = now;
+    },
+  };
+}
 
 export interface BountywellHealthScenario {
   readonly brokerRequests: readonly BountywellHealthObservationRequest[];
