@@ -1,9 +1,73 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
+const execFileAsync = promisify(execFile);
+
+test("Human Merge verification resolves the authoritative PR when the commit projection omits merged_by", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-human-merge-"));
+  const gh = join(directory, "gh");
+  await writeFile(
+    gh,
+    `#!/usr/bin/env bash
+set -euo pipefail
+endpoint=\${!#}
+if [[ $endpoint == */commits/*/pulls ]]; then
+  printf '%s\\n' '[{"number":20,"merge_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merged_at":"2026-08-16T11:54:26Z","base":{"ref":"main"},"merged_by":null}]'
+elif [[ $endpoint == */pulls/20 ]]; then
+  if [[ \${MERGER_TYPE:-User} == User ]]; then
+    printf '%s\\n' '{"merge_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merged_at":"2026-08-16T11:54:26Z","base":{"ref":"main"},"merged_by":{"type":"User"}}'
+  else
+    printf '%s\\n' '{"merge_commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merged_at":"2026-08-16T11:54:26Z","base":{"ref":"main"},"merged_by":{"type":"Bot"}}'
+  fi
+else
+  exit 2
+fi
+`,
+  );
+  await chmod(gh, 0o700);
+
+  try {
+    await expect(
+      execFileAsync(
+        join(repositoryRoot, "ops/release/verify-human-merge.sh"),
+        [
+          "JacobStephens2/voice-agent",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+        {
+          env: {
+            ...process.env,
+            PATH: `${directory}:${process.env.PATH ?? ""}`,
+          },
+        },
+      ),
+    ).resolves.toBeDefined();
+    await expect(
+      execFileAsync(
+        join(repositoryRoot, "ops/release/verify-human-merge.sh"),
+        [
+          "JacobStephens2/voice-agent",
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+        {
+          env: {
+            ...process.env,
+            MERGER_TYPE: "Bot",
+            PATH: `${directory}:${process.env.PATH ?? ""}`,
+          },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 1 });
+  } finally {
+    await rm(directory, { force: true, recursive: true });
+  }
+});
 
 test("the Agent Host release preserves its private ports and service boundaries", async () => {
   const [
@@ -66,7 +130,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(wizard).toContain(
     "sudo -u voice-agent -g voice-broker-client env",
   );
-  expect(wizard).toContain("commits/$MERGED_COMMIT/pulls");
+  expect(wizard).toContain("verify-human-merge.sh");
   expect(wizard).toContain("install-prometheus-scrape.sh");
   expect(wizard).toContain("read-only Contents permission");
   expect(wizard).toContain("github-app-private-key.pem");
@@ -77,8 +141,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(queue).toContain("'$1 == before { print $2; exit }'");
   expect(workflow).toContain("BEFORE_COMMIT: ${{ github.event.before }}");
   expect(queue).toContain("record-promotion-failure.sh");
-  expect(workflow).toContain("commits/$MERGED_COMMIT/pulls");
-  expect(workflow).toContain(".merged_by.type == \"User\"");
+  expect(workflow).toContain("./ops/release/verify-human-merge.sh");
   expect(workflow).toContain("/usr/local/libexec/voice-agent/promote-main.sh");
   expect(attemptRecorder).toContain("promotion-state.sh");
   expect(resumePromotion).toContain("VOICE_AGENT_FRESH_PASSKEY_RESUME=1");

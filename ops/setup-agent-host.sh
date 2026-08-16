@@ -199,12 +199,8 @@ if [[ $CHECKOUT_COMMIT != "$MERGED_COMMIT" ]] || \
   warn "Use a clean checkout of origin/main so the provisioning code has passed the Human Merge boundary."
   exit 1
 fi
-if ! gh api \
-  -H 'Accept: application/vnd.github+json' \
-  "repos/JacobStephens2/voice-agent/commits/$MERGED_COMMIT/pulls" \
-  | jq -e --arg commit "$MERGED_COMMIT" \
-    'any(.[]; .merge_commit_sha == $commit and .merged_at != null and .base.ref == "main" and .merged_by.type == "User")' \
-    >/dev/null; then
+if ! "$REPOSITORY_ROOT/ops/release/verify-human-merge.sh" \
+  JacobStephens2/voice-agent "$MERGED_COMMIT"; then
   warn "GitHub does not identify this exact commit as a Human Merge to main."
   exit 1
 fi
@@ -313,7 +309,8 @@ for script in \
   candidate-preflight.sh deployment-health.sh install-release.sh \
   git-credential-github-app.sh github-source-token.sh \
   promote-main.sh promote-release.sh promotion-state.sh \
-  record-promotion-failure.sh resume-promotion.sh rollback-release.sh; do
+  record-promotion-failure.sh resume-promotion.sh rollback-release.sh \
+  verify-human-merge.sh; do
   if sudo test -e "$ROOT_ORCHESTRATOR/$script" && \
     ! sudo cmp -s "$REPOSITORY_ROOT/ops/release/$script" \
       "$ROOT_ORCHESTRATOR/$script"; then
