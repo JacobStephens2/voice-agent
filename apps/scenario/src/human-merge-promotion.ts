@@ -4,9 +4,10 @@ import type {
   FixtureCodebaseRegistration,
   FixtureDeploymentContract,
   FixtureGitHubEvent,
-  PromotionEffectProjection,
+  PromotionOperationProjection,
   PromotionEvidenceRecordProjection,
 } from "@voice-agent/contracts";
+import { fixtureDeploymentContractSchema } from "@voice-agent/contracts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import { renderEvidenceRecordPage } from "@voice-agent/pwa/server";
 import {
@@ -31,8 +32,8 @@ export interface HumanMergePromotionScenarioOptions {
   readonly healthStatusByCommit?: Readonly<Record<string, number>> | undefined;
   readonly ids: readonly string[];
   readonly now: string;
-  readonly processLossAfterEffect?:
-    | PromotionEffectProjection["kind"]
+  readonly processLossAfterOperation?:
+    | PromotionOperationProjection["kind"]
     | undefined;
   readonly webhookSecret: string;
 }
@@ -92,7 +93,7 @@ export async function createHumanMergePromotionScenario(
       },
     },
   });
-  let processLossAfterEffect = options.processLossAfterEffect;
+  let processLossAfterOperation = options.processLossAfterOperation;
 
   function nextId(label: string): string {
     const id = ids.shift();
@@ -102,9 +103,9 @@ export async function createHumanMergePromotionScenario(
     return id;
   }
 
-  function simulateProcessLossAfter(kind: PromotionEffectProjection["kind"]): void {
-    if (processLossAfterEffect !== kind) return;
-    processLossAfterEffect = undefined;
+  function simulateProcessLossAfterOperation(kind: PromotionOperationProjection["kind"]): void {
+    if (processLossAfterOperation !== kind) return;
+    processLossAfterOperation = undefined;
     throw new Error(`Simulated process loss after ${kind}`);
   }
 
@@ -133,7 +134,7 @@ export async function createHumanMergePromotionScenario(
     },
     async close() {
       await api.close();
-      store.database.close();
+      store.close();
     },
     async deliver(input) {
       const taskId = nextId("Durable Task");
@@ -210,7 +211,9 @@ export async function createHumanMergePromotionScenario(
     async processNext() {
       const attempt = store.claimNext(options.now);
       if (attempt === undefined) return undefined;
-      const contract = parseJson<FixtureDeploymentContract>(attempt.contract_json);
+      const contract = fixtureDeploymentContractSchema.parse(
+        JSON.parse(attempt.contract_json),
+      );
       const release = {
         commit: attempt.merge_commit,
         id: `${fixtureApplicationId}-${attempt.merge_commit}`,
@@ -220,14 +223,14 @@ export async function createHumanMergePromotionScenario(
         options.healthStatusByCommit?.[attempt.merge_commit] ??
         contract.health.expectedStatus;
 
-      const build = store.performEffect({
+      const build = store.performOperation({
         actualHealthStatus,
         attempt,
         contract,
         kind: "release.build",
         release,
       });
-      simulateProcessLossAfter(build.kind);
+      simulateProcessLossAfterOperation(build.kind);
       store.appendEvidence(
         attempt.record_id,
         `${build.operationId}:evidence`,
@@ -241,14 +244,14 @@ export async function createHumanMergePromotionScenario(
         },
       );
 
-      const preflight = store.performEffect({
+      const preflight = store.performOperation({
         actualHealthStatus,
         attempt,
         contract,
         kind: "release.preflight",
         release,
       });
-      simulateProcessLossAfter(preflight.kind);
+      simulateProcessLossAfterOperation(preflight.kind);
       store.appendEvidence(
         attempt.record_id,
         `${preflight.operationId}:evidence`,
@@ -258,14 +261,14 @@ export async function createHumanMergePromotionScenario(
         { command: contract.preflightCommand, outcome: "passed" },
       );
 
-      const switched = store.performEffect({
+      const switched = store.performOperation({
         actualHealthStatus,
         attempt,
         contract,
         kind: "release.switch",
         release,
       });
-      simulateProcessLossAfter(switched.kind);
+      simulateProcessLossAfterOperation(switched.kind);
       store.appendEvidence(
         attempt.record_id,
         `${switched.operationId}:evidence`,
@@ -275,14 +278,14 @@ export async function createHumanMergePromotionScenario(
         { releaseId: release.id },
       );
 
-      const verified = store.performEffect({
+      const verified = store.performOperation({
         actualHealthStatus,
         attempt,
         contract,
         kind: "release.verify",
         release,
       });
-      simulateProcessLossAfter(verified.kind);
+      simulateProcessLossAfterOperation(verified.kind);
       if (verified.outcome !== "healthy" && verified.outcome !== "unhealthy") {
         throw new Error("Persisted Release verification outcome is invalid");
       }
@@ -306,14 +309,14 @@ export async function createHumanMergePromotionScenario(
         },
       );
       if (verification.outcome !== "healthy") {
-        const rollback = store.performEffect({
+        const rollback = store.performOperation({
           actualHealthStatus,
           attempt,
           contract,
           kind: "release.rollback",
           release,
         });
-        simulateProcessLossAfter(rollback.kind);
+        simulateProcessLossAfterOperation(rollback.kind);
         store.appendEvidence(
           attempt.record_id,
           `${rollback.operationId}:evidence`,
@@ -363,7 +366,13 @@ export async function createHumanMergePromotionScenario(
           }),
         });
       }
-      return discovered;
+      store.reorderQueuedAttempts();
+      return discovered.map((result) => ({
+        ...result,
+        record: requirePromotionRecord(
+          store.findRecord(result.record.task.id),
+        ),
+      }));
     },
     async readTaskPage(taskId, sessionToken) {
       const request = {
@@ -457,6 +466,11 @@ function orderHumanMerges(
   return ordered;
 }
 
-function parseJson<T>(value: string): T {
-  return JSON.parse(value) as T;
+function requirePromotionRecord(
+  record: PromotionEvidenceRecordProjection | undefined,
+): PromotionEvidenceRecordProjection {
+  if (record === undefined) {
+    throw new Error("Promotion Evidence Record is unavailable");
+  }
+  return record;
 }

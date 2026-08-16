@@ -102,13 +102,13 @@ test("a Human Merge promotes its exact commit through the active Deployment Cont
 
   const inspection = await scenario.inspect();
   expect(inspection.activeRelease?.commit).toBe(healthyCommit);
-  expect(inspection.effects.map((effect) => effect.kind)).toEqual([
+  expect(inspection.operations.map((operation) => operation.kind)).toEqual([
     "release.build",
     "release.preflight",
     "release.switch",
     "release.verify",
   ]);
-  expect(inspection.effects).toEqual(
+  expect(inspection.operations).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
         kind: "release.build",
@@ -249,7 +249,7 @@ test("untrusted and ineligible GitHub deliveries are denied with evidence and no
   expect(inspection.attempts).toEqual([
     expect.objectContaining({ id: "attempt-accepted", status: "queued" }),
   ]);
-  expect(inspection.effects).toEqual([]);
+  expect(inspection.operations).toEqual([]);
 
   await scenario.close();
 });
@@ -319,7 +319,7 @@ test("Promotion Attempts remain serial and an unhealthy Release restores the pri
     "rolled-back",
     "queued",
   ]);
-  expect(inspection.effects.map((effect) => effect.kind)).toEqual([
+  expect(inspection.operations.map((operation) => operation.kind)).toEqual([
     "release.build",
     "release.preflight",
     "release.switch",
@@ -330,7 +330,7 @@ test("Promotion Attempts remain serial and an unhealthy Release restores the pri
     "release.verify",
     "release.rollback",
   ]);
-  expect(inspection.effects.at(-1)).toMatchObject({
+  expect(inspection.operations.at(-1)).toMatchObject({
     kind: "release.rollback",
     restoredReleaseId: `fixture-production-${serialHealthyCommit}`,
   });
@@ -533,7 +533,55 @@ test("reconciliation discovers a missed Human Merge exactly once", async () => {
   await scenario.close();
 });
 
-test("recorded external effects are not repeated after simulated process loss", async () => {
+test("reconciliation inserts a missed ancestor before its queued descendant", async () => {
+  const scenario = await createScenario({
+    ids: [
+      "task-descendant-first",
+      "attempt-descendant-first",
+      "task-missed-ancestor",
+      "attempt-missed-ancestor",
+    ],
+  });
+  const missedAncestor = humanMerge(missedCommit, healthyCommit);
+  const recordedDescendant = humanMerge(missedDescendantCommit, missedCommit);
+  await deliverSigned(
+    scenario,
+    "delivery-descendant-first",
+    recordedDescendant,
+  );
+
+  const discovered = await scenario.reconcile([
+    recordedDescendant,
+    missedAncestor,
+  ]);
+  expect(discovered[0]?.record.promotion.attempt).toMatchObject({
+    id: "attempt-missed-ancestor",
+    mergeCommit: missedCommit,
+    queueSequence: 1,
+  });
+  expect((await scenario.inspect()).attempts).toEqual([
+    expect.objectContaining({
+      id: "attempt-missed-ancestor",
+      mergeCommit: missedCommit,
+      queueSequence: 1,
+    }),
+    expect.objectContaining({
+      id: "attempt-descendant-first",
+      mergeCommit: missedDescendantCommit,
+      queueSequence: 2,
+    }),
+  ]);
+  expect((await scenario.processNext())?.promotion.attempt?.mergeCommit).toBe(
+    missedCommit,
+  );
+  expect((await scenario.processNext())?.promotion.attempt?.mergeCommit).toBe(
+    missedDescendantCommit,
+  );
+
+  await scenario.close();
+});
+
+test("recorded external operations are not repeated after simulated process loss", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-promotion-loss-"));
   temporaryDirectories.push(directory);
   const databasePath = join(directory, "scenario.sqlite");
@@ -543,7 +591,7 @@ test("recorded external effects are not repeated after simulated process loss", 
     healthStatusByCommit: { [healthyCommit]: 204 },
     ids: ["task-process-loss", "attempt-process-loss"],
     now: "2026-08-15T12:00:00.000Z",
-    processLossAfterEffect: "release.switch",
+    processLossAfterOperation: "release.switch",
     webhookSecret,
   });
   await deliverSigned(interrupted, "delivery-process-loss", event);
@@ -551,7 +599,7 @@ test("recorded external effects are not repeated after simulated process loss", 
   await expect(interrupted.processNext()).rejects.toThrow(
     "Simulated process loss after release.switch",
   );
-  expect((await interrupted.inspect()).effects.map((effect) => effect.kind)).toEqual([
+  expect((await interrupted.inspect()).operations.map((operation) => operation.kind)).toEqual([
     "release.build",
     "release.preflight",
     "release.switch",
@@ -579,13 +627,13 @@ test("recorded external effects are not repeated after simulated process loss", 
     "release.verified",
   ]);
   const inspection = await resumed.inspect();
-  expect(inspection.effects.map((effect) => effect.kind)).toEqual([
+  expect(inspection.operations.map((operation) => operation.kind)).toEqual([
     "release.build",
     "release.preflight",
     "release.switch",
     "release.verify",
   ]);
-  expect(new Set(inspection.effects.map((effect) => effect.operationId)).size).toBe(4);
+  expect(new Set(inspection.operations.map((operation) => operation.operationId)).size).toBe(4);
   expect(inspection.activeRelease?.commit).toBe(healthyCommit);
 
   await resumed.close();
@@ -600,7 +648,7 @@ test("an unhealthy persisted verification still rolls back after process loss", 
     healthStatusByCommit: { [serialUnhealthyCommit]: 503 },
     ids: ["task-verify-loss", "attempt-verify-loss"],
     now: "2026-08-15T12:00:00.000Z",
-    processLossAfterEffect: "release.verify",
+    processLossAfterOperation: "release.verify",
     webhookSecret,
   });
   await deliverSigned(
@@ -625,7 +673,7 @@ test("an unhealthy persisted verification still rolls back after process loss", 
     rollback: { performed: true },
     verification: { actualStatus: 503, outcome: "unhealthy" },
   });
-  expect((await resumed.inspect()).effects.map((effect) => effect.kind)).toEqual([
+  expect((await resumed.inspect()).operations.map((operation) => operation.kind)).toEqual([
     "release.build",
     "release.preflight",
     "release.switch",
@@ -709,9 +757,14 @@ test("Deployment Contract revisions activate independently and remain fixed per 
     verification: { expectedStatus: 418, outcome: "healthy", path: "/ready" },
   });
   expect(
-    (await scenario.inspect()).effects
-      .filter((effect) => effect.kind === "release.preflight")
-      .map((effect) => effect.command),
+    (await scenario.inspect()).operations
+      .filter((operation) => operation.kind === "release.build")
+      .map((operation) => operation.command),
+  ).toEqual(["pnpm build", "pnpm build:fixture"]);
+  expect(
+    (await scenario.inspect()).operations
+      .filter((operation) => operation.kind === "release.preflight")
+      .map((operation) => operation.command),
   ).toEqual(["pnpm test --run", "pnpm fixture:preflight"]);
 
   await scenario.close();

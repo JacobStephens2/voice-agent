@@ -4,9 +4,20 @@ import type {
   FixtureCodebaseRegistration,
   FixtureDeploymentContract,
   FixtureGitHubEvent,
-  PromotionEffectProjection,
+  PromotionOperationProjection,
   PromotionEvidenceEventProjection,
   PromotionEvidenceRecordProjection,
+} from "@voice-agent/contracts";
+import {
+  fixtureCodebaseRegistrationSchema,
+  fixtureDeploymentContractSchema,
+  promotionEvidenceDetailsSchema,
+  promotionEvidenceRecordProjectionSchema,
+  promotionMergeProjectionSchema,
+  promotionOperationProjectionSchema,
+  promotionReleaseProjectionSchema,
+  promotionRollbackProjectionSchema,
+  promotionVerificationProjectionSchema,
 } from "@voice-agent/contracts";
 
 export const fixtureApplicationId = "fixture-production" as const;
@@ -60,11 +71,10 @@ export interface PromotionStoreInspection {
   readonly attempts: readonly NonNullable<
     PromotionEvidenceRecordProjection["promotion"]["attempt"]
   >[];
-  readonly effects: readonly PromotionEffectProjection[];
+  readonly operations: readonly PromotionOperationProjection[];
 }
 
 export interface PromotionStore {
-  readonly database: Database.Database;
   activateContract(contract: FixtureDeploymentContract): FixtureDeploymentContract;
   activateInitialPolicy(now: string): void;
   appendEvidence(
@@ -76,6 +86,7 @@ export interface PromotionStore {
     details: PromotionEvidenceEventProjection["details"],
   ): void;
   claimNext(now: string): AttemptRow | undefined;
+  close(): void;
   completeHealthy(input: {
     readonly attemptId: string;
     readonly now: string;
@@ -102,15 +113,15 @@ export interface PromotionStore {
   hasAttempt(commit: string): boolean;
   hasDelivery(deliveryId: string): boolean;
   inspect(): PromotionStoreInspection;
-  performEffect(input: {
+  performOperation(input: {
     readonly actualHealthStatus: number;
     readonly attempt: AttemptRow;
     readonly contract: FixtureDeploymentContract;
-    readonly kind: PromotionEffectProjection["kind"];
+    readonly kind: PromotionOperationProjection["kind"];
     readonly release: NonNullable<
       PromotionEvidenceRecordProjection["promotion"]["release"]
     >;
-  }): PromotionEffectProjection;
+  }): PromotionOperationProjection;
   persistAccepted(input: {
     readonly attemptId: string;
     readonly contract: FixtureDeploymentContract;
@@ -129,6 +140,7 @@ export interface PromotionStore {
     readonly reason: string;
     readonly taskId: string;
   }): PromotionEvidenceRecordProjection;
+  reorderQueuedAttempts(): void;
 }
 
 export function createPromotionStore(databasePath: string): PromotionStore {
@@ -142,7 +154,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       .prepare("SELECT definition_json FROM promotion_registrations LIMIT 1")
       .get() as { readonly definition_json: string } | undefined;
     if (row === undefined) throw new Error("Fixture Registered Codebase is unavailable");
-    return parseJson<FixtureCodebaseRegistration>(row.definition_json);
+    return parseStored(row.definition_json, fixtureCodebaseRegistrationSchema);
   }
 
   function findActiveContract(): FixtureDeploymentContract {
@@ -157,7 +169,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       `)
       .get(fixtureApplicationId) as { readonly definition_json: string } | undefined;
     if (row === undefined) throw new Error("Active Deployment Contract is unavailable");
-    return parseJson<FixtureDeploymentContract>(row.definition_json);
+    return parseStored(row.definition_json, fixtureDeploymentContractSchema);
   }
 
   function readApplicationState(): ApplicationStateRow {
@@ -233,35 +245,32 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         ORDER BY sequence
       `)
       .all(taskId) as EvidenceRow[];
-    const merge = parseJson<
-      PromotionEvidenceRecordProjection["promotion"]["merge"]
-    >(row.merge_json);
+    const merge = parseStored(row.merge_json, promotionMergeProjectionSchema);
     const contract =
       row.contract_json === null
         ? undefined
-        : parseJson<FixtureDeploymentContract>(row.contract_json);
+        : parseStored(row.contract_json, fixtureDeploymentContractSchema);
     const release =
       attempt?.release_json === null || attempt?.release_json === undefined
         ? undefined
-        : parseJson<
-            NonNullable<PromotionEvidenceRecordProjection["promotion"]["release"]>
-          >(attempt.release_json);
+        : parseStored(attempt.release_json, promotionReleaseProjectionSchema);
     const verification =
       attempt?.verification_json === null ||
       attempt?.verification_json === undefined
         ? undefined
-        : parseJson<
-            NonNullable<
-              PromotionEvidenceRecordProjection["promotion"]["verification"]
-            >
-          >(attempt.verification_json);
-    const rollback = parseJson<
-      PromotionEvidenceRecordProjection["promotion"]["rollback"]
-    >(attempt?.rollback_json ?? row.rollback_json);
-    return {
+        : parseStored(
+            attempt.verification_json,
+            promotionVerificationProjectionSchema,
+          );
+    const rollback = parseStored(
+      attempt?.rollback_json ?? row.rollback_json,
+      promotionRollbackProjectionSchema,
+    );
+    return promotionEvidenceRecordProjectionSchema.parse({
       evidence: evidence.map((event) => ({
-        details: parseJson<PromotionEvidenceEventProjection["details"]>(
+        details: parseStored(
           event.details_json,
+          promotionEvidenceDetailsSchema,
         ),
         id: event.id,
         kind: event.kind,
@@ -308,7 +317,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         status: row.status,
         updatedAt: row.updated_at,
       },
-    };
+    });
   }
 
   function appendEvidence(
@@ -397,8 +406,8 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     database
       .prepare(`
         INSERT OR IGNORE INTO promotion_contracts (
-          application_id, revision, active, definition_json
-        ) VALUES (?, ?, 1, ?)
+          application_id, revision, definition_json
+        ) VALUES (?, ?, ?)
       `)
       .run(fixtureApplicationId, contract.revision, JSON.stringify(contract));
     database
@@ -446,8 +455,8 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       database
         .prepare(`
           INSERT INTO promotion_contracts (
-            application_id, revision, active, definition_json
-          ) VALUES (?, ?, 0, ?)
+            application_id, revision, definition_json
+          ) VALUES (?, ?, ?)
         `)
         .run(
           contract.applicationId,
@@ -705,25 +714,29 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     return claimTransaction.immediate();
   }
 
-  function performEffect(input: {
+  function performOperation(input: {
     readonly actualHealthStatus: number;
     readonly attempt: AttemptRow;
     readonly contract: FixtureDeploymentContract;
-    readonly kind: PromotionEffectProjection["kind"];
+    readonly kind: PromotionOperationProjection["kind"];
     readonly release: NonNullable<
       PromotionEvidenceRecordProjection["promotion"]["release"]
     >;
-  }): PromotionEffectProjection {
+  }): PromotionOperationProjection {
     const operationId = `${input.attempt.id}:${input.kind}`;
     const existing = database
-      .prepare("SELECT effect_json FROM promotion_effects WHERE operation_id = ?")
-      .get(operationId) as { readonly effect_json: string } | undefined;
+      .prepare("SELECT operation_json FROM promotion_operations WHERE operation_id = ?")
+      .get(operationId) as { readonly operation_json: string } | undefined;
     if (existing !== undefined) {
-      return parseJson<PromotionEffectProjection>(existing.effect_json);
+      return parseStored(
+        existing.operation_json,
+        promotionOperationProjectionSchema,
+      );
     }
-    const effect: PromotionEffectProjection =
+    const operation: PromotionOperationProjection =
       input.kind === "release.build"
         ? {
+            command: input.contract.buildCommand,
             kind: input.kind,
             operationId,
             outcome: "completed",
@@ -755,13 +768,10 @@ export function createPromotionStore(databasePath: string): PromotionStore {
                   ...(findAttempt(input.attempt.id).previous_release_json === null
                     ? {}
                     : {
-                        restoredReleaseId: parseJson<
-                          NonNullable<
-                            PromotionEvidenceRecordProjection["promotion"]["release"]
-                          >
-                        >(
+                        restoredReleaseId: parseStored(
                           findAttempt(input.attempt.id).previous_release_json ??
                             "null",
+                          promotionReleaseProjectionSchema,
                         ).id,
                       }),
                 }
@@ -807,14 +817,14 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       }
       database
         .prepare(`
-          INSERT INTO promotion_effects (
-            operation_id, attempt_id, kind, effect_json
+          INSERT INTO promotion_operations (
+            operation_id, attempt_id, kind, operation_json
           ) VALUES (?, ?, ?, ?)
         `)
-        .run(operationId, input.attempt.id, input.kind, JSON.stringify(effect));
+        .run(operationId, input.attempt.id, input.kind, JSON.stringify(operation));
     });
     persist.immediate();
-    return effect;
+    return operation;
   }
 
   const completeHealthyTransaction = database.transaction(
@@ -896,11 +906,10 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       const restoredRelease =
         attempt.previous_release_json === null
           ? undefined
-          : parseJson<
-              NonNullable<
-                PromotionEvidenceRecordProjection["promotion"]["release"]
-              >
-            >(attempt.previous_release_json);
+          : parseStored(
+              attempt.previous_release_json,
+              promotionReleaseProjectionSchema,
+            );
       const rollback: PromotionEvidenceRecordProjection["promotion"]["rollback"] = {
         attemptedReleaseId: input.release.id,
         performed: true,
@@ -980,9 +989,9 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       .get(fixtureApplicationId) as {
       readonly active_release_json: string | null;
     };
-    const effects = database
-      .prepare("SELECT effect_json FROM promotion_effects ORDER BY rowid")
-      .all() as Array<{ readonly effect_json: string }>;
+    const operations = database
+      .prepare("SELECT operation_json FROM promotion_operations ORDER BY rowid")
+      .all() as Array<{ readonly operation_json: string }>;
     const attempts = database
       .prepare(`
         SELECT id, merge_commit, queue_sequence, status
@@ -999,11 +1008,10 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       ...(environment.active_release_json === null
         ? {}
         : {
-            activeRelease: parseJson<
-              NonNullable<
-                PromotionEvidenceRecordProjection["promotion"]["release"]
-              >
-            >(environment.active_release_json),
+            activeRelease: parseStored(
+              environment.active_release_json,
+              promotionReleaseProjectionSchema,
+            ),
           }),
       attempts: attempts.map((attempt) => ({
         id: attempt.id,
@@ -1011,11 +1019,69 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         queueSequence: attempt.queue_sequence,
         status: attempt.status,
       })),
-      effects: effects.map((effect) =>
-        parseJson<PromotionEffectProjection>(effect.effect_json),
+      operations: operations.map((operation) =>
+        parseStored(operation.operation_json, promotionOperationProjectionSchema),
       ),
     };
   }
+
+  const reorderQueuedAttemptsTransaction = database.transaction(() => {
+    const queued = database
+      .prepare(`
+        SELECT promotion_attempts.id, promotion_attempts.queue_sequence,
+          promotion_records.merge_json
+        FROM promotion_attempts
+        JOIN promotion_records
+          ON promotion_records.id = promotion_attempts.record_id
+        WHERE promotion_attempts.status = 'queued'
+        ORDER BY promotion_attempts.queue_sequence
+      `)
+      .all() as Array<{
+      readonly id: string;
+      readonly merge_json: string;
+      readonly queue_sequence: number;
+    }>;
+    const remaining = queued.map((attempt) => ({
+      ...attempt,
+      merge: parseStored(attempt.merge_json, promotionMergeProjectionSchema),
+    }));
+    const ordered: typeof remaining = [];
+    while (remaining.length > 0) {
+      const remainingCommits = new Set(
+        remaining.map((attempt) => attempt.merge.commit),
+      );
+      const nextIndex = remaining.findIndex(
+        (attempt) => !remainingCommits.has(attempt.merge.beforeCommit),
+      );
+      if (nextIndex === -1) {
+        throw new Error("Queued Promotion Attempts are not an ordered merge chain");
+      }
+      const [next] = remaining.splice(nextIndex, 1);
+      if (next !== undefined) ordered.push(next);
+    }
+    const terminal = database
+      .prepare(`
+        SELECT COALESCE(MAX(queue_sequence), 0) AS queue_sequence
+        FROM promotion_attempts
+        WHERE status != 'queued'
+      `)
+      .get() as { readonly queue_sequence: number };
+    database
+      .prepare(`
+        UPDATE promotion_attempts
+        SET queue_sequence = -queue_sequence
+        WHERE status = 'queued'
+      `)
+      .run();
+    const updateSequence = database.prepare(`
+      UPDATE promotion_attempts
+      SET queue_sequence = ?
+      WHERE id = ? AND status = 'queued'
+    `);
+    ordered.forEach((attempt, index) => {
+      updateSequence.run(terminal.queue_sequence + index + 1, attempt.id);
+    });
+  });
 
   return {
     activateContract(contract) {
@@ -1024,25 +1090,30 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     activateInitialPolicy,
     appendEvidence,
     claimNext,
+    close() {
+      database.close();
+    },
     completeHealthy(input) {
       return completeHealthyTransaction.immediate(input);
     },
     completeUnhealthy(input) {
       return completeUnhealthyTransaction.immediate(input);
     },
-    database,
     findActiveContract,
     findRecord,
     findRegistration,
     hasAttempt,
     hasDelivery,
     inspect,
-    performEffect,
+    performOperation,
     persistAccepted(input) {
       return persistAcceptedTransaction.immediate(input);
     },
     persistDenied(input) {
       return persistDeniedTransaction.immediate(input);
+    },
+    reorderQueuedAttempts() {
+      reorderQueuedAttemptsTransaction.immediate();
     },
   };
 }
@@ -1057,14 +1128,9 @@ function createPromotionSchema(database: Database.Database): void {
     CREATE TABLE IF NOT EXISTS promotion_contracts (
       application_id TEXT NOT NULL,
       revision INTEGER NOT NULL,
-      active INTEGER NOT NULL CHECK (active IN (0, 1)),
       definition_json TEXT NOT NULL,
       PRIMARY KEY (application_id, revision)
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS one_active_promotion_contract
-    ON promotion_contracts(application_id)
-    WHERE active = 1;
 
     CREATE TABLE IF NOT EXISTS promotion_active_contracts (
       application_id TEXT PRIMARY KEY,
@@ -1120,11 +1186,11 @@ function createPromotionSchema(database: Database.Database): void {
       UNIQUE (record_id, sequence)
     );
 
-    CREATE TABLE IF NOT EXISTS promotion_effects (
+    CREATE TABLE IF NOT EXISTS promotion_operations (
       operation_id TEXT PRIMARY KEY,
       attempt_id TEXT NOT NULL REFERENCES promotion_attempts(id),
       kind TEXT NOT NULL,
-      effect_json TEXT NOT NULL
+      operation_json TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS promotion_application_state (
@@ -1168,22 +1234,26 @@ function createPromotionSchema(database: Database.Database): void {
       SELECT RAISE(ABORT, 'Promotion Evidence Events are append-only');
     END;
 
-    CREATE TRIGGER IF NOT EXISTS promotion_effects_no_update
-    BEFORE UPDATE ON promotion_effects
+    CREATE TRIGGER IF NOT EXISTS promotion_operations_no_update
+    BEFORE UPDATE ON promotion_operations
     BEGIN
-      SELECT RAISE(ABORT, 'External Promotion effects are immutable');
+      SELECT RAISE(ABORT, 'Promotion Operations are immutable');
     END;
 
-    CREATE TRIGGER IF NOT EXISTS promotion_effects_no_delete
-    BEFORE DELETE ON promotion_effects
+    CREATE TRIGGER IF NOT EXISTS promotion_operations_no_delete
+    BEFORE DELETE ON promotion_operations
     BEGIN
-      SELECT RAISE(ABORT, 'External Promotion effects are immutable');
+      SELECT RAISE(ABORT, 'Promotion Operations are immutable');
     END;
   `);
 }
 
-function parseJson<T>(value: string): T {
-  return JSON.parse(value) as T;
+interface StoredValueSchema<T> {
+  parse(value: unknown): T;
+}
+
+function parseStored<T>(value: string, schema: StoredValueSchema<T>): T {
+  return schema.parse(JSON.parse(value));
 }
 
 function requireRecord(

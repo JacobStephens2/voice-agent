@@ -19,6 +19,7 @@ import {
   passkeyEnrollmentResultSchema,
   passkeyResponseRequestSchema,
   promotionResumeResponseSchema,
+  promotionEvidenceRecordProjectionSchema,
   recoveryCodesConfirmationRequestSchema,
   recoveryRequestSchema,
   recoverySessionResponseSchema,
@@ -221,7 +222,7 @@ function createApi(options: TaskApiOptions): FastifyInstance {
         return reply.code(404).send({ error: "Task not found" });
       }
       return record.task.kind === "human-merge.promotion"
-        ? record
+        ? promotionEvidenceRecordProjectionSchema.parse(record)
         : evidenceRecordProjectionSchema.parse(record);
     },
   );
