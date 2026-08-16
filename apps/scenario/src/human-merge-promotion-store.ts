@@ -65,6 +65,7 @@ interface EvidenceRow {
 
 interface ApplicationStateRow {
   readonly circuit_opened_accepted_sequence: number | null;
+  readonly circuit_opened_at: string | null;
   readonly circuit_state: "closed" | "half-open" | "open";
   readonly consecutive_failures: number;
 }
@@ -183,7 +184,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
     return database
       .prepare(`
         SELECT consecutive_failures, circuit_state,
-          circuit_opened_accepted_sequence
+          circuit_opened_accepted_sequence, circuit_opened_at
         FROM promotion_application_state
         WHERE application_id = ?
       `)
@@ -201,6 +202,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
       branch: input.event.branch,
       commit: input.event.commit,
       deliveryId: input.deliveryId,
+      mergedAt: input.event.mergedAt,
       repository: input.event.repository,
       source: input.source,
     };
@@ -564,6 +566,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
           beforeCommit: input.event.beforeCommit,
           commit: input.event.commit,
           deliveryId: input.deliveryId,
+          mergedAt: input.event.mergedAt,
         },
       );
       appendEvidence(
@@ -694,6 +697,8 @@ export function createPromotionStore(databasePath: string): PromotionStore {
               attempts,
               mergesByCommit,
               applicationState.circuit_opened_accepted_sequence,
+              applicationState.circuit_opened_at,
+              findRegistration().initialProductionCommit,
             )
           : findNextAncestryReadyAttempt(
               queued,
@@ -888,7 +893,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
           UPDATE promotion_application_state
           SET active_release_json = ?, consecutive_failures = 0,
             circuit_state = 'closed',
-            circuit_opened_accepted_sequence = NULL
+            circuit_opened_accepted_sequence = NULL, circuit_opened_at = NULL
           WHERE application_id = ?
         `)
         .run(JSON.stringify(input.release), fixtureApplicationId);
@@ -971,7 +976,8 @@ export function createPromotionStore(databasePath: string): PromotionStore {
         .prepare(`
           UPDATE promotion_application_state
           SET active_release_json = ?, consecutive_failures = ?,
-            circuit_state = ?, circuit_opened_accepted_sequence = ?
+            circuit_state = ?, circuit_opened_accepted_sequence = ?,
+            circuit_opened_at = ?
           WHERE application_id = ?
         `)
         .run(
@@ -979,6 +985,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
           consecutiveFailures,
           circuitState,
           circuitState === "open" ? latestAcceptedSequence.accepted_sequence : null,
+          circuitState === "open" ? input.now : null,
           fixtureApplicationId,
         );
       const conclusion =
@@ -1009,7 +1016,7 @@ export function createPromotionStore(databasePath: string): PromotionStore {
           applicationState.circuit_state === "half-open"
             ? "The failed half-open attempt reopened the Deployment Circuit Breaker."
             : "Three consecutive failures opened the Deployment Circuit Breaker.",
-          { consecutiveFailures, state: "open" },
+          { consecutiveFailures, openedAt: input.now, state: "open" },
         );
       }
       return requireRecord(findRecord(attempt.record_id));
@@ -1178,15 +1185,10 @@ function findNextAncestryReadyAttempt(
   >,
   initialProductionCommit: string,
 ): AttemptWithMergeRow | undefined {
-  const readyPredecessors = new Set([
+  const readyPredecessors = findTerminalPredecessors(
+    attempts,
     initialProductionCommit,
-    ...attempts
-      .filter(
-        (attempt) =>
-          attempt.status === "rolled-back" || attempt.status === "succeeded",
-      )
-      .map((attempt) => attempt.merge_commit),
-  ]);
+  );
   return [...queued]
     .sort((left, right) => left.queue_sequence - right.queue_sequence)
     .find((attempt) => {
@@ -1203,46 +1205,54 @@ function findHalfOpenCandidate(
     PromotionEvidenceRecordProjection["promotion"]["merge"]
   >,
   circuitOpenedAcceptedSequence: number | null,
+  circuitOpenedAt: string | null,
+  initialProductionCommit: string,
 ): AttemptWithMergeRow | undefined {
-  if (circuitOpenedAcceptedSequence === null) return undefined;
-  const commitsAcceptedBeforeCircuitOpened = attempts
-    .filter(
-      (attempt) => attempt.accepted_sequence <= circuitOpenedAcceptedSequence,
-    )
-    .map((attempt) => attempt.merge_commit);
-  return [...queued]
-    .filter(
-      (attempt) =>
-        attempt.accepted_sequence > circuitOpenedAcceptedSequence &&
-        !isAncestorOfAny(
-          attempt.merge_commit,
-          commitsAcceptedBeforeCircuitOpened,
-          mergesByCommit,
-        ),
-    )
-    .sort((left, right) => left.accepted_sequence - right.accepted_sequence)[0];
-}
-
-function isAncestorOfAny(
-  possibleAncestor: string,
-  descendants: readonly string[],
-  mergesByCommit: ReadonlyMap<
-    string,
-    PromotionEvidenceRecordProjection["promotion"]["merge"]
-  >,
-): boolean {
-  for (const descendant of descendants) {
-    const visited = new Set<string>();
-    let commit: string | undefined = descendant;
-    while (commit !== undefined && !visited.has(commit)) {
-      visited.add(commit);
-      const beforeCommit: string | undefined =
-        mergesByCommit.get(commit)?.beforeCommit;
-      if (beforeCommit === possibleAncestor) return true;
-      commit = beforeCommit;
+  if (circuitOpenedAcceptedSequence === null || circuitOpenedAt === null) {
+    return undefined;
+  }
+  const circuitOpenedTime = Date.parse(circuitOpenedAt);
+  const readyPredecessors = findTerminalPredecessors(
+    attempts,
+    initialProductionCommit,
+  );
+  for (const attempt of attempts) {
+    const merge = mergesByCommit.get(attempt.merge_commit);
+    if (
+      merge !== undefined &&
+      Date.parse(merge.mergedAt) <= circuitOpenedTime
+    ) {
+      readyPredecessors.add(attempt.merge_commit);
     }
   }
-  return false;
+  return [...queued]
+    .filter(
+      (attempt) => {
+        const merge = mergesByCommit.get(attempt.merge_commit);
+        return (
+          merge !== undefined &&
+          attempt.accepted_sequence > circuitOpenedAcceptedSequence &&
+          Date.parse(merge.mergedAt) > circuitOpenedTime &&
+          readyPredecessors.has(merge.beforeCommit)
+        );
+      },
+    )
+    .sort((left, right) => left.queue_sequence - right.queue_sequence)[0];
+}
+
+function findTerminalPredecessors(
+  attempts: readonly AttemptWithMergeRow[],
+  initialProductionCommit: string,
+): Set<string> {
+  return new Set([
+    initialProductionCommit,
+    ...attempts
+      .filter(
+        (attempt) =>
+          attempt.status === "rolled-back" || attempt.status === "succeeded",
+      )
+      .map((attempt) => attempt.merge_commit),
+  ]);
 }
 
 function createPromotionSchema(database: Database.Database): void {
@@ -1326,7 +1336,8 @@ function createPromotionSchema(database: Database.Database): void {
       active_release_json TEXT,
       consecutive_failures INTEGER NOT NULL,
       circuit_state TEXT NOT NULL,
-      circuit_opened_accepted_sequence INTEGER
+      circuit_opened_accepted_sequence INTEGER,
+      circuit_opened_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS promotion_environment (

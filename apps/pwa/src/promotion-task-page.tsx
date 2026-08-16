@@ -47,7 +47,7 @@ export function PromotionTaskPage({
               ? `Webhook delivery ${record.promotion.merge.deliveryId}`
               : `Reconciliation ${record.promotion.merge.deliveryId}`} by{" "}
             {record.promotion.merge.actor} into {record.promotion.merge.branch} of{" "}
-            {record.promotion.merge.repository}
+            {record.promotion.merge.repository} at {record.promotion.merge.mergedAt}
           </dd>
           <dt>Merge commit</dt>
           <dd>{record.promotion.merge.commit}</dd>

@@ -23,6 +23,8 @@ const recoveryCommit = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const missedCommit = "ffffffffffffffffffffffffffffffffffffffff";
 const preOpenCommit = "1414141414141414141414141414141414141414";
 const missedDescendantCommit = "1515151515151515151515151515151515151515";
+const postOpenParentCommit = "1616161616161616161616161616161616161616";
+const postOpenDescendantCommit = "1717171717171717171717171717171717171717";
 
 afterEach(async () => {
   await Promise.all(
@@ -431,7 +433,11 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
   const recovery = await deliverSigned(
     scenario,
     "delivery-recovery",
-    humanMerge(recoveryCommit, preOpenCommit),
+    humanMerge(
+      recoveryCommit,
+      preOpenCommit,
+      "2026-08-15T12:01:00.000Z",
+    ),
   );
   expect(recovery.record.promotion.circuit.state).toBe("open");
   const recovered = await scenario.processNext();
@@ -454,6 +460,97 @@ test("three failed Promotions open the circuit and the next Human Merge is half-
   expect(resumedPreOpen?.promotion.attempt).toMatchObject({
     id: "attempt-pre-open",
     mergeCommit: preOpenCommit,
+    status: "succeeded",
+  });
+
+  await scenario.close();
+});
+
+test("half-open waits for a missing post-breaker merge ancestor", async () => {
+  const scenario = await createScenario({
+    healthStatusByCommit: {
+      [failureOneCommit]: 503,
+      [failureThreeCommit]: 503,
+      [failureTwoCommit]: 503,
+      [missedCommit]: 204,
+      [postOpenDescendantCommit]: 204,
+      [postOpenParentCommit]: 204,
+    },
+    ids: [
+      "task-post-order-failure-1",
+      "attempt-post-order-failure-1",
+      "task-post-order-failure-2",
+      "attempt-post-order-failure-2",
+      "task-post-order-failure-3",
+      "attempt-post-order-failure-3",
+      "task-post-order-missed-tip",
+      "attempt-post-order-missed-tip",
+      "task-post-order-descendant",
+      "attempt-post-order-descendant",
+      "task-post-order-parent",
+      "attempt-post-order-parent",
+    ],
+  });
+  await deliverSigned(
+    scenario,
+    "delivery-post-order-failure-1",
+    humanMerge(failureOneCommit, previousCommit),
+  );
+  await deliverSigned(
+    scenario,
+    "delivery-post-order-failure-2",
+    humanMerge(failureTwoCommit, failureOneCommit),
+  );
+  await deliverSigned(
+    scenario,
+    "delivery-post-order-failure-3",
+    humanMerge(failureThreeCommit, failureTwoCommit),
+  );
+  await scenario.processNext();
+  await scenario.processNext();
+  await scenario.processNext();
+
+  expect(
+    await scenario.reconcile([
+      humanMerge(
+        missedCommit,
+        failureThreeCommit,
+        "2026-08-15T11:59:00.000Z",
+      ),
+    ]),
+  ).toHaveLength(1);
+  expect(await scenario.processNext()).toBeUndefined();
+
+  const descendant = humanMerge(
+    postOpenDescendantCommit,
+    postOpenParentCommit,
+    "2026-08-15T12:02:00.000Z",
+  );
+  await deliverSigned(
+    scenario,
+    "delivery-post-order-descendant",
+    descendant,
+  );
+  const discovered = await scenario.reconcile([
+    descendant,
+    humanMerge(
+      postOpenParentCommit,
+      missedCommit,
+      "2026-08-15T12:01:00.000Z",
+    ),
+  ]);
+  expect(discovered).toHaveLength(1);
+
+  expect((await scenario.processNext())?.promotion.attempt).toMatchObject({
+    mergeCommit: postOpenParentCommit,
+    status: "succeeded",
+  });
+  expect((await scenario.processNext())?.promotion.attempt).toMatchObject({
+    mergeCommit: missedCommit,
+    status: "succeeded",
+  });
+  expect((await scenario.processNext())?.promotion.attempt).toMatchObject({
+    mergeCommit: postOpenDescendantCommit,
     status: "succeeded",
   });
 
@@ -826,7 +923,11 @@ async function createScenario(input: {
   });
 }
 
-function humanMerge(commit: string, beforeCommit: string): FixtureGitHubEvent {
+function humanMerge(
+  commit: string,
+  beforeCommit: string,
+  mergedAt = "2026-08-15T11:00:00.000Z",
+): FixtureGitHubEvent {
   return {
     action: "closed",
     beforeCommit,
@@ -834,6 +935,7 @@ function humanMerge(commit: string, beforeCommit: string): FixtureGitHubEvent {
     commit,
     event: "pull_request",
     merged: true,
+    mergedAt,
     mergedBy: { login: "fixture-owner", type: "User" },
     repository: "JacobStephens2/fixture-application",
   };

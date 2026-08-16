@@ -14,6 +14,7 @@ export const fixtureGitHubEventSchema = z
     commit: promotionCommitSchema,
     event: z.enum(["pull_request", "push"]),
     merged: z.boolean(),
+    mergedAt: promotionTimestampSchema,
     mergedBy: z
       .object({
         login: z.string().min(1).max(120),
@@ -108,6 +109,7 @@ export const promotionMergeProjectionSchema = z
     branch: z.string().min(1).max(120),
     commit: promotionCommitSchema,
     deliveryId: promotionIdentifierSchema,
+    mergedAt: promotionTimestampSchema,
     repository: z.string().min(1).max(200),
     source: z.enum(["reconciliation", "webhook"]),
   })
