@@ -1,0 +1,45 @@
+[Unit]
+Description=Voice Agent authenticated web API
+After=network.target
+
+[Service]
+Type=simple
+User=voice-agent
+Group=voice-agent
+WorkingDirectory=/opt/voice-agent/current
+Environment=NODE_ENV=production
+Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
+Environment=VOICE_AGENT_PROMOTION_METRICS_PATH=/var/lib/voice-agent-promotions/promotions.prom
+Environment=VOICE_AGENT_PROMOTION_RESUME_PATH=/var/lib/voice-agent-promotion-resume/resume.request
+Environment=VOICE_AGENT_PROMOTION_STATE_PATH=/var/lib/voice-agent-promotions/state.tsv
+Environment=VOICE_AGENT_PORT=3472
+ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/api/src/server.ts
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+UMask=0027
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ReadWritePaths=/var/lib/voice-agent /var/lib/voice-agent-promotion-resume
+RestrictAddressFamilies=AF_UNIX AF_INET
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

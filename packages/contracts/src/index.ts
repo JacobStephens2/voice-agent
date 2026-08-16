@@ -11,9 +11,62 @@ export const originSecurityHeaders = {
 const identifierSchema = z.string().min(1).max(120);
 const timestampSchema = z.iso.datetime();
 
+export const bountywellReadCapabilitiesSchema = z.tuple([
+  z.literal("bountywell.public-health.read"),
+  z.literal("bountywell.authentication-boundary.read"),
+  z.literal("bountywell.local-health.read"),
+  z.literal("bountywell.service-metadata.read"),
+  z.literal("bountywell.resource-evidence.read"),
+]);
+
+export const bountywellRegistrationSchema = z.object({
+  applicationId: z.literal("bountywell-production"),
+  capabilities: bountywellReadCapabilitiesSchema,
+  healthSemantics: z.object({
+    authenticationBoundary: z.object({
+      expectedStatus: z.literal(401),
+      path: z.literal("/api/data"),
+    }),
+    primary: z.object({
+      expectedStatus: z.literal(200),
+      path: z.literal("/api/health"),
+    }),
+    registeredLocal: z.object({
+      expectedStatus: z.literal(200),
+      path: z.literal("/api/health"),
+      port: z.literal(3000),
+    }),
+  }),
+  publicOrigin: z.literal("https://bountywell.com"),
+  registeredAt: timestampSchema,
+  revision: z.number().int().positive(),
+  serviceUnit: z.literal("bountywell-api.service"),
+});
+
+export type BountywellRegistration = z.infer<
+  typeof bountywellRegistrationSchema
+>;
+
 export const bountywellHealthInquiryRequestSchema = z.object({
   question: z.string().min(1).max(240),
   requestId: identifierSchema,
+});
+
+export const registerBountywellRequestSchema = z
+  .object({
+    csrfToken: z.string().min(16).max(200),
+  })
+  .strict();
+
+export const submitBountywellHealthRequestSchema = z
+  .object({
+    csrfToken: z.string().min(16).max(200),
+    requestId: identifierSchema,
+  })
+  .strict();
+
+export const bountywellRegistrationStatusSchema = z.object({
+  registration: bountywellRegistrationSchema.nullable(),
 });
 
 export const bountywellHealthInquirySchema =
@@ -30,6 +83,7 @@ export type BountywellHealthInquiry = z.infer<
 
 const checkFields = {
   outcome: z.enum(["pass", "fail"]),
+  provenance: z.string().min(1).max(120).optional(),
   summary: z.string().max(240),
 };
 
@@ -46,12 +100,28 @@ export const bountywellHealthCheckSchema = z.discriminatedUnion("source", [
   }),
   z.object({
     ...checkFields,
-    facts: z.object({ active: z.boolean() }),
+    facts: z.object({ statusCode: z.number().int().min(100).max(599) }),
+    source: z.literal("local-health"),
+  }),
+  z.object({
+    ...checkFields,
+    facts: z.object({
+      active: z.boolean(),
+      subState: z.enum(["running", "not-running", "unavailable"]).optional(),
+    }),
     source: z.literal("service-state"),
   }),
   z.object({
     ...checkFields,
-    facts: z.object({ diskPressure: z.boolean() }),
+    facts: z.discriminatedUnion("availability", [
+      z.object({
+        availability: z.literal("available"),
+        diskPressure: z.boolean().optional(),
+        memoryPressure: z.boolean().optional(),
+        taskPressure: z.boolean().optional(),
+      }),
+      z.object({ availability: z.literal("unavailable") }),
+    ]),
     source: z.literal("resource-health"),
   }),
 ]);
@@ -60,6 +130,7 @@ export const bountywellHealthObservationSchema = z.object({
   checks: z.array(bountywellHealthCheckSchema).min(1).max(8),
   observedAt: timestampSchema,
   rejectedEvidenceCount: z.number().int().nonnegative(),
+  uncertainty: z.string().min(1).max(300).optional(),
 });
 
 export type BountywellHealthObservation = z.infer<
@@ -69,7 +140,7 @@ export type BountywellHealthObservation = z.infer<
 export const bountywellHealthObservationRequestSchema = z.object({
   operationId: identifierSchema,
   taskId: identifierSchema,
-});
+}).strict();
 
 export type BountywellHealthObservationRequest = z.infer<
   typeof bountywellHealthObservationRequestSchema
@@ -104,6 +175,7 @@ export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
     details: z.object({
       checks: z.array(bountywellHealthCheckSchema).min(1).max(8),
       rejectedEvidenceCount: z.number().int().nonnegative(),
+      uncertainty: z.string().min(1).max(300).optional(),
     }),
     kind: z.literal("evidence.observed"),
   }),
@@ -127,6 +199,7 @@ export const evidenceRecordProjectionSchema = z.object({
   evidence: z.array(evidenceEventProjectionSchema).max(100),
   task: z.object({
     conclusion: z.enum([
+      "Bountywell inquiry is pending.",
       "Bountywell API is healthy.",
       "Bountywell API health could not be confirmed.",
     ]),
@@ -134,7 +207,7 @@ export const evidenceRecordProjectionSchema = z.object({
     id: identifierSchema,
     kind: z.literal("bountywell.health.inquiry"),
     question: z.literal("Is Bountywell healthy?"),
-    status: z.literal("completed"),
+    status: z.enum(["pending", "completed"]),
     updatedAt: timestampSchema,
   }),
 });
@@ -214,6 +287,10 @@ export type RecoverySessionResponse = z.infer<
 >;
 export const freshPasskeyActionResponseSchema = z.object({
   freshUntil: timestampSchema,
+});
+export const promotionResumeResponseSchema = z.object({
+  commit: z.string().regex(/^[0-9a-f]{40}$/u),
+  status: z.literal("queued"),
 });
 export const webAuthnOptionsSchema = z.looseObject({
   challenge: z.string().min(1),

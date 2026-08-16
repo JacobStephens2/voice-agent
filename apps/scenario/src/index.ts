@@ -22,6 +22,8 @@ import {
 
 export interface BountywellHealthScenario {
   readonly brokerRequests: readonly BountywellHealthObservationRequest[];
+  accept(request: BountywellHealthInquiryRequest): Promise<EvidenceRecordProjection>;
+  processNext(): Promise<EvidenceRecordProjection | undefined>;
   submit(request: BountywellHealthInquiryRequest): Promise<EvidenceRecordProjection>;
   readTaskPage(taskId: string, sessionToken?: string): Promise<{
     readonly statusCode: number;
@@ -34,6 +36,9 @@ export interface BountywellHealthScenario {
   replayOperation(
     operationId: string,
   ): Promise<EvidenceRecordProjection | undefined>;
+  registerBountywell(): ReturnType<
+    ReturnType<typeof createDurableTaskRuntime>["registerBountywell"]
+  >;
   close(): Promise<void>;
 }
 
@@ -43,6 +48,7 @@ export interface BountywellHealthScenarioOptions {
   readonly ids: readonly string[];
   readonly observation: BountywellHealthObservation;
   readonly rejectedBrokerMaterial?: readonly string[];
+  readonly registered?: boolean;
 }
 
 export async function createBountywellHealthScenario(
@@ -53,7 +59,12 @@ export async function createBountywellHealthScenario(
     options.observation,
     options.rejectedBrokerMaterial,
   );
+  const store = createSqliteDurableTaskStore(options.databasePath);
+  if (options.registered !== false) {
+    await store.registerBountywell(options.now);
+  }
   const runtime = createDurableTaskRuntime({
+    applicationRegistry: store,
     healthObserver: broker,
     nextId() {
       const id = ids.shift();
@@ -63,7 +74,7 @@ export async function createBountywellHealthScenario(
       return id;
     },
     now: () => options.now,
-    store: createSqliteDurableTaskStore(options.databasePath),
+    store,
   });
   const api = createTaskApi({
     authentication: {
@@ -75,6 +86,7 @@ export async function createBountywellHealthScenario(
   });
 
   return {
+    accept: (request) => runtime.acceptBountywellHealthInquiry(request),
     brokerRequests: broker.requests,
     async close() {
       await api.close();
@@ -108,6 +120,8 @@ export async function createBountywellHealthScenario(
     },
     replayOperation: (operationId) =>
       runtime.replayBountywellHealthOperation(operationId),
+    processNext: () => runtime.processNextBountywellHealthInquiry(),
+    registerBountywell: () => runtime.registerBountywell(),
     submit: (request) => runtime.submitBountywellHealthInquiry(request),
   };
 }

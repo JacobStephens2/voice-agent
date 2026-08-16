@@ -1,6 +1,9 @@
 import { useState, type ReactNode } from "react";
 
-import type { EvidenceRecordSummary } from "@voice-agent/contracts";
+import type {
+  BountywellRegistration,
+  EvidenceRecordSummary,
+} from "@voice-agent/contracts";
 
 export function Shell({
   children,
@@ -169,10 +172,14 @@ export function RecoveryCodesView(props: {
 }
 
 export function TaskList(props: {
+  bountywellRegistration?: BountywellRegistration | undefined;
   tasks: readonly EvidenceRecordSummary[];
   message?: string | undefined;
   busy: boolean;
   onFresh(): Promise<void>;
+  onResumePromotions(): Promise<void>;
+  onRegisterBountywell(): Promise<void>;
+  onRunBountywell(): Promise<void>;
 }) {
   return (
     <main className="task-page">
@@ -181,6 +188,38 @@ export function TaskList(props: {
       {props.message === undefined ? null : (
         <p className="notice" role="status">{props.message}</p>
       )}
+      <section className="bountywell-control" aria-labelledby="bountywell-heading">
+        <p className="eyebrow">Registered application</p>
+        <h2 id="bountywell-heading">Bountywell production</h2>
+        {props.bountywellRegistration === undefined ? (
+          <>
+            <p>
+              Register the fixed public, local, systemd, and bounded resource
+              reads after a Fresh Passkey Action.
+            </p>
+            <button
+              disabled={props.busy}
+              onClick={() => void props.onRegisterBountywell()}
+            >
+              Register Bountywell read-only access
+            </button>
+          </>
+        ) : (
+          <>
+            <p>
+              <strong>{props.bountywellRegistration.serviceUnit}</strong> is
+              registered with five read-only capabilities. No restart or
+              service-control authority is present.
+            </p>
+            <button
+              disabled={props.busy}
+              onClick={() => void props.onRunBountywell()}
+            >
+              Run Bountywell health inquiry
+            </button>
+          </>
+        )}
+      </section>
       <ul className="task-list">
         {props.tasks.length === 0 ? (
           <li>No Evidence Records yet.</li>
@@ -196,7 +235,11 @@ export function TaskList(props: {
           ))
         )}
       </ul>
-      <ActionFooter busy={props.busy} onFresh={props.onFresh} />
+      <ActionFooter
+        busy={props.busy}
+        onFresh={props.onFresh}
+        onResumePromotions={props.onResumePromotions}
+      />
     </main>
   );
 }
@@ -204,9 +247,11 @@ export function TaskList(props: {
 export function ActionFooter({
   busy,
   onFresh,
+  onResumePromotions,
 }: {
   busy: boolean;
   onFresh(): Promise<void>;
+  onResumePromotions(): Promise<void>;
 }) {
   return (
     <footer className="action-footer">
@@ -216,6 +261,13 @@ export function ActionFooter({
         onClick={() => void onFresh()}
       >
         Perform Fresh Passkey Action
+      </button>
+      <button
+        className="quiet"
+        disabled={busy}
+        onClick={() => void onResumePromotions()}
+      >
+        Resume Promotion queue after review
       </button>
     </footer>
   );

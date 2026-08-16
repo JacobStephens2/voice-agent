@@ -13,6 +13,7 @@
     "@voice-agent/auth": "workspace:*",
     "@voice-agent/contracts": "workspace:*",
     "@voice-agent/durable-store": "workspace:*",
+    "@voice-agent/policy": "workspace:*",
     "better-sqlite3": "13.0.3"
   },
   "devDependencies": {

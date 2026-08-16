@@ -8,6 +8,8 @@ import Fastify, {
 import type { AuthenticationLifecycle } from "@voice-agent/auth";
 import {
   authenticationStatusSchema,
+  bountywellRegistrationSchema,
+  bountywellRegistrationStatusSchema,
   csrfRequestSchema,
   evidenceRecordProjectionSchema,
   evidenceRecordSummaryListSchema,
@@ -16,11 +18,15 @@ import {
   passkeyAuthenticationResponseRequestSchema,
   passkeyEnrollmentResultSchema,
   passkeyResponseRequestSchema,
+  promotionResumeResponseSchema,
   recoveryCodesConfirmationRequestSchema,
   recoveryRequestSchema,
   recoverySessionResponseSchema,
+  registerBountywellRequestSchema,
   registrationOptionsRequestSchema,
+  submitBountywellHealthRequestSchema,
   trustedBrowserSessionResponseSchema,
+  type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
 } from "@voice-agent/contracts";
@@ -28,20 +34,68 @@ import {
 export interface EvidenceRecordReader {
   getEvidenceRecord(taskId: string): Promise<EvidenceRecordProjection | undefined>;
   listEvidenceRecords?(): Promise<readonly EvidenceRecordSummary[]>;
+  readOperationalMetrics?(): Promise<{
+    readonly bountywellChecks: readonly {
+      readonly outcome: "fail" | "pass";
+      readonly source:
+        | "authentication-boundary"
+        | "local-health"
+        | "public-health"
+        | "resource-health"
+        | "service-state";
+    }[];
+    readonly operations: {
+      readonly accepted: number;
+      readonly completed: number;
+      readonly running: number;
+    };
+    readonly policyDenials: number;
+    readonly storage: {
+      readonly databaseBytes: number;
+      readonly filesystemAvailableBytes: number;
+    };
+    readonly tasks: { readonly completed: number; readonly pending: number };
+  }>;
+  recordPolicyDenial?(): Promise<void>;
 }
 
 export interface EvidenceRecordAuthentication {
+  canChangeState?(input: {
+    readonly csrfToken: string;
+    readonly sessionToken: string;
+  }): Promise<boolean>;
   canViewEvidence(sessionToken: string): Promise<boolean>;
+  hasFreshPasskeyAction?(sessionToken: string): Promise<boolean>;
+}
+
+export interface BountywellTaskControls {
+  acceptBountywellHealthInquiry(input: {
+    readonly question: "Is Bountywell healthy?";
+    readonly requestId: string;
+  }): Promise<EvidenceRecordProjection>;
+  getBountywellRegistration(): Promise<BountywellRegistration | undefined>;
+  registerBountywell(): Promise<BountywellRegistration>;
 }
 
 export interface TaskApiOptions {
+  readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: EvidenceRecordAuthentication;
+  readonly controls?: BountywellTaskControls;
+  readonly origin?: string;
+  readonly promotionControl?: {
+    requestResume(): Promise<string>;
+  } | undefined;
   readonly records: EvidenceRecordReader;
 }
 
 export interface VoiceApiOptions {
+  readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: AuthenticationLifecycle;
+  readonly controls?: BountywellTaskControls;
   readonly origin: string;
+  readonly promotionControl?: {
+    requestResume(): Promise<string>;
+  } | undefined;
   readonly records: EvidenceRecordReader;
 }
 
@@ -124,6 +178,21 @@ function createApi(options: TaskApiOptions): FastifyInstance {
     return reply.code(500).send({ error: "Request failed" });
   });
 
+  api.get("/healthz", async () => ({ status: "ok" }));
+  api.get("/metrics", async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    reply.type("text/plain; version=0.0.4; charset=utf-8");
+    const applicationMetrics =
+      options.records.readOperationalMetrics === undefined
+        ? emptyOperationalMetrics()
+        : await options.records.readOperationalMetrics();
+    const additionalMetrics =
+      options.additionalMetrics === undefined
+        ? ""
+        : await options.additionalMetrics();
+    return renderOperationalMetrics(applicationMetrics, additionalMetrics);
+  });
+
   api.get("/api/tasks", async (request, reply) => {
     if (!(await authorizeEvidence(request, options.authentication))) {
       return reply.code(401).send({ error: "Authentication required" });
@@ -151,7 +220,148 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       return evidenceRecordProjectionSchema.parse(record);
     },
   );
+  if (options.controls !== undefined && options.origin !== undefined) {
+    registerBountywellControlRoutes(api, {
+      authentication: options.authentication,
+      controls: options.controls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
+  if (options.promotionControl !== undefined && options.origin !== undefined) {
+    registerPromotionControlRoute(api, {
+      authentication: options.authentication,
+      origin: options.origin,
+      promotionControl: options.promotionControl,
+      records: options.records,
+    });
+  }
   return api;
+}
+
+function registerPromotionControlRoute(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly origin: string;
+    readonly promotionControl: NonNullable<TaskApiOptions["promotionControl"]>;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.post("/api/operations/promotions/resume", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = csrfRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    if (
+      options.authentication.hasFreshPasskeyAction === undefined ||
+      !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+    ) {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: "Fresh Passkey Action required" });
+    }
+    try {
+      const commit = await options.promotionControl.requestResume();
+      return reply.code(202).send(
+        promotionResumeResponseSchema.parse({ commit, status: "queued" }),
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "No open Deployment Circuit Breaker"
+      ) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+}
+
+function registerBountywellControlRoutes(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: BountywellTaskControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.get("/api/applications/bountywell", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const registration = await options.controls.getBountywellRegistration();
+    return bountywellRegistrationStatusSchema.parse({
+      registration: registration ?? null,
+    });
+  });
+
+  api.post(
+    "/api/applications/bountywell/registration",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = registerBountywellRequestSchema.parse(request.body);
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      if (
+        options.authentication.hasFreshPasskeyAction === undefined ||
+        !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+      ) {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(403).send({ error: "Fresh Passkey Action required" });
+      }
+      return bountywellRegistrationSchema.parse(
+        await options.controls.registerBountywell(),
+      );
+    },
+  );
+
+  api.post("/api/tasks/bountywell-health", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = submitBountywellHealthRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    try {
+      const record = await options.controls.acceptBountywellHealthInquiry({
+        question: "Is Bountywell healthy?",
+        requestId: body.requestId,
+      });
+      return reply.code(202).send(evidenceRecordProjectionSchema.parse(record));
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === "Bountywell is not registered"
+      ) {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(409).send({ error: "Bountywell is not registered" });
+      }
+      if (
+        error instanceof Error &&
+        error.message === "Evidence Record retention expired"
+      ) {
+        return reply.code(410).send({ error: "Evidence Record expired" });
+      }
+      throw error;
+    }
+  });
 }
 
 function registerAuthenticationRoutes(
@@ -301,6 +511,80 @@ async function authorizeEvidence(
     sessionToken !== undefined &&
     (await authentication.canViewEvidence(sessionToken))
   );
+}
+
+async function authorizeStateChange(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  authentication: EvidenceRecordAuthentication,
+  csrfToken: string,
+  records: EvidenceRecordReader,
+): Promise<string | undefined> {
+  const sessionToken = request.cookies[trustedSessionCookieName];
+  if (sessionToken === undefined) {
+    await records.recordPolicyDenial?.();
+    void reply.code(401).send({ error: "Authentication required" });
+    return undefined;
+  }
+  if (
+    authentication.canChangeState === undefined ||
+    !(await authentication.canChangeState({ csrfToken, sessionToken }))
+  ) {
+    await records.recordPolicyDenial?.();
+    void reply.code(403).send({ error: "CSRF validation failed" });
+    return undefined;
+  }
+  return sessionToken;
+}
+
+function emptyOperationalMetrics(): Awaited<
+  ReturnType<NonNullable<EvidenceRecordReader["readOperationalMetrics"]>>
+> {
+  return {
+    bountywellChecks: [],
+    operations: { accepted: 0, completed: 0, running: 0 },
+    policyDenials: 0,
+    storage: { databaseBytes: 0, filesystemAvailableBytes: 0 },
+    tasks: { completed: 0, pending: 0 },
+  };
+}
+
+function renderOperationalMetrics(
+  metrics: Awaited<
+    ReturnType<NonNullable<EvidenceRecordReader["readOperationalMetrics"]>>
+  >,
+  additionalMetrics: string,
+): string {
+  const lines = [
+    "# HELP voice_agent_durable_tasks Current Durable Tasks by status.",
+    "# TYPE voice_agent_durable_tasks gauge",
+    `voice_agent_durable_tasks{status="pending"} ${metrics.tasks.pending}`,
+    `voice_agent_durable_tasks{status="completed"} ${metrics.tasks.completed}`,
+    "# HELP voice_agent_operations Current Operations by status.",
+    "# TYPE voice_agent_operations gauge",
+    `voice_agent_operations{status="accepted"} ${metrics.operations.accepted}`,
+    `voice_agent_operations{status="running"} ${metrics.operations.running}`,
+    `voice_agent_operations{status="completed"} ${metrics.operations.completed}`,
+    "# HELP voice_agent_policy_denials_total State-changing requests denied by policy.",
+    "# TYPE voice_agent_policy_denials_total counter",
+    `voice_agent_policy_denials_total ${metrics.policyDenials}`,
+    "# HELP voice_agent_sqlite_database_bytes Bytes used by the SQLite database and WAL files.",
+    "# TYPE voice_agent_sqlite_database_bytes gauge",
+    `voice_agent_sqlite_database_bytes ${metrics.storage.databaseBytes}`,
+    "# HELP voice_agent_sqlite_filesystem_available_bytes Bytes available on the SQLite filesystem.",
+    "# TYPE voice_agent_sqlite_filesystem_available_bytes gauge",
+    `voice_agent_sqlite_filesystem_available_bytes ${metrics.storage.filesystemAvailableBytes}`,
+    "# HELP voice_agent_bountywell_check_pass Whether the latest bounded check passed.",
+    "# TYPE voice_agent_bountywell_check_pass gauge",
+    ...metrics.bountywellChecks.map(
+      (check) =>
+        `voice_agent_bountywell_check_pass{source="${check.source}"} ${check.outcome === "pass" ? 1 : 0}`,
+    ),
+  ];
+  if (additionalMetrics.trim().length > 0) {
+    lines.push(additionalMetrics.trim());
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 function requireOrigin(

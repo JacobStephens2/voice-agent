@@ -2,7 +2,7 @@
 
 A personal, voice-first assistant for discussing codebases, operating Linux services, and delegating deeper work to coding agents while away from a keyboard.
 
-> **Status:** Architecture and product design are complete. The simulated Durable Task and passkey-protected PWA slices are implemented; telephone and production-service integration remain future slices.
+> **Status:** The passkey-protected PWA, durable Bountywell inquiry, read-only Operations Broker, and hardened Agent Host release path are implemented. Telephone integration remains a future slice.
 
 The intended experience begins with a telephone call. The Voice Agent calls back to authenticate the session, carries on a natural conversation, performs narrowly authorized operations, and delegates substantial code investigation or changes to restricted Subagents such as Codex or Claude Code. A PWA provides passkey-protected controls and a visual Evidence Record for every Durable Task.
 
@@ -87,3 +87,24 @@ VOICE_AGENT_DATABASE_PATH=/path/to/voice-agent.sqlite pnpm auth:bootstrap
 The command writes only the code to standard output. It never places the code in repository files or passes it as a shell argument. A new code is required for each of the first two independently enrolled passkeys; bootstrap closes permanently only after the one-time Recovery Codes have been displayed and their receipt confirmed.
 
 The PWA lives in `apps/pwa`; the API, authentication lifecycle, scenario harness, contracts, and durable runtime are isolated workspace modules under `apps/` and `packages/`.
+
+## Agent Host release
+
+After the first Human Merge, run the repeatable setup wizard from a clean
+checkout on `stephens.page`:
+
+```bash
+./ops/setup-agent-host.sh
+```
+
+The wizard installs an immutable release, separate hardened API, worker, and
+broker services, the narrow Apache vhost, passkey bootstrap, fixed Bountywell
+registration, a private Prometheus scrape on the verified-free localhost port
+3472, the ordered Human Merge Promotion trigger, and the bounded production
+smoke. Later pushes to `main` enqueue every verified Human Merge on the Agent
+Host; the host serializes and attempts them in GitHub order. The wizard installs
+a repository-scoped, read-only GitHub App PEM from a local file into a distinct
+root-only source; it never accepts the key contents through a prompt or command
+argument. Other provider credentials remain future setup slices. See
+[`docs/operations/agent-host-release.md`](docs/operations/agent-host-release.md)
+for the service boundary, health checks, and automatic/manual rollback path.

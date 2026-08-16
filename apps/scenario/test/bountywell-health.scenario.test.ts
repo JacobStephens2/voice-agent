@@ -16,6 +16,77 @@ afterEach(async () => {
 });
 
 describe("Bountywell health inquiry scenario", () => {
+  test("the fixed read-only Bountywell registration gates inquiry acceptance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-registration-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createBountywellHealthScenario({
+      databasePath: join(directory, "tasks.sqlite"),
+      ids: [
+        "registration-001",
+        "task-registration",
+        "operation-registration",
+        "event-registration-1",
+        "event-registration-2",
+        "event-registration-3",
+        "event-registration-4",
+        "event-registration-5",
+      ],
+      now: "2026-08-15T13:00:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { statusCode: 200 },
+            outcome: "pass",
+            source: "public-health",
+            summary: "The public health endpoint responded successfully.",
+          },
+        ],
+        observedAt: "2026-08-15T13:00:01.000Z",
+        rejectedEvidenceCount: 0,
+      },
+      registered: false,
+    });
+
+    try {
+      await expect(
+        scenario.submit({
+          question: "Is Bountywell healthy?",
+          requestId: "request-registration",
+        }),
+      ).rejects.toThrow("Bountywell is not registered");
+
+      const registration = await scenario.registerBountywell();
+      expect(registration).toMatchObject({
+        applicationId: "bountywell-production",
+        capabilities: [
+          "bountywell.public-health.read",
+          "bountywell.authentication-boundary.read",
+          "bountywell.local-health.read",
+          "bountywell.service-metadata.read",
+          "bountywell.resource-evidence.read",
+        ],
+        healthSemantics: {
+          authenticationBoundary: { expectedStatus: 401, path: "/api/data" },
+          primary: { expectedStatus: 200, path: "/api/health" },
+          registeredLocal: {
+            expectedStatus: 200,
+            path: "/api/health",
+            port: 3000,
+          },
+        },
+        serviceUnit: "bountywell-api.service",
+      });
+
+      const record = await scenario.submit({
+        question: "Is Bountywell healthy?",
+        requestId: "request-registration",
+      });
+      expect(record.task.status).toBe("completed");
+    } finally {
+      await scenario.close();
+    }
+  });
+
   test("a healthy inquiry produces a supported Evidence Record", async () => {
     const directory = await mkdtemp(join(tmpdir(), "voice-agent-scenario-"));
     temporaryDirectories.push(directory);
@@ -53,7 +124,7 @@ describe("Bountywell health inquiry scenario", () => {
             summary: "The registered API service is active.",
           },
           {
-            facts: { diskPressure: false },
+            facts: { availability: "available", diskPressure: false },
             outcome: "pass",
             source: "resource-health",
             summary: "No bounded resource-health check failed.",
@@ -110,7 +181,7 @@ describe("Bountywell health inquiry scenario", () => {
                   summary: "The registered API service is active.",
                 },
                 {
-                  facts: { diskPressure: false },
+                  facts: { availability: "available", diskPressure: false },
                   outcome: "pass",
                   source: "resource-health",
                   summary: "No bounded resource-health check failed.",
@@ -218,6 +289,104 @@ describe("Bountywell health inquiry scenario", () => {
       expect(reopenedScenario.brokerRequests).toEqual([]);
     } finally {
       await reopenedScenario.close();
+    }
+  });
+
+  test("an accepted inquiry survives a worker restart before the broker runs", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-accepted-"));
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "tasks.sqlite");
+    const observation = {
+      checks: [
+        {
+          facts: { statusCode: 200 },
+          outcome: "pass" as const,
+          source: "public-health" as const,
+          summary: "The public health endpoint responded successfully.",
+        },
+      ],
+      observedAt: "2026-08-15T16:00:01.000Z",
+      rejectedEvidenceCount: 0,
+    };
+    const request = {
+      question: "Is Bountywell healthy?" as const,
+      requestId: "request-accepted",
+    };
+    const apiProcess = await createBountywellHealthScenario({
+      databasePath,
+      ids: [
+        "task-accepted",
+        "operation-accepted",
+        "event-accepted-1",
+        "event-accepted-2",
+      ],
+      now: "2026-08-15T16:00:00.000Z",
+      observation,
+    });
+
+    const accepted = await apiProcess.accept(request);
+    expect(accepted.task.status).toBe("pending");
+    expect(apiProcess.brokerRequests).toEqual([]);
+    await apiProcess.close();
+
+    const workerProcess = await createBountywellHealthScenario({
+      databasePath,
+      ids: ["event-accepted-3", "event-accepted-4", "event-accepted-5"],
+      now: "2026-08-15T16:00:01.000Z",
+      observation,
+    });
+    try {
+      expect(await workerProcess.accept(request)).toEqual(accepted);
+      const completed = await workerProcess.processNext();
+      expect(completed?.task.status).toBe("completed");
+      expect(workerProcess.brokerRequests).toEqual([
+        { operationId: "operation-accepted", taskId: "task-accepted" },
+      ]);
+      expect(await workerProcess.processNext()).toBeUndefined();
+    } finally {
+      await workerProcess.close();
+    }
+  });
+
+  test("concurrent duplicate submissions retain one Durable Task and Operation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-duplicate-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createBountywellHealthScenario({
+      databasePath: join(directory, "tasks.sqlite"),
+      ids: Array.from({ length: 12 }, (_value, index) => `duplicate-${index + 1}`),
+      now: "2026-08-15T16:30:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { statusCode: 200 },
+            outcome: "pass",
+            source: "public-health",
+            summary: "The public health endpoint responded successfully.",
+          },
+        ],
+        observedAt: "2026-08-15T16:30:01.000Z",
+        rejectedEvidenceCount: 0,
+      },
+    });
+    const request = {
+      question: "Is Bountywell healthy?" as const,
+      requestId: "request-duplicate",
+    };
+
+    try {
+      const [first, second] = await Promise.all([
+        scenario.accept(request),
+        scenario.accept(request),
+      ]);
+      expect(second).toEqual(first);
+      expect(scenario.brokerRequests).toEqual([]);
+
+      const completed = await scenario.processNext();
+      expect(completed?.task.id).toBe(first.task.id);
+      expect(scenario.brokerRequests).toHaveLength(1);
+      expect(await scenario.processNext()).toBeUndefined();
+    } finally {
+      await scenario.close();
     }
   });
 
@@ -349,7 +518,7 @@ describe("Bountywell health inquiry scenario", () => {
       observation: {
         checks: [
           {
-            facts: { diskPressure: false },
+            facts: { availability: "available", diskPressure: false },
             outcome: "pass",
             source: "resource-health",
             summary: "No bounded resource-health check failed.",
@@ -366,6 +535,48 @@ describe("Bountywell health inquiry scenario", () => {
         requestId: "request-support",
       });
 
+      expect(record.task.conclusion).toBe(
+        "Bountywell API health could not be confirmed.",
+      );
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("a 401 authentication boundary does not replace primary health evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-primary-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createBountywellHealthScenario({
+      databasePath: join(directory, "tasks.sqlite"),
+      ids: [
+        "task-primary",
+        "operation-primary",
+        "event-primary-1",
+        "event-primary-2",
+        "event-primary-3",
+        "event-primary-4",
+        "event-primary-5",
+      ],
+      now: "2026-08-15T19:30:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { statusCode: 401 },
+            outcome: "pass",
+            source: "authentication-boundary",
+            summary: "The protected data endpoint required authentication.",
+          },
+        ],
+        observedAt: "2026-08-15T19:30:00.000Z",
+        rejectedEvidenceCount: 0,
+      },
+    });
+
+    try {
+      const record = await scenario.submit({
+        question: "Is Bountywell healthy?",
+        requestId: "request-primary",
+      });
       expect(record.task.conclusion).toBe(
         "Bountywell API health could not be confirmed.",
       );

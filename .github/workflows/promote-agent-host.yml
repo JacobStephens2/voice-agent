@@ -1,0 +1,57 @@
+name: Promote Agent Host
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  enqueue-human-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Authenticate the exact Human Merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/$GITHUB_REPOSITORY/commits/$MERGED_COMMIT/pulls" \
+            | jq -e --arg commit "$MERGED_COMMIT" \
+              'any(.[]; .merge_commit_sha == $commit and .merged_at != null and .base.ref == "main" and .merged_by.type == "User")'
+
+      - name: Configure restricted SSH identity
+        env:
+          DEPLOY_KEY_B64: ${{ secrets.VOICE_AGENT_DEPLOY_KEY_B64 }}
+          KNOWN_HOSTS_B64: ${{ secrets.VOICE_AGENT_KNOWN_HOSTS_B64 }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s' "$DEPLOY_KEY_B64" | base64 --decode > "$HOME/.ssh/id_ed25519"
+          printf '%s' "$KNOWN_HOSTS_B64" | base64 --decode > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Enqueue the verified Human Merge transition
+        env:
+          DEPLOY_HOST: ${{ vars.VOICE_AGENT_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.VOICE_AGENT_DEPLOY_USER }}
+          REPOSITORY_PATH: ${{ vars.VOICE_AGENT_REPOSITORY_PATH }}
+          BEFORE_COMMIT: ${{ github.event.before }}
+          MERGED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$REPOSITORY_PATH" == /* && "$REPOSITORY_PATH" != *$'\n'* ]]
+          printf '%s\n%s\n%s\n' \
+            "$REPOSITORY_PATH" "$BEFORE_COMMIT" "$MERGED_COMMIT" | ssh \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'IFS= read -r repository; IFS= read -r before; IFS= read -r commit; exec sudo -n /usr/local/libexec/voice-agent/promote-main.sh "$repository" "$before" "$commit"'

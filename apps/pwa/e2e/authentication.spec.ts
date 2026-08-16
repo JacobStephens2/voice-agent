@@ -95,6 +95,49 @@ test("two independent passkeys protect live evidence and recovery replaces only 
   await expect(secondPage.getByRole("heading", { name: "Durable Tasks" })).toBeVisible();
   await secondPage.getByRole("button", { name: "Perform Fresh Passkey Action" }).click();
   await expect(secondPage.getByText(/Fresh Passkey Action valid until/u)).toBeVisible();
+  await secondPage
+    .getByRole("button", { name: "Register Bountywell read-only access" })
+    .click();
+  await expect(
+    secondPage.getByText("Bountywell read-only access is registered."),
+  ).toBeVisible();
+  let inquiryAttempts = 0;
+  await secondPage.route("**/api/tasks/bountywell-health", async (route) => {
+    inquiryAttempts += 1;
+    if (inquiryAttempts === 1) {
+      const acceptedResponse = await route.fetch();
+      expect(acceptedResponse.status()).toBe(202);
+      await route.fulfill({
+        body: JSON.stringify({ error: "response lost after acceptance" }),
+        contentType: "application/json",
+        status: 502,
+      });
+      return;
+    }
+    await route.continue();
+  });
+  await secondPage
+    .getByRole("button", { name: "Run Bountywell health inquiry" })
+    .click();
+  await expect(
+    secondPage.getByText("The Bountywell inquiry could not be accepted."),
+  ).toBeVisible();
+  await secondPage
+    .getByRole("button", { name: "Run Bountywell health inquiry" })
+    .click();
+  await expect(
+    secondPage.getByRole("heading", { name: "Is Bountywell healthy?" }),
+  ).toBeVisible();
+  await expect(secondPage.getByLabel("Task status: pending")).toBeVisible();
+  expect(inquiryAttempts).toBe(2);
+  expect(
+    await secondPage.evaluate(async () =>
+      fetch("/api/tasks")
+        .then((response) => response.json())
+        .then((tasks: unknown[]) => tasks.length),
+    ),
+  ).toBe(1);
+  expect(await secondPage.evaluate(() => localStorage.length)).toBe(0);
 
   const csrfStatus = await secondPage.evaluate(async () =>
     fetch("/api/auth/fresh/options", {

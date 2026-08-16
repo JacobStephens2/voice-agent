@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for authenticated Voice Agent Promotion resume requests
+
+[Path]
+PathExists=/var/lib/voice-agent-promotion-resume/resume.request
+Unit=voice-agent-promotion-resume.service
+
+[Install]
+WantedBy=multi-user.target
