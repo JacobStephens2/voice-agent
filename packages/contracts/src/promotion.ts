@@ -58,7 +58,6 @@ export const fixtureDeploymentContractSchema = z
   .strict();
 
 export const promotionAttemptStatusSchema = z.enum([
-  "included-in-recovery",
   "queued",
   "running",
   "rolled-back",
@@ -88,7 +87,6 @@ export const promotionEvidenceEventProjectionSchema = z
       "delivery.denied",
       "delivery.duplicate",
       "merge.accepted",
-      "promotion.included",
       "promotion.queued",
       "promotion.reordered",
       "reconciliation.discovered",

@@ -8,7 +8,6 @@ const eventLabels: Record<
   "delivery.denied": "Delivery denied",
   "delivery.duplicate": "Duplicate delivery ignored",
   "merge.accepted": "Human Merge accepted",
-  "promotion.included": "Merge included in recovery",
   "promotion.queued": "Promotion Attempt queued",
   "promotion.reordered": "Promotion Attempt reordered",
   "reconciliation.discovered": "Missed Human Merge discovered",
