@@ -314,7 +314,7 @@ function sanitizeFinalizedTurn(transcript: string): string {
     .replace(/[\u0000-\u001f\u007f]/gu, " ")
     .replace(/\bBearer\s+\S+/giu, "Bearer [redacted]")
     .replace(
-      /\b((?:(?:my|our|the)\s+)?(?:authorization|api[-_ ]?key|password|secret|token))\s*(?::|=|\bis\b)\s*\S+/giu,
+      /\b((?:(?:my|our|the)\s+)?(?:authorization|api[-_ ]?key|password|secret|token))\s*(?:[:=]|\b(?:equals|is|was)\b\s*:?)\s*\S+/giu,
       "$1: [redacted]",
     )
     .replace(/\s+/gu, " ")

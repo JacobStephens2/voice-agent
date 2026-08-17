@@ -368,7 +368,7 @@ describe("Telephone Bountywell health inquiry", () => {
         stt: { durationMs: 300, provider: "assemblyai" },
         telephoneSessionId: "telephone-session-redaction",
         transcript:
-          "Is Bountywell healthy? My password is hunter2 and the API key is sk-live-secret",
+          "Is Bountywell healthy? My password is: hunter2, the API key equals sk-live-secret, and our token was tok-sensitive",
       });
       const action = result.actions[0];
       if (action?.kind !== "speak-semantic-response") {
@@ -381,6 +381,7 @@ describe("Telephone Bountywell health inquiry", () => {
       });
       expect(retained).not.toContain("hunter2");
       expect(retained).not.toContain("sk-live-secret");
+      expect(retained).not.toContain("tok-sensitive");
       expect(retained).toContain("[redacted]");
     } finally {
       await scenario.close();

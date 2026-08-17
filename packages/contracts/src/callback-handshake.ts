@@ -152,7 +152,7 @@ export type TelephoneEvidenceEvent = z.infer<
 >;
 
 export const telephoneSessionEvidenceRecordProjectionSchema = z.object({
-  evidence: z.array(telephoneEvidenceEventSchema).max(1_000),
+  evidence: z.array(telephoneEvidenceEventSchema),
   session: z.object({
     attempt: z.union([z.literal(1), z.literal(2)]),
     authorizedAt: callbackTimestampSchema.optional(),

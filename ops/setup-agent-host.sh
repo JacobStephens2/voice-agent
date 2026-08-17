@@ -477,9 +477,6 @@ sudo -u voice-agent env \
   VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite \
   /usr/bin/node --experimental-strip-types \
   /opt/voice-agent/current/apps/worker/src/callback-smoke.ts
-open_url "https://voice.stephens.page"
-step "Open the new Callback Handshake Evidence Record and confirm it contains sanitized inbound, callback, machine-detection, DTMF, authorization, and outcome evidence."
-pause "Press Enter after the real PSTN evidence is visible."
 
 stage "Answer Bountywell by telephone"
 say "Keep the authorized callback connected. This smoke waits up to three minutes for a new finalized telephone health question and its complete Evidence Record."
@@ -490,6 +487,7 @@ sudo -u voice-agent env \
   /usr/bin/node --experimental-strip-types \
   /opt/voice-agent/current/apps/worker/src/telephone-smoke.ts
 open_url "https://voice.stephens.page"
+step "Open the Callback Handshake Evidence Record and confirm it contains sanitized inbound, callback, machine-detection, DTMF, authorization, and outcome evidence."
 step "Open the new Bountywell Evidence Record and confirm it contains the finalized turn, provider timing, Operation, bounded evidence, semantic response, and conclusion."
 pause "Press Enter after the real spoken and visual evidence is verified."
 
