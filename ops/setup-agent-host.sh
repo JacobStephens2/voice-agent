@@ -184,7 +184,7 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=12
+TOTAL_STAGES=14
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 banner "Voice Agent host setup"
@@ -296,6 +296,43 @@ sudo install -o root -g root -m 0600 "$livekit_environment" \
 rm -f -- "$livekit_environment"
 unset LIVEKIT_API_KEY LIVEKIT_API_SECRET
 note "LiveKit credentials are root-owned and injected only into the telephone worker."
+
+stage "Configure Resend Silent Notifications"
+say "Resend sends only generic completion notices from a dedicated verified subdomain. Open and click tracking must remain disabled."
+open_url "https://resend.com/domains"
+step "Add notify.stephens.page as a sending domain, add the displayed DNS records, and wait until Resend reports the domain as verified."
+step "Open the domain tracking configuration and confirm both open tracking and click tracking are disabled."
+step "Copy the verified domain ID from the domain page."
+ask RESEND_DOMAIN_ID "Verified Resend domain ID:"
+ask VOICE_AGENT_NOTIFICATION_SUBDOMAIN "Verified notification subdomain [notify.stephens.page]:"
+if [[ -z $VOICE_AGENT_NOTIFICATION_SUBDOMAIN ]]; then
+  VOICE_AGENT_NOTIFICATION_SUBDOMAIN=notify.stephens.page
+fi
+open_url "https://resend.com/api-keys"
+step "Create a sending API key for the Voice Agent and copy it now; Resend will not show it again."
+ask_secret RESEND_API_KEY "Resend sending API key:"
+if [[ ! $RESEND_DOMAIN_ID =~ ^[A-Za-z0-9_-]+$ || \
+  ! $VOICE_AGENT_NOTIFICATION_SUBDOMAIN =~ ^[a-z0-9.-]+$ || \
+  ! $RESEND_API_KEY =~ ^re_[A-Za-z0-9_-]+$ ]]; then
+  warn "Provide the exact Resend domain ID, verified subdomain, and re_ API key."
+  exit 1
+fi
+resend_environment=$(mktemp)
+printf 'RESEND_API_KEY=%s\nRESEND_DOMAIN_ID=%s\nVOICE_AGENT_NOTIFICATION_SUBDOMAIN=%s\n' \
+  "$RESEND_API_KEY" "$RESEND_DOMAIN_ID" \
+  "$VOICE_AGENT_NOTIFICATION_SUBDOMAIN" > "$resend_environment"
+if sudo test -e /etc/voice-agent/resend.env && \
+  ! sudo cmp -s "$resend_environment" /etc/voice-agent/resend.env; then
+  confirm "Replace the existing root-owned Resend credential source?" || {
+    rm -f -- "$resend_environment"
+    exit 1
+  }
+fi
+sudo install -o root -g root -m 0600 "$resend_environment" \
+  /etc/voice-agent/resend.env
+rm -f -- "$resend_environment"
+unset RESEND_API_KEY
+note "The Resend credential is root-owned and injected only into the background worker."
 
 stage "Install and promote the immutable release"
 say "This pins reviewed root orchestration, creates unprivileged identities, private state directories, and hardened services."
@@ -469,6 +506,24 @@ step "Enter $TELNYX_NUMBER as the dedicated Telnyx number."
 step "Enter $LIVEKIT_INBOUND_TRUNK_ID and $LIVEKIT_OUTBOUND_TRUNK_ID as the fixed LiveKit route, then save the revision."
 step "Confirm the PWA shows the intended owner number and a new Registered Telephone revision."
 pause "Press Enter after the Registered Telephone is visible."
+
+stage "Set the Silent Notification preference"
+open_url "https://voice.stephens.page"
+step "Choose “Perform Fresh Passkey Action” and complete the passkey ceremony."
+ask OWNER_NOTIFICATION_EMAIL "Owner email for generic completion notices:"
+step "In Silent Notifications, enter $OWNER_NOTIFICATION_EMAIL as the owner email."
+step "Enter Voice Agent <tasks@$VOICE_AGENT_NOTIFICATION_SUBDOMAIN> as the sender identity."
+step "Enter $VOICE_AGENT_NOTIFICATION_SUBDOMAIN as the verified notification subdomain, then save."
+step "Confirm the PWA shows tracking disabled and the new preference revision."
+pause "Press Enter after the Silent Notification preference is visible."
+unset OWNER_NOTIFICATION_EMAIL
+
+stage "Activate the Evidence lifecycle policy"
+open_url "https://voice.stephens.page"
+step "Choose “Perform Fresh Passkey Action” and complete the passkey ceremony."
+step "Choose “Activate 90-day Evidence retention”."
+step "Confirm the PWA reports the cutoff applied by the lifecycle policy."
+pause "Press Enter after the Evidence lifecycle policy is active."
 
 stage "Complete the real Callback Handshake smoke"
 say "This bounded smoke waits up to three minutes for one new authorized Telephone Session."

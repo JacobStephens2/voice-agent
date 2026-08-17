@@ -4,6 +4,12 @@ import type {
 } from "@voice-agent/contracts";
 
 const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
+  "completion.callback.requested": "Completion Callback requested",
+  "completion.callback.outcome": "Completion Callback outcome",
+  "notification.requested": "Silent Notification requested",
+  "notification.sent": "Silent Notification sent",
+  "task.cancellation.requested": "Cancellation requested",
+  "task.cancelled": "Task cancelled",
   "task.accepted": "Inquiry accepted",
   "operation.accepted": "Health check accepted",
   "evidence.observed": "Health evidence observed",

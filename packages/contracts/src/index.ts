@@ -14,10 +14,19 @@ import {
   telephoneSemanticResponseEvidenceEventSchema,
   telephoneTurnFinalizedEvidenceEventSchema,
 } from "./telephone-session.ts";
+import {
+  completionCallbackOutcomeEvidenceEventSchema,
+  completionCallbackRequestedEvidenceEventSchema,
+  notificationRequestedEvidenceEventSchema,
+  notificationSentEvidenceEventSchema,
+  taskCancellationRequestedEvidenceEventSchema,
+  taskCancelledEvidenceEventSchema,
+} from "./task-continuity.ts";
 
 export * from "./promotion.ts";
 export * from "./callback-handshake.ts";
 export * from "./telephone-session.ts";
+export * from "./task-continuity.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -183,6 +192,12 @@ export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
   telephoneProviderTimingEvidenceEventSchema,
   telephoneProviderFailureEvidenceEventSchema,
   telephoneResponseInterruptedEvidenceEventSchema,
+  completionCallbackRequestedEvidenceEventSchema,
+  completionCallbackOutcomeEvidenceEventSchema,
+  notificationRequestedEvidenceEventSchema,
+  notificationSentEvidenceEventSchema,
+  taskCancellationRequestedEvidenceEventSchema,
+  taskCancelledEvidenceEventSchema,
   z.object({
     ...eventFields,
     details: z.object({ requestId: identifierSchema }),
@@ -226,12 +241,13 @@ export const evidenceRecordProjectionSchema = z.object({
       "Bountywell inquiry is pending.",
       "Bountywell API is healthy.",
       "Bountywell API health could not be confirmed.",
+      "Bountywell inquiry cancelled.",
     ]),
     createdAt: timestampSchema,
     id: identifierSchema,
     kind: z.literal("bountywell.health.inquiry"),
     question: z.literal("Is Bountywell healthy?"),
-    status: z.enum(["pending", "completed"]),
+    status: z.enum(["pending", "completed", "cancelled"]),
     updatedAt: timestampSchema,
   }),
 });

@@ -69,7 +69,7 @@ pnpm scenario:callback
 pnpm scenario:telephone
 ```
 
-The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. The telephone scenario covers paraphrases, unrelated and state-changing requests, insufficient evidence, interim-hypothesis retention, interruption, duplicate final events, provider timing, and bounded failures. They persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
+The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. The telephone and continuity scenarios cover paraphrases, background-work callback consent, authenticated resumption, call and process loss, safe cancellation, provider failures, generic notification fallback, idempotent replay, and the authenticated 90-day Evidence lifecycle policy. They persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
 
 The CI-ready verification commands are:
 

@@ -13,6 +13,7 @@ import type {
   AcceptedInquiryPersistence,
   ApplicationRegistry,
   AppendedEvidencePersistence,
+  CancellationRequestPersistence,
   ClaimedBountywellOperation,
   CompletedInquiryPersistence,
   DurableTaskStore,
@@ -21,6 +22,7 @@ import { createBountywellReadRegistration } from "@voice-agent/policy";
 
 export { createSqliteAuthenticationStore } from "./authentication.ts";
 export { createSqliteCallbackHandshakeStore } from "./callback-handshake.ts";
+export { createSqliteTaskContinuityStore } from "./task-continuity.ts";
 export {
   backupSqliteDatabase,
   restoreSqliteDatabase,
@@ -28,12 +30,13 @@ export {
 } from "./database-maintenance.ts";
 
 interface TaskRow {
+  readonly cancellation_requested_at: string | null;
   readonly conclusion: string;
   readonly created_at: string;
   readonly id: string;
   readonly kind: "bountywell.health.inquiry";
   readonly question: "Is Bountywell healthy?";
-  readonly status: "completed" | "pending";
+  readonly status: "cancelled" | "completed" | "pending";
   readonly updated_at: string;
 }
 
@@ -56,8 +59,6 @@ interface OperationRow {
   readonly task_id: string;
 }
 
-const liveEvidenceRetentionDays = 90;
-
 export function createSqliteDurableTaskStore(
   databasePath: string,
 ): DurableTaskStore & ApplicationRegistry {
@@ -67,7 +68,8 @@ export function createSqliteDurableTaskStore(
   createSchema(database);
 
   const findTaskByRequest = database.prepare<[requestId: string], TaskRow>(`
-    SELECT id, kind, status, question, conclusion, created_at, updated_at
+    SELECT id, kind, status, question, conclusion, created_at, updated_at,
+      cancellation_requested_at
     FROM durable_tasks
     WHERE request_id = ?
   `);
@@ -78,25 +80,22 @@ export function createSqliteDurableTaskStore(
     SELECT request_id FROM expired_request_ids WHERE request_id = ?
   `);
   const findLiveTaskByRequest = database.prepare<[requestId: string], TaskRow>(`
-    SELECT id, kind, status, question, conclusion, created_at, updated_at
+    SELECT id, kind, status, question, conclusion, created_at, updated_at,
+      cancellation_requested_at
     FROM durable_tasks
     WHERE request_id = ?
-      AND created_at >= strftime(
-        '%Y-%m-%dT%H:%M:%fZ', 'now', '-${liveEvidenceRetentionDays} days'
-      )
   `);
   const findTaskById = database.prepare<[taskId: string], TaskRow>(`
-    SELECT id, kind, status, question, conclusion, created_at, updated_at
+    SELECT id, kind, status, question, conclusion, created_at, updated_at,
+      cancellation_requested_at
     FROM durable_tasks
     WHERE id = ?
   `);
   const findLiveTaskById = database.prepare<[taskId: string], TaskRow>(`
-    SELECT id, kind, status, question, conclusion, created_at, updated_at
+    SELECT id, kind, status, question, conclusion, created_at, updated_at,
+      cancellation_requested_at
     FROM durable_tasks
     WHERE id = ?
-      AND created_at >= strftime(
-        '%Y-%m-%dT%H:%M:%fZ', 'now', '-${liveEvidenceRetentionDays} days'
-      )
   `);
   const findTaskByOperation = database.prepare<[operationId: string], TaskRow>(`
     SELECT
@@ -106,7 +105,8 @@ export function createSqliteDurableTaskStore(
       durable_tasks.question,
       durable_tasks.conclusion,
       durable_tasks.created_at,
-      durable_tasks.updated_at
+      durable_tasks.updated_at,
+      durable_tasks.cancellation_requested_at
     FROM operations
     JOIN durable_tasks ON durable_tasks.id = operations.task_id
     WHERE operations.id = ?
@@ -127,11 +127,9 @@ export function createSqliteDurableTaskStore(
     SELECT task_id FROM evidence_events WHERE id = ?
   `);
   const listTasks = database.prepare<[], TaskRow>(`
-    SELECT id, kind, status, question, conclusion, created_at, updated_at
+    SELECT id, kind, status, question, conclusion, created_at, updated_at,
+      cancellation_requested_at
     FROM durable_tasks
-    WHERE created_at >= strftime(
-      '%Y-%m-%dT%H:%M:%fZ', 'now', '-${liveEvidenceRetentionDays} days'
-    )
     ORDER BY updated_at DESC
     LIMIT 100
   `);
@@ -167,14 +165,20 @@ export function createSqliteDurableTaskStore(
     [claimedAt: string],
     OperationRow
   >(`
-    SELECT id, task_id, status
+    SELECT operations.id, operations.task_id, operations.status
     FROM operations
-    WHERE kind = 'bountywell.health.observe'
+    JOIN durable_tasks ON durable_tasks.id = operations.task_id
+    WHERE operations.kind = 'bountywell.health.observe'
+      AND durable_tasks.status = 'pending'
+      AND durable_tasks.cancellation_requested_at IS NULL
       AND (
-        status = 'accepted'
-        OR (status = 'running' AND lease_expires_at <= ?)
+        operations.status = 'accepted'
+        OR (
+          operations.status = 'running'
+          AND operations.lease_expires_at <= ?
+        )
       )
-    ORDER BY created_at, id
+    ORDER BY operations.created_at, operations.id
     LIMIT 1
   `);
   const claimOperation = database.prepare(`
@@ -201,6 +205,35 @@ export function createSqliteDurableTaskStore(
     UPDATE durable_tasks
     SET status = 'completed', conclusion = ?, updated_at = ?
     WHERE id = ? AND status = 'pending'
+  `);
+  const cancelTask = database.prepare(`
+    UPDATE durable_tasks
+    SET status = 'cancelled', conclusion = 'Bountywell inquiry cancelled.',
+      updated_at = ?, cancellation_requested_at = COALESCE(cancellation_requested_at, ?)
+    WHERE id = ? AND status = 'pending'
+  `);
+  const requestCancellation = database.prepare(`
+    UPDATE durable_tasks
+    SET cancellation_requested_at = ?, updated_at = ?
+    WHERE id = ? AND status = 'pending'
+  `);
+  const findRunningTaskOperation = database.prepare<
+    [taskId: string],
+    { readonly id: string }
+  >(`
+    SELECT id FROM operations
+    WHERE task_id = ? AND kind = 'bountywell.health.observe' AND status = 'running'
+    LIMIT 1
+  `);
+  const findCancellationRequest = database.prepare<
+    [requestId: string],
+    { readonly task_id: string }
+  >(`
+    SELECT task_id FROM task_cancellation_requests WHERE request_id = ?
+  `);
+  const insertCancellationRequest = database.prepare(`
+    INSERT INTO task_cancellation_requests (request_id, task_id, operation_id)
+    VALUES (?, ?, ?)
   `);
   const updateTaskTimestamp = database.prepare(`
     UPDATE durable_tasks
@@ -259,18 +292,7 @@ export function createSqliteDurableTaskStore(
   `);
   const deleteExpiredEvents = database.prepare(`
     DELETE FROM evidence_events
-    WHERE task_id IN (
-      SELECT id FROM durable_tasks WHERE created_at < ?
-    )
-  `);
-  const deleteExpiredOperations = database.prepare(`
-    DELETE FROM operations
-    WHERE task_id IN (
-      SELECT id FROM durable_tasks WHERE created_at < ?
-    )
-  `);
-  const deleteExpiredTasks = database.prepare(`
-    DELETE FROM durable_tasks WHERE created_at < ?
+    WHERE occurred_at < ?
   `);
 
   function loadRecord(task: TaskRow): EvidenceRecordProjection {
@@ -375,15 +397,32 @@ export function createSqliteDurableTaskStore(
         input.operationId,
         input.taskId,
       );
-      const taskResult = completeTask.run(
-        input.conclusion,
-        input.observedAt,
-        input.taskId,
-      );
+      const task = requireTask(findTaskById.get(input.taskId));
+      const cancellationRequested = task.cancellation_requested_at !== null;
+      const taskResult = cancellationRequested
+        ? cancelTask.run(input.observedAt, input.observedAt, input.taskId)
+        : completeTask.run(
+            input.conclusion,
+            input.observedAt,
+            input.taskId,
+          );
       if (operationResult.changes !== 1 || taskResult.changes !== 1) {
         throw new Error("Claimed Bountywell Operation changed concurrently");
       }
-      insertEvidence(input.taskId, input.evidence);
+      insertEvidence(
+        input.taskId,
+        cancellationRequested
+          ? input.evidence.map((event) =>
+              event.kind === "task.completed"
+                ? {
+                    ...event,
+                    kind: "task.cancelled" as const,
+                    summary: "The Durable Task stopped at a safe boundary.",
+                  }
+                : event,
+            )
+          : input.evidence,
+      );
       return loadRecord(requireTask(findTaskById.get(input.taskId)));
     },
   );
@@ -413,44 +452,106 @@ export function createSqliteDurableTaskStore(
     },
   );
 
+  const cancellationTransaction = database.transaction(
+    (input: CancellationRequestPersistence): EvidenceRecordProjection => {
+      const duplicate = findCancellationRequest.get(input.requestId);
+      if (duplicate !== undefined) {
+        return loadRecord(requireTask(findTaskById.get(duplicate.task_id)));
+      }
+      const task = requireTask(findTaskById.get(input.taskId));
+      insertCancellationRequest.run(
+        input.requestId,
+        input.taskId,
+        input.operationId,
+      );
+      if (task.status !== "pending" || task.cancellation_requested_at !== null) {
+        return loadRecord(task);
+      }
+      insertOperation.run(
+        input.operationId,
+        input.taskId,
+        `task-cancellation:${input.requestId}`,
+        "task.cancel",
+        "completed",
+        JSON.stringify({ requested: true }),
+        input.requestedAt,
+        input.requestedAt,
+      );
+      const previousSequence = findEventsByTask.all(input.taskId).at(-1)?.sequence ?? 0;
+      const evidence: EvidenceEventProjection[] = [
+        {
+          details: { operationId: input.operationId },
+          id: input.requestedEventId,
+          kind: "task.cancellation.requested",
+          occurredAt: input.requestedAt,
+          sequence: previousSequence + 1,
+          summary: "A stop request was accepted for this Durable Task.",
+        },
+        {
+          details: { operationId: input.operationId },
+          id: input.acceptedEventId,
+          kind: "operation.accepted",
+          occurredAt: input.requestedAt,
+          sequence: previousSequence + 2,
+          summary: "The cancellation Operation was accepted.",
+        },
+        {
+          details: { operationId: input.operationId },
+          id: input.completedEventId,
+          kind: "operation.completed",
+          occurredAt: input.requestedAt,
+          sequence: previousSequence + 3,
+          summary: "The cancellation Operation completed.",
+        },
+      ];
+      const running = findRunningTaskOperation.get(input.taskId) !== undefined;
+      requestCancellation.run(
+        input.requestedAt,
+        input.requestedAt,
+        input.taskId,
+      );
+      if (!running) {
+        cancelTask.run(input.requestedAt, input.requestedAt, input.taskId);
+        evidence.push({
+          details: {},
+          id: input.cancelledEventId,
+          kind: "task.cancelled",
+          occurredAt: input.requestedAt,
+          sequence: previousSequence + 4,
+          summary: "The Durable Task stopped before future work began.",
+        });
+      }
+      insertEvidence(input.taskId, evidence);
+      return loadRecord(requireTask(findTaskById.get(input.taskId)));
+    },
+  );
+
   const expireTransaction = database.transaction((cutoff: string) => {
     tombstoneExpiredRequests.run(cutoff, cutoff);
     deleteExpiredEvents.run(cutoff);
-    deleteExpiredOperations.run(cutoff);
-    deleteExpiredTasks.run(cutoff);
   });
-  function expireOldEvidence(): void {
-    expireTransaction.immediate(
-      new Date(
-        Date.now() - liveEvidenceRetentionDays * 24 * 60 * 60 * 1_000,
-      ).toISOString(),
-    );
-  }
-  expireOldEvidence();
 
   return {
+    async applyEvidenceRetention(input) {
+      expireTransaction.immediate(input.cutoff);
+    },
     async appendEvidence(input) {
-      expireOldEvidence();
       return appendEvidenceTransaction.immediate(input);
     },
     async claimBountywellOperation(input) {
-      expireOldEvidence();
       return claimTransaction.immediate(input);
     },
     async close() {
       database.close();
     },
     async completeBountywellInquiry(input) {
-      expireOldEvidence();
       return completeTransaction.immediate(input);
     },
     async findByOperationId(operationId) {
-      expireOldEvidence();
       const task = findTaskByOperation.get(operationId);
       return task === undefined ? undefined : loadRecord(task);
     },
     async findByRequestId(requestId) {
-      expireOldEvidence();
       const liveTask = findLiveTaskByRequest.get(requestId);
       if (liveTask !== undefined) return loadRecord(liveTask);
       return findExpiredRequest.get(requestId) === undefined
@@ -458,7 +559,6 @@ export function createSqliteDurableTaskStore(
         : { expired: true };
     },
     async findByTaskId(taskId) {
-      expireOldEvidence();
       const task = findLiveTaskById.get(taskId);
       return task === undefined ? undefined : loadRecord(task);
     },
@@ -469,7 +569,6 @@ export function createSqliteDurableTaskStore(
         : bountywellRegistrationSchema.parse(JSON.parse(row.definition_json));
     },
     async listTasks() {
-      expireOldEvidence();
       return listTasks.all().map((task) => ({
         conclusion:
           evidenceRecordProjectionSchema.shape.task.shape.conclusion.parse(
@@ -484,7 +583,6 @@ export function createSqliteDurableTaskStore(
       }));
     },
     async readOperationalMetrics() {
-      expireOldEvidence();
       const taskMetrics = readTaskMetrics.get() ?? { completed: 0, pending: 0 };
       const operationMetrics = readOperationMetrics.get() ?? {
         accepted: 0,
@@ -533,8 +631,10 @@ export function createSqliteDurableTaskStore(
     async recordPolicyDenial() {
       incrementPolicyDenials.run();
     },
+    async requestCancellation(input) {
+      return cancellationTransaction.immediate(input);
+    },
     async persistAcceptedInquiry(input) {
-      expireOldEvidence();
       if (findExpiredRequest.get(input.requestId) !== undefined) {
         throw new Error("Evidence Record retention expired");
       }
@@ -623,6 +723,12 @@ function createSchema(database: Database.Database): void {
       expired_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS task_cancellation_requests (
+      request_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES durable_tasks(id),
+      operation_id TEXT NOT NULL UNIQUE
+    );
+
     CREATE TRIGGER IF NOT EXISTS application_registrations_no_update
     BEFORE UPDATE ON application_registrations
     BEGIN
@@ -657,6 +763,7 @@ function createSchema(database: Database.Database): void {
     END;
   `);
   ensureColumn(database, "operations", "lease_expires_at", "TEXT");
+  ensureColumn(database, "durable_tasks", "cancellation_requested_at", "TEXT");
 }
 
 function ensureColumn(

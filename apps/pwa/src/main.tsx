@@ -7,16 +7,20 @@ import {
   type BountywellRegistration,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
+  type NotificationPreference,
+  type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
   type EvidenceRecordSummary,
 } from "@voice-agent/contracts";
 import {
+  applyEvidenceLifecyclePolicy,
   confirmRecoveryCodes,
   enrollBootstrapPasskey,
   enrollReplacementPasskey,
   loadAuthenticationStatus,
   loadBountywellRegistration,
   loadRegisteredTelephone,
+  loadNotificationPreference,
   loadProtectedContent as fetchProtectedContent,
   loginWithPasskey,
   performFreshPasskeyAction as requestFreshPasskeyAction,
@@ -26,6 +30,7 @@ import {
   resumePromotionQueue,
   startRecovery,
   submitBountywellHealthInquiry,
+  updateNotificationPreference,
 } from "./api-client.ts";
 import {
   ActionFooter,
@@ -54,6 +59,8 @@ function App() {
     useState<BountywellRegistration>();
   const [registeredTelephone, setRegisteredTelephone] =
     useState<RegisteredTelephone>();
+  const [notificationPreference, setNotificationPreference] =
+    useState<NotificationPreference>();
   const [csrfToken, setCsrfToken] = useState<string | undefined>(readCsrfCookie);
   const [recoveryConfirmation, setRecoveryConfirmation] = useState<{
     readonly codes: readonly string[];
@@ -76,12 +83,14 @@ function App() {
     if (content.kind === "tasks") {
       setTasks(content.tasks);
       setRecord(undefined);
-      const [bountywell, telephone] = await Promise.all([
+      const [bountywell, telephone, notification] = await Promise.all([
         loadBountywellRegistration(),
         loadRegisteredTelephone(),
+        loadNotificationPreference(),
       ]);
       setBountywellRegistration(bountywell);
       setRegisteredTelephone(telephone);
+      setNotificationPreference(notification);
     } else {
       setRecord(content.record);
       setTasks(undefined);
@@ -218,6 +227,31 @@ function App() {
     });
   }
 
+  async function saveNotificationPreference(input: NotificationPreferenceInput) {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before changing notifications.");
+      return;
+    }
+    await run(async () => {
+      setNotificationPreference(
+        await updateNotificationPreference(csrfToken, input),
+      );
+      setMessage("Silent Notification identity and destination saved.");
+    });
+  }
+
+  async function retainOrdinaryEvidence() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before applying Evidence retention.");
+      return;
+    }
+    await run(async () => {
+      const result = await applyEvidenceLifecyclePolicy(csrfToken);
+      setMessage(`Ordinary Evidence Events before ${formatTime(result.cutoff)} were removed.`);
+      await loadProtectedContent();
+    });
+  }
+
   async function resumePromotions() {
     if (csrfToken === undefined) {
       setMessage("Sign in again before resuming Promotions.");
@@ -322,13 +356,16 @@ function App() {
     <TaskList
       bountywellRegistration={bountywellRegistration}
       registeredTelephone={registeredTelephone}
+      notificationPreference={notificationPreference}
       tasks={tasks ?? []}
       message={message}
       busy={busy}
       onFresh={freshPasskeyAction}
+      onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}
       onRegisterBountywell={enrollBountywell}
       onRegisterTelephone={enrollTelephone}
+      onUpdateNotificationPreference={saveNotificationPreference}
       onRunBountywell={runBountywellInquiry}
     />
   );

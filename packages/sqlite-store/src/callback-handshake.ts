@@ -45,8 +45,6 @@ interface CallbackEvidenceIdentityRow {
   readonly handshake_id: string;
 }
 
-const liveCallbackEvidenceRetentionDays = 90;
-
 export function createSqliteCallbackHandshakeStore(
   databasePath: string,
 ): CallbackHandshakeStore {
@@ -179,37 +177,9 @@ export function createSqliteCallbackHandshakeStore(
     INSERT OR IGNORE INTO expired_callback_handshake_ids (handshake_id, expired_at)
     SELECT id, ? FROM callback_handshakes WHERE accepted_at < ?
   `);
-  const tombstoneExpiredDeliveries = database.prepare(`
-    INSERT OR IGNORE INTO expired_callback_deliveries (
-      delivery_id, result_json, expired_at
-    )
-    SELECT
-      callback_provider_deliveries.delivery_id,
-      CASE
-        WHEN json_extract(callback_provider_deliveries.result_json, '$.disposition')
-          IS NULL THEN '{"actions":[]}'
-        ELSE '{"actions":[],"disposition":"reject"}'
-      END,
-      ?
-    FROM callback_provider_deliveries
-    JOIN callback_handshakes
-      ON callback_handshakes.id = callback_provider_deliveries.handshake_id
-    WHERE callback_handshakes.accepted_at < ?
-  `);
-  const deleteExpiredDeliveries = database.prepare(`
-    DELETE FROM callback_provider_deliveries
-    WHERE handshake_id IN (
-      SELECT id FROM callback_handshakes WHERE accepted_at < ?
-    )
-  `);
   const deleteExpiredEvidence = database.prepare(`
     DELETE FROM callback_evidence_events
-    WHERE handshake_id IN (
-      SELECT id FROM callback_handshakes WHERE accepted_at < ?
-    )
-  `);
-  const deleteExpiredHandshakes = database.prepare(`
-    DELETE FROM callback_handshakes WHERE accepted_at < ?
+    WHERE occurred_at < ?
   `);
 
   function parseDelivery(row: CallbackDeliveryRow): CallbackDeliveryResult {
@@ -377,7 +347,7 @@ export function createSqliteCallbackHandshakeStore(
           : record.task.updatedAt;
       const event = telephoneEvidenceEventSchema.parse({
         ...input.event,
-        sequence: record.evidence.length + 1,
+        sequence: (record.evidence.at(-1)?.sequence ?? 0) + 1,
       });
       insertEvidence.run(
         event.id,
@@ -416,47 +386,32 @@ export function createSqliteCallbackHandshakeStore(
 
   const expireTransaction = database.transaction((cutoff: string) => {
     tombstoneExpiredHandshakes.run(cutoff, cutoff);
-    tombstoneExpiredDeliveries.run(cutoff, cutoff);
-    deleteExpiredDeliveries.run(cutoff);
     deleteExpiredEvidence.run(cutoff);
-    deleteExpiredHandshakes.run(cutoff);
   });
-  function expireOldEvidence(): void {
-    expireTransaction.immediate(
-      new Date(
-        Date.now() - liveCallbackEvidenceRetentionDays * 24 * 60 * 60 * 1_000,
-      ).toISOString(),
-    );
-  }
-  expireOldEvidence();
-
   return {
+    async applyEvidenceRetention(input) {
+      expireTransaction.immediate(input.cutoff);
+    },
     async appendEvidence(input) {
-      expireOldEvidence();
       return appendEvidenceTransaction.immediate(input);
     },
     async applyTransition(input) {
-      expireOldEvidence();
       return applyTransitionTransaction.immediate(input);
     },
     async claimCallbackPlacement(effectId, handshakeId) {
-      expireOldEvidence();
       return insertCallbackPlacement.run(effectId, handshakeId).changes === 1;
     },
     async close() {
       database.close();
     },
     async createHandshake(input) {
-      expireOldEvidence();
       return createHandshakeTransaction.immediate(input);
     },
     async findDelivery(deliveryId) {
-      expireOldEvidence();
       const row = findDelivery.get(deliveryId, deliveryId);
       return row === undefined ? undefined : parseDelivery(row);
     },
     async findDueRetries(now) {
-      expireOldEvidence();
       return findDueRetries
         .all(now)
         .map((row) =>
@@ -464,12 +419,10 @@ export function createSqliteCallbackHandshakeStore(
         );
     },
     async findEvidenceRecord(handshakeId) {
-      expireOldEvidence();
       const row = findHandshake.get(handshakeId);
       return row === undefined ? undefined : loadRecord(row, handshakeId);
     },
     async findHandshake(handshakeId) {
-      expireOldEvidence();
       const row = findHandshake.get(handshakeId);
       return row === undefined
         ? undefined
@@ -488,7 +441,6 @@ export function createSqliteCallbackHandshakeStore(
         : registeredTelephoneSchema.parse(JSON.parse(row.definition_json));
     },
     async listEvidenceRecords() {
-      expireOldEvidence();
       return listHandshakes.all().map((row) => {
         const projection = JSON.parse(row.projection_json) as {
           readonly task?: unknown;
@@ -497,11 +449,9 @@ export function createSqliteCallbackHandshakeStore(
       });
     },
     async persistRejectedDelivery(deliveryId, result) {
-      expireOldEvidence();
       return persistRejectedTransaction.immediate(deliveryId, result);
     },
     async readOperationalMetrics() {
-      expireOldEvidence();
       const states = new Map(
         readHandshakeMetrics.all().map((row) => [row.state, row.count]),
       );

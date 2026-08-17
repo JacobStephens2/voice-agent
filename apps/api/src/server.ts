@@ -7,6 +7,7 @@ import {
   createSqliteAuthenticationStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
 import staticFiles from "@fastify/static";
 import { randomUUID } from "node:crypto";
@@ -18,6 +19,7 @@ import { createVoiceApi } from "./index.ts";
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createTaskContinuityRuntime,
 } from "@voice-agent/runtime";
 
 const databasePath = process.env.VOICE_AGENT_DATABASE_PATH;
@@ -43,10 +45,19 @@ const runtime = createDurableTaskRuntime({
   now: () => new Date().toISOString(),
   store: taskStore,
 });
+const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
 const callbackRuntime = createCallbackHandshakeRuntime({
   nextId: randomUUID,
   now: () => new Date().toISOString(),
-  store: createSqliteCallbackHandshakeStore(databasePath),
+  store: callbackStore,
+});
+const continuityRuntime = createTaskContinuityRuntime({
+  callbackEvidenceRetention: callbackStore,
+  evidenceOrigin: origin,
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  store: createSqliteTaskContinuityStore(databasePath),
+  tasks: taskStore,
 });
 const authentication = createAuthenticationLifecycle({
   now: () => new Date().toISOString(),
@@ -65,6 +76,7 @@ const api = createVoiceApi({
       "/var/lib/voice-agent-promotions/promotions.prom",
   ),
   authentication,
+  completionControls: continuityRuntime,
   controls: runtime,
   origin,
   promotionControl: {
@@ -104,6 +116,7 @@ const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
   await callbackRuntime.close();
+  await continuityRuntime.close();
   await runtime.close();
 };
 process.once("SIGINT", () => void shutdown());

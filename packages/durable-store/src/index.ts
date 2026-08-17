@@ -6,6 +6,7 @@ import type {
 } from "@voice-agent/contracts";
 
 export * from "./callback-handshake.ts";
+export * from "./task-continuity.ts";
 
 export interface ApplicationRegistry {
   findBountywellRegistration(): Promise<BountywellRegistration | undefined>;
@@ -43,6 +44,17 @@ export interface CompletedInquiryPersistence {
   readonly taskId: string;
 }
 
+export interface CancellationRequestPersistence {
+  readonly acceptedEventId: string;
+  readonly cancelledEventId: string;
+  readonly completedEventId: string;
+  readonly operationId: string;
+  readonly requestId: string;
+  readonly requestedAt: string;
+  readonly requestedEventId: string;
+  readonly taskId: string;
+}
+
 export interface VoiceAgentOperationalMetrics {
   readonly bountywellChecks: readonly {
     readonly outcome: "fail" | "pass";
@@ -70,6 +82,9 @@ export interface VoiceAgentOperationalMetrics {
 }
 
 export interface DurableTaskStore {
+  applyEvidenceRetention(input: {
+    readonly cutoff: string;
+  }): Promise<void>;
   appendEvidence(
     input: AppendedEvidencePersistence,
   ): Promise<EvidenceRecordProjection>;
@@ -90,6 +105,9 @@ export interface DurableTaskStore {
   findByTaskId(taskId: string): Promise<EvidenceRecordProjection | undefined>;
   readOperationalMetrics(): Promise<VoiceAgentOperationalMetrics>;
   recordPolicyDenial(): Promise<void>;
+  requestCancellation(
+    input: CancellationRequestPersistence,
+  ): Promise<EvidenceRecordProjection>;
   persistAcceptedInquiry(
     input: AcceptedInquiryPersistence,
   ): Promise<EvidenceRecordProjection>;

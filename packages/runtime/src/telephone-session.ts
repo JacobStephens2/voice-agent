@@ -29,6 +29,10 @@ interface TelephoneBountywellTasks {
     readonly sanitizedTranscript: string;
     readonly turn: FinalizedTelephoneTurn;
   }): Promise<EvidenceRecordProjection>;
+  requestStop?(input: {
+    readonly requestId: string;
+    readonly taskId: string;
+  }): Promise<EvidenceRecordProjection>;
 }
 
 export interface TelephoneSessionCoordinator {
@@ -48,9 +52,14 @@ export interface TelephoneSessionEvidenceSink {
 }
 
 interface TelephoneSessionCoordinatorOptions {
+  readonly activeTaskId?: string;
   readonly interpreter: TelephoneTurnInterpreter;
   readonly sessionEvidence?: TelephoneSessionEvidenceSink;
   readonly tasks: TelephoneBountywellTasks;
+}
+
+interface TelephoneSessionCoordinatorState {
+  pendingCompletionOfferTaskId: string | undefined;
 }
 
 interface FinalizedTurnResult {
@@ -62,6 +71,9 @@ export function createTelephoneSessionCoordinator(
   options: TelephoneSessionCoordinatorOptions,
 ): TelephoneSessionCoordinator {
   const finalizedTurnResults = new Map<string, FinalizedTurnResult>();
+  const state: TelephoneSessionCoordinatorState = {
+    pendingCompletionOfferTaskId: undefined,
+  };
   return {
     async receiveProviderEvent(untrustedEvent) {
       const event = telephoneSessionProviderEventSchema.parse(untrustedEvent);
@@ -92,6 +104,7 @@ export function createTelephoneSessionCoordinator(
         }
         const processing = handleFinalizedTurn(
           options,
+          state,
           event,
           sanitizedTranscript,
         );
@@ -177,6 +190,7 @@ export function createTelephoneSessionCoordinator(
 
 async function handleFinalizedTurn(
   options: TelephoneSessionCoordinatorOptions,
+  state: TelephoneSessionCoordinatorState,
   turn: FinalizedTelephoneTurn,
   sanitizedTranscript: string,
 ): Promise<TelephoneSessionActionResult> {
@@ -203,6 +217,28 @@ async function handleFinalizedTurn(
     occurredAt: turn.occurredAt,
     summary: "Final speech recognition timing was recorded.",
   });
+  if (state.pendingCompletionOfferTaskId !== undefined) {
+    const taskId = state.pendingCompletionOfferTaskId;
+    state.pendingCompletionOfferTaskId = undefined;
+    if (isAffirmative(sanitizedTranscript)) {
+      return telephoneSessionActionResultSchema.parse({
+        actions: [
+          {
+            interruptible: false,
+            kind: "request-completion-callback-and-disconnect",
+            requestId: `completion-callback:${turn.turnId}`,
+            taskId,
+            telephoneSessionId: turn.telephoneSessionId,
+          },
+        ],
+      });
+    }
+    return guidance(
+      options,
+      turn,
+      "Okay. I’ll keep this call open while the Durable Task continues.",
+    );
+  }
   const interpretation = telephoneTurnInterpretationSchema.parse(
     await options.interpreter.interpret({
       telephoneSessionId: turn.telephoneSessionId,
@@ -222,6 +258,45 @@ async function handleFinalizedTurn(
     occurredAt: turn.occurredAt,
     summary: "Telephone turn interpretation timing was recorded.",
   });
+  if (interpretation.intent === "stop") {
+    if (
+      options.activeTaskId === undefined ||
+      options.tasks.requestStop === undefined
+    ) {
+      return guidance(
+        options,
+        turn,
+        "There is no active Durable Task in this Telephone Session to stop.",
+      );
+    }
+    const record = await options.tasks.requestStop({
+      requestId: `telephone-stop:${turn.turnId}`,
+      taskId: options.activeTaskId,
+    });
+    const responseId = `${turn.turnId}:stop-response`;
+    const text = "I stopped the Durable Task at its next safe boundary.";
+    await options.tasks.appendTelephoneEvidence({
+      event: {
+        details: { responseId, text },
+        id: responseId,
+        kind: "telephone.semantic.response",
+        occurredAt: record.task.updatedAt,
+        summary: "A cancellation response was prepared for speech.",
+      },
+      taskId: record.task.id,
+    });
+    return telephoneSessionActionResultSchema.parse({
+      actions: [
+        {
+          interruptible: true,
+          kind: "speak-semantic-response",
+          responseId,
+          taskId: record.task.id,
+          text,
+        },
+      ],
+    });
+  }
   if (interpretation.intent === "state-changing") {
     const taskDescription = /[.!?]$/u.test(sanitizedTranscript)
       ? sanitizedTranscript
@@ -277,6 +352,35 @@ async function handleFinalizedTurn(
     turn,
   });
   const responseId = `${turn.turnId}:response`;
+  if (record.task.status === "pending") {
+    state.pendingCompletionOfferTaskId = record.task.id;
+    const offerResponseId = `${turn.turnId}:completion-offer`;
+    const text =
+      "This is still running. I can disconnect and call your registered telephone when it finishes. Would you like that?" as const;
+    const evidence = {
+      details: { responseId: offerResponseId, text },
+      id: offerResponseId,
+      kind: "telephone.semantic.response" as const,
+      occurredAt: record.task.updatedAt,
+      summary: "A Completion Callback offer was prepared for speech.",
+    };
+    await options.tasks.appendTelephoneEvidence({
+      event: evidence,
+      taskId: record.task.id,
+    });
+    await options.sessionEvidence?.append(evidence);
+    return telephoneSessionActionResultSchema.parse({
+      actions: [
+        {
+          interruptible: true,
+          kind: "offer-completion-callback",
+          responseId: offerResponseId,
+          taskId: record.task.id,
+          text,
+        },
+      ],
+    });
+  }
   const text = semanticBountywellAnswer(record);
   await options.tasks.appendTelephoneEvidence({
     event: {
@@ -302,6 +406,37 @@ async function handleFinalizedTurn(
         kind: "speak-semantic-response",
         responseId,
         taskId: record.task.id,
+        text,
+      },
+    ],
+  });
+}
+
+function isAffirmative(text: string): boolean {
+  return /^(?:yes|yes(?:,\s*|\s+)please|yeah|yep|sure|okay|ok|please do)[.!]?$/iu.test(
+    text.trim(),
+  );
+}
+
+async function guidance(
+  options: { readonly sessionEvidence?: TelephoneSessionEvidenceSink },
+  turn: FinalizedTelephoneTurn,
+  text: string,
+): Promise<TelephoneSessionActionResult> {
+  const responseId = `${turn.turnId}:guidance`;
+  await options.sessionEvidence?.append({
+    details: { responseId, text },
+    id: responseId,
+    kind: "telephone.semantic.response",
+    occurredAt: turn.occurredAt,
+    summary: "Bounded Telephone Session guidance was prepared for speech.",
+  });
+  return telephoneSessionActionResultSchema.parse({
+    actions: [
+      {
+        interruptible: true,
+        kind: "speak-guidance",
+        responseId,
         text,
       },
     ],

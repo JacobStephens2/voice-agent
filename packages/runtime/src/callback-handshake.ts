@@ -739,7 +739,10 @@ function appendEvent(
     ...projection,
     evidence: [
       ...projection.evidence,
-      { ...event, sequence: projection.evidence.length + 1 } as TelephoneEvidenceEvent,
+      {
+        ...event,
+        sequence: (projection.evidence.at(-1)?.sequence ?? 0) + 1,
+      } as TelephoneEvidenceEvent,
     ],
   };
 }

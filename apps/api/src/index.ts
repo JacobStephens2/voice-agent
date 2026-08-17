@@ -7,14 +7,18 @@ import Fastify, {
 
 import type { AuthenticationLifecycle } from "@voice-agent/auth";
 import {
+  applyEvidenceRetentionRequestSchema,
   authenticationStatusSchema,
   bountywellRegistrationSchema,
   bountywellRegistrationStatusSchema,
   csrfRequestSchema,
   evidenceRecordProjectionSchema,
+  evidenceRetentionResultSchema,
   evidenceRecordSummaryListSchema,
   freshPasskeyActionResponseSchema,
   originSecurityHeaders,
+  notificationPreferenceSchema,
+  notificationPreferenceStatusSchema,
   passkeyAuthenticationResponseRequestSchema,
   passkeyEnrollmentResultSchema,
   passkeyResponseRequestSchema,
@@ -28,13 +32,17 @@ import {
   registerBountywellRequestSchema,
   registrationOptionsRequestSchema,
   submitBountywellHealthRequestSchema,
+  stopTaskRequestSchema,
   trustedBrowserSessionResponseSchema,
+  updateNotificationPreferenceRequestSchema,
   voiceAgentEvidenceRecordProjectionSchema,
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
+  type NotificationPreference,
+  type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
@@ -92,6 +100,10 @@ export interface BountywellTaskControls {
   }): Promise<EvidenceRecordProjection>;
   getBountywellRegistration(): Promise<BountywellRegistration | undefined>;
   registerBountywell(): Promise<BountywellRegistration>;
+  requestStop?(input: {
+    readonly requestId: string;
+    readonly taskId: string;
+  }): Promise<EvidenceRecordProjection>;
 }
 
 export interface TelephoneControls {
@@ -99,10 +111,19 @@ export interface TelephoneControls {
   registerTelephone(input: RegisteredTelephoneInput): Promise<RegisteredTelephone>;
 }
 
+export interface CompletionControls {
+  applyEvidenceLifecyclePolicy?(): Promise<{ readonly cutoff: string }>;
+  configureNotification(
+    input: NotificationPreferenceInput,
+  ): Promise<NotificationPreference>;
+  getNotificationPreference(): Promise<NotificationPreference | undefined>;
+}
+
 export interface TaskApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: EvidenceRecordAuthentication;
   readonly controls?: BountywellTaskControls;
+  readonly completionControls?: CompletionControls | undefined;
   readonly origin?: string;
   readonly promotionControl?: {
     requestResume(): Promise<string>;
@@ -115,6 +136,7 @@ export interface VoiceApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: AuthenticationLifecycle;
   readonly controls?: BountywellTaskControls;
+  readonly completionControls?: CompletionControls | undefined;
   readonly origin: string;
   readonly promotionControl?: {
     requestResume(): Promise<string>;
@@ -268,7 +290,84 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       records: options.records,
     });
   }
+  if (options.completionControls !== undefined && options.origin !== undefined) {
+    registerCompletionControlRoutes(api, {
+      authentication: options.authentication,
+      controls: options.completionControls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
   return api;
+}
+
+function registerCompletionControlRoutes(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: CompletionControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.get("/api/notifications/preference", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return notificationPreferenceStatusSchema.parse({
+      preference:
+        (await options.controls.getNotificationPreference()) ?? null,
+    });
+  });
+  api.post("/api/notifications/preference", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = updateNotificationPreferenceRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    if (
+      options.authentication.hasFreshPasskeyAction === undefined ||
+      !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+    ) {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: "Fresh Passkey Action required" });
+    }
+    return notificationPreferenceSchema.parse(
+      await options.controls.configureNotification({
+        email: body.email,
+        from: body.from,
+        notificationSubdomain: body.notificationSubdomain,
+      }),
+    );
+  });
+  api.post("/api/evidence/retention", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = applyEvidenceRetentionRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    if (
+      options.controls.applyEvidenceLifecyclePolicy === undefined ||
+      options.authentication.hasFreshPasskeyAction === undefined ||
+      !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+    ) {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: "Fresh Passkey Action required" });
+    }
+    return evidenceRetentionResultSchema.parse(
+      await options.controls.applyEvidenceLifecyclePolicy(),
+    );
+  });
 }
 
 function registerTelephoneControlRoutes(
@@ -441,6 +540,30 @@ function registerBountywellControlRoutes(
       throw error;
     }
   });
+  api.post<{ Params: { taskId: string } }>(
+    "/api/tasks/:taskId/stop",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = stopTaskRequestSchema.parse(request.body);
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      if (options.controls.requestStop === undefined) {
+        return reply.code(409).send({ error: "Task cancellation is unavailable" });
+      }
+      return evidenceRecordProjectionSchema.parse(
+        await options.controls.requestStop({
+          requestId: body.requestId,
+          taskId: request.params.taskId,
+        }),
+      );
+    },
+  );
 }
 
 function registerAuthenticationRoutes(
