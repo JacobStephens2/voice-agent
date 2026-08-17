@@ -23,7 +23,7 @@ try {
         throw new Error(record.task.conclusion);
       }
       const kinds = new Set(record.evidence.map((event) => event.kind));
-      for (const requiredKind of [
+      const hasRequiredEvidence = ([
         "telephone.turn.finalized",
         "telephone.provider.timing",
         "task.accepted",
@@ -32,13 +32,8 @@ try {
         "operation.completed",
         "task.completed",
         "telephone.semantic.response",
-      ] as const) {
-        if (!kinds.has(requiredKind)) {
-          throw new Error(
-            `The telephone Bountywell inquiry omitted ${requiredKind}`,
-          );
-        }
-      }
+      ] as const).every((requiredKind) => kinds.has(requiredKind));
+      if (!hasRequiredEvidence) continue;
       const timingStages = new Set(
         record.evidence.flatMap((event) =>
           event.kind === "telephone.provider.timing"
@@ -46,13 +41,10 @@ try {
             : [],
         ),
       );
-      for (const requiredStage of ["stt", "coordinator", "tts"] as const) {
-        if (!timingStages.has(requiredStage)) {
-          throw new Error(
-            `The telephone Bountywell inquiry omitted ${requiredStage} timing`,
-          );
-        }
-      }
+      const hasRequiredTiming = (
+        ["stt", "coordinator", "tts"] as const
+      ).every((requiredStage) => timingStages.has(requiredStage));
+      if (!hasRequiredTiming) continue;
       const observed = record.evidence.find(
         (event) => event.kind === "evidence.observed",
       );
