@@ -81,6 +81,7 @@ export interface TelephoneBoundarySession {
   readonly lastActivityAt?: string;
   readonly sessionId: string;
   readonly mode: "ordinary" | "safe-terminal-only";
+  readonly rawAudioDebugConfirmed?: boolean;
   readonly rawAudioDebugExpiresAt?: string;
   readonly state: "active" | "ended" | "warm";
 }
@@ -126,6 +127,7 @@ export interface TelephoneBoundaryStore {
     readonly sessionId: string;
   }): Promise<{ readonly ended: boolean }>;
   findSession(sessionId: string): Promise<TelephoneBoundarySession | undefined>;
+  findActiveSessionIds(): Promise<readonly string[]>;
   findExpiredRawAudioDebug(now: string): Promise<
     readonly {
       readonly artifactPath?: string;
@@ -137,6 +139,10 @@ export interface TelephoneBoundaryStore {
     readonly expiresAt: string;
     readonly sessionId: string;
   }): Promise<boolean>;
+  expireWarmSessions(input: {
+    readonly cutoff: string;
+    readonly endedAt: string;
+  }): Promise<number>;
   readMetrics(now: string): Promise<TelephoneBoundaryMetrics>;
   recordProviderFailure(input: {
     readonly failureClass: TelephoneProviderFailureClass;

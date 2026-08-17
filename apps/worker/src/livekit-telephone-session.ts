@@ -53,6 +53,7 @@ export async function runLiveKitTelephoneSession(
     readonly boundaries: Pick<
       ReturnType<typeof createTelephoneBoundaryRuntime>,
       | "claimRawAudioCapture"
+      | "claimStateChangingTask"
       | "endSession"
       | "noteActivity"
       | "recordProviderFailure"
@@ -86,6 +87,10 @@ export async function runLiveKitTelephoneSession(
       : { activeTaskId: options.activeTaskId }),
     interpreter,
     sessionEvidence: options.sessionEvidence,
+    stateChangingTasks: {
+      claim: (telephoneSessionId, taskId) =>
+        options.boundaries.claimStateChangingTask(telephoneSessionId, taskId),
+    },
     tasks: options.tasks,
   });
   const prolongedSilenceMs = options.prolongedSilenceMs ?? 60_000;
@@ -259,11 +264,16 @@ export async function runLiveKitTelephoneSession(
         rejectTelephoneInput(error);
       }
     });
-    await session.start({
-      agent,
-      record: false,
-      room: options.room,
-    });
+    try {
+      await session.start({
+        agent,
+        record: false,
+        room: options.room,
+      });
+    } catch (error) {
+      await recordProviderFailureAndEnd("tts", error, options.activeTaskId);
+      return;
+    }
     rawAudioCapture = recordAuthorizedCallerAudio({
       boundaries: options.boundaries,
       room: options.room,

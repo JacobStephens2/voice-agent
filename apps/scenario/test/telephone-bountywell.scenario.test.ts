@@ -554,6 +554,7 @@ describe("Telephone Bountywell health inquiry", () => {
         observedAt: "2026-08-17T17:00:01.000Z",
         rejectedEvidenceCount: 0,
       },
+      stateChangingDecisions: ["accepted", "queued"],
     });
 
     try {
@@ -575,6 +576,25 @@ describe("Telephone Bountywell health inquiry", () => {
             kind: "request-task-confirmation",
             text:
               "Please confirm this state-changing task: Bountywell production — Restart Bountywell production so the API becomes healthy.",
+          },
+        ],
+      });
+      await expect(
+        scenario.receiveProviderEvent({
+          deliveryId: "confirmation-delivery-002",
+          kind: "turn-finalized",
+          occurredAt: "2026-08-17T17:00:01.500Z",
+          stt: { durationMs: 280, provider: "assemblyai" },
+          telephoneSessionId: "telephone-session-confirmation",
+          transcript: "Deploy the Bountywell fix now",
+        }),
+      ).resolves.toEqual({
+        actions: [
+          {
+            interruptible: true,
+            kind: "speak-guidance",
+            responseId: "confirmation-delivery-002:guidance",
+            text: "That state-changing discussion is queued in position 1.",
           },
         ],
       });

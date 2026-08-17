@@ -10,7 +10,6 @@ import {
   type Room,
 } from "@livekit/rtc-node";
 import { createHash, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 
 import type {
   CallbackAction,
@@ -21,6 +20,7 @@ import { createUnixSocketBountywellObserver } from "@voice-agent/operations-brok
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createNodeRawAudioArtifactRemover,
   createTaskContinuityRuntime,
   createTelephoneBoundaryRuntime,
 } from "@voice-agent/runtime";
@@ -36,10 +36,19 @@ import {
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
 import {
+  boundedProviderConnectOptions,
   playPrerecordedProviderFailure,
   runLiveKitTelephoneSession,
 } from "./livekit-telephone-session.ts";
 import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
+import {
+  createProductionResendSilentNotificationAdapter,
+  type SilentNotificationAdapter,
+} from "./resend-silent-notification.ts";
+import {
+  reserveTelephoneUsageSlice,
+  telephoneUsageRatesFromEnvironment,
+} from "./telephone-usage-meter.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -66,23 +75,7 @@ export default defineAgent({
       nextId: randomUUID,
       now: () => new Date().toISOString(),
       prolongedSilenceMs: prolongedSilenceMs(),
-      rawAudioArtifacts: {
-        async remove(path) {
-          try {
-            await rm(path);
-            return "deleted";
-          } catch (error) {
-            if (
-              error instanceof Error &&
-              "code" in error &&
-              error.code === "ENOENT"
-            ) {
-              return "missing";
-            }
-            throw error;
-          }
-        },
-      },
+      rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
       rawAudioDebugDirectory:
         process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
         "/var/lib/voice-agent/raw-audio-debug",
@@ -112,6 +105,13 @@ export default defineAgent({
       placementClaims: callbackStore,
       url: requireEnvironment("LIVEKIT_URL"),
     });
+    const notificationAdapter = createProductionResendSilentNotificationAdapter({
+      apiKey: requireEnvironment("RESEND_API_KEY"),
+      domainId: requireEnvironment("RESEND_DOMAIN_ID"),
+      notificationSubdomain: requireEnvironment(
+        "VOICE_AGENT_NOTIFICATION_SUBDOMAIN",
+      ),
+    });
     try {
       const dispatch = parseOutboundDispatch(ctx.job.metadata);
       if (dispatch === undefined) {
@@ -123,6 +123,7 @@ export default defineAgent({
           tasks,
           continuity,
           boundaries,
+          notificationAdapter,
           dispatch,
         );
       } else {
@@ -224,6 +225,7 @@ async function handleInbound(
       await playFixedText(session, notice.text);
     }
   } catch {
+    await playPrerecordedProviderFailure(session).catch(() => undefined);
     await runtime.receiveProviderEvent(inbound.handshakeId!, {
       attempt: 1,
       deliveryId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
@@ -254,6 +256,7 @@ async function handleOutbound(
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
   boundaries: BoundaryRuntime,
+  notificationAdapter: SilentNotificationAdapter,
   dispatch: AuthenticationCallbackDispatch,
 ): Promise<void> {
   const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
@@ -289,13 +292,10 @@ async function handleOutbound(
       dispatch.participantIdentity,
     );
     callId = providerCallId(participant);
-    detector = new voice.AMD(session, {
-      interruptOnMachine: true,
-      llm: "openai/gpt-5.4",
-      participantIdentity: dispatch.participantIdentity,
-      stt: "assemblyai/universal-streaming-multilingual",
-      waitUntilFinished: true,
-    });
+    detector = createBoundedMachineDetector(
+      session,
+      dispatch.participantIdentity,
+    );
     disconnected = waitForParticipantDisconnect(
       ctx.room,
       participant.identity,
@@ -405,12 +405,20 @@ async function handleOutbound(
                 dispatch.handshakeId,
                 input,
               );
+              await sendAuthenticationFailureNotification({
+                failureEventId: input.failureEventId,
+                handshakeId: dispatch.handshakeId,
+                notificationAdapter,
+                occurredAt: input.occurredAt,
+                runtime,
+                continuity,
+              });
             },
           },
           tasks,
           telephoneSessionId: record.session.id,
           prolongedSilenceMs: prolongedSilenceMs(),
-          usageRatesMicrousdPerMinute: usageRatesMicrousdPerMinute(),
+          usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
         });
         return;
       }
@@ -425,13 +433,28 @@ async function handleOutbound(
     });
     await performMediaActions(session, ended);
   } catch {
-    await runtime.receiveProviderEvent(dispatch.handshakeId, {
+    await playPrerecordedProviderFailure(session).catch(() => undefined);
+    const failed = await runtime.receiveProviderEvent(dispatch.handshakeId, {
       attempt: dispatch.attempt,
       deliveryId: `provider-failure:${dispatch.effectId}`,
       kind: "ended",
       outcome: "failed",
       providerCallId: callId,
     });
+    const notification = failed.actions.find(
+      (action) => action.kind === "request-silent-notification",
+    );
+    if (notification !== undefined) {
+      await sendAuthenticationFailureNotification({
+        failureEventId: `provider-failure:${dispatch.effectId}`,
+        handshakeId: dispatch.handshakeId,
+        notificationAdapter,
+        occurredAt: new Date().toISOString(),
+        operationId: notification.effectId,
+        runtime,
+        continuity,
+      }).catch(() => undefined);
+    }
   } finally {
     await boundaries.releaseWarmSession(telephoneSessionId);
     disconnected?.cancel();
@@ -480,13 +503,10 @@ async function handleCompletionOutbound(
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
-    detector = new voice.AMD(session, {
-      interruptOnMachine: true,
-      llm: "openai/gpt-5.4",
-      participantIdentity: dispatch.participantIdentity,
-      stt: "assemblyai/universal-streaming-multilingual",
-      waitUntilFinished: true,
-    });
+    detector = createBoundedMachineDetector(
+      session,
+      dispatch.participantIdentity,
+    );
     disconnected = waitForParticipantDisconnect(
       ctx.room,
       participant.identity,
@@ -612,9 +632,10 @@ async function handleCompletionOutbound(
       tasks,
       telephoneSessionId: resume.telephoneSessionId,
       prolongedSilenceMs: prolongedSilenceMs(),
-      usageRatesMicrousdPerMinute: usageRatesMicrousdPerMinute(),
+      usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
   } catch {
+    await playPrerecordedProviderFailure(session).catch(() => undefined);
     if (authenticated) {
       await continuity
         .requestSessionFailureNotification({
@@ -712,7 +733,7 @@ async function handleCompletionResumption(
       tasks,
       telephoneSessionId: dispatch.telephoneSessionId,
       prolongedSilenceMs: prolongedSilenceMs(),
-      usageRatesMicrousdPerMinute: usageRatesMicrousdPerMinute(),
+      usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
   } catch {
     await continuity
@@ -750,6 +771,47 @@ function completionSessionEvidence(
       });
     },
   };
+}
+
+async function sendAuthenticationFailureNotification(input: {
+  readonly continuity: ContinuityRuntime;
+  readonly failureEventId: string;
+  readonly handshakeId: string;
+  readonly notificationAdapter: SilentNotificationAdapter;
+  readonly occurredAt: string;
+  readonly operationId?: string;
+  readonly runtime: CallbackRuntime;
+}): Promise<void> {
+  const preference = await input.continuity.getNotificationPreference();
+  if (preference === undefined) {
+    throw new Error("Silent Notification preference is unavailable");
+  }
+  const correlation = createHash("sha256")
+    .update(`${input.handshakeId}:${input.failureEventId}`)
+    .digest("hex")
+    .slice(0, 32);
+  const operationId =
+    input.operationId ?? `notification-operation:${correlation}`;
+  await input.notificationAdapter.send({
+    clickTracking: false,
+    evidenceRecordUrl: `https://voice.stephens.page/?task=${encodeURIComponent(input.handshakeId)}`,
+    from: preference.from,
+    idempotencyKey: `telephone-failure:${correlation}`,
+    kind: "send-silent-notification",
+    openTracking: false,
+    operationId,
+    subject: "Voice Agent task update",
+    taskId: input.handshakeId,
+    text: "A Voice Agent telephone session ended at a safe failure boundary. Open the secure app for details.",
+    to: preference.email,
+  });
+  await input.runtime.appendTelephoneSessionEvidence(input.handshakeId, {
+    details: { operationId },
+    id: `notification-sent:${correlation}`,
+    kind: "notification.sent",
+    occurredAt: input.occurredAt,
+    summary: "A generic Silent Notification was delivered.",
+  });
 }
 
 function requireResumptionOperationId(
@@ -792,11 +854,32 @@ async function performCompletionMediaActions(
 
 function createFixedSpeechSession(): voice.AgentSession {
   return new voice.AgentSession({
+    connOptions: {
+      maxUnrecoverableErrors: 0,
+      ttsConnOptions: boundedProviderConnectOptions("tts"),
+    },
     tts: new inference.TTS({
+      connOptions: boundedProviderConnectOptions("tts"),
       language: "en",
       model: "inworld/inworld-tts-2",
       voice: process.env.VOICE_AGENT_TTS_VOICE ?? "Sarah",
     }),
+    ttsReadIdleTimeout: 10_000,
+  });
+}
+
+function createBoundedMachineDetector(
+  session: voice.AgentSession,
+  participantIdentity: string,
+): voice.AMD {
+  return new voice.AMD(session, {
+    detectionTimeoutMs: 10_000,
+    interruptOnMachine: true,
+    llm: "openai/gpt-5.4",
+    noSpeechTimeoutMs: 5_000,
+    participantIdentity,
+    stt: "assemblyai/universal-streaming-multilingual",
+    waitUntilFinished: false,
   });
 }
 
@@ -856,6 +939,24 @@ async function placeCallbackOrRecordFailure(
     await runtime.receiveProviderEvent(handshakeId, {
       attempt: action.attempt,
       deliveryId: `admission-rejected:${action.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: action.effectId,
+    });
+    return;
+  }
+  if (
+    (await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
+      recordUsage: boundaries.recordUsage,
+      sessionId: record.session.id,
+      usageScopeId: `prelive:${action.effectId}`,
+    })) === "safe-terminal-only"
+  ) {
+    await boundaries.releaseWarmSession(record.session.id);
+    await runtime.receiveProviderEvent(handshakeId, {
+      attempt: action.attempt,
+      deliveryId: `spending-ceiling:${action.effectId}`,
       kind: "ended",
       outcome: "failed",
       providerCallId: action.effectId,
@@ -1042,31 +1143,6 @@ function prolongedSilenceMs(): number {
     );
   }
   return configured * 1_000;
-}
-
-function usageRatesMicrousdPerMinute() {
-  return {
-    api: positiveEnvironmentInteger(
-      "VOICE_AGENT_API_MICROUSD_PER_MINUTE",
-      50_000,
-    ),
-    "realtime-media": positiveEnvironmentInteger(
-      "VOICE_AGENT_REALTIME_MEDIA_MICROUSD_PER_MINUTE",
-      100_000,
-    ),
-    telephony: positiveEnvironmentInteger(
-      "VOICE_AGENT_TELEPHONY_MICROUSD_PER_MINUTE",
-      50_000,
-    ),
-  } as const;
-}
-
-function positiveEnvironmentInteger(name: string, fallback: number): number {
-  const value = Number(process.env[name] ?? fallback);
-  if (!Number.isSafeInteger(value) || value < 1 || value > 1_000_000_000) {
-    throw new Error(`${name} must be between one microusd and $1,000`);
-  }
-  return value;
 }
 
 function boundaryDenialReason(

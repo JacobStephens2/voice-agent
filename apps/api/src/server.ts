@@ -13,13 +13,14 @@ import {
 import staticFiles from "@fastify/static";
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import { open, readFile, rm } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { createVoiceApi } from "./index.ts";
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createNodeRawAudioArtifactRemover,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   formatTelephoneBoundaryPrometheusMetrics,
@@ -65,19 +66,7 @@ const boundaries = createTelephoneBoundaryRuntime({
   },
   nextId: randomUUID,
   now: () => new Date().toISOString(),
-  rawAudioArtifacts: {
-    async remove(path) {
-      try {
-        await rm(path);
-        return "deleted";
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-          return "missing";
-        }
-        throw error;
-      }
-    },
-  },
+  rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
   rawAudioDebugDirectory:
     process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
     "/var/lib/voice-agent/raw-audio-debug",

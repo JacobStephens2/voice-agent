@@ -15,7 +15,6 @@ import {
   type InboundTelephoneResult,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
-  type TelephoneConversationEvidenceEvent,
   type TelephoneEvidenceEvent,
   type TelephoneEvidenceRecordSummary,
   type TelephoneSessionEvidenceRecordProjection,
@@ -30,7 +29,7 @@ const rateLimitWindowMs = 5 * 60 * 1_000;
 export interface CallbackHandshakeRuntime {
   appendTelephoneSessionEvidence(
     handshakeId: string,
-    event: Omit<TelephoneConversationEvidenceEvent, "sequence">,
+    event: Omit<TelephoneEvidenceEvent, "sequence">,
   ): Promise<TelephoneSessionEvidenceRecordProjection>;
   appendTelephoneSessionEvidenceBySessionId(
     telephoneSessionId: string,

@@ -69,6 +69,13 @@ describe("Telephone fail-closed boundaries", () => {
         position: 1,
         resource: "state-changing-task",
       });
+      await expect(
+        scenario.claimStateChangingTask("session-1", "task-3"),
+      ).resolves.toEqual({
+        decision: "queued",
+        position: 2,
+        resource: "state-changing-task",
+      });
 
       await expect(scenario.claimSubagent("delegation-1")).resolves.toEqual({
         decision: "accepted",
@@ -79,18 +86,30 @@ describe("Telephone fail-closed boundaries", () => {
         position: 1,
         resource: "subagent",
       });
+      await expect(scenario.claimSubagent("delegation-3")).resolves.toEqual({
+        decision: "queued",
+        position: 2,
+        resource: "subagent",
+      });
+
+      await expect(
+        scenario.releaseStateChangingTask("session-1", "task-2"),
+      ).resolves.toEqual({});
+      await expect(scenario.releaseSubagent("delegation-2")).resolves.toEqual(
+        {},
+      );
 
       await expect(
         scenario.releaseStateChangingTask("session-1", "task-1"),
-      ).resolves.toEqual({ promotedOwnerId: "task-2" });
+      ).resolves.toEqual({ promotedOwnerId: "task-3" });
       await expect(scenario.releaseSubagent("delegation-1")).resolves.toEqual({
-        promotedOwnerId: "delegation-2",
+        promotedOwnerId: "delegation-3",
       });
 
       const metrics = await scenario.readMetrics();
       expect(metrics.limitDecisions).toEqual({
         accepted: 5,
-        queued: 2,
+        queued: 4,
         rejected: 3,
       });
       expect(metrics.resources).toEqual({
@@ -184,6 +203,39 @@ describe("Telephone fail-closed boundaries", () => {
         'voice_agent_telephone_provider_failures_total{stage="stt",class="timeout"} 1',
       );
       expect(renderedMetrics).not.toContain("failed-session");
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("durable recovery expires abandoned warm and active sessions", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-recovery-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      now: "2026-08-17T12:00:00.000Z",
+    });
+
+    try {
+      await scenario.reserveWarmSession("active-session");
+      await scenario.activateSession("active-session");
+      await scenario.reserveWarmSession("abandoned-warm-session");
+      scenario.setTime("2026-08-17T14:00:00.000Z");
+
+      await expect(scenario.enforceDeadlines()).resolves.toEqual({
+        endedActiveSessions: 1,
+        expiredWarmSessions: 1,
+      });
+      await expect(scenario.readSession("active-session")).resolves.toMatchObject({
+        state: "ended",
+      });
+      await expect(
+        scenario.readSession("abandoned-warm-session"),
+      ).resolves.toMatchObject({ state: "ended" });
+      await expect(scenario.reserveWarmSession("replacement-session")).resolves.toEqual({
+        decision: "accepted",
+        resource: "warm-session",
+      });
     } finally {
       await scenario.close();
     }
@@ -387,6 +439,20 @@ describe("Telephone fail-closed boundaries", () => {
         reason: "subagent-ineligible",
       });
 
+      scenario.setTime("2026-08-17T12:10:00.000Z");
+      await scenario.endSession("debug-session", "completed");
+      await scenario.reserveWarmSession("debug-session");
+      await scenario.activateSession("debug-session");
+      await expect(
+        scenario.claimRawAudioCapture({
+          actor: "voice-agent",
+          sessionId: "debug-session",
+        }),
+      ).resolves.toEqual({
+        decision: "rejected",
+        reason: "debug-grant-required",
+      });
+
       scenario.setTime("2026-08-18T10:59:59.999Z");
       await expect(scenario.cleanupExpiredRawAudio()).resolves.toEqual({
         deleted: 0,
@@ -402,6 +468,8 @@ describe("Telephone fail-closed boundaries", () => {
 
       expect(scenario.evidence.map((event) => event.kind)).toEqual([
         "telephone.audio-debug.enabled",
+        "telephone.audio-debug.revoked",
+        "telephone.session.ended",
         "telephone.audio-debug.cleaned",
       ]);
       expect(JSON.stringify(scenario.evidence)).not.toContain(
@@ -449,6 +517,47 @@ describe("Telephone fail-closed boundaries", () => {
         reason: "debug-grant-required",
       });
       expect(scenario.evidence).toEqual([]);
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("raw-audio evidence is corrected when its session ends before grant confirmation", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-audio-race-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      endSessionOnEvidenceKinds: ["telephone.audio-debug.enabled"],
+      now: "2026-08-17T12:00:00.000Z",
+      rawAudioDebugDirectory: join(directory, "debug-audio"),
+    });
+
+    try {
+      await scenario.reserveWarmSession("debug-race-session");
+      await scenario.activateSession("debug-race-session");
+      await expect(
+        scenario.authorizeRawAudioDebug({
+          actor: "owner",
+          freshPasskey: true,
+          sessionId: "debug-race-session",
+        }),
+      ).resolves.toEqual({
+        decision: "rejected",
+        reason: "session-unavailable",
+      });
+      expect(scenario.evidence.map((event) => event.kind)).toEqual([
+        "telephone.audio-debug.enabled",
+        "telephone.audio-debug.revoked",
+      ]);
+      await expect(
+        scenario.claimRawAudioCapture({
+          actor: "voice-agent",
+          sessionId: "debug-race-session",
+        }),
+      ).resolves.toEqual({
+        decision: "rejected",
+        reason: "debug-grant-required",
+      });
     } finally {
       await scenario.close();
     }

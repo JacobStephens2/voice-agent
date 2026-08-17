@@ -20,6 +20,7 @@ interface SessionRow {
   readonly last_activity_at: string | null;
   readonly session_id: string;
   readonly safe_terminal_only: 0 | 1;
+  readonly raw_audio_debug_confirmed: 0 | 1;
   readonly raw_audio_debug_expires_at: string | null;
   readonly state: "active" | "ended" | "warm";
 }
@@ -42,7 +43,8 @@ export function createSqliteTelephoneBoundaryStore(
     SessionRow
   >(`
     SELECT session_id, state, activated_at, last_activity_at,
-      safe_terminal_only, raw_audio_debug_expires_at
+      safe_terminal_only, raw_audio_debug_expires_at,
+      raw_audio_debug_confirmed
     FROM telephone_boundary_sessions
     WHERE session_id = ?
   `);
@@ -62,9 +64,26 @@ export function createSqliteTelephoneBoundaryStore(
       duration_ms = NULL, safe_terminal_only = 0
     WHERE session_id = ? AND state = 'ended'
   `);
-  const deleteWarmSession = database.prepare(`
-    DELETE FROM telephone_boundary_sessions
+  const releaseWarmSession = database.prepare(`
+    UPDATE telephone_boundary_sessions
+    SET state = 'ended', ended_at = ?, end_reason = 'disconnected',
+      duration_ms = 0, raw_audio_debug_confirmed = 0
     WHERE session_id = ? AND state = 'warm'
+  `);
+  const expireWarmSessions = database.prepare(`
+    UPDATE telephone_boundary_sessions
+    SET state = 'ended', ended_at = ?, end_reason = 'disconnected',
+      duration_ms = 0, raw_audio_debug_confirmed = 0
+    WHERE state = 'warm' AND reserved_at <= ?
+  `);
+  const findActiveSessionIds = database.prepare<
+    [],
+    { readonly session_id: string }
+  >(`
+    SELECT session_id
+    FROM telephone_boundary_sessions
+    WHERE state = 'active'
+    ORDER BY activated_at, session_id
   `);
   const activateSession = database.prepare(`
     UPDATE telephone_boundary_sessions
@@ -84,7 +103,8 @@ export function createSqliteTelephoneBoundaryStore(
   `);
   const finishSession = database.prepare(`
     UPDATE telephone_boundary_sessions
-    SET state = 'ended', ended_at = ?, end_reason = ?, duration_ms = ?
+    SET state = 'ended', ended_at = ?, end_reason = ?, duration_ms = ?,
+      raw_audio_debug_confirmed = 0
     WHERE session_id = ? AND state = 'active'
   `);
   const deleteSessionTasks = database.prepare(`
@@ -148,6 +168,7 @@ export function createSqliteTelephoneBoundaryStore(
         raw_audio_debug_expires_at IS NULL
         OR raw_audio_debug_expires_at <= ?
       )
+      AND raw_audio_artifact_path IS NULL
   `);
   const confirmRawAudioDebug = database.prepare(`
     UPDATE telephone_boundary_sessions
@@ -366,7 +387,9 @@ export function createSqliteTelephoneBoundaryStore(
   );
   const releaseTask = database.transaction(
     (input: { readonly sessionId: string; readonly taskId: string }) => {
+      const released = findTask.get(input.taskId);
       deleteTask.run(input.taskId, input.sessionId);
+      if (released?.state !== "active") return {};
       const next = findNextTask.get(input.sessionId);
       if (next === undefined) return {};
       activateTask.run(next.owner_id);
@@ -374,7 +397,9 @@ export function createSqliteTelephoneBoundaryStore(
     },
   );
   const releaseGlobalSubagent = database.transaction((delegationId: string) => {
+    const released = findSubagent.get(delegationId);
     deleteSubagent.run(delegationId);
+    if (released?.state !== "running") return {};
     const next = findNextSubagent.get();
     if (next === undefined) return {};
     activateSubagent.run(next.owner_id);
@@ -471,6 +496,12 @@ export function createSqliteTelephoneBoundaryStore(
       database.close();
     },
     endSession: async (input) => endActiveSession.immediate(input),
+    async expireWarmSessions(input) {
+      return expireWarmSessions.run(input.endedAt, input.cutoff).changes;
+    },
+    async findActiveSessionIds() {
+      return findActiveSessionIds.all().map((row) => row.session_id);
+    },
     async findSession(sessionId) {
       const row = findSession.get(sessionId);
       if (row === undefined) return undefined;
@@ -481,6 +512,9 @@ export function createSqliteTelephoneBoundaryStore(
           : { lastActivityAt: row.last_activity_at }),
         sessionId: row.session_id,
         mode: row.safe_terminal_only === 1 ? "safe-terminal-only" : "ordinary",
+        ...(row.raw_audio_debug_confirmed === 1
+          ? { rawAudioDebugConfirmed: true }
+          : {}),
         ...(row.raw_audio_debug_expires_at === null
           ? {}
           : { rawAudioDebugExpiresAt: row.raw_audio_debug_expires_at }),
@@ -598,7 +632,7 @@ export function createSqliteTelephoneBoundaryStore(
       incrementDecision.run(`audio-grant:${decision}`);
     },
     async releaseWarmSession(sessionId) {
-      deleteWarmSession.run(sessionId);
+      releaseWarmSession.run(new Date().toISOString(), sessionId);
     },
     async revokeRawAudioDebug(sessionId) {
       clearRawAudioDebug.run(sessionId);

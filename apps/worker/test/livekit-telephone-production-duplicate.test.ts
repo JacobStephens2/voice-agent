@@ -96,6 +96,12 @@ describe("production-shaped LiveKit telephone turns", () => {
                 reason: "debug-grant-required" as const,
               };
             },
+            async claimStateChangingTask() {
+              return {
+                decision: "accepted" as const,
+                resource: "state-changing-task" as const,
+              };
+            },
             async endSession() {
               return { ended: false as const };
             },

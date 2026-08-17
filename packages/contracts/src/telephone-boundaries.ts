@@ -61,6 +61,14 @@ export const telephoneAudioDebugEnabledEvidenceEventSchema = z.object({
   kind: z.literal("telephone.audio-debug.enabled"),
 });
 
+export const telephoneAudioDebugRevokedEvidenceEventSchema = z.object({
+  ...evidenceFields,
+  details: z.object({
+    reason: z.enum(["session-ended", "session-unavailable"]),
+  }),
+  kind: z.literal("telephone.audio-debug.revoked"),
+});
+
 export const telephoneAudioDebugCleanedEvidenceEventSchema = z.object({
   ...evidenceFields,
   details: z.object({
@@ -74,6 +82,7 @@ export const telephoneBoundaryEvidenceEventSchema = z.discriminatedUnion(
   [
     telephoneAudioDebugCleanedEvidenceEventSchema,
     telephoneAudioDebugEnabledEvidenceEventSchema,
+    telephoneAudioDebugRevokedEvidenceEventSchema,
     telephoneSessionEndedEvidenceEventSchema,
     telephoneSpendingWarningEvidenceEventSchema,
     telephoneUsageRecordedEvidenceEventSchema,

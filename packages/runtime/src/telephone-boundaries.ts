@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneAudioDebugRevokedEvidenceEventSchema,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
@@ -21,6 +23,7 @@ const maximumTelephoneSessionMs = 2 * 60 * 60 * 1_000;
 const rawAudioDebugLifetimeMs = 23 * 60 * 60 * 1_000;
 const maximumProlongedSilenceMs = 15 * 60 * 1_000;
 const minimumProlongedSilenceMs = 30 * 1_000;
+const maximumWarmSessionMs = 5 * 60 * 1_000;
 
 export interface TelephoneBoundaryEvidenceSink {
   append(
@@ -31,6 +34,27 @@ export interface TelephoneBoundaryEvidenceSink {
 
 export interface RawAudioArtifactRemover {
   remove(path: string): Promise<"deleted" | "missing">;
+}
+
+export function createNodeRawAudioArtifactRemover(): RawAudioArtifactRemover {
+  return {
+    async remove(path) {
+      try {
+        await rm(path, { force: false });
+        return "deleted";
+      } catch (error) {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          return "missing";
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 export interface TelephoneBoundaryRuntimeOptions {
@@ -89,6 +113,21 @@ export function createTelephoneBoundaryRuntime(
     });
     if (!persisted.ended) return { ended: false } as const;
     if (options.evidence !== undefined && options.nextId !== undefined) {
+      if (session.rawAudioDebugConfirmed === true) {
+        await options.evidence.append(
+          sessionId,
+          telephoneAudioDebugRevokedEvidenceEventSchema
+            .omit({ sequence: true })
+            .parse({
+              details: { reason: "session-ended" },
+              id: options.nextId(),
+              kind: "telephone.audio-debug.revoked",
+              occurredAt,
+              summary:
+                "Raw-audio debugging was revoked when its Telephone Session ended.",
+            }),
+        );
+      }
       await options.evidence.append(
         sessionId,
         telephoneSessionEndedEvidenceEventSchema.omit({ sequence: true }).parse({
@@ -175,6 +214,19 @@ export function createTelephoneBoundaryRuntime(
       ) {
         await options.store.revokeRawAudioDebug(input.sessionId);
         await options.store.recordRawAudioDebugDecision("rejected");
+        await options.evidence.append(
+          input.sessionId,
+          telephoneAudioDebugRevokedEvidenceEventSchema
+            .omit({ sequence: true })
+            .parse({
+              details: { reason: "session-unavailable" },
+              id: options.nextId(),
+              kind: "telephone.audio-debug.revoked",
+              occurredAt: options.now(),
+              summary:
+                "Raw-audio debugging was revoked because the Telephone Session ended before activation.",
+            }),
+        );
         return { decision: "rejected", reason: "session-unavailable" } as const;
       }
       await options.store.recordRawAudioDebugDecision("accepted");
@@ -315,6 +367,21 @@ export function createTelephoneBoundaryRuntime(
         return endSession(sessionId, "prolonged-silence");
       }
       return { ended: false } as const;
+    },
+    async enforceDeadlines() {
+      const now = options.now();
+      const expiredWarmSessions = await options.store.expireWarmSessions({
+        cutoff: new Date(
+          new Date(now).getTime() - maximumWarmSessionMs,
+        ).toISOString(),
+        endedAt: now,
+      });
+      let endedActiveSessions = 0;
+      for (const sessionId of await options.store.findActiveSessionIds()) {
+        const result = await this.enforceDeadline(sessionId);
+        if (result.ended) endedActiveSessions += 1;
+      }
+      return { endedActiveSessions, expiredWarmSessions };
     },
     noteActivity(sessionId: string) {
       return options.store.touchSession({

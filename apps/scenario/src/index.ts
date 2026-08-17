@@ -83,6 +83,9 @@ export interface TelephoneBoundaryScenario {
   enforceDeadline(sessionId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["enforceDeadline"]
   >;
+  enforceDeadlines(): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["enforceDeadlines"]
+  >;
   endSession(
     sessionId: string,
     reason: "completed" | "disconnected" | "provider-failure",
@@ -129,6 +132,7 @@ export interface TelephoneBoundaryScenario {
 
 export async function createTelephoneBoundaryScenario(options: {
   readonly databasePath: string;
+  readonly endSessionOnEvidenceKinds?: readonly TelephoneBoundaryEvidenceEvent["kind"][];
   readonly failEvidenceKinds?: readonly TelephoneBoundaryEvidenceEvent["kind"][];
   readonly now: string;
   readonly prolongedSilenceMs?: number;
@@ -137,6 +141,7 @@ export async function createTelephoneBoundaryScenario(options: {
   let currentNow = options.now;
   let sequence = 0;
   const evidence: TelephoneBoundaryEvidenceEvent[] = [];
+  const store = createSqliteTelephoneBoundaryStore(options.databasePath);
   const runtime = createTelephoneBoundaryRuntime({
     evidence: {
       async append(_sessionId, event) {
@@ -149,6 +154,14 @@ export async function createTelephoneBoundaryScenario(options: {
             sequence: evidence.length + 1,
           }),
         );
+        if (options.endSessionOnEvidenceKinds?.includes(event.kind)) {
+          await store.endSession({
+            durationMs: 0,
+            endedAt: event.occurredAt,
+            reason: "disconnected",
+            sessionId: _sessionId,
+          });
+        }
       },
     },
     nextId: () => `telephone-boundary-event-${(sequence += 1)}`,
@@ -164,7 +177,7 @@ export async function createTelephoneBoundaryScenario(options: {
     ...(options.rawAudioDebugDirectory === undefined
       ? {}
       : { rawAudioDebugDirectory: options.rawAudioDebugDirectory }),
-    store: createSqliteTelephoneBoundaryStore(options.databasePath),
+    store,
   });
   return {
     ...runtime,
@@ -344,6 +357,7 @@ export interface TelephoneBountywellScenarioOptions {
   readonly ids: readonly string[];
   readonly now: string;
   readonly observation: BountywellHealthObservation;
+  readonly stateChangingDecisions?: readonly ("accepted" | "queued")[];
 }
 
 export async function createTelephoneBountywellScenario(
@@ -391,6 +405,7 @@ export async function createTelephoneBountywellScenario(
     readonly failureEventId: string;
     readonly occurredAt: string;
   }> = [];
+  const stateChangingDecisions = [...(options.stateChangingDecisions ?? [])];
   const coordinator = createTelephoneSessionCoordinator({
     interpreter,
     sessionEvidence: {
@@ -406,6 +421,26 @@ export async function createTelephoneBountywellScenario(
         failureNotifications.push(input);
       },
     },
+    ...(options.stateChangingDecisions === undefined
+      ? {}
+      : {
+          stateChangingTasks: {
+            async claim() {
+              const decision = stateChangingDecisions.shift();
+              if (decision === "accepted") {
+                return {
+                  decision,
+                  resource: "state-changing-task" as const,
+                };
+              }
+              return {
+                decision: "queued" as const,
+                position: 1,
+                resource: "state-changing-task" as const,
+              };
+            },
+          },
+        }),
     tasks,
   });
   const api = createTaskApi({

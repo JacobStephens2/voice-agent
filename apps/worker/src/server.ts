@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import type { CallbackAction } from "@voice-agent/contracts";
@@ -9,6 +8,7 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createNodeRawAudioArtifactRemover,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
 } from "@voice-agent/runtime";
@@ -26,6 +26,10 @@ import {
 import { createProductionLiveKitCompletionCallbackAdapter } from "./livekit-completion-callback-adapter.ts";
 import { createLiveKitAgentServer } from "./livekit-agent-server.ts";
 import { createProductionResendSilentNotificationAdapter } from "./resend-silent-notification.ts";
+import {
+  reserveTelephoneUsageSlice,
+  telephoneUsageRatesFromEnvironment,
+} from "./telephone-usage-meter.ts";
 
 const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
 const socketPath = requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH");
@@ -54,24 +58,13 @@ const telephoneBoundaries = createTelephoneBoundaryRuntime({
   },
   nextId: randomUUID,
   now: () => new Date().toISOString(),
-  rawAudioArtifacts: {
-    async remove(path) {
-      try {
-        await rm(path);
-        return "deleted";
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-          return "missing";
-        }
-        throw error;
-      }
-    },
-  },
+  rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
   rawAudioDebugDirectory:
     process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
     "/var/lib/voice-agent/raw-audio-debug",
   store: createSqliteTelephoneBoundaryStore(databasePath),
 });
+const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
 const continuityRuntime = createTaskContinuityRuntime({
   callbackEvidenceRetention: callbackStore,
@@ -117,6 +110,7 @@ let stopping = false;
 let serverFailure: unknown;
 let nextEvidenceRetentionAt = 0;
 let nextRawAudioCleanupAt = 0;
+let nextBoundaryDeadlineAt = 0;
 process.once("SIGINT", () => {
   stopping = true;
 });
@@ -138,6 +132,10 @@ while (!stopping) {
       await telephoneBoundaries.cleanupExpiredRawAudio();
       nextRawAudioCleanupAt = Date.now() + 60 * 60 * 1_000;
     }
+    if (Date.now() >= nextBoundaryDeadlineAt) {
+      await telephoneBoundaries.enforceDeadlines();
+      nextBoundaryDeadlineAt = Date.now() + 5_000;
+    }
     if ((await runtime.getBountywellRegistration()) !== undefined) {
       const record = await runtime.processNextBountywellHealthInquiry();
       if (record !== undefined) continue;
@@ -151,6 +149,22 @@ while (!stopping) {
         await continuityRuntime.requestSessionFailureNotification({
           callbackOperationId: report.operationId,
           failureEventId: `${report.operationId}:admission-rejected`,
+          occurredAt: new Date().toISOString(),
+        });
+        continue;
+      }
+      if (
+        (await reserveTelephoneUsageSlice({
+          ratesMicrousdPerMinute: telephoneUsageRates,
+          recordUsage: telephoneBoundaries.recordUsage,
+          sessionId: report.telephoneSessionId,
+          usageScopeId: `prelive:${report.operationId}`,
+        })) === "safe-terminal-only"
+      ) {
+        await telephoneBoundaries.releaseWarmSession(report.telephoneSessionId);
+        await continuityRuntime.requestSessionFailureNotification({
+          callbackOperationId: report.operationId,
+          failureEventId: `${report.operationId}:spending-ceiling`,
           occurredAt: new Date().toISOString(),
         });
         continue;
@@ -242,6 +256,24 @@ async function placeCallbackOrRecordFailure(
     await callback.receiveProviderEvent(handshakeId, {
       attempt: action.attempt,
       deliveryId: `admission-rejected:${action.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: action.effectId,
+    });
+    return;
+  }
+  if (
+    (await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: telephoneUsageRates,
+      recordUsage: boundaries.recordUsage,
+      sessionId: record.session.id,
+      usageScopeId: `prelive:${action.effectId}`,
+    })) === "safe-terminal-only"
+  ) {
+    await boundaries.releaseWarmSession(record.session.id);
+    await callback.receiveProviderEvent(handshakeId, {
+      attempt: action.attempt,
+      deliveryId: `spending-ceiling:${action.effectId}`,
       kind: "ended",
       outcome: "failed",
       providerCallId: action.effectId,

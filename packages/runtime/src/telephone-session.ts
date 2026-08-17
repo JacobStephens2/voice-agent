@@ -10,6 +10,7 @@ import {
   type TelephoneSessionProviderEvent,
   type TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
+import type { TelephoneBoundaryDecision } from "@voice-agent/durable-store";
 
 export interface TelephoneTurnInterpreter {
   interpret(input: {
@@ -55,6 +56,12 @@ interface TelephoneSessionCoordinatorOptions {
   readonly activeTaskId?: string;
   readonly interpreter: TelephoneTurnInterpreter;
   readonly sessionEvidence?: TelephoneSessionEvidenceSink;
+  readonly stateChangingTasks?: {
+    claim(
+      telephoneSessionId: string,
+      taskId: string,
+    ): Promise<TelephoneBoundaryDecision>;
+  };
   readonly tasks: TelephoneBountywellTasks;
 }
 
@@ -302,6 +309,24 @@ async function handleFinalizedTurn(
       ? sanitizedTranscript
       : `${sanitizedTranscript}.`;
     const confirmationId = `${turn.turnId}:confirmation`;
+    const boundaryDecision = await options.stateChangingTasks?.claim(
+      turn.telephoneSessionId,
+      confirmationId,
+    );
+    if (boundaryDecision?.decision === "queued") {
+      return guidance(
+        options,
+        turn,
+        `That state-changing discussion is queued in position ${boundaryDecision.position}.`,
+      );
+    }
+    if (boundaryDecision?.decision === "rejected") {
+      return guidance(
+        options,
+        turn,
+        "I could not accept another state-changing discussion in this Telephone Session.",
+      );
+    }
     const text =
       `Please confirm this state-changing task: ` +
       `Bountywell production — ${taskDescription}`;

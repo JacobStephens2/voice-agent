@@ -10,6 +10,7 @@ const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
   "notification.sent": "Silent Notification sent",
   "telephone.audio-debug.cleaned": "Raw-audio debugging cleaned",
   "telephone.audio-debug.enabled": "Raw-audio debugging enabled",
+  "telephone.audio-debug.revoked": "Raw-audio debugging revoked",
   "task.cancellation.requested": "Cancellation requested",
   "task.cancelled": "Task cancelled",
   "task.accepted": "Inquiry accepted",

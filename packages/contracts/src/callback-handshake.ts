@@ -10,6 +10,7 @@ import {
 import {
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneAudioDebugRevokedEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
@@ -61,6 +62,7 @@ const telephoneEvidenceFields = {
 export const telephoneEvidenceEventSchema = z.discriminatedUnion("kind", [
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneAudioDebugRevokedEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
@@ -157,6 +159,11 @@ export const telephoneEvidenceEventSchema = z.discriminatedUnion("kind", [
     ...telephoneEvidenceFields,
     details: z.object({ operationId: callbackIdentifierSchema }),
     kind: z.literal("notification.requested"),
+  }),
+  z.object({
+    ...telephoneEvidenceFields,
+    details: z.object({ operationId: callbackIdentifierSchema }),
+    kind: z.literal("notification.sent"),
   }),
 ]);
 export type TelephoneEvidenceEvent = z.infer<

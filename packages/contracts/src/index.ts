@@ -17,6 +17,7 @@ import {
 import {
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneAudioDebugRevokedEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
@@ -198,6 +199,7 @@ const eventFields = {
 export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneAudioDebugRevokedEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,

@@ -5,8 +5,10 @@ import type {
 
 const eventLabels: Record<TelephoneEvidenceEvent["kind"], string> = {
   "notification.requested": "Silent Notification requested",
+  "notification.sent": "Silent Notification sent",
   "telephone.audio-debug.cleaned": "Raw-audio debugging cleaned",
   "telephone.audio-debug.enabled": "Raw-audio debugging enabled",
+  "telephone.audio-debug.revoked": "Raw-audio debugging revoked",
   "telephone.authorization.rejected": "Authorization rejected",
   "telephone.callback.outcome": "Callback outcome",
   "telephone.callback.requested": "Callback requested",
