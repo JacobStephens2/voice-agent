@@ -23,6 +23,7 @@ import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
+import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -73,8 +74,12 @@ async function handleInbound(
   const attributes = participant.attributes;
   const inboundCallId = providerCallId(participant);
   const inbound = await runtime.receiveInbound({
-    calledNumber: attributes["sip.trunkPhoneNumber"] ?? "malformed",
-    callerNumber: attributes["sip.phoneNumber"] ?? "malformed",
+    calledNumber: normalizeTelnyxSipTelephoneNumber(
+      attributes["sip.trunkPhoneNumber"],
+    ),
+    callerNumber: normalizeTelnyxSipTelephoneNumber(
+      attributes["sip.phoneNumber"],
+    ),
     deliveryId: `inbound:${providerDeliveryFingerprint(inboundCallId)}`,
     inboundTrunkId: attributes["sip.trunkID"] ?? "malformed",
     providerCallId: inboundCallId,
