@@ -31,6 +31,7 @@ import {
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
 import { runLiveKitTelephoneSession } from "./livekit-telephone-session.ts";
+import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -38,10 +39,11 @@ const dtmfWindowMs = 15_000;
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
+    const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
     const runtime = createCallbackHandshakeRuntime({
       nextId: randomUUID,
       now: () => new Date().toISOString(),
-      store: createSqliteCallbackHandshakeStore(databasePath),
+      store: callbackStore,
     });
     const taskStore = createSqliteDurableTaskStore(databasePath);
     const tasks = createDurableTaskRuntime({
@@ -57,6 +59,7 @@ export default defineAgent({
       agentName,
       apiKey: requireEnvironment("LIVEKIT_API_KEY"),
       apiSecret: requireEnvironment("LIVEKIT_API_SECRET"),
+      placementClaims: callbackStore,
       url: requireEnvironment("LIVEKIT_URL"),
     });
     try {
@@ -93,8 +96,12 @@ async function handleInbound(
   const attributes = participant.attributes;
   const inboundCallId = providerCallId(participant);
   const inbound = await runtime.receiveInbound({
-    calledNumber: attributes["sip.trunkPhoneNumber"] ?? "malformed",
-    callerNumber: attributes["sip.phoneNumber"] ?? "malformed",
+    calledNumber: normalizeTelnyxSipTelephoneNumber(
+      attributes["sip.trunkPhoneNumber"],
+    ),
+    callerNumber: normalizeTelnyxSipTelephoneNumber(
+      attributes["sip.phoneNumber"],
+    ),
     deliveryId: `inbound:${providerDeliveryFingerprint(inboundCallId)}`,
     inboundTrunkId: attributes["sip.trunkID"] ?? "malformed",
     providerCallId: inboundCallId,

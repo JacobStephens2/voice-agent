@@ -1,4 +1,3 @@
-import { AgentServer, ServerOptions } from "@livekit/agents";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +18,7 @@ import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
+import { createLiveKitAgentServer } from "./livekit-agent-server.ts";
 
 const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
 const socketPath = requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH");
@@ -30,28 +30,29 @@ const runtime = createDurableTaskRuntime({
   now: () => new Date().toISOString(),
   store,
 });
+const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
 const callbackRuntime = createCallbackHandshakeRuntime({
   nextId: randomUUID,
   now: () => new Date().toISOString(),
-  store: createSqliteCallbackHandshakeStore(databasePath),
+  store: callbackStore,
 });
 const agentName = "voice-agent-telephone";
-const callbackAdapter = createProductionLiveKitCallbackAdapter({
-  agentName,
+const liveKitConnection = {
   apiKey: requireEnvironment("LIVEKIT_API_KEY"),
   apiSecret: requireEnvironment("LIVEKIT_API_SECRET"),
   url: requireEnvironment("LIVEKIT_URL"),
+};
+const callbackAdapter = createProductionLiveKitCallbackAdapter({
+  agentName,
+  ...liveKitConnection,
+  placementClaims: callbackStore,
 });
-const telephoneServer = new AgentServer(
-  new ServerOptions({
-    agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
-    agentName,
-    host: "127.0.0.1",
-    numIdleProcesses: 1,
-    port: Number(process.env.VOICE_AGENT_WORKER_PORT ?? "3473"),
-    production: true,
-  }),
-);
+const telephoneServer = createLiveKitAgentServer({
+  agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
+  agentName,
+  ...liveKitConnection,
+  port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
+});
 
 let stopping = false;
 let serverFailure: unknown;

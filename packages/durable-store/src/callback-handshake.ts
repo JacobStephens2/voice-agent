@@ -64,6 +64,10 @@ export interface CallbackHandshakeStore {
   applyTransition(
     input: ApplyCallbackTransitionPersistence,
   ): Promise<ApplyCallbackTransitionResult>;
+  claimCallbackPlacement(
+    effectId: string,
+    handshakeId: string,
+  ): Promise<boolean>;
   close(): Promise<void>;
   createHandshake(
     input: CreateCallbackHandshakePersistence,
