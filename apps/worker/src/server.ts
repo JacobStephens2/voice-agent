@@ -20,6 +20,9 @@ import {
 } from "@voice-agent/sqlite-store";
 
 import {
+  deliverPendingAuthenticationFailureNotifications,
+} from "./authentication-failure-notifications.ts";
+import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
@@ -111,6 +114,7 @@ let serverFailure: unknown;
 let nextEvidenceRetentionAt = 0;
 let nextRawAudioCleanupAt = 0;
 let nextBoundaryDeadlineAt = 0;
+let nextAuthenticationNotificationAt = 0;
 process.once("SIGINT", () => {
   stopping = true;
 });
@@ -135,6 +139,14 @@ while (!stopping) {
     if (Date.now() >= nextBoundaryDeadlineAt) {
       await telephoneBoundaries.enforceDeadlines();
       nextBoundaryDeadlineAt = Date.now() + 5_000;
+    }
+    if (Date.now() >= nextAuthenticationNotificationAt) {
+      await deliverPendingAuthenticationFailureNotifications(
+        callbackRuntime,
+        continuityRuntime,
+        notificationAdapter,
+      );
+      nextAuthenticationNotificationAt = Date.now() + 5_000;
     }
     if ((await runtime.getBountywellRegistration()) !== undefined) {
       const record = await runtime.processNextBountywellHealthInquiry();

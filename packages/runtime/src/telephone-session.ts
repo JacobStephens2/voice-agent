@@ -61,12 +61,17 @@ interface TelephoneSessionCoordinatorOptions {
       telephoneSessionId: string,
       taskId: string,
     ): Promise<TelephoneBoundaryDecision>;
+    release(
+      telephoneSessionId: string,
+      taskId: string,
+    ): Promise<{ readonly promotedOwnerId?: string }>;
   };
   readonly tasks: TelephoneBountywellTasks;
 }
 
 interface TelephoneSessionCoordinatorState {
   pendingCompletionOfferTaskId: string | undefined;
+  pendingStateChangingDiscussionId: string | undefined;
 }
 
 interface FinalizedTurnResult {
@@ -80,6 +85,7 @@ export function createTelephoneSessionCoordinator(
   const finalizedTurnResults = new Map<string, FinalizedTurnResult>();
   const state: TelephoneSessionCoordinatorState = {
     pendingCompletionOfferTaskId: undefined,
+    pendingStateChangingDiscussionId: undefined,
   };
   return {
     async receiveProviderEvent(untrustedEvent) {
@@ -224,6 +230,21 @@ async function handleFinalizedTurn(
     occurredAt: turn.occurredAt,
     summary: "Final speech recognition timing was recorded.",
   });
+  if (state.pendingStateChangingDiscussionId !== undefined) {
+    const discussionId = state.pendingStateChangingDiscussionId;
+    state.pendingStateChangingDiscussionId = undefined;
+    await options.stateChangingTasks?.release(
+      turn.telephoneSessionId,
+      discussionId,
+    );
+    return guidance(
+      options,
+      turn,
+      isAffirmative(sanitizedTranscript)
+        ? "Task confirmation recorded. Use the secure app to authorize execution."
+        : "Okay. I did not confirm that state-changing task.",
+    );
+  }
   if (state.pendingCompletionOfferTaskId !== undefined) {
     const taskId = state.pendingCompletionOfferTaskId;
     state.pendingCompletionOfferTaskId = undefined;
@@ -326,6 +347,9 @@ async function handleFinalizedTurn(
         turn,
         "I could not accept another state-changing discussion in this Telephone Session.",
       );
+    }
+    if (boundaryDecision?.decision === "accepted") {
+      state.pendingStateChangingDiscussionId = confirmationId;
     }
     const text =
       `Please confirm this state-changing task: ` +

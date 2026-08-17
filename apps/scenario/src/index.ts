@@ -439,6 +439,9 @@ export async function createTelephoneBountywellScenario(
                 resource: "state-changing-task" as const,
               };
             },
+            async release() {
+              return {};
+            },
           },
         }),
     tasks,

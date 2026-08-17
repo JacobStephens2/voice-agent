@@ -42,10 +42,6 @@ import {
 } from "./livekit-telephone-session.ts";
 import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
 import {
-  createProductionResendSilentNotificationAdapter,
-  type SilentNotificationAdapter,
-} from "./resend-silent-notification.ts";
-import {
   reserveTelephoneUsageSlice,
   telephoneUsageRatesFromEnvironment,
 } from "./telephone-usage-meter.ts";
@@ -105,17 +101,15 @@ export default defineAgent({
       placementClaims: callbackStore,
       url: requireEnvironment("LIVEKIT_URL"),
     });
-    const notificationAdapter = createProductionResendSilentNotificationAdapter({
-      apiKey: requireEnvironment("RESEND_API_KEY"),
-      domainId: requireEnvironment("RESEND_DOMAIN_ID"),
-      notificationSubdomain: requireEnvironment(
-        "VOICE_AGENT_NOTIFICATION_SUBDOMAIN",
-      ),
-    });
     try {
       const dispatch = parseOutboundDispatch(ctx.job.metadata);
       if (dispatch === undefined) {
-        await handleInbound(ctx, runtime, boundaries, callbackAdapter);
+        await handleInbound(
+          ctx,
+          runtime,
+          boundaries,
+          callbackAdapter,
+        );
       } else if (dispatch.kind === "authentication") {
         await handleOutbound(
           ctx,
@@ -123,7 +117,6 @@ export default defineAgent({
           tasks,
           continuity,
           boundaries,
-          notificationAdapter,
           dispatch,
         );
       } else {
@@ -210,6 +203,21 @@ async function handleInbound(
     await ctx.deleteRoom();
     return;
   }
+  const record = await runtime.readEvidenceRecord(inbound.handshakeId!);
+  if (record === undefined) {
+    throw new Error("Inbound Callback Handshake Evidence Record is unavailable");
+  }
+  if (
+    (await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
+      recordUsage: boundaries.recordUsage,
+      sessionId: record.session.id,
+      usageScopeId: `prelive:inbound:${inbound.handshakeId}`,
+    })) === "safe-terminal-only"
+  ) {
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
 
   const session = createFixedSpeechSession();
   try {
@@ -226,12 +234,21 @@ async function handleInbound(
     }
   } catch {
     await playPrerecordedProviderFailure(session).catch(() => undefined);
-    await runtime.receiveProviderEvent(inbound.handshakeId!, {
+    const failed = await runtime.receiveProviderEvent(inbound.handshakeId!, {
       attempt: 1,
       deliveryId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
       kind: "ended",
       outcome: "failed",
       providerCallId: inboundCallId,
+    });
+    await recordAuthenticationSetupProviderFailure({
+      boundaries,
+      failureEventId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
+      handshakeId: inbound.handshakeId!,
+      occurredAt: new Date().toISOString(),
+      result: failed,
+      runtime,
+      telephoneSessionId: record.session.id,
     });
     return;
   } finally {
@@ -256,7 +273,6 @@ async function handleOutbound(
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
   boundaries: BoundaryRuntime,
-  notificationAdapter: SilentNotificationAdapter,
   dispatch: AuthenticationCallbackDispatch,
 ): Promise<void> {
   const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
@@ -405,14 +421,6 @@ async function handleOutbound(
                 dispatch.handshakeId,
                 input,
               );
-              await sendAuthenticationFailureNotification({
-                failureEventId: input.failureEventId,
-                handshakeId: dispatch.handshakeId,
-                notificationAdapter,
-                occurredAt: input.occurredAt,
-                runtime,
-                continuity,
-              });
             },
           },
           tasks,
@@ -441,20 +449,15 @@ async function handleOutbound(
       outcome: "failed",
       providerCallId: callId,
     });
-    const notification = failed.actions.find(
-      (action) => action.kind === "request-silent-notification",
-    );
-    if (notification !== undefined) {
-      await sendAuthenticationFailureNotification({
-        failureEventId: `provider-failure:${dispatch.effectId}`,
-        handshakeId: dispatch.handshakeId,
-        notificationAdapter,
-        occurredAt: new Date().toISOString(),
-        operationId: notification.effectId,
-        runtime,
-        continuity,
-      }).catch(() => undefined);
-    }
+    await recordAuthenticationSetupProviderFailure({
+      boundaries,
+      failureEventId: `provider-failure:${dispatch.effectId}`,
+      handshakeId: dispatch.handshakeId,
+      occurredAt: new Date().toISOString(),
+      result: failed,
+      runtime,
+      telephoneSessionId,
+    });
   } finally {
     await boundaries.releaseWarmSession(telephoneSessionId);
     disconnected?.cancel();
@@ -636,6 +639,34 @@ async function handleCompletionOutbound(
     });
   } catch {
     await playPrerecordedProviderFailure(session).catch(() => undefined);
+    const occurredAt = new Date().toISOString();
+    const failureId = `setup-provider-failure:${createHash("sha256")
+      .update(dispatch.effectId)
+      .digest("hex")
+      .slice(0, 32)}`;
+    await callback
+      .appendTelephoneSessionEvidenceBySessionId(
+        dispatch.telephoneSessionId,
+        {
+          details: {
+            failure: "unavailable",
+            provider: "livekit-setup",
+            stage: "coordinator",
+          },
+          id: failureId,
+          kind: "telephone.provider.failure",
+          occurredAt,
+          summary: "Telephone setup reached a bounded provider failure.",
+        },
+      )
+      .catch(() => undefined);
+    await boundaries
+      .recordProviderFailure({
+        failureClass: "unavailable",
+        sessionId: dispatch.telephoneSessionId,
+        stage: "coordinator",
+      })
+      .catch(() => undefined);
     if (authenticated) {
       await continuity
         .requestSessionFailureNotification({
@@ -773,45 +804,47 @@ function completionSessionEvidence(
   };
 }
 
-async function sendAuthenticationFailureNotification(input: {
-  readonly continuity: ContinuityRuntime;
+async function recordAuthenticationSetupProviderFailure(input: {
+  readonly boundaries: BoundaryRuntime;
   readonly failureEventId: string;
   readonly handshakeId: string;
-  readonly notificationAdapter: SilentNotificationAdapter;
   readonly occurredAt: string;
-  readonly operationId?: string;
+  readonly result: CallbackActionResult;
   readonly runtime: CallbackRuntime;
+  readonly telephoneSessionId: string;
 }): Promise<void> {
-  const preference = await input.continuity.getNotificationPreference();
-  if (preference === undefined) {
-    throw new Error("Silent Notification preference is unavailable");
-  }
   const correlation = createHash("sha256")
-    .update(`${input.handshakeId}:${input.failureEventId}`)
+    .update(input.failureEventId)
     .digest("hex")
     .slice(0, 32);
-  const operationId =
-    input.operationId ?? `notification-operation:${correlation}`;
-  await input.notificationAdapter.send({
-    clickTracking: false,
-    evidenceRecordUrl: `https://voice.stephens.page/?task=${encodeURIComponent(input.handshakeId)}`,
-    from: preference.from,
-    idempotencyKey: `telephone-failure:${correlation}`,
-    kind: "send-silent-notification",
-    openTracking: false,
-    operationId,
-    subject: "Voice Agent task update",
-    taskId: input.handshakeId,
-    text: "A Voice Agent telephone session ended at a safe failure boundary. Open the secure app for details.",
-    to: preference.email,
-  });
   await input.runtime.appendTelephoneSessionEvidence(input.handshakeId, {
-    details: { operationId },
-    id: `notification-sent:${correlation}`,
-    kind: "notification.sent",
+    details: {
+      failure: "unavailable",
+      provider: "livekit-setup",
+      stage: "coordinator",
+    },
+    id: `setup-provider-failure:${correlation}`,
+    kind: "telephone.provider.failure",
     occurredAt: input.occurredAt,
-    summary: "A generic Silent Notification was delivered.",
+    summary: "Telephone setup reached a bounded provider failure.",
   });
+  await input.boundaries.recordProviderFailure({
+    failureClass: "unavailable",
+    sessionId: input.telephoneSessionId,
+    stage: "coordinator",
+  });
+  const notification = input.result.actions.find(
+    (action) => action.kind === "request-silent-notification",
+  );
+  if (notification === undefined) {
+    await input.runtime.requestTelephoneSessionFailureNotification(
+      input.handshakeId,
+      {
+        failureEventId: input.failureEventId,
+        occurredAt: input.occurredAt,
+      },
+    );
+  }
 }
 
 function requireResumptionOperationId(

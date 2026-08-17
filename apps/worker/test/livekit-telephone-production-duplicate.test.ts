@@ -117,6 +117,9 @@ describe("production-shaped LiveKit telephone turns", () => {
                 warnings: [],
               };
             },
+            async releaseStateChangingTask() {
+              return {};
+            },
           },
           disconnected: Promise.resolve(),
           async endCall() {},
