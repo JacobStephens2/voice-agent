@@ -26,7 +26,8 @@ if [[ ! $worker_port =~ ^[0-9]+$ ]]; then
 fi
 curl --fail --silent --show-error --max-time 5 \
   "http://127.0.0.1:$worker_port/" >/dev/null
-curl --fail --silent --show-error --max-time 5 \
+runuser --user voice-agent --group voice-broker-client -- /usr/bin/curl \
+  --fail --silent --show-error --max-time 5 \
   --unix-socket /run/voice-agent-broker/broker.sock \
   http://localhost/healthz >/dev/null
 runuser --user voice-agent -- /usr/bin/node --experimental-strip-types \

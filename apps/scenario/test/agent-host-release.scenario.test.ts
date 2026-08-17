@@ -127,8 +127,8 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(health).not.toContain("http://127.0.0.1:3474/");
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
-  expect(brokerUnit).toContain("SupplementaryGroups=voice-broker-client");
-  expect(brokerUnit).toContain("StateDirectoryMode=0750");
+  expect(brokerUnit).toContain("Group=voice-broker-client");
+  expect(brokerUnit).toContain("StateDirectoryMode=0700");
   expect(installer).not.toContain("usermod");
   expect(installer).not.toContain("safe.directory");
   expect(installer).toContain("/var/lib/voice-agent-source/repository.git");
@@ -183,16 +183,22 @@ test("the isolated release builder does not depend on a global pnpm shim", async
   expect(installer).toContain("corepack pnpm -r --if-present build");
 });
 
-test("the broker prepares its shared socket directory before dropping privileges", async () => {
-  const brokerUnit = await readFile(
-    join(repositoryRoot, "ops/systemd/voice-agent-broker.service"),
-    "utf8",
-  );
+test("the broker socket remains reachable through the worker security boundary", async () => {
+  const [brokerUnit, health] = await Promise.all([
+    readFile(
+      join(repositoryRoot, "ops/systemd/voice-agent-broker.service"),
+      "utf8",
+    ),
+    readFile(join(repositoryRoot, "ops/release/deployment-health.sh"), "utf8"),
+  ]);
 
-  expect(brokerUnit).toContain(
-    "ExecStartPre=+/usr/bin/chgrp voice-broker-client /run/voice-agent-broker",
-  );
-  expect(brokerUnit).toContain(
-    "ExecStartPre=+/usr/bin/chmod 2770 /run/voice-agent-broker",
+  expect(brokerUnit).toContain("Group=voice-broker-client");
+  expect(brokerUnit).toContain("RuntimeDirectory=voice-agent-broker");
+  expect(brokerUnit).toContain("RuntimeDirectoryMode=0770");
+  expect(brokerUnit).toContain("StateDirectoryMode=0700");
+  expect(brokerUnit).not.toContain("ExecStartPre=+/usr/bin/chgrp");
+  expect(brokerUnit).not.toContain("ExecStartPre=+/usr/bin/chmod");
+  expect(health).toContain(
+    "runuser --user voice-agent --group voice-broker-client -- /usr/bin/curl",
   );
 });
