@@ -34,7 +34,7 @@ state directories.
 
 Apache serves `/opt/voice-agent/current/apps/pwa/dist` and proxies only `/api/`
 to `127.0.0.1:3472`. The telephone worker connects to LiveKit Cloud and binds
-its worker endpoint only to `127.0.0.1:3473`; it has no public listener. The broker listens only on
+its worker endpoint only to `127.0.0.1:3474`; it has no public listener. The broker listens only on
 `/run/voice-agent-broker/broker.sock`, whose group permits the worker to connect.
 The socket-only `voice-broker-client` group cannot read the broker's
 `voice-broker`-owned state. SQLite and broker state live under separate private

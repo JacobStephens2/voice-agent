@@ -45,7 +45,7 @@ const callbackAdapter = createProductionLiveKitCallbackAdapter({
 const telephoneServer = createLiveKitAgentServer({
   agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
   agentName,
-  port: Number(process.env.VOICE_AGENT_WORKER_PORT ?? "3473"),
+  port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
 });
 
 let stopping = false;

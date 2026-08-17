@@ -72,6 +72,7 @@ fi
 test("the Agent Host release preserves its private ports and service boundaries", async () => {
   const [
     apiServer,
+    workerServer,
     apache,
     health,
     apiUnit,
@@ -92,6 +93,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
     await Promise.all(
       [
         "apps/api/src/server.ts",
+        "apps/worker/src/server.ts",
         "ops/apache/voice.stephens.page.conf",
         "ops/release/deployment-health.sh",
         "ops/systemd/voice-agent-api.service",
@@ -115,6 +117,14 @@ test("the Agent Host release preserves its private ports and service boundaries"
     expect(portConsumer).toContain("3472");
     expect(portConsumer).not.toContain("3470");
   }
+  expect(workerServer).toContain(
+    'requireEnvironment("VOICE_AGENT_WORKER_PORT")',
+  );
+  expect(workerServer).not.toContain('?? "3474"');
+  expect(workerUnit).toContain("Environment=VOICE_AGENT_WORKER_PORT=3474");
+  expect(health).toContain("VOICE_AGENT_WORKER_PORT=");
+  expect(health).toContain('"http://127.0.0.1:$worker_port/"');
+  expect(health).not.toContain("http://127.0.0.1:3474/");
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
   expect(brokerUnit).toContain("SupplementaryGroups=voice-broker-client");
