@@ -6,8 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=voice-broker
-Group=voice-broker
-SupplementaryGroups=voice-broker-client
+# RuntimeDirectory inherits Group; clients need to traverse it and connect.
+Group=voice-broker-client
 WorkingDirectory=/opt/voice-agent/current
 Environment=NODE_ENV=production
 Environment=VOICE_AGENT_BROKER_DATABASE_PATH=/var/lib/voice-agent-broker/broker.sqlite
@@ -19,10 +19,9 @@ TimeoutStopSec=20s
 UMask=0007
 RuntimeDirectory=voice-agent-broker
 RuntimeDirectoryMode=0770
-ExecStartPre=+/usr/bin/chgrp voice-broker-client /run/voice-agent-broker
-ExecStartPre=+/usr/bin/chmod 2770 /run/voice-agent-broker
 StateDirectory=voice-agent-broker
-StateDirectoryMode=0750
+# The shared process group must not grant access to durable broker state.
+StateDirectoryMode=0700
 NoNewPrivileges=true
 CapabilityBoundingSet=
 AmbientCapabilities=
