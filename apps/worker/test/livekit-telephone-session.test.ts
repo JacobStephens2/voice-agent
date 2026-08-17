@@ -1,7 +1,64 @@
 import { APITimeoutError } from "@livekit/agents";
 import { describe, expect, test } from "vitest";
 
-import { mapProviderFailureEvent } from "../src/livekit-telephone-session.ts";
+import {
+  mapFinalizedTranscriptionEvent,
+  mapProviderFailureEvent,
+} from "../src/livekit-telephone-session.ts";
+
+describe("LiveKit finalized telephone turns", () => {
+  test("rejects a finalized turn without a speech boundary", () => {
+    expect(() =>
+      mapFinalizedTranscriptionEvent({
+        createdAt: 1_776_444_000_500,
+        itemId: null,
+        speechStartedAt: undefined,
+        telephoneSessionId: "telephone-session-001",
+        transcript: "Is Bountywell healthy?",
+      }),
+    ).toThrow("Finalized telephone turn boundary is unavailable");
+  });
+
+  test("keeps provider deliveries distinct while preserving one logical speech turn", () => {
+    const first = mapFinalizedTranscriptionEvent({
+      createdAt: 1_776_444_000_500,
+      itemId: "provider-item-001",
+      speechStartedAt: 1_776_444_000_000,
+      telephoneSessionId: "telephone-session-001",
+      transcript: "Is Bountywell healthy?",
+    });
+    const redelivered = mapFinalizedTranscriptionEvent({
+      createdAt: 1_776_444_000_717,
+      itemId: "provider-item-002",
+      speechStartedAt: 1_776_444_000_000,
+      telephoneSessionId: "telephone-session-001",
+      transcript: "Is Bountywell healthy?",
+    });
+
+    expect(redelivered.deliveryId).not.toBe(first.deliveryId);
+    expect(redelivered.turnId).toBe(first.turnId);
+  });
+
+  test("assigns a new logical identity to a later speech turn", () => {
+    const first = mapFinalizedTranscriptionEvent({
+      createdAt: 1_776_444_000_500,
+      itemId: null,
+      speechStartedAt: 1_776_444_000_000,
+      telephoneSessionId: "telephone-session-001",
+      transcript: "Is Bountywell healthy?",
+    });
+    const repeatedLater = mapFinalizedTranscriptionEvent({
+      createdAt: 1_776_444_010_500,
+      itemId: null,
+      speechStartedAt: 1_776_444_010_000,
+      telephoneSessionId: "telephone-session-001",
+      transcript: "Is Bountywell healthy?",
+    });
+
+    expect(repeatedLater.deliveryId).not.toBe(first.deliveryId);
+    expect(repeatedLater.turnId).not.toBe(first.turnId);
+  });
+});
 
 describe("LiveKit telephone provider failures", () => {
   test("maps an STT timeout to the bounded provider-timeout contract", () => {

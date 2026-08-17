@@ -81,6 +81,7 @@ describe("Telephone Bountywell health inquiry", () => {
         },
         telephoneSessionId: "telephone-session-001",
         transcript: "Could you tell me how Bountywell is doing?",
+        turnId: "turn-delivery-001",
       });
 
       expect(result.actions).toEqual([
@@ -200,6 +201,7 @@ describe("Telephone Bountywell health inquiry", () => {
           stt: { durationMs: 280, provider: "assemblyai" },
           telephoneSessionId: "telephone-session-unrelated",
           transcript: "What's the weather tomorrow?",
+          turnId: "unrelated-delivery-001",
         }),
       ).resolves.toEqual({
         actions: [
@@ -265,6 +267,7 @@ describe("Telephone Bountywell health inquiry", () => {
         stt: { durationMs: 310, provider: "assemblyai" },
         telephoneSessionId: "telephone-session-insufficient",
         transcript: "What's Bountywell's health status?",
+        turnId: "insufficient-delivery-001",
       });
 
       expect(result.actions[0]).toMatchObject({
@@ -316,6 +319,7 @@ describe("Telephone Bountywell health inquiry", () => {
         stt: { durationMs: 300, provider: "assemblyai" },
         telephoneSessionId: "telephone-session-primary-only",
         transcript: "Is Bountywell healthy?",
+        turnId: "primary-only-delivery-001",
       });
 
       expect(result.actions[0]).toMatchObject({
@@ -369,6 +373,7 @@ describe("Telephone Bountywell health inquiry", () => {
         telephoneSessionId: "telephone-session-redaction",
         transcript:
           "Is Bountywell healthy? My password is: hunter2, the API key equals sk-live-secret, and our token was tok-sensitive",
+        turnId: "redaction-delivery-001",
       });
       const action = result.actions[0];
       if (action?.kind !== "speak-semantic-response") {
@@ -439,18 +444,39 @@ describe("Telephone Bountywell health inquiry", () => {
       stt: { durationMs: 300, provider: "assemblyai" },
       telephoneSessionId: "telephone-session-duplicate",
       transcript: "Is Bountywell up and healthy?",
+      turnId: "duplicate-delivery-001",
+    };
+    const redeliveredTurn = {
+      ...finalizedTurn,
+      deliveryId: "duplicate-delivery-002",
+      occurredAt: "2026-08-17T16:00:00.717Z",
     };
 
     try {
-      const [first, duplicate] = await Promise.all([
-        scenario.receiveProviderEvent(finalizedTurn),
-        scenario.receiveProviderEvent(finalizedTurn),
-      ]);
-      expect(duplicate).toEqual(first);
+      const first = await scenario.receiveProviderEvent(finalizedTurn);
+      const duplicate = await scenario.receiveProviderEvent(redeliveredTurn);
+      expect(duplicate).toEqual({ actions: [] });
       const spoken = first.actions[0];
       if (spoken?.kind !== "speak-semantic-response") {
         throw new Error("Expected a semantic spoken response");
       }
+      await expect(
+        scenario.receiveProviderEvent({
+          ...redeliveredTurn,
+          deliveryId: "duplicate-delivery-003",
+          transcript: "Restart Bountywell production",
+        }),
+      ).resolves.toEqual({
+        actions: [
+          {
+            interruptible: false,
+            kind: "play-prerecorded-failure-and-end",
+            taskId: spoken.taskId,
+            text:
+              "The voice service is temporarily unavailable. Please check the Evidence Record.",
+          },
+        ],
+      });
 
       const interruption = {
         deliveryId: "interruption-delivery-001",
@@ -479,6 +505,11 @@ describe("Telephone Bountywell health inquiry", () => {
         ),
       ).toHaveLength(1);
       expect(
+        scenario.sessionEvidence.filter(
+          (event) => event.kind === "telephone.turn.finalized",
+        ),
+      ).toHaveLength(1);
+      expect(
         record?.evidence.filter(
           (event) => event.kind === "telephone.semantic.response",
         ),
@@ -488,6 +519,17 @@ describe("Telephone Bountywell health inquiry", () => {
           (event) => event.kind === "telephone.response.interrupted",
         ),
       ).toHaveLength(1);
+      expect(
+        record?.evidence.filter(
+          (event) => event.kind === "telephone.provider.failure",
+        ),
+      ).toHaveLength(1);
+      expect(
+        scenario.sessionEvidence.filter(
+          (event) => event.kind === "telephone.provider.failure",
+        ),
+      ).toHaveLength(1);
+      expect(scenario.failureNotifications).toHaveLength(1);
     } finally {
       await scenario.close();
     }
@@ -523,6 +565,7 @@ describe("Telephone Bountywell health inquiry", () => {
           stt: { durationMs: 330, provider: "assemblyai" },
           telephoneSessionId: "telephone-session-confirmation",
           transcript: "Restart Bountywell production so the API becomes healthy",
+          turnId: "confirmation-delivery-001",
         }),
       ).resolves.toEqual({
         actions: [
@@ -594,6 +637,7 @@ describe("Telephone Bountywell health inquiry", () => {
         stt: { durationMs: 290, provider: "assemblyai" },
         telephoneSessionId: "telephone-session-provider",
         transcript: "How is Bountywell doing?",
+        turnId: "provider-turn-001",
       });
       const spoken = answered.actions[0];
       if (spoken?.kind !== "speak-semantic-response") {

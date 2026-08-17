@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const identifierSchema = z.string().min(1).max(120);
 const deliveryIdentifierSchema = z.string().min(1).max(80);
+const turnIdentifierSchema = z.string().min(1).max(80);
 const timestampSchema = z.iso.datetime();
 const providerNameSchema = z.string().min(1).max(80);
 const durationSchema = z.number().int().nonnegative().max(120_000);
@@ -18,7 +19,7 @@ export const telephoneTurnFinalizedEvidenceEventSchema = z.object({
   details: z.object({
     telephoneSessionId: identifierSchema,
     text: z.string().min(1).max(500),
-    turnId: deliveryIdentifierSchema,
+    turnId: turnIdentifierSchema,
   }),
   kind: z.literal("telephone.turn.finalized"),
 });
@@ -95,6 +96,7 @@ export const finalizedTelephoneTurnSchema = z
     }),
     telephoneSessionId: identifierSchema,
     transcript: z.string().min(1).max(2_000),
+    turnId: turnIdentifierSchema,
   })
   .strict();
 export type FinalizedTelephoneTurn = z.infer<
