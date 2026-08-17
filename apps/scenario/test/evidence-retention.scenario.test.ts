@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
 import { createSqliteDurableTaskStore } from "@voice-agent/sqlite-store";
+import { createDurableTaskRuntime } from "@voice-agent/runtime";
 
 const temporaryDirectories: string[] = [];
 
@@ -15,7 +16,7 @@ afterEach(async () => {
   );
 });
 
-test("Evidence Records leave the live PWA window after 90 days without breaking idempotency", async () => {
+test("the lifecycle policy removes ordinary Evidence Events but preserves durable identities", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-retention-"));
   temporaryDirectories.push(directory);
   const store = createSqliteDurableTaskStore(join(directory, "tasks.sqlite"));
@@ -52,17 +53,76 @@ test("Evidence Records leave the live PWA window after 90 days without breaking 
     },
     requestId: "request-expired",
   });
+  await store.appendEvidence({
+    event: {
+      details: {
+        responseId: "recent-response",
+        text: "A recent retained semantic response.",
+      },
+      id: "recent-event",
+      kind: "telephone.semantic.response",
+      occurredAt: "2026-07-01T00:00:00.000Z",
+      summary: "A recent response remains inside the retention window.",
+    },
+    taskId: "task-expired",
+    updatedAt: "2026-07-01T00:00:00.000Z",
+  });
   try {
-    expect(await store.findByTaskId("task-expired")).toBeUndefined();
-    expect(await store.findByOperationId("operation-expired")).toBeUndefined();
-    expect(await store.listTasks()).toEqual([]);
-    expect(await store.findByRequestId("request-expired")).toEqual({
-      expired: true,
+    expect(await store.findByTaskId("task-expired")).toBeDefined();
+    await store.applyEvidenceRetention({
+      cutoff: "2026-01-01T00:00:00.000Z",
+    });
+    expect(await store.findByTaskId("task-expired")).toMatchObject({
+      evidence: [
+        expect.objectContaining({
+          id: "recent-event",
+          kind: "telephone.semantic.response",
+        }),
+      ],
+      task: { id: "task-expired" },
+    });
+    expect(await store.findByOperationId("operation-expired")).toMatchObject({
+      task: { id: "task-expired" },
+    });
+    expect(await store.listTasks()).toHaveLength(1);
+    expect(await store.findByRequestId("request-expired")).toMatchObject({
+      task: { id: "task-expired" },
     });
     expect(await store.readOperationalMetrics()).toMatchObject({
-      operations: { accepted: 0, completed: 0, running: 0 },
-      tasks: { completed: 0, pending: 0 },
+      operations: { accepted: 1, completed: 0, running: 0 },
+      tasks: { completed: 0, pending: 1 },
     });
+    const ids = ["post-retention-observation", "post-retention-operation", "post-retention-task"];
+    const runtime = createDurableTaskRuntime({
+      healthObserver: {
+        async observe() {
+          return {
+            checks: [
+              {
+                facts: { statusCode: 200 },
+                outcome: "pass" as const,
+                source: "public-health" as const,
+                summary: "The public health endpoint responded successfully.",
+              },
+            ],
+            observedAt: "2026-08-01T00:00:00.000Z",
+            rejectedEvidenceCount: 0,
+          };
+        },
+      },
+      nextId() {
+        const id = ids.shift();
+        if (id === undefined) throw new Error("Missing retention test id");
+        return id;
+      },
+      now: () => "2026-08-01T00:00:00.000Z",
+      store,
+    });
+    const completed = await runtime.processNextBountywellHealthInquiry();
+    expect(completed?.task.status).toBe("completed");
+    expect(completed?.evidence.map((event) => event.sequence)).toEqual([
+      3, 4, 5, 6,
+    ]);
   } finally {
     await store.close();
   }

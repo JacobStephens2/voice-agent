@@ -162,7 +162,7 @@ export const telephoneProviderFailureEventSchema = z
 
 export const telephoneTurnInterpretationSchema = z.object({
   durationMs: durationSchema,
-  intent: z.enum(["bountywell-health", "state-changing", "unrelated"]),
+  intent: z.enum(["bountywell-health", "state-changing", "stop", "unrelated"]),
   provider: providerNameSchema,
 });
 export type TelephoneTurnInterpretation = z.infer<
@@ -211,11 +211,29 @@ const playPrerecordedFailureActionSchema = z.object({
     "The voice service is temporarily unavailable. Please check the Evidence Record.",
   ),
 });
+const offerCompletionCallbackActionSchema = z.object({
+  interruptible: z.literal(true),
+  kind: z.literal("offer-completion-callback"),
+  responseId: identifierSchema,
+  taskId: identifierSchema,
+  text: z.literal(
+    "This is still running. I can disconnect and call your registered telephone when it finishes. Would you like that?",
+  ),
+});
+const requestCompletionCallbackAndDisconnectActionSchema = z.object({
+  interruptible: z.literal(false),
+  kind: z.literal("request-completion-callback-and-disconnect"),
+  requestId: identifierSchema,
+  taskId: identifierSchema,
+  telephoneSessionId: identifierSchema,
+});
 export const telephoneSessionActionSchema = z.discriminatedUnion("kind", [
   speakSemanticResponseActionSchema,
   speakGuidanceActionSchema,
   requestTaskConfirmationActionSchema,
   playPrerecordedFailureActionSchema,
+  offerCompletionCallbackActionSchema,
+  requestCompletionCallbackAndDisconnectActionSchema,
 ]);
 export type TelephoneSessionAction = z.infer<
   typeof telephoneSessionActionSchema

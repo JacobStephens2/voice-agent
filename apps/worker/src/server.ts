@@ -8,17 +8,21 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createTaskContinuityRuntime,
 } from "@voice-agent/runtime";
 import {
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
 
 import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
+import { createProductionLiveKitCompletionCallbackAdapter } from "./livekit-completion-callback-adapter.ts";
 import { createLiveKitAgentServer } from "./livekit-agent-server.ts";
+import { createProductionResendSilentNotificationAdapter } from "./resend-silent-notification.ts";
 
 const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
 const socketPath = requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH");
@@ -36,6 +40,14 @@ const callbackRuntime = createCallbackHandshakeRuntime({
   now: () => new Date().toISOString(),
   store: callbackStore,
 });
+const continuityStore = createSqliteTaskContinuityStore(databasePath);
+const continuityRuntime = createTaskContinuityRuntime({
+  callbackEvidenceRetention: callbackStore,
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  store: continuityStore,
+  tasks: store,
+});
 const agentName = "voice-agent-telephone";
 const liveKitConnection = {
   apiKey: requireEnvironment("LIVEKIT_API_KEY"),
@@ -47,6 +59,21 @@ const callbackAdapter = createProductionLiveKitCallbackAdapter({
   ...liveKitConnection,
   placementClaims: callbackStore,
 });
+const completionCallbackAdapter =
+  createProductionLiveKitCompletionCallbackAdapter({
+    agentName,
+    ...liveKitConnection,
+    placementClaims: continuityStore,
+  });
+const notificationAdapter = createProductionResendSilentNotificationAdapter(
+  {
+    apiKey: requireEnvironment("RESEND_API_KEY"),
+    domainId: requireEnvironment("RESEND_DOMAIN_ID"),
+    notificationSubdomain: requireEnvironment(
+      "VOICE_AGENT_NOTIFICATION_SUBDOMAIN",
+    ),
+  },
+);
 const telephoneServer = createLiveKitAgentServer({
   agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
   agentName,
@@ -56,6 +83,7 @@ const telephoneServer = createLiveKitAgentServer({
 
 let stopping = false;
 let serverFailure: unknown;
+let nextEvidenceRetentionAt = 0;
 process.once("SIGINT", () => {
   stopping = true;
 });
@@ -69,9 +97,47 @@ const serverRun = telephoneServer.run().catch((error: unknown) => {
 
 while (!stopping) {
   try {
+    if (Date.now() >= nextEvidenceRetentionAt) {
+      await continuityRuntime.runEvidenceLifecyclePolicy();
+      nextEvidenceRetentionAt = Date.now() + 60 * 60 * 1_000;
+    }
     if ((await runtime.getBountywellRegistration()) !== undefined) {
       const record = await runtime.processNextBountywellHealthInquiry();
       if (record !== undefined) continue;
+    }
+    const report = await continuityRuntime.processNextReport();
+    if (report?.kind === "place-completion-callback") {
+      try {
+        await completionCallbackAdapter.placeCallback(report);
+      } catch {
+        await continuityRuntime.receiveCompletionCallbackEvent({
+          deliveryId: `placement-failed:${report.operationId}`,
+          operationId: report.operationId,
+          outcome: "failed",
+        });
+      }
+      continue;
+    }
+    if (report?.kind === "resume-completion-callback") {
+      try {
+        await completionCallbackAdapter.resumeCallback(report);
+      } catch {
+        await continuityRuntime.requestSessionFailureNotification({
+          callbackOperationId: report.callbackOperationId,
+          failureEventId: `${report.operationId}:resumption-dispatch-failed`,
+          occurredAt: new Date().toISOString(),
+        });
+      }
+      continue;
+    }
+    if (report?.kind === "send-silent-notification") {
+      const sent = await notificationAdapter.send(report);
+      await continuityRuntime.recordNotificationDelivery({
+        deliveryId: `resend:${report.operationId}`,
+        operationId: report.operationId,
+        providerMessageId: sent.providerMessageId,
+      });
+      continue;
     }
     const retries = await callbackRuntime.processDueRetries();
     for (const retry of retries) {
@@ -93,6 +159,7 @@ await telephoneServer.drain(10_000);
 await telephoneServer.close();
 await serverRun;
 await callbackRuntime.close();
+await continuityRuntime.close();
 await runtime.close();
 if (serverFailure !== undefined) throw serverFailure;
 

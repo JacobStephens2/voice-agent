@@ -88,6 +88,10 @@ _Avoid_: Raw payload, unrestricted context
 The canonical visual history of a Durable Task, including conversations, inspected evidence, Operations, delegated work, changes, verification, and conclusions; raw telephone audio is excluded outside temporary debugging.
 _Avoid_: Transcript, chat history
 
+**Evidence Lifecycle Policy**:
+An authenticated, durable policy that authorizes scheduled expiry of ordinary Evidence Events after their retention window while preserving Durable Task and Operation identities.
+_Avoid_: Ad hoc deletion, task deletion, retention cleanup
+
 **PWA**:
 The installable, authenticated browser interface for visual security actions, operational controls, Durable Task status, and Evidence Records; conversational task initiation and WebRTC are separate interaction capabilities.
 _Avoid_: Dashboard, native app, telephone interface

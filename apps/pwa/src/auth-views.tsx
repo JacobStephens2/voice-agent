@@ -3,6 +3,8 @@ import { useState, type ReactNode } from "react";
 import type {
   BountywellRegistration,
   EvidenceRecordSummary,
+  NotificationPreference,
+  NotificationPreferenceInput,
   RegisteredTelephone,
   RegisteredTelephoneInput,
 } from "@voice-agent/contracts";
@@ -176,13 +178,16 @@ export function RecoveryCodesView(props: {
 export function TaskList(props: {
   bountywellRegistration?: BountywellRegistration | undefined;
   registeredTelephone?: RegisteredTelephone | undefined;
+  notificationPreference?: NotificationPreference | undefined;
   tasks: readonly EvidenceRecordSummary[];
   message?: string | undefined;
   busy: boolean;
   onFresh(): Promise<void>;
+  onApplyEvidenceRetention(): Promise<void>;
   onResumePromotions(): Promise<void>;
   onRegisterBountywell(): Promise<void>;
   onRegisterTelephone(input: RegisteredTelephoneInput): Promise<void>;
+  onUpdateNotificationPreference(input: NotificationPreferenceInput): Promise<void>;
   onRunBountywell(): Promise<void>;
 }) {
   return (
@@ -198,6 +203,26 @@ export function TaskList(props: {
         registration={props.registeredTelephone}
         onRegister={props.onRegisterTelephone}
       />
+      <NotificationPreferenceControl
+        key={props.notificationPreference?.revision ?? 0}
+        busy={props.busy}
+        onUpdate={props.onUpdateNotificationPreference}
+        preference={props.notificationPreference}
+      />
+      <section className="bountywell-control" aria-labelledby="retention-heading">
+        <p className="eyebrow">Lifecycle policy</p>
+        <h2 id="retention-heading">Evidence retention</h2>
+        <p>
+          Remove ordinary Evidence Events older than 90 days while preserving
+          Durable Task and Operation identities. A Fresh Passkey Action is required.
+        </p>
+        <button
+          disabled={props.busy}
+          onClick={() => void props.onApplyEvidenceRetention()}
+        >
+          Activate 90-day Evidence retention
+        </button>
+      </section>
       <section className="bountywell-control" aria-labelledby="bountywell-heading">
         <p className="eyebrow">Registered application</p>
         <h2 id="bountywell-heading">Bountywell production</h2>
@@ -251,6 +276,66 @@ export function TaskList(props: {
         onResumePromotions={props.onResumePromotions}
       />
     </main>
+  );
+}
+
+function NotificationPreferenceControl(props: {
+  busy: boolean;
+  onUpdate(input: NotificationPreferenceInput): Promise<void>;
+  preference?: NotificationPreference | undefined;
+}) {
+  const [email, setEmail] = useState(props.preference?.email ?? "");
+  const [from, setFrom] = useState(props.preference?.from ?? "");
+  const [notificationSubdomain, setNotificationSubdomain] = useState(
+    props.preference?.notificationSubdomain ?? "notify.stephens.page",
+  );
+  return (
+    <section className="bountywell-control" aria-labelledby="notification-heading">
+      <p className="eyebrow">Completion channel</p>
+      <h2 id="notification-heading">Silent Notifications</h2>
+      <p>
+        A Fresh Passkey Action is required to change the destination or sender.
+        Open and click tracking are always disabled.
+      </p>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void props.onUpdate({ email, from, notificationSubdomain });
+        }}
+      >
+        <label>
+          Owner email
+          <input
+            autoComplete="email"
+            required
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </label>
+        <label>
+          Sender identity
+          <input
+            autoComplete="off"
+            placeholder="Voice Agent <tasks@notify.stephens.page>"
+            required
+            value={from}
+            onChange={(event) => setFrom(event.target.value)}
+          />
+        </label>
+        <label>
+          Verified notification subdomain
+          <input
+            autoComplete="off"
+            pattern="[a-z0-9.-]+"
+            required
+            value={notificationSubdomain}
+            onChange={(event) => setNotificationSubdomain(event.target.value)}
+          />
+        </label>
+        <button disabled={props.busy}>Save Silent Notification preference</button>
+      </form>
+    </section>
   );
 }
 

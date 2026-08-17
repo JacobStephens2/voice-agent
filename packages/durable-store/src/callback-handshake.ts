@@ -58,6 +58,9 @@ export type ApplyCallbackTransitionResult =
   | { readonly kind: "duplicate"; readonly result: CallbackDeliveryResult };
 
 export interface CallbackHandshakeStore {
+  applyEvidenceRetention(input: {
+    readonly cutoff: string;
+  }): Promise<void>;
   appendEvidence(
     input: AppendCallbackEvidencePersistence,
   ): Promise<TelephoneSessionEvidenceRecordProjection>;

@@ -18,6 +18,7 @@ import {
 } from "@voice-agent/contracts";
 
 export * from "./human-merge-promotion.ts";
+export * from "./task-continuity.ts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAuthenticationLifecycle,
@@ -42,6 +43,9 @@ import {
 } from "@voice-agent/sqlite-store";
 
 export interface CallbackHandshakeScenario {
+  applyEvidenceRetention(input: {
+    readonly cutoff: string;
+  }): Promise<void>;
   appendTelephoneSessionEvidence: ReturnType<
     typeof createCallbackHandshakeRuntime
   >["appendTelephoneSessionEvidence"];
@@ -124,6 +128,7 @@ export async function createCallbackHandshakeScenario(
     },
   });
   return {
+    applyEvidenceRetention: (input) => store.applyEvidenceRetention(input),
     appendTelephoneSessionEvidence: (handshakeId, event) =>
       runtime.appendTelephoneSessionEvidence(handshakeId, event),
     async close() {

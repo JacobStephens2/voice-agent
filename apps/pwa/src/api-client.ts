@@ -10,8 +10,11 @@ import {
   bountywellRegistrationSchema,
   bountywellRegistrationStatusSchema,
   evidenceRecordProjectionSchema,
+  evidenceRetentionResultSchema,
   evidenceRecordSummaryListSchema,
   freshPasskeyActionResponseSchema,
+  notificationPreferenceSchema,
+  notificationPreferenceStatusSchema,
   passkeyEnrollmentResultSchema,
   promotionResumeResponseSchema,
   recoverySessionResponseSchema,
@@ -25,6 +28,8 @@ import {
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
   type PasskeyEnrollmentResult,
+  type NotificationPreference,
+  type NotificationPreferenceInput,
   type RecoverySessionResponse,
   type TrustedBrowserSessionResponse,
   type VoiceAgentEvidenceRecordProjection,
@@ -100,6 +105,53 @@ export async function registerTelephone(
     );
   }
   return registeredTelephoneSchema.parse(await response.json());
+}
+
+export async function loadNotificationPreference(): Promise<
+  NotificationPreference | undefined
+> {
+  const response = await fetch("/api/notifications/preference");
+  if (response.status === 401) return undefined;
+  if (!response.ok) throw new Error("Notification preference is unavailable.");
+  const result = notificationPreferenceStatusSchema.parse(await response.json());
+  return result.preference ?? undefined;
+}
+
+export async function updateNotificationPreference(
+  csrfToken: string,
+  input: NotificationPreferenceInput,
+): Promise<NotificationPreference> {
+  const response = await fetch("/api/notifications/preference", {
+    body: JSON.stringify({ csrfToken, ...input }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before changing notifications."
+        : "The notification preference could not be saved.",
+    );
+  }
+  return notificationPreferenceSchema.parse(await response.json());
+}
+
+export async function applyEvidenceLifecyclePolicy(
+  csrfToken: string,
+): Promise<{ readonly cutoff: string }> {
+  const response = await fetch("/api/evidence/retention", {
+    body: JSON.stringify({ csrfToken }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before applying Evidence retention."
+        : "Evidence retention could not be applied.",
+    );
+  }
+  return evidenceRetentionResultSchema.parse(await response.json());
 }
 
 export async function submitBountywellHealthInquiry(

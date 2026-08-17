@@ -539,7 +539,7 @@ test("speech, bad DTMF, and voicemail never authorize or receive commands", asyn
   }
 });
 
-test("Callback Handshake evidence expires from the authenticated record window after 90 days", async () => {
+test("Callback Handshake evidence expires only through the authenticated lifecycle policy", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-callback-retention-"));
   temporaryDirectories.push(directory);
   const scenario = await createCallbackHandshakeScenario({
@@ -564,7 +564,14 @@ test("Callback Handshake evidence expires from the authenticated record window a
     });
     await expect(
       scenario.readEvidenceRecord(inbound.handshakeId!),
-    ).resolves.toBeUndefined();
+    ).resolves.toBeDefined();
+    await scenario.applyEvidenceRetention({
+      cutoff: "2026-01-01T00:00:00.000Z",
+    });
+    await expect(scenario.readEvidenceRecord(inbound.handshakeId!)).resolves.toMatchObject({
+      evidence: [],
+      task: { id: inbound.handshakeId },
+    });
   } finally {
     await scenario.close();
   }

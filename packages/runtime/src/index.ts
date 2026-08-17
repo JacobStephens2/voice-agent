@@ -19,6 +19,7 @@ import {
 
 export * from "./callback-handshake.ts";
 export * from "./telephone-session.ts";
+export * from "./task-continuity.ts";
 
 export interface TelephoneBountywellHealthInquiry {
   readonly interpretation: TelephoneTurnInterpretation;
@@ -41,6 +42,10 @@ export interface DurableTaskRuntime {
   listEvidenceRecords(): Promise<readonly EvidenceRecordSummary[]>;
   readOperationalMetrics(): ReturnType<DurableTaskStore["readOperationalMetrics"]>;
   recordPolicyDenial(): ReturnType<DurableTaskStore["recordPolicyDenial"]>;
+  requestStop(input: {
+    readonly requestId: string;
+    readonly taskId: string;
+  }): Promise<EvidenceRecordProjection>;
   processNextBountywellHealthInquiry(): Promise<
     EvidenceRecordProjection | undefined
   >;
@@ -62,6 +67,7 @@ export interface DurableTaskRuntime {
 
 export interface DurableTaskRuntimeOptions {
   readonly applicationRegistry?: ApplicationRegistry;
+  readonly deferTelephoneOperations?: boolean;
   readonly healthObserver?: BountywellHealthObserver;
   readonly nextId: () => string;
   readonly now: () => string;
@@ -166,7 +172,8 @@ export function createDurableTaskRuntime(
     if (currentRecord === undefined) {
       throw new Error("Claimed Bountywell Durable Task is unavailable");
     }
-    const firstCompletionSequence = currentRecord.evidence.length + 1;
+    const firstCompletionSequence =
+      (currentRecord.evidence.at(-1)?.sequence ?? 0) + 1;
     const eventIds = [options.nextId(), options.nextId(), options.nextId()];
     const evidence: readonly EvidenceEventProjection[] = [
       {
@@ -261,7 +268,10 @@ export function createDurableTaskRuntime(
       initialEvidence,
       input.turn.occurredAt,
     );
-    if (accepted.task.status === "completed") return accepted;
+    if (accepted.task.status !== "pending") return accepted;
+    if (options.deferTelephoneOperations === true) {
+      return waitForCompletedTelephoneTask(accepted.task.id, accepted);
+    }
     const processed = await processNextBountywellHealthInquiry();
     if (processed !== undefined) return processed;
     return waitForCompletedTelephoneTask(accepted.task.id, accepted);
@@ -280,7 +290,7 @@ export function createDurableTaskRuntime(
         throw new Error("Telephone Durable Task became unavailable");
       }
       latest = record;
-      if (record.task.status === "completed") return record;
+      if (record.task.status !== "pending") return record;
     }
     return latest;
   }
@@ -317,6 +327,18 @@ export function createDurableTaskRuntime(
     listEvidenceRecords: () => options.store.listTasks(),
     readOperationalMetrics: () => options.store.readOperationalMetrics(),
     recordPolicyDenial: () => options.store.recordPolicyDenial(),
+    requestStop(input) {
+      return options.store.requestCancellation({
+        operationId: options.nextId(),
+        requestId: input.requestId,
+        requestedEventId: options.nextId(),
+        acceptedEventId: options.nextId(),
+        completedEventId: options.nextId(),
+        cancelledEventId: options.nextId(),
+        requestedAt: options.now(),
+        taskId: input.taskId,
+      });
+    },
     processNextBountywellHealthInquiry,
     async registerBountywell() {
       if (options.applicationRegistry === undefined) {
@@ -328,7 +350,7 @@ export function createDurableTaskRuntime(
       options.store.findByOperationId(operationId),
     async submitBountywellHealthInquiry(request) {
       const accepted = await acceptBountywellHealthInquiry(request);
-      if (accepted.task.status === "completed") return accepted;
+      if (accepted.task.status !== "pending") return accepted;
       return (await processNextBountywellHealthInquiry()) ?? accepted;
     },
     submitTelephoneBountywellHealthInquiry,

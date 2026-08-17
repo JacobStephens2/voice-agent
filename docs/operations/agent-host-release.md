@@ -70,6 +70,10 @@ repository or environment files.
 
 LiveKit credentials are installed as root-owned mode `0600`
 `/etc/voice-agent/livekit.env` and are exposed only to the telephone worker.
+The Resend sending key, verified domain ID, and notification subdomain live in
+root-owned `/etc/voice-agent/resend.env` and are exposed only to the same
+background worker. Before every send, the worker verifies through Resend that
+the configured subdomain is verified and both open and click tracking are off.
 Telnyx SIP credentials stay in Telnyx and LiveKit provider configuration; they
 are not copied to the Agent Host, repository, PWA, or shell arguments.
 
