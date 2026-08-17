@@ -266,7 +266,8 @@ open_url "https://developers.telnyx.com/docs/voice/sip-trunking/livekit-configur
 step "In Telnyx Mission Control, create an FQDN SIP connection pointed at the LiveKit project SIP URI, attach an outbound voice profile, and assign the dedicated number."
 step "Enable credential authentication for outbound calls. Keep that username/password in the provider dashboards; do not place them on the Agent Host."
 step "In LiveKit, create an inbound trunk for the dedicated number restricted to Telnyx SIP addresses, then a dispatch rule for agent voice-agent-telephone."
-step "Create a stored outbound trunk using sip.telnyx.com and the Telnyx credential. Configure X-Telnyx-Username so Telnyx selects credential authentication."
+step "Create a stored outbound trunk using sip.telnyx.com and the Telnyx credential."
+step 'In the LiveKit outbound trunk JSON editor, set "headers": {"X-Telnyx-Username": "<same Telnyx username>"}. Use the credential username as the value; headers_to_attributes maps response headers and does not send the initial INVITE header.'
 ask TELNYX_NUMBER "Dedicated Telnyx number in E.164 form (+...):"
 ask LIVEKIT_INBOUND_TRUNK_ID "LiveKit inbound trunk ID (ST_...):"
 ask LIVEKIT_OUTBOUND_TRUNK_ID "LiveKit outbound trunk ID (ST_...):"
