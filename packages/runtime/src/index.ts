@@ -218,9 +218,9 @@ export function createDurableTaskRuntime(
         details: {
           telephoneSessionId: input.turn.telephoneSessionId,
           text: input.sanitizedTranscript,
-          turnId: input.turn.deliveryId,
+          turnId: input.turn.turnId,
         },
-        id: `${input.turn.deliveryId}:turn`,
+        id: `${input.turn.turnId}:turn`,
         kind: "telephone.turn.finalized",
         occurredAt: input.turn.occurredAt,
         sequence: turnSequence,
@@ -233,7 +233,7 @@ export function createDurableTaskRuntime(
           provider: input.turn.stt.provider,
           stage: "stt",
         },
-        id: `${input.turn.deliveryId}:stt`,
+        id: `${input.turn.turnId}:stt`,
         kind: "telephone.provider.timing",
         occurredAt: input.turn.occurredAt,
         sequence: turnSequence + 1,
@@ -246,7 +246,7 @@ export function createDurableTaskRuntime(
           provider: input.interpretation.provider,
           stage: "coordinator",
         },
-        id: `${input.turn.deliveryId}:coordinator`,
+        id: `${input.turn.turnId}:coordinator`,
         kind: "telephone.provider.timing",
         occurredAt: input.turn.occurredAt,
         sequence: turnSequence + 2,
@@ -256,7 +256,7 @@ export function createDurableTaskRuntime(
     const accepted = await acceptBountywellHealthInquiry(
       {
         question: "Is Bountywell healthy?",
-        requestId: `telephone:${input.turn.deliveryId}`,
+        requestId: `telephone:${input.turn.turnId}`,
       },
       initialEvidence,
       input.turn.occurredAt,
@@ -288,7 +288,7 @@ export function createDurableTaskRuntime(
   async function submitTelephoneBountywellHealthInquiry(
     input: TelephoneBountywellHealthInquiry,
   ): Promise<EvidenceRecordProjection> {
-    const key = `${input.turn.telephoneSessionId}:${input.turn.deliveryId}`;
+    const key = `${input.turn.telephoneSessionId}:${input.turn.turnId}`;
     const active = activeTelephoneSubmissions.get(key);
     if (active !== undefined) return active;
     const submission = performTelephoneBountywellHealthInquiry(input);

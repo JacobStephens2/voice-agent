@@ -47,14 +47,69 @@ export interface TelephoneSessionEvidenceSink {
   }): Promise<void>;
 }
 
-export function createTelephoneSessionCoordinator(options: {
+interface TelephoneSessionCoordinatorOptions {
   readonly interpreter: TelephoneTurnInterpreter;
   readonly sessionEvidence?: TelephoneSessionEvidenceSink;
   readonly tasks: TelephoneBountywellTasks;
-}): TelephoneSessionCoordinator {
+}
+
+interface FinalizedTurnResult {
+  readonly processing: Promise<TelephoneSessionActionResult>;
+  readonly sanitizedTranscript: string;
+}
+
+export function createTelephoneSessionCoordinator(
+  options: TelephoneSessionCoordinatorOptions,
+): TelephoneSessionCoordinator {
+  const finalizedTurnResults = new Map<string, FinalizedTurnResult>();
   return {
     async receiveProviderEvent(untrustedEvent) {
       const event = telephoneSessionProviderEventSchema.parse(untrustedEvent);
+      if (event.kind === "turn-finalized") {
+        const sanitizedTranscript = sanitizeFinalizedTurn(event.transcript);
+        const existing = finalizedTurnResults.get(event.turnId);
+        if (existing !== undefined) {
+          const result = await existing.processing;
+          if (existing.sanitizedTranscript !== sanitizedTranscript) {
+            const spoken = result.actions.find(
+              (action) => action.kind === "speak-semantic-response",
+            );
+            return recordProviderFailure(
+              options,
+              {
+                deliveryId: event.deliveryId,
+                occurredAt: event.occurredAt,
+                ...(spoken === undefined ? {} : { taskId: spoken.taskId }),
+              },
+              {
+                failure: "unavailable",
+                provider: event.stt.provider,
+                stage: "stt",
+              },
+            );
+          }
+          return telephoneSessionActionResultSchema.parse({ actions: [] });
+        }
+        const processing = handleFinalizedTurn(
+          options,
+          event,
+          sanitizedTranscript,
+        );
+        finalizedTurnResults.set(event.turnId, {
+          processing,
+          sanitizedTranscript,
+        });
+        try {
+          return await processing;
+        } catch (error) {
+          if (
+            finalizedTurnResults.get(event.turnId)?.processing === processing
+          ) {
+            finalizedTurnResults.delete(event.turnId);
+          }
+          throw error;
+        }
+      }
       if (event.kind === "speech-hypothesis") {
         return telephoneSessionActionResultSchema.parse({ actions: [] });
       }
@@ -115,136 +170,142 @@ export function createTelephoneSessionCoordinator(options: {
           stage: event.stage,
         });
       }
-      const turn = event;
-      const sanitizedTranscript = sanitizeFinalizedTurn(turn.transcript);
-      await options.sessionEvidence?.append({
-        details: {
-          telephoneSessionId: turn.telephoneSessionId,
-          text: sanitizedTranscript,
-          turnId: turn.deliveryId,
-        },
-        id: `${turn.deliveryId}:turn`,
-        kind: "telephone.turn.finalized",
-        occurredAt: turn.occurredAt,
-        summary: "A finalized sanitized telephone turn was accepted.",
-      });
-      await options.sessionEvidence?.append({
-        details: {
-          durationMs: turn.stt.durationMs,
-          outcome: "completed",
-          provider: turn.stt.provider,
-          stage: "stt",
-        },
-        id: `${turn.deliveryId}:stt`,
-        kind: "telephone.provider.timing",
-        occurredAt: turn.occurredAt,
-        summary: "Final speech recognition timing was recorded.",
-      });
-      const interpretation = telephoneTurnInterpretationSchema.parse(
-        await options.interpreter.interpret({
-          telephoneSessionId: turn.telephoneSessionId,
-          text: sanitizedTranscript,
-          turnId: turn.deliveryId,
-        }),
-      );
-      await options.sessionEvidence?.append({
-        details: {
-          durationMs: interpretation.durationMs,
-          outcome: "completed",
-          provider: interpretation.provider,
-          stage: "coordinator",
-        },
-        id: `${turn.deliveryId}:coordinator`,
-        kind: "telephone.provider.timing",
-        occurredAt: turn.occurredAt,
-        summary: "Telephone turn interpretation timing was recorded.",
-      });
-      if (interpretation.intent === "state-changing") {
-        const taskDescription = /[.!?]$/u.test(sanitizedTranscript)
-          ? sanitizedTranscript
-          : `${sanitizedTranscript}.`;
-        const confirmationId = `${turn.deliveryId}:confirmation`;
-        const text =
-          `Please confirm this state-changing task: ` +
-          `Bountywell production — ${taskDescription}`;
-        await options.sessionEvidence?.append({
-          details: { responseId: confirmationId, text },
-          id: confirmationId,
-          kind: "telephone.semantic.response",
-          occurredAt: turn.occurredAt,
-          summary: "A Task Confirmation was prepared for speech.",
-        });
-        return telephoneSessionActionResultSchema.parse({
-          actions: [
-            {
-              confirmationId,
-              interruptible: true,
-              kind: "request-task-confirmation",
-              text,
-            },
-          ],
-        });
-      }
-      if (interpretation.intent === "unrelated") {
-        const responseId = `${turn.deliveryId}:guidance`;
-        const text =
-          "I can only answer the registered read-only Bountywell health " +
-          "question in this Telephone Session.";
-        await options.sessionEvidence?.append({
-          details: { responseId, text },
-          id: responseId,
-          kind: "telephone.semantic.response",
-          occurredAt: turn.occurredAt,
-          summary: "Bounded Telephone Session guidance was prepared for speech.",
-        });
-        return telephoneSessionActionResultSchema.parse({
-          actions: [
-            {
-              interruptible: true,
-              kind: "speak-guidance",
-              responseId,
-              text,
-            },
-          ],
-        });
-      }
-      const record = await options.tasks.submitTelephoneBountywellHealthInquiry({
-        interpretation,
-        sanitizedTranscript,
-        turn,
-      });
-      const responseId = `${turn.deliveryId}:response`;
-      const text = semanticBountywellAnswer(record);
-      await options.tasks.appendTelephoneEvidence({
-        event: {
-          details: { responseId, text },
-          id: responseId,
-          kind: "telephone.semantic.response",
-          occurredAt: record.task.updatedAt,
-          summary: "A semantic telephone response was prepared for speech.",
-        },
-        taskId: record.task.id,
-      });
-      await options.sessionEvidence?.append({
-        details: { responseId, text },
-        id: responseId,
-        kind: "telephone.semantic.response",
-        occurredAt: record.task.updatedAt,
-        summary: "A semantic telephone response was prepared for speech.",
-      });
-      return telephoneSessionActionResultSchema.parse({
-        actions: [
-          {
-            interruptible: true,
-            kind: "speak-semantic-response",
-            responseId,
-            taskId: record.task.id,
-            text,
-          },
-        ],
-      });
+      throw new Error("Unsupported Telephone Session provider event");
     },
   };
+}
+
+async function handleFinalizedTurn(
+  options: TelephoneSessionCoordinatorOptions,
+  turn: FinalizedTelephoneTurn,
+  sanitizedTranscript: string,
+): Promise<TelephoneSessionActionResult> {
+  await options.sessionEvidence?.append({
+    details: {
+      telephoneSessionId: turn.telephoneSessionId,
+      text: sanitizedTranscript,
+      turnId: turn.turnId,
+    },
+    id: `${turn.turnId}:turn`,
+    kind: "telephone.turn.finalized",
+    occurredAt: turn.occurredAt,
+    summary: "A finalized sanitized telephone turn was accepted.",
+  });
+  await options.sessionEvidence?.append({
+    details: {
+      durationMs: turn.stt.durationMs,
+      outcome: "completed",
+      provider: turn.stt.provider,
+      stage: "stt",
+    },
+    id: `${turn.turnId}:stt`,
+    kind: "telephone.provider.timing",
+    occurredAt: turn.occurredAt,
+    summary: "Final speech recognition timing was recorded.",
+  });
+  const interpretation = telephoneTurnInterpretationSchema.parse(
+    await options.interpreter.interpret({
+      telephoneSessionId: turn.telephoneSessionId,
+      text: sanitizedTranscript,
+      turnId: turn.turnId,
+    }),
+  );
+  await options.sessionEvidence?.append({
+    details: {
+      durationMs: interpretation.durationMs,
+      outcome: "completed",
+      provider: interpretation.provider,
+      stage: "coordinator",
+    },
+    id: `${turn.turnId}:coordinator`,
+    kind: "telephone.provider.timing",
+    occurredAt: turn.occurredAt,
+    summary: "Telephone turn interpretation timing was recorded.",
+  });
+  if (interpretation.intent === "state-changing") {
+    const taskDescription = /[.!?]$/u.test(sanitizedTranscript)
+      ? sanitizedTranscript
+      : `${sanitizedTranscript}.`;
+    const confirmationId = `${turn.turnId}:confirmation`;
+    const text =
+      `Please confirm this state-changing task: ` +
+      `Bountywell production — ${taskDescription}`;
+    await options.sessionEvidence?.append({
+      details: { responseId: confirmationId, text },
+      id: confirmationId,
+      kind: "telephone.semantic.response",
+      occurredAt: turn.occurredAt,
+      summary: "A Task Confirmation was prepared for speech.",
+    });
+    return telephoneSessionActionResultSchema.parse({
+      actions: [
+        {
+          confirmationId,
+          interruptible: true,
+          kind: "request-task-confirmation",
+          text,
+        },
+      ],
+    });
+  }
+  if (interpretation.intent === "unrelated") {
+    const responseId = `${turn.turnId}:guidance`;
+    const text =
+      "I can only answer the registered read-only Bountywell health " +
+      "question in this Telephone Session.";
+    await options.sessionEvidence?.append({
+      details: { responseId, text },
+      id: responseId,
+      kind: "telephone.semantic.response",
+      occurredAt: turn.occurredAt,
+      summary: "Bounded Telephone Session guidance was prepared for speech.",
+    });
+    return telephoneSessionActionResultSchema.parse({
+      actions: [
+        {
+          interruptible: true,
+          kind: "speak-guidance",
+          responseId,
+          text,
+        },
+      ],
+    });
+  }
+  const record = await options.tasks.submitTelephoneBountywellHealthInquiry({
+    interpretation,
+    sanitizedTranscript,
+    turn,
+  });
+  const responseId = `${turn.turnId}:response`;
+  const text = semanticBountywellAnswer(record);
+  await options.tasks.appendTelephoneEvidence({
+    event: {
+      details: { responseId, text },
+      id: responseId,
+      kind: "telephone.semantic.response",
+      occurredAt: record.task.updatedAt,
+      summary: "A semantic telephone response was prepared for speech.",
+    },
+    taskId: record.task.id,
+  });
+  await options.sessionEvidence?.append({
+    details: { responseId, text },
+    id: responseId,
+    kind: "telephone.semantic.response",
+    occurredAt: record.task.updatedAt,
+    summary: "A semantic telephone response was prepared for speech.",
+  });
+  return telephoneSessionActionResultSchema.parse({
+    actions: [
+      {
+        interruptible: true,
+        kind: "speak-semantic-response",
+        responseId,
+        taskId: record.task.id,
+        text,
+      },
+    ],
+  });
 }
 
 async function recordProviderFailure(

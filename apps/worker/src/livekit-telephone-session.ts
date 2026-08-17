@@ -83,7 +83,7 @@ export async function runLiveKitTelephoneSession(options: {
   ): Promise<void> {
     if (failureEnded) return;
     const occurredAt = new Date().toISOString();
-    const deliveryId = providerDeliveryId(
+    const deliveryId = stableIdentifier(
       `${stage}:${taskId ?? options.telephoneSessionId}:${occurredAt}`,
     );
     try {
@@ -109,32 +109,31 @@ export async function runLiveKitTelephoneSession(options: {
   });
   session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
     if (failureEnded) return;
-    const durationMs = Math.max(
-      0,
-      event.createdAt - (speechStartedAt ?? event.createdAt),
-    );
-    const providerEvent: TelephoneSessionProviderEvent = event.isFinal
-      ? {
-          deliveryId: finalizedDeliveryId(
-            options.telephoneSessionId,
-            event.itemId,
-            event.transcript,
-          ),
-          kind: "turn-finalized",
-          occurredAt: new Date(event.createdAt).toISOString(),
-          stt: { durationMs, provider: "assemblyai" },
-          telephoneSessionId: options.telephoneSessionId,
-          transcript: event.transcript,
-        }
-      : {
-          deliveryId: providerDeliveryId(
-            `interim:${options.telephoneSessionId}:${event.itemId ?? event.transcript}`,
-          ),
-          kind: "speech-hypothesis",
-          occurredAt: new Date(event.createdAt).toISOString(),
-          telephoneSessionId: options.telephoneSessionId,
-          transcript: event.transcript,
-        };
+    let providerEvent: TelephoneSessionProviderEvent;
+    try {
+      providerEvent = event.isFinal
+        ? mapFinalizedTranscriptionEvent({
+            createdAt: event.createdAt,
+            itemId: event.itemId,
+            speechStartedAt,
+            telephoneSessionId: options.telephoneSessionId,
+            transcript: event.transcript,
+          })
+        : {
+            deliveryId: stableIdentifier(
+              `interim:${options.telephoneSessionId}:${event.itemId ?? event.transcript}`,
+            ),
+            kind: "speech-hypothesis",
+            occurredAt: new Date(event.createdAt).toISOString(),
+            telephoneSessionId: options.telephoneSessionId,
+            transcript: event.transcript,
+          };
+    } catch (error) {
+      processing = processing
+        .then(() => recordProviderFailureAndEnd("stt", error))
+        .catch(() => undefined);
+      return;
+    }
     processing = processing
       .then(async () => {
         const result = await coordinator.receiveProviderEvent(providerEvent);
@@ -316,7 +315,7 @@ async function performConversationAction(
     action.kind === "speak-semantic-response" ? action.taskId : undefined;
   const occurredAt = new Date().toISOString();
   await coordinator.receiveProviderEvent({
-    deliveryId: providerDeliveryId(`tts-timing:${responseId}`),
+    deliveryId: stableIdentifier(`tts-timing:${responseId}`),
     durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
     kind: "provider-timing",
     occurredAt,
@@ -326,7 +325,7 @@ async function performConversationAction(
   });
   if (speech.interrupted) {
     await coordinator.receiveProviderEvent({
-      deliveryId: providerDeliveryId(`interruption:${responseId}`),
+      deliveryId: stableIdentifier(`interruption:${responseId}`),
       durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
       kind: "response-interrupted",
       occurredAt,
@@ -376,14 +375,58 @@ async function collectWithTimeout(
 function finalizedDeliveryId(
   telephoneSessionId: string,
   itemId: string | null,
-  transcript: string,
+  turnId: string,
 ): string {
-  return providerDeliveryId(
-    `final:${telephoneSessionId}:${itemId ?? transcript}`,
+  return stableIdentifier(
+    `final:${telephoneSessionId}:${itemId ?? `turn:${turnId}`}`,
   );
 }
 
-function providerDeliveryId(value: string): string {
+export function mapFinalizedTranscriptionEvent(input: {
+  readonly createdAt: number;
+  readonly itemId: string | null;
+  readonly speechStartedAt: number | undefined;
+  readonly telephoneSessionId: string;
+  readonly transcript: string;
+}): Extract<TelephoneSessionProviderEvent, { kind: "turn-finalized" }> {
+  const turnId = finalizedTurnId(
+    input.telephoneSessionId,
+    input.speechStartedAt,
+  );
+  return {
+    deliveryId: finalizedDeliveryId(
+      input.telephoneSessionId,
+      input.itemId,
+      turnId,
+    ),
+    kind: "turn-finalized",
+    occurredAt: new Date(input.createdAt).toISOString(),
+    stt: {
+      durationMs: Math.max(
+        0,
+        input.createdAt - (input.speechStartedAt ?? input.createdAt),
+      ),
+      provider: "assemblyai",
+    },
+    telephoneSessionId: input.telephoneSessionId,
+    transcript: input.transcript,
+    turnId,
+  };
+}
+
+function finalizedTurnId(
+  telephoneSessionId: string,
+  speechStartedAt: number | undefined,
+): string {
+  if (speechStartedAt === undefined) {
+    throw new Error("Finalized telephone turn boundary is unavailable");
+  }
+  return stableIdentifier(
+    `turn:${telephoneSessionId}:speech-start:${speechStartedAt}`,
+  );
+}
+
+function stableIdentifier(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 32);
 }
 
