@@ -11,6 +11,7 @@
     "build": "pnpm -r --if-present build",
     "scenario:bountywell": "pnpm install --frozen-lockfile && pnpm --filter @voice-agent/scenario test --run",
     "scenario:callback": "pnpm install --frozen-lockfile && pnpm --filter @voice-agent/scenario test --run test/callback-handshake.scenario.test.ts test/callback-handshake-control.scenario.test.ts",
+    "scenario:telephone": "pnpm install --frozen-lockfile && pnpm --filter @voice-agent/scenario test --run test/telephone-bountywell.scenario.test.ts",
     "test": "pnpm -r --if-present test --run",
     "typecheck": "pnpm -r --if-present typecheck"
   },

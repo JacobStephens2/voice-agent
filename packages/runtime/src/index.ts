@@ -5,6 +5,8 @@ import {
   type EvidenceEventProjection,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
+  type FinalizedTelephoneTurn,
+  type TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import type {
   ApplicationRegistry,
@@ -16,8 +18,16 @@ import {
 } from "@voice-agent/policy";
 
 export * from "./callback-handshake.ts";
+export * from "./telephone-session.ts";
+
+export interface TelephoneBountywellHealthInquiry {
+  readonly interpretation: TelephoneTurnInterpretation;
+  readonly sanitizedTranscript: string;
+  readonly turn: FinalizedTelephoneTurn;
+}
 
 const OPERATION_LEASE_MS = 30_000;
+const TELEPHONE_OPERATION_WAIT_MS = 12_000;
 
 export interface DurableTaskRuntime {
   acceptBountywellHealthInquiry(
@@ -41,6 +51,13 @@ export interface DurableTaskRuntime {
   submitBountywellHealthInquiry(
     request: BountywellHealthInquiryRequest,
   ): Promise<EvidenceRecordProjection>;
+  submitTelephoneBountywellHealthInquiry(
+    input: TelephoneBountywellHealthInquiry,
+  ): Promise<EvidenceRecordProjection>;
+  appendTelephoneEvidence(input: {
+    readonly event: Omit<EvidenceEventProjection, "sequence">;
+    readonly taskId: string;
+  }): Promise<EvidenceRecordProjection>;
 }
 
 export interface DurableTaskRuntimeOptions {
@@ -54,6 +71,10 @@ export interface DurableTaskRuntimeOptions {
 export function createDurableTaskRuntime(
   options: DurableTaskRuntimeOptions,
 ): DurableTaskRuntime {
+  const activeTelephoneSubmissions = new Map<
+    string,
+    Promise<EvidenceRecordProjection>
+  >();
   async function requireRegistration(): Promise<void> {
     if (
       options.applicationRegistry !== undefined &&
@@ -66,6 +87,8 @@ export function createDurableTaskRuntime(
 
   async function acceptBountywellHealthInquiry(
     request: BountywellHealthInquiryRequest,
+    initialEvidence: readonly EvidenceEventProjection[] = [],
+    acceptedAt = options.now(),
   ): Promise<EvidenceRecordProjection> {
     const normalizedRequest = authorizeBountywellHealthInquiry(request);
     await requireRegistration();
@@ -82,15 +105,15 @@ export function createDurableTaskRuntime(
     const taskId = options.nextId();
     const operationId = options.nextId();
     const eventIds = [options.nextId(), options.nextId()];
-    const acceptedAt = options.now();
     const record: EvidenceRecordProjection = {
       evidence: [
+        ...initialEvidence,
         {
           details: { requestId: normalizedRequest.requestId },
           id: requireEventId(eventIds, 0),
           kind: "task.accepted",
           occurredAt: acceptedAt,
-          sequence: 1,
+          sequence: initialEvidence.length + 1,
           summary: "Bountywell health inquiry accepted.",
         },
         {
@@ -98,7 +121,7 @@ export function createDurableTaskRuntime(
           id: requireEventId(eventIds, 1),
           kind: "operation.accepted",
           occurredAt: acceptedAt,
-          sequence: 2,
+          sequence: initialEvidence.length + 2,
           summary: "Read-only Bountywell health observation accepted.",
         },
       ],
@@ -139,6 +162,11 @@ export function createDurableTaskRuntime(
       await options.healthObserver.observe(operation),
     );
     const conclusion = deriveBountywellHealthConclusion(observation);
+    const currentRecord = await options.store.findByTaskId(operation.taskId);
+    if (currentRecord === undefined) {
+      throw new Error("Claimed Bountywell Durable Task is unavailable");
+    }
+    const firstCompletionSequence = currentRecord.evidence.length + 1;
     const eventIds = [options.nextId(), options.nextId(), options.nextId()];
     const evidence: readonly EvidenceEventProjection[] = [
       {
@@ -152,7 +180,7 @@ export function createDurableTaskRuntime(
         id: requireEventId(eventIds, 0),
         kind: "evidence.observed",
         occurredAt: observation.observedAt,
-        sequence: 3,
+        sequence: firstCompletionSequence,
         summary: "Bounded Bountywell health evidence observed.",
       },
       {
@@ -160,7 +188,7 @@ export function createDurableTaskRuntime(
         id: requireEventId(eventIds, 1),
         kind: "operation.completed",
         occurredAt: observation.observedAt,
-        sequence: 4,
+        sequence: firstCompletionSequence + 1,
         summary: "Read-only Bountywell health observation completed.",
       },
       {
@@ -168,7 +196,7 @@ export function createDurableTaskRuntime(
         id: requireEventId(eventIds, 2),
         kind: "task.completed",
         occurredAt: observation.observedAt,
-        sequence: 5,
+        sequence: firstCompletionSequence + 2,
         summary: conclusion,
       },
     ];
@@ -181,8 +209,106 @@ export function createDurableTaskRuntime(
     });
   }
 
+  async function performTelephoneBountywellHealthInquiry(
+    input: TelephoneBountywellHealthInquiry,
+  ): Promise<EvidenceRecordProjection> {
+    const turnSequence = 1;
+    const initialEvidence: readonly EvidenceEventProjection[] = [
+      {
+        details: {
+          telephoneSessionId: input.turn.telephoneSessionId,
+          text: input.sanitizedTranscript,
+          turnId: input.turn.deliveryId,
+        },
+        id: `${input.turn.deliveryId}:turn`,
+        kind: "telephone.turn.finalized",
+        occurredAt: input.turn.occurredAt,
+        sequence: turnSequence,
+        summary: "A finalized sanitized telephone turn was accepted.",
+      },
+      {
+        details: {
+          durationMs: input.turn.stt.durationMs,
+          outcome: "completed",
+          provider: input.turn.stt.provider,
+          stage: "stt",
+        },
+        id: `${input.turn.deliveryId}:stt`,
+        kind: "telephone.provider.timing",
+        occurredAt: input.turn.occurredAt,
+        sequence: turnSequence + 1,
+        summary: "Final speech recognition timing was recorded.",
+      },
+      {
+        details: {
+          durationMs: input.interpretation.durationMs,
+          outcome: "completed",
+          provider: input.interpretation.provider,
+          stage: "coordinator",
+        },
+        id: `${input.turn.deliveryId}:coordinator`,
+        kind: "telephone.provider.timing",
+        occurredAt: input.turn.occurredAt,
+        sequence: turnSequence + 2,
+        summary: "Telephone turn interpretation timing was recorded.",
+      },
+    ];
+    const accepted = await acceptBountywellHealthInquiry(
+      {
+        question: "Is Bountywell healthy?",
+        requestId: `telephone:${input.turn.deliveryId}`,
+      },
+      initialEvidence,
+      input.turn.occurredAt,
+    );
+    if (accepted.task.status === "completed") return accepted;
+    const processed = await processNextBountywellHealthInquiry();
+    if (processed !== undefined) return processed;
+    return waitForCompletedTelephoneTask(accepted.task.id, accepted);
+  }
+
+  async function waitForCompletedTelephoneTask(
+    taskId: string,
+    accepted: EvidenceRecordProjection,
+  ): Promise<EvidenceRecordProjection> {
+    const deadline = Date.now() + TELEPHONE_OPERATION_WAIT_MS;
+    let latest = accepted;
+    while (Date.now() < deadline) {
+      await delay(100);
+      const record = await options.store.findByTaskId(taskId);
+      if (record === undefined) {
+        throw new Error("Telephone Durable Task became unavailable");
+      }
+      latest = record;
+      if (record.task.status === "completed") return record;
+    }
+    return latest;
+  }
+
+  async function submitTelephoneBountywellHealthInquiry(
+    input: TelephoneBountywellHealthInquiry,
+  ): Promise<EvidenceRecordProjection> {
+    const key = `${input.turn.telephoneSessionId}:${input.turn.deliveryId}`;
+    const active = activeTelephoneSubmissions.get(key);
+    if (active !== undefined) return active;
+    const submission = performTelephoneBountywellHealthInquiry(input);
+    activeTelephoneSubmissions.set(key, submission);
+    try {
+      return await submission;
+    } finally {
+      if (activeTelephoneSubmissions.get(key) === submission) {
+        activeTelephoneSubmissions.delete(key);
+      }
+    }
+  }
+
   return {
     acceptBountywellHealthInquiry,
+    appendTelephoneEvidence: (input) =>
+      options.store.appendEvidence({
+        ...input,
+        updatedAt: input.event.occurredAt,
+      }),
     close: () => options.store.close(),
     async getBountywellRegistration() {
       return options.applicationRegistry?.findBountywellRegistration();
@@ -205,6 +331,7 @@ export function createDurableTaskRuntime(
       if (accepted.task.status === "completed") return accepted;
       return (await processNextBountywellHealthInquiry()) ?? accepted;
     },
+    submitTelephoneBountywellHealthInquiry,
   };
 }
 
@@ -214,4 +341,8 @@ function requireEventId(ids: readonly string[], index: number): string {
     throw new Error(`Missing deterministic event identifier at index ${index}`);
   }
   return id;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

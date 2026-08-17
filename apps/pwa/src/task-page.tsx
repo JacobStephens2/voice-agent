@@ -9,6 +9,11 @@ const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
   "evidence.observed": "Health evidence observed",
   "operation.completed": "Health check completed",
   "task.completed": "Inquiry completed",
+  "telephone.provider.timing": "Speech provider timing",
+  "telephone.provider.failure": "Speech provider failure",
+  "telephone.response.interrupted": "Spoken response interrupted",
+  "telephone.semantic.response": "Spoken response prepared",
+  "telephone.turn.finalized": "Finalized telephone turn",
 };
 
 export function TaskPage({ record }: { readonly record: EvidenceRecordProjection }) {

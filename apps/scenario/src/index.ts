@@ -6,6 +6,8 @@ import type {
   CallbackActionResult,
   CallbackProviderEvent,
   EvidenceRecordProjection,
+  TelephoneSessionActionResult,
+  TelephoneSessionProviderEvent,
   InboundTelephoneEvent,
   InboundTelephoneResult,
   RegisteredTelephoneInput,
@@ -28,6 +30,8 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createTelephoneSessionCoordinator,
+  type TelephoneTurnInterpreter,
 } from "@voice-agent/runtime";
 import {
   createSqliteAuthenticationStore,
@@ -161,6 +165,118 @@ export async function createCallbackHandshakeScenario(
     setTime(now) {
       currentNow = now;
     },
+  };
+}
+
+export interface TelephoneBountywellScenario {
+  readonly brokerRequests: readonly BountywellHealthObservationRequest[];
+  close(): Promise<void>;
+  readEvidenceRecord(
+    taskId: string,
+  ): Promise<EvidenceRecordProjection | undefined>;
+  readTaskPage(taskId: string, sessionToken?: string): Promise<{
+    readonly body: unknown;
+    readonly html: string;
+    readonly statusCode: number;
+  }>;
+  receiveProviderEvent(
+    event: TelephoneSessionProviderEvent,
+  ): Promise<TelephoneSessionActionResult>;
+}
+
+export interface TelephoneBountywellScenarioOptions {
+  readonly databasePath: string;
+  readonly ids: readonly string[];
+  readonly now: string;
+  readonly observation: BountywellHealthObservation;
+}
+
+export async function createTelephoneBountywellScenario(
+  options: TelephoneBountywellScenarioOptions,
+): Promise<TelephoneBountywellScenario> {
+  const ids = [...options.ids];
+  const broker = new DeterministicBountywellHealthBroker(options.observation);
+  const store = createSqliteDurableTaskStore(options.databasePath);
+  await store.registerBountywell(options.now);
+  const tasks = createDurableTaskRuntime({
+    applicationRegistry: store,
+    healthObserver: broker,
+    nextId() {
+      const id = ids.shift();
+      if (id === undefined) {
+        throw new Error("The scenario exhausted its deterministic identifiers");
+      }
+      return id;
+    },
+    now: () => options.now,
+    store,
+  });
+  const interpreter: TelephoneTurnInterpreter = {
+    async interpret(input) {
+      const normalized = input.text.toLocaleLowerCase("en-US");
+      const stateChanging =
+        normalized.includes("bountywell") &&
+        /\b(delete|deploy|fix|restart|start|stop|update)\b/u.test(normalized);
+      const bountywellHealthQuestion =
+        normalized.includes("bountywell") &&
+        /\b(doing|health|healthy|okay|running|status|up)\b/u.test(normalized);
+      return {
+        durationMs: 24,
+        intent: stateChanging
+          ? "state-changing"
+          : bountywellHealthQuestion
+            ? "bountywell-health"
+            : "unrelated",
+        provider: "deterministic-scenario-coordinator",
+      };
+    },
+  };
+  const coordinator = createTelephoneSessionCoordinator({
+    interpreter,
+    tasks,
+  });
+  const api = createTaskApi({
+    authentication: {
+      async canViewEvidence(sessionToken) {
+        return sessionToken === "scenario-trusted-session";
+      },
+    },
+    records: tasks,
+  });
+
+  return {
+    brokerRequests: broker.requests,
+    async close() {
+      await api.close();
+      await tasks.close();
+    },
+    readEvidenceRecord: (taskId) => tasks.getEvidenceRecord(taskId),
+    async readTaskPage(taskId, sessionToken) {
+      const request = {
+        method: "GET",
+        url: `/api/tasks/${encodeURIComponent(taskId)}`,
+      } as const;
+      const response = await api.inject(
+        sessionToken === undefined
+          ? request
+          : {
+              ...request,
+              headers: {
+                cookie: `${trustedSessionCookieName}=${sessionToken}`,
+              },
+            },
+      );
+      const body = response.json<unknown>();
+      return {
+        body,
+        html:
+          response.statusCode === 200
+            ? renderTaskPage(body as EvidenceRecordProjection)
+            : "",
+        statusCode: response.statusCode,
+      };
+    },
+    receiveProviderEvent: (event) => coordinator.receiveProviderEvent(event),
   };
 }
 

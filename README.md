@@ -2,7 +2,7 @@
 
 A personal, voice-first assistant for discussing codebases, operating Linux services, and delegating deeper work to coding agents while away from a keyboard.
 
-> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake over Telnyx and LiveKit, read-only Operations Broker, and hardened Agent Host release path are implemented. A real PSTN smoke remains part of attended deployment acceptance.
+> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake and conversational health answer over Telnyx and LiveKit, read-only Operations Broker, and hardened Agent Host release path are implemented. Real PSTN verification remains part of attended deployment acceptance.
 
 The intended experience begins with a telephone call. The Voice Agent calls back to authenticate the session, carries on a natural conversation, performs narrowly authorized operations, and delegates substantial code investigation or changes to restricted Subagents such as Codex or Claude Code. A PWA provides passkey-protected controls and a visual Evidence Record for every Durable Task.
 
@@ -66,9 +66,10 @@ The workspace requires Node.js 22 or newer and pnpm 11. From a clean checkout:
 ```bash
 pnpm scenario:bountywell
 pnpm scenario:callback
+pnpm scenario:telephone
 ```
 
-The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. Both persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
+The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. The telephone scenario covers paraphrases, unrelated and state-changing requests, insufficient evidence, interim-hypothesis retention, interruption, duplicate final events, provider timing, and bounded failures. They persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
 
 The CI-ready verification commands are:
 
@@ -102,7 +103,8 @@ The wizard installs an immutable release, separate hardened API, telephone
 worker, and broker services, the narrow Apache vhost, passkey bootstrap, fixed
 Bountywell and Registered Telephone revisions, a private Prometheus scrape on
 the verified-free localhost port 3472, the ordered Human Merge Promotion
-trigger, and bounded Callback Handshake and Bountywell production smokes. Later
+trigger, and bounded Callback Handshake, telephone Bountywell, and direct
+Bountywell production smokes. Later
 pushes to `main` enqueue every verified Human Merge on the Agent Host; the host
 serializes and attempts them in GitHub order. The wizard installs a
 repository-scoped, read-only GitHub App PEM and LiveKit credentials into

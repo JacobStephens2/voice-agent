@@ -16,13 +16,21 @@ import type {
   CallbackActionResult,
   CallbackProviderEvent,
 } from "@voice-agent/contracts";
-import { createCallbackHandshakeRuntime } from "@voice-agent/runtime";
-import { createSqliteCallbackHandshakeStore } from "@voice-agent/sqlite-store";
+import { createUnixSocketBountywellObserver } from "@voice-agent/operations-broker";
+import {
+  createCallbackHandshakeRuntime,
+  createDurableTaskRuntime,
+} from "@voice-agent/runtime";
+import {
+  createSqliteCallbackHandshakeStore,
+  createSqliteDurableTaskStore,
+} from "@voice-agent/sqlite-store";
 
 import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
+import { runLiveKitTelephoneSession } from "./livekit-telephone-session.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -35,6 +43,16 @@ export default defineAgent({
       now: () => new Date().toISOString(),
       store: createSqliteCallbackHandshakeStore(databasePath),
     });
+    const taskStore = createSqliteDurableTaskStore(databasePath);
+    const tasks = createDurableTaskRuntime({
+      applicationRegistry: taskStore,
+      healthObserver: createUnixSocketBountywellObserver(
+        requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH"),
+      ),
+      nextId: randomUUID,
+      now: () => new Date().toISOString(),
+      store: taskStore,
+    });
     const callbackAdapter = createProductionLiveKitCallbackAdapter({
       agentName,
       apiKey: requireEnvironment("LIVEKIT_API_KEY"),
@@ -46,15 +64,17 @@ export default defineAgent({
       if (dispatch === undefined) {
         await handleInbound(ctx, runtime, callbackAdapter);
       } else {
-        await handleOutbound(ctx, runtime, dispatch);
+        await handleOutbound(ctx, runtime, tasks, dispatch);
       }
     } finally {
+      await tasks.close();
       await runtime.close();
     }
   },
 });
 
 type CallbackRuntime = ReturnType<typeof createCallbackHandshakeRuntime>;
+type TaskRuntime = ReturnType<typeof createDurableTaskRuntime>;
 
 interface OutboundDispatch {
   readonly attempt: 1 | 2;
@@ -120,6 +140,7 @@ async function handleInbound(
 async function handleOutbound(
   ctx: JobContext,
   runtime: CallbackRuntime,
+  tasks: TaskRuntime,
   dispatch: OutboundDispatch,
 ): Promise<void> {
   const session = createFixedSpeechSession();
@@ -217,6 +238,19 @@ async function handleOutbound(
           (action) => action.kind === "play-confirmation",
         )
       ) {
+        const record = await runtime.readEvidenceRecord(dispatch.handshakeId);
+        if (record?.session.outcome !== "authorized") {
+          throw new Error("Telephone Session was not durably authorized");
+        }
+        await session.close();
+        await detector.aclose();
+        await runLiveKitTelephoneSession({
+          disconnected: disconnected.promise,
+          endCall: () => ctx.deleteRoom(),
+          room: ctx.room,
+          tasks,
+          telephoneSessionId: record.session.id,
+        });
         return;
       }
     }
