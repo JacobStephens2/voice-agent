@@ -102,6 +102,16 @@ export function createSqliteCallbackHandshakeStore(
     FROM callback_handshakes
     WHERE id = ?
   `);
+  const findHandshakeIdByTelephoneSession = database.prepare<
+    [telephoneSessionId: string],
+    { readonly id: string }
+  >(`
+    SELECT id
+    FROM callback_handshakes
+    WHERE json_extract(snapshot_json, '$.telephoneSessionId') = ?
+    ORDER BY accepted_at DESC
+    LIMIT 1
+  `);
   const findDueRetries = database.prepare<
     [now: string],
     { readonly snapshot_json: string }
@@ -362,6 +372,15 @@ export function createSqliteCallbackHandshakeStore(
         projectionStateJson({
           ...record,
           evidence: [...record.evidence, event],
+          session:
+            event.kind === "telephone.session.ended"
+              ? {
+                  ...record.session,
+                  durationMs: event.details.durationMs,
+                  endedAt: event.occurredAt,
+                  endReason: event.details.reason,
+                }
+              : record.session,
           task: { ...record.task, updatedAt: occurredAt },
         }),
         input.handshakeId,
@@ -394,6 +413,19 @@ export function createSqliteCallbackHandshakeStore(
     },
     async appendEvidence(input) {
       return appendEvidenceTransaction.immediate(input);
+    },
+    async appendEvidenceByTelephoneSessionId(input) {
+      const row = findHandshakeIdByTelephoneSession.get(
+        input.telephoneSessionId,
+      );
+      if (row === undefined) {
+        throw new Error("Telephone Session Evidence Record is unavailable");
+      }
+      return appendEvidenceTransaction.immediate({
+        event: input.event,
+        handshakeId: row.id,
+        updatedAt: input.updatedAt,
+      });
     },
     async applyTransition(input) {
       return applyTransitionTransaction.immediate(input);

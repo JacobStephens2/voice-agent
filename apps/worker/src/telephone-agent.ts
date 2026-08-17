@@ -10,6 +10,7 @@ import {
   type Room,
 } from "@livekit/rtc-node";
 import { createHash, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 
 import type {
   CallbackAction,
@@ -21,18 +22,23 @@ import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
   createTaskContinuityRuntime,
+  createTelephoneBoundaryRuntime,
 } from "@voice-agent/runtime";
 import {
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteTaskContinuityStore,
+  createSqliteTelephoneBoundaryStore,
 } from "@voice-agent/sqlite-store";
 
 import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
-import { runLiveKitTelephoneSession } from "./livekit-telephone-session.ts";
+import {
+  playPrerecordedProviderFailure,
+  runLiveKitTelephoneSession,
+} from "./livekit-telephone-session.ts";
 import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
 
 const agentName = "voice-agent-telephone";
@@ -47,6 +53,40 @@ export default defineAgent({
       nextId: randomUUID,
       now: () => new Date().toISOString(),
       store: callbackStore,
+    });
+    const boundaries = createTelephoneBoundaryRuntime({
+      evidence: {
+        async append(telephoneSessionId, event) {
+          await runtime.appendTelephoneSessionEvidenceBySessionId(
+            telephoneSessionId,
+            event,
+          );
+        },
+      },
+      nextId: randomUUID,
+      now: () => new Date().toISOString(),
+      prolongedSilenceMs: prolongedSilenceMs(),
+      rawAudioArtifacts: {
+        async remove(path) {
+          try {
+            await rm(path);
+            return "deleted";
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ENOENT"
+            ) {
+              return "missing";
+            }
+            throw error;
+          }
+        },
+      },
+      rawAudioDebugDirectory:
+        process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
+        "/var/lib/voice-agent/raw-audio-debug",
+      store: createSqliteTelephoneBoundaryStore(databasePath),
     });
     const taskStore = createSqliteDurableTaskStore(databasePath);
     const tasks = createDurableTaskRuntime({
@@ -75,9 +115,16 @@ export default defineAgent({
     try {
       const dispatch = parseOutboundDispatch(ctx.job.metadata);
       if (dispatch === undefined) {
-        await handleInbound(ctx, runtime, callbackAdapter);
+        await handleInbound(ctx, runtime, boundaries, callbackAdapter);
       } else if (dispatch.kind === "authentication") {
-        await handleOutbound(ctx, runtime, tasks, continuity, dispatch);
+        await handleOutbound(
+          ctx,
+          runtime,
+          tasks,
+          continuity,
+          boundaries,
+          dispatch,
+        );
       } else {
         if (dispatch.resumption) {
           await handleCompletionResumption(
@@ -85,6 +132,7 @@ export default defineAgent({
             runtime,
             tasks,
             continuity,
+            boundaries,
             dispatch,
           );
         } else {
@@ -93,11 +141,14 @@ export default defineAgent({
             runtime,
             tasks,
             continuity,
+            boundaries,
             dispatch,
           );
         }
       }
     } finally {
+      await boundaries.cleanupExpiredRawAudio();
+      await boundaries.close();
       await continuity.close();
       await tasks.close();
       await runtime.close();
@@ -108,6 +159,7 @@ export default defineAgent({
 type CallbackRuntime = ReturnType<typeof createCallbackHandshakeRuntime>;
 type TaskRuntime = ReturnType<typeof createDurableTaskRuntime>;
 type ContinuityRuntime = ReturnType<typeof createTaskContinuityRuntime>;
+type BoundaryRuntime = ReturnType<typeof createTelephoneBoundaryRuntime>;
 
 interface AuthenticationCallbackDispatch {
   readonly attempt: 1 | 2;
@@ -135,6 +187,7 @@ type OutboundDispatch =
 async function handleInbound(
   ctx: JobContext,
   runtime: CallbackRuntime,
+  boundaries: BoundaryRuntime,
   callbackAdapter: LiveKitCallbackAdapter,
 ): Promise<void> {
   await ctx.connect();
@@ -186,7 +239,12 @@ async function handleInbound(
 
   for (const action of inbound.actions) {
     if (action.kind !== "place-callback") continue;
-    await placeCallbackOrRecordFailure(runtime, callbackAdapter, action);
+    await placeCallbackOrRecordFailure(
+      runtime,
+      boundaries,
+      callbackAdapter,
+      action,
+    );
   }
 }
 
@@ -195,8 +253,26 @@ async function handleOutbound(
   runtime: CallbackRuntime,
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
+  boundaries: BoundaryRuntime,
   dispatch: AuthenticationCallbackDispatch,
 ): Promise<void> {
+  const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
+  if (pendingRecord === undefined) {
+    throw new Error("Callback Handshake Evidence Record is unavailable");
+  }
+  const telephoneSessionId = pendingRecord.session.id;
+  const warmDecision = await boundaries.reserveWarmSession(telephoneSessionId);
+  if (warmDecision.decision !== "accepted") {
+    await runtime.requestTelephoneSessionFailureNotification(
+      dispatch.handshakeId,
+      {
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
+        occurredAt: new Date().toISOString(),
+      },
+    );
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   const session = createFixedSpeechSession();
   let callId = dispatch.effectId;
   let detector: voice.AMD | undefined;
@@ -296,9 +372,22 @@ async function handleOutbound(
         if (record?.session.outcome !== "authorized") {
           throw new Error("Telephone Session was not durably authorized");
         }
+        const admission = await boundaries.activateSession(telephoneSessionId);
+        if (admission.decision !== "accepted") {
+          await runtime.requestTelephoneSessionFailureNotification(
+            dispatch.handshakeId,
+            {
+              failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(admission)}`,
+              occurredAt: new Date().toISOString(),
+            },
+          );
+          await playPrerecordedProviderFailure(session);
+          return;
+        }
         await session.close();
         await detector.aclose();
         await runLiveKitTelephoneSession({
+          boundaries,
           disconnected: disconnected.promise,
           endCall: () => ctx.deleteRoom(),
           room: ctx.room,
@@ -320,6 +409,8 @@ async function handleOutbound(
           },
           tasks,
           telephoneSessionId: record.session.id,
+          prolongedSilenceMs: prolongedSilenceMs(),
+          usageRatesMicrousdPerMinute: usageRatesMicrousdPerMinute(),
         });
         return;
       }
@@ -342,6 +433,7 @@ async function handleOutbound(
       providerCallId: callId,
     });
   } finally {
+    await boundaries.releaseWarmSession(telephoneSessionId);
     disconnected?.cancel();
     await detector?.aclose().catch(() => undefined);
     await session.close().catch(() => undefined);
@@ -354,8 +446,23 @@ async function handleCompletionOutbound(
   callback: CallbackRuntime,
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
+  boundaries: BoundaryRuntime,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
+  const warmDecision = await boundaries.reserveWarmSession(
+    dispatch.telephoneSessionId,
+  );
+  if (warmDecision.decision !== "accepted") {
+    await continuity
+      .requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
+        occurredAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   const session = createFixedSpeechSession();
   let detector: voice.AMD | undefined;
   let disconnected:
@@ -467,10 +574,23 @@ async function handleCompletionOutbound(
       session,
       "Telephone confirmed. Resuming your Voice Agent task.",
     );
+    const admission = await boundaries.activateSession(
+      resume.telephoneSessionId,
+    );
+    if (admission.decision !== "accepted") {
+      await continuity.requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(admission)}`,
+        occurredAt: new Date().toISOString(),
+      });
+      await playPrerecordedProviderFailure(session);
+      return;
+    }
     await session.close();
     await detector.aclose();
     await runLiveKitTelephoneSession({
       activeTaskId: resume.taskId,
+      boundaries,
       disconnected: disconnected.promise,
       endCall: () => ctx.deleteRoom(),
       openingText: `Your task concluded: ${record.task.conclusion}`,
@@ -491,6 +611,8 @@ async function handleCompletionOutbound(
       },
       tasks,
       telephoneSessionId: resume.telephoneSessionId,
+      prolongedSilenceMs: prolongedSilenceMs(),
+      usageRatesMicrousdPerMinute: usageRatesMicrousdPerMinute(),
     });
   } catch {
     if (authenticated) {
@@ -511,6 +633,7 @@ async function handleCompletionOutbound(
         .catch(() => undefined);
     }
   } finally {
+    await boundaries.releaseWarmSession(dispatch.telephoneSessionId);
     disconnected?.cancel();
     await detector?.aclose().catch(() => undefined);
     await session.close().catch(() => undefined);
@@ -525,8 +648,23 @@ async function handleCompletionResumption(
   callback: CallbackRuntime,
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
+  boundaries: BoundaryRuntime,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
+  const warmDecision = await boundaries.reserveWarmSession(
+    dispatch.telephoneSessionId,
+  );
+  if (warmDecision.decision !== "accepted") {
+    await continuity
+      .requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
+        occurredAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
@@ -541,8 +679,20 @@ async function handleCompletionResumption(
     if (record === undefined) {
       throw new Error("Resumed Durable Task is unavailable");
     }
+    const admission = await boundaries.activateSession(
+      dispatch.telephoneSessionId,
+    );
+    if (admission.decision !== "accepted") {
+      await continuity.requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(admission)}`,
+        occurredAt: new Date().toISOString(),
+      });
+      return;
+    }
     await runLiveKitTelephoneSession({
       activeTaskId: dispatch.taskId,
+      boundaries,
       disconnected: disconnected.promise,
       endCall: () => ctx.deleteRoom(),
       openingText: `Your task concluded: ${record.task.conclusion}`,
@@ -561,6 +711,8 @@ async function handleCompletionResumption(
       ),
       tasks,
       telephoneSessionId: dispatch.telephoneSessionId,
+      prolongedSilenceMs: prolongedSilenceMs(),
+      usageRatesMicrousdPerMinute: usageRatesMicrousdPerMinute(),
     });
   } catch {
     await continuity
@@ -571,6 +723,7 @@ async function handleCompletionResumption(
       })
       .catch(() => undefined);
   } finally {
+    await boundaries.releaseWarmSession(dispatch.telephoneSessionId);
     disconnected?.cancel();
     await ctx.deleteRoom().catch(() => undefined);
   }
@@ -689,14 +842,32 @@ async function playFixedText(
 
 async function placeCallbackOrRecordFailure(
   runtime: CallbackRuntime,
+  boundaries: BoundaryRuntime,
   adapter: LiveKitCallbackAdapter,
   action: Extract<CallbackAction, { kind: "place-callback" }>,
 ): Promise<void> {
+  const handshakeId = requireHandshakeId(action.roomName);
+  const record = await runtime.readEvidenceRecord(handshakeId);
+  if (record === undefined) {
+    throw new Error("Callback Handshake Evidence Record is unavailable");
+  }
+  const decision = await boundaries.reserveWarmSession(record.session.id);
+  if (decision.decision !== "accepted") {
+    await runtime.receiveProviderEvent(handshakeId, {
+      attempt: action.attempt,
+      deliveryId: `admission-rejected:${action.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: action.effectId,
+    });
+    return;
+  }
   try {
     await adapter.placeCallback(action);
   } catch {
+    await boundaries.releaseWarmSession(record.session.id);
     await runtime.receiveProviderEvent(
-      requireHandshakeId(action.roomName),
+      handshakeId,
       {
         attempt: action.attempt,
         deliveryId: `placement-failed:${action.effectId}`,
@@ -859,4 +1030,52 @@ function requireEnvironment(name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
+}
+
+function prolongedSilenceMs(): number {
+  const configured = Number(
+    process.env.VOICE_AGENT_PROLONGED_SILENCE_SECONDS ?? "60",
+  );
+  if (!Number.isInteger(configured) || configured < 30 || configured > 900) {
+    throw new Error(
+      "VOICE_AGENT_PROLONGED_SILENCE_SECONDS must be between 30 and 900",
+    );
+  }
+  return configured * 1_000;
+}
+
+function usageRatesMicrousdPerMinute() {
+  return {
+    api: positiveEnvironmentInteger(
+      "VOICE_AGENT_API_MICROUSD_PER_MINUTE",
+      50_000,
+    ),
+    "realtime-media": positiveEnvironmentInteger(
+      "VOICE_AGENT_REALTIME_MEDIA_MICROUSD_PER_MINUTE",
+      100_000,
+    ),
+    telephony: positiveEnvironmentInteger(
+      "VOICE_AGENT_TELEPHONY_MICROUSD_PER_MINUTE",
+      50_000,
+    ),
+  } as const;
+}
+
+function positiveEnvironmentInteger(name: string, fallback: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 1_000_000_000) {
+    throw new Error(`${name} must be between one microusd and $1,000`);
+  }
+  return value;
+}
+
+function boundaryDenialReason(
+  decision: Awaited<ReturnType<BoundaryRuntime["activateSession"]>>,
+): string {
+  if (decision.decision === "accepted") {
+    throw new Error("Accepted boundary decision has no denial reason");
+  }
+  return decision.decision === "rejected"
+    ? decision.reason
+    : `${decision.resource}-queued`;
 }

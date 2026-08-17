@@ -22,6 +22,7 @@ import { createBountywellReadRegistration } from "@voice-agent/policy";
 
 export { createSqliteAuthenticationStore } from "./authentication.ts";
 export { createSqliteCallbackHandshakeStore } from "./callback-handshake.ts";
+export { createSqliteTelephoneBoundaryStore } from "./telephone-boundaries.ts";
 export { createSqliteTaskContinuityStore } from "./task-continuity.ts";
 export {
   backupSqliteDatabase,

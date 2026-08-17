@@ -8,6 +8,8 @@ const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
   "completion.callback.outcome": "Completion Callback outcome",
   "notification.requested": "Silent Notification requested",
   "notification.sent": "Silent Notification sent",
+  "telephone.audio-debug.cleaned": "Raw-audio debugging cleaned",
+  "telephone.audio-debug.enabled": "Raw-audio debugging enabled",
   "task.cancellation.requested": "Cancellation requested",
   "task.cancelled": "Task cancelled",
   "task.accepted": "Inquiry accepted",
@@ -19,7 +21,10 @@ const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
   "telephone.provider.failure": "Speech provider failure",
   "telephone.response.interrupted": "Spoken response interrupted",
   "telephone.semantic.response": "Spoken response prepared",
+  "telephone.session.ended": "Telephone Session ended",
+  "telephone.spending.warning": "Provider spending warning",
   "telephone.turn.finalized": "Finalized telephone turn",
+  "telephone.usage.recorded": "Provider usage recorded",
 };
 
 export function TaskPage({ record }: { readonly record: EvidenceRecordProjection }) {

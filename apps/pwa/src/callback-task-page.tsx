@@ -5,6 +5,8 @@ import type {
 
 const eventLabels: Record<TelephoneEvidenceEvent["kind"], string> = {
   "notification.requested": "Silent Notification requested",
+  "telephone.audio-debug.cleaned": "Raw-audio debugging cleaned",
+  "telephone.audio-debug.enabled": "Raw-audio debugging enabled",
   "telephone.authorization.rejected": "Authorization rejected",
   "telephone.callback.outcome": "Callback outcome",
   "telephone.callback.requested": "Callback requested",
@@ -18,7 +20,10 @@ const eventLabels: Record<TelephoneEvidenceEvent["kind"], string> = {
   "telephone.retry.scheduled": "Retry scheduled",
   "telephone.semantic.response": "Spoken response prepared",
   "telephone.session.authorized": "Telephone Session authorized",
+  "telephone.session.ended": "Telephone Session ended",
+  "telephone.spending.warning": "Provider spending warning",
   "telephone.turn.finalized": "Finalized telephone turn",
+  "telephone.usage.recorded": "Provider usage recorded",
 };
 
 export function CallbackTaskPage({
@@ -50,6 +55,16 @@ export function CallbackTaskPage({
           <dd>{record.session.attempt}</dd>
           <dt>Outcome</dt>
           <dd>{record.session.outcome}</dd>
+          {record.session.endedAt === undefined ? null : (
+            <>
+              <dt>Ended at</dt>
+              <dd>{record.session.endedAt}</dd>
+              <dt>End reason</dt>
+              <dd>{record.session.endReason}</dd>
+              <dt>Duration</dt>
+              <dd>{record.session.durationMs} ms</dd>
+            </>
+          )}
           {record.session.authorizedAt === undefined ? null : (
             <>
               <dt>Authorized at</dt>

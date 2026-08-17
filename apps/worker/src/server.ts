@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import type { CallbackAction } from "@voice-agent/contracts";
@@ -8,11 +9,13 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
 } from "@voice-agent/runtime";
 import {
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteTelephoneBoundaryStore,
   createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
 
@@ -39,6 +42,35 @@ const callbackRuntime = createCallbackHandshakeRuntime({
   nextId: randomUUID,
   now: () => new Date().toISOString(),
   store: callbackStore,
+});
+const telephoneBoundaries = createTelephoneBoundaryRuntime({
+  evidence: {
+    async append(telephoneSessionId, event) {
+      await callbackRuntime.appendTelephoneSessionEvidenceBySessionId(
+        telephoneSessionId,
+        event,
+      );
+    },
+  },
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  rawAudioArtifacts: {
+    async remove(path) {
+      try {
+        await rm(path);
+        return "deleted";
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          return "missing";
+        }
+        throw error;
+      }
+    },
+  },
+  rawAudioDebugDirectory:
+    process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
+    "/var/lib/voice-agent/raw-audio-debug",
+  store: createSqliteTelephoneBoundaryStore(databasePath),
 });
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
 const continuityRuntime = createTaskContinuityRuntime({
@@ -84,6 +116,7 @@ const telephoneServer = createLiveKitAgentServer({
 let stopping = false;
 let serverFailure: unknown;
 let nextEvidenceRetentionAt = 0;
+let nextRawAudioCleanupAt = 0;
 process.once("SIGINT", () => {
   stopping = true;
 });
@@ -101,15 +134,31 @@ while (!stopping) {
       await continuityRuntime.runEvidenceLifecyclePolicy();
       nextEvidenceRetentionAt = Date.now() + 60 * 60 * 1_000;
     }
+    if (Date.now() >= nextRawAudioCleanupAt) {
+      await telephoneBoundaries.cleanupExpiredRawAudio();
+      nextRawAudioCleanupAt = Date.now() + 60 * 60 * 1_000;
+    }
     if ((await runtime.getBountywellRegistration()) !== undefined) {
       const record = await runtime.processNextBountywellHealthInquiry();
       if (record !== undefined) continue;
     }
     const report = await continuityRuntime.processNextReport();
     if (report?.kind === "place-completion-callback") {
+      const admission = await telephoneBoundaries.reserveWarmSession(
+        report.telephoneSessionId,
+      );
+      if (admission.decision !== "accepted") {
+        await continuityRuntime.requestSessionFailureNotification({
+          callbackOperationId: report.operationId,
+          failureEventId: `${report.operationId}:admission-rejected`,
+          occurredAt: new Date().toISOString(),
+        });
+        continue;
+      }
       try {
         await completionCallbackAdapter.placeCallback(report);
       } catch {
+        await telephoneBoundaries.releaseWarmSession(report.telephoneSessionId);
         await continuityRuntime.receiveCompletionCallbackEvent({
           deliveryId: `placement-failed:${report.operationId}`,
           operationId: report.operationId,
@@ -119,9 +168,21 @@ while (!stopping) {
       continue;
     }
     if (report?.kind === "resume-completion-callback") {
+      const admission = await telephoneBoundaries.reserveWarmSession(
+        report.telephoneSessionId,
+      );
+      if (admission.decision !== "accepted") {
+        await continuityRuntime.requestSessionFailureNotification({
+          callbackOperationId: report.callbackOperationId,
+          failureEventId: `${report.operationId}:admission-rejected`,
+          occurredAt: new Date().toISOString(),
+        });
+        continue;
+      }
       try {
         await completionCallbackAdapter.resumeCallback(report);
       } catch {
+        await telephoneBoundaries.releaseWarmSession(report.telephoneSessionId);
         await continuityRuntime.requestSessionFailureNotification({
           callbackOperationId: report.callbackOperationId,
           failureEventId: `${report.operationId}:resumption-dispatch-failed`,
@@ -145,6 +206,7 @@ while (!stopping) {
         if (action.kind !== "place-callback") continue;
         await placeCallbackOrRecordFailure(
           callbackRuntime,
+          telephoneBoundaries,
           callbackAdapter,
           action,
         );
@@ -159,20 +221,39 @@ await telephoneServer.drain(10_000);
 await telephoneServer.close();
 await serverRun;
 await callbackRuntime.close();
+await telephoneBoundaries.close();
 await continuityRuntime.close();
 await runtime.close();
 if (serverFailure !== undefined) throw serverFailure;
 
 async function placeCallbackOrRecordFailure(
   callback: ReturnType<typeof createCallbackHandshakeRuntime>,
+  boundaries: ReturnType<typeof createTelephoneBoundaryRuntime>,
   adapter: LiveKitCallbackAdapter,
   action: Extract<CallbackAction, { kind: "place-callback" }>,
 ): Promise<void> {
+  const handshakeId = requireHandshakeId(action.roomName);
+  const record = await callback.readEvidenceRecord(handshakeId);
+  if (record === undefined) {
+    throw new Error("Callback Handshake Evidence Record is unavailable");
+  }
+  const admission = await boundaries.reserveWarmSession(record.session.id);
+  if (admission.decision !== "accepted") {
+    await callback.receiveProviderEvent(handshakeId, {
+      attempt: action.attempt,
+      deliveryId: `admission-rejected:${action.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: action.effectId,
+    });
+    return;
+  }
   try {
     await adapter.placeCallback(action);
   } catch {
+    await boundaries.releaseWarmSession(record.session.id);
     await callback.receiveProviderEvent(
-      requireHandshakeId(action.roomName),
+      handshakeId,
       {
         attempt: action.attempt,
         deliveryId: `placement-failed:${action.effectId}`,

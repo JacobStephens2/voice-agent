@@ -2,6 +2,7 @@ import { APITimeoutError, llm } from "@livekit/agents";
 import { describe, expect, test } from "vitest";
 
 import {
+  boundedProviderConnectOptions,
   LiveKitTelephoneTurnAdapter,
   mapCompletedTelephoneTurnEvent,
   mapProviderFailureEvent,
@@ -88,6 +89,24 @@ describe("LiveKit finalized telephone turns", () => {
 });
 
 describe("LiveKit telephone provider failures", () => {
+  test("uses one transient retry with a finite timeout for each selected provider", () => {
+    expect(boundedProviderConnectOptions("stt")).toEqual({
+      maxRetry: 1,
+      retryIntervalMs: 250,
+      timeoutMs: 5_000,
+    });
+    expect(boundedProviderConnectOptions("coordinator")).toEqual({
+      maxRetry: 1,
+      retryIntervalMs: 250,
+      timeoutMs: 8_000,
+    });
+    expect(boundedProviderConnectOptions("tts")).toEqual({
+      maxRetry: 1,
+      retryIntervalMs: 250,
+      timeoutMs: 10_000,
+    });
+  });
+
   test("maps an STT timeout to the bounded provider-timeout contract", () => {
     expect(
       mapProviderFailureEvent({

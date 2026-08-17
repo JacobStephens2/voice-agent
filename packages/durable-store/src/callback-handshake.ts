@@ -64,6 +64,11 @@ export interface CallbackHandshakeStore {
   appendEvidence(
     input: AppendCallbackEvidencePersistence,
   ): Promise<TelephoneSessionEvidenceRecordProjection>;
+  appendEvidenceByTelephoneSessionId(input: {
+    readonly event: Omit<TelephoneEvidenceEvent, "sequence">;
+    readonly telephoneSessionId: string;
+    readonly updatedAt: string;
+  }): Promise<TelephoneSessionEvidenceRecordProjection>;
   applyTransition(
     input: ApplyCallbackTransitionPersistence,
   ): Promise<ApplyCallbackTransitionResult>;

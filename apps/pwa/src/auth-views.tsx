@@ -7,6 +7,7 @@ import type {
   NotificationPreferenceInput,
   RegisteredTelephone,
   RegisteredTelephoneInput,
+  TelephoneBoundaryStatus,
 } from "@voice-agent/contracts";
 
 export function Shell({
@@ -178,6 +179,7 @@ export function RecoveryCodesView(props: {
 export function TaskList(props: {
   bountywellRegistration?: BountywellRegistration | undefined;
   registeredTelephone?: RegisteredTelephone | undefined;
+  telephoneBoundaries?: TelephoneBoundaryStatus | undefined;
   notificationPreference?: NotificationPreference | undefined;
   tasks: readonly EvidenceRecordSummary[];
   message?: string | undefined;
@@ -187,6 +189,7 @@ export function TaskList(props: {
   onResumePromotions(): Promise<void>;
   onRegisterBountywell(): Promise<void>;
   onRegisterTelephone(input: RegisteredTelephoneInput): Promise<void>;
+  onChangeSpendingCeiling(ceilingMicrousd: number): Promise<void>;
   onUpdateNotificationPreference(input: NotificationPreferenceInput): Promise<void>;
   onRunBountywell(): Promise<void>;
 }) {
@@ -202,6 +205,11 @@ export function TaskList(props: {
         busy={props.busy}
         registration={props.registeredTelephone}
         onRegister={props.onRegisterTelephone}
+      />
+      <TelephoneSpendingControl
+        busy={props.busy}
+        onChange={props.onChangeSpendingCeiling}
+        status={props.telephoneBoundaries}
       />
       <NotificationPreferenceControl
         key={props.notificationPreference?.revision ?? 0}
@@ -277,6 +285,85 @@ export function TaskList(props: {
       />
     </main>
   );
+}
+
+function TelephoneSpendingControl(props: {
+  busy: boolean;
+  onChange(ceilingMicrousd: number): Promise<void>;
+  status?: TelephoneBoundaryStatus | undefined;
+}) {
+  const [ceilingDollars, setCeilingDollars] = useState(
+    (props.status?.spending.ceilingMicrousd ?? 50_000_000) / 1_000_000,
+  );
+  const spending = props.status?.spending;
+  return (
+    <section className="bountywell-control" aria-labelledby="spending-heading">
+      <p className="eyebrow">Fail-closed budget</p>
+      <h2 id="spending-heading">Paid provider spending</h2>
+      {spending === undefined ? (
+        <p>Provider usage is unavailable.</p>
+      ) : (
+        <p>
+          {formatUsd(spending.totalMicrousd)} used in {spending.month}: API{" "}
+          {formatUsd(spending.bySourceMicrousd.api)}, telephony{" "}
+          {formatUsd(spending.bySourceMicrousd.telephony)}, realtime media{" "}
+          {formatUsd(spending.bySourceMicrousd["realtime-media"])}. New paid
+          work stops at {formatUsd(spending.ceilingMicrousd)}.
+        </p>
+      )}
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void props.onChange(Math.round(ceilingDollars * 1_000_000));
+        }}
+      >
+        <label>
+          Monthly ceiling (USD)
+          <input
+            min="1"
+            max="1000"
+            required
+            step="1"
+            type="number"
+            value={ceilingDollars}
+            onChange={(event) => setCeilingDollars(event.target.valueAsNumber)}
+          />
+        </label>
+        <button disabled={props.busy}>Change ceiling after Fresh Passkey Action</button>
+      </form>
+    </section>
+  );
+}
+
+export function RawAudioDebugControl(props: {
+  busy: boolean;
+  onEnable(sessionId: string): Promise<void>;
+  sessionId: string;
+}) {
+  return (
+    <section className="bountywell-control" aria-labelledby="audio-debug-heading">
+      <p className="eyebrow">Exceptional privacy mode</p>
+      <h2 id="audio-debug-heading">Raw-audio debugging</h2>
+      <p className="notice">
+        Raw audio is ordinarily discarded. Enabling this conspicuous exception
+        records only this active Telephone Session and deletes it within 24 hours.
+        Subagents cannot enable or use it.
+      </p>
+      <button
+        disabled={props.busy}
+        onClick={() => void props.onEnable(props.sessionId)}
+      >
+        Enable for this session after Fresh Passkey Action
+      </button>
+    </section>
+  );
+}
+
+function formatUsd(microusd: number): string {
+  return new Intl.NumberFormat(undefined, {
+    currency: "USD",
+    style: "currency",
+  }).format(microusd / 1_000_000);
 }
 
 function NotificationPreferenceControl(props: {

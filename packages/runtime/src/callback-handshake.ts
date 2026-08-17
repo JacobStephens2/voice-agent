@@ -32,6 +32,10 @@ export interface CallbackHandshakeRuntime {
     handshakeId: string,
     event: Omit<TelephoneConversationEvidenceEvent, "sequence">,
   ): Promise<TelephoneSessionEvidenceRecordProjection>;
+  appendTelephoneSessionEvidenceBySessionId(
+    telephoneSessionId: string,
+    event: Omit<TelephoneEvidenceEvent, "sequence">,
+  ): Promise<TelephoneSessionEvidenceRecordProjection>;
   close(): Promise<void>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
@@ -630,6 +634,12 @@ export function createCallbackHandshakeRuntime(
       options.store.appendEvidence({
         event,
         handshakeId,
+        updatedAt: event.occurredAt,
+      }),
+    appendTelephoneSessionEvidenceBySessionId: (telephoneSessionId, event) =>
+      options.store.appendEvidenceByTelephoneSessionId({
+        event,
+        telephoneSessionId,
         updatedAt: event.occurredAt,
       }),
     close: () => options.store.close(),

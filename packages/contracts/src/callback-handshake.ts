@@ -7,6 +7,13 @@ import {
   telephoneSemanticResponseEvidenceEventSchema,
   telephoneTurnFinalizedEvidenceEventSchema,
 } from "./telephone-session.ts";
+import {
+  telephoneAudioDebugCleanedEvidenceEventSchema,
+  telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneSessionEndedEvidenceEventSchema,
+  telephoneSpendingWarningEvidenceEventSchema,
+  telephoneUsageRecordedEvidenceEventSchema,
+} from "./telephone-boundaries.ts";
 
 const callbackIdentifierSchema = z.string().min(1).max(120);
 const callbackTimestampSchema = z.iso.datetime();
@@ -52,6 +59,11 @@ const telephoneEvidenceFields = {
 };
 
 export const telephoneEvidenceEventSchema = z.discriminatedUnion("kind", [
+  telephoneAudioDebugCleanedEvidenceEventSchema,
+  telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneSessionEndedEvidenceEventSchema,
+  telephoneSpendingWarningEvidenceEventSchema,
+  telephoneUsageRecordedEvidenceEventSchema,
   telephoneTurnFinalizedEvidenceEventSchema,
   telephoneProviderTimingEvidenceEventSchema,
   telephoneProviderFailureEvidenceEventSchema,
@@ -156,6 +168,18 @@ export const telephoneSessionEvidenceRecordProjectionSchema = z.object({
   session: z.object({
     attempt: z.union([z.literal(1), z.literal(2)]),
     authorizedAt: callbackTimestampSchema.optional(),
+    durationMs: z.number().int().nonnegative().max(7_200_000).optional(),
+    endedAt: callbackTimestampSchema.optional(),
+    endReason: z
+      .enum([
+        "completed",
+        "disconnected",
+        "maximum-duration",
+        "prolonged-silence",
+        "provider-failure",
+        "spending-ceiling",
+      ])
+      .optional(),
     id: callbackIdentifierSchema,
     outcome: z.enum(["authorized", "failed", "pending"]),
     retryDueAt: callbackTimestampSchema.optional(),

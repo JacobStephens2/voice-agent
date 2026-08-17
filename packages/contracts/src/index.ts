@@ -15,6 +15,13 @@ import {
   telephoneTurnFinalizedEvidenceEventSchema,
 } from "./telephone-session.ts";
 import {
+  telephoneAudioDebugCleanedEvidenceEventSchema,
+  telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneSessionEndedEvidenceEventSchema,
+  telephoneSpendingWarningEvidenceEventSchema,
+  telephoneUsageRecordedEvidenceEventSchema,
+} from "./telephone-boundaries.ts";
+import {
   completionCallbackOutcomeEvidenceEventSchema,
   completionCallbackRequestedEvidenceEventSchema,
   notificationRequestedEvidenceEventSchema,
@@ -26,6 +33,7 @@ import {
 export * from "./promotion.ts";
 export * from "./callback-handshake.ts";
 export * from "./telephone-session.ts";
+export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
 
 export const originSecurityHeaders = {
@@ -188,6 +196,11 @@ const eventFields = {
 };
 
 export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
+  telephoneAudioDebugCleanedEvidenceEventSchema,
+  telephoneAudioDebugEnabledEvidenceEventSchema,
+  telephoneSessionEndedEvidenceEventSchema,
+  telephoneSpendingWarningEvidenceEventSchema,
+  telephoneUsageRecordedEvidenceEventSchema,
   telephoneTurnFinalizedEvidenceEventSchema,
   telephoneProviderTimingEvidenceEventSchema,
   telephoneProviderFailureEvidenceEventSchema,

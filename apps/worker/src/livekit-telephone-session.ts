@@ -16,11 +16,18 @@ import type {
   TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import {
+  createTelephoneBoundaryRuntime,
   createTelephoneSessionCoordinator,
   type DurableTaskRuntime,
   type TelephoneSessionEvidenceSink,
   type TelephoneTurnInterpreter,
 } from "@voice-agent/runtime";
+
+import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
+import {
+  meterTelephoneSessionUsage,
+  type TelephoneUsageRates,
+} from "./telephone-usage-meter.ts";
 
 const coordinatorTimeoutMs = 8_000;
 const maximumTelephoneSessionMs = 2 * 60 * 60 * 1_000;
@@ -36,13 +43,21 @@ interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
 }
 
 export interface LiveKitTelephoneSessionDependencies {
-  createConversationSession(): voice.AgentSession;
+  createConversationSession(prolongedSilenceMs: number): voice.AgentSession;
   createInterpreter(): ClosableTelephoneTurnInterpreter;
 }
 
 export async function runLiveKitTelephoneSession(
   options: {
     readonly activeTaskId?: string;
+    readonly boundaries: Pick<
+      ReturnType<typeof createTelephoneBoundaryRuntime>,
+      | "claimRawAudioCapture"
+      | "endSession"
+      | "noteActivity"
+      | "recordProviderFailure"
+      | "recordUsage"
+    >;
     readonly disconnected: Promise<void>;
     readonly endCall: () => Promise<void>;
     readonly openingText?: string;
@@ -56,6 +71,8 @@ export async function runLiveKitTelephoneSession(
     readonly sessionEvidence: TelephoneSessionEvidenceSink;
     readonly tasks: DurableTaskRuntime;
     readonly telephoneSessionId: string;
+    readonly prolongedSilenceMs?: number;
+    readonly usageRatesMicrousdPerMinute: TelephoneUsageRates;
   },
   dependencies: LiveKitTelephoneSessionDependencies = {
     createConversationSession,
@@ -71,7 +88,8 @@ export async function runLiveKitTelephoneSession(
     sessionEvidence: options.sessionEvidence,
     tasks: options.tasks,
   });
-  const session = dependencies.createConversationSession();
+  const prolongedSilenceMs = options.prolongedSilenceMs ?? 60_000;
+  const session = dependencies.createConversationSession(prolongedSilenceMs);
   const turnAdapter = new LiveKitTelephoneTurnAdapter(
     options.telephoneSessionId,
   );
@@ -80,8 +98,22 @@ export async function runLiveKitTelephoneSession(
   let callEnding = false;
   let maximumDurationTimeout: ReturnType<typeof setTimeout> | undefined;
   let resolveCallEndRequested: () => void = () => {};
+  let resolveRawAudioStop: () => void = () => {};
+  let resolveUsageStop: () => void = () => {};
+  let resolveUsageReady: () => void = () => {};
+  let rawAudioCapture: Promise<unknown> | undefined;
+  let usageMeter: Promise<unknown> | undefined;
   const callEndRequested = new Promise<void>((resolve) => {
     resolveCallEndRequested = resolve;
+  });
+  const rawAudioStop = new Promise<void>((resolve) => {
+    resolveRawAudioStop = resolve;
+  });
+  const usageStop = new Promise<void>((resolve) => {
+    resolveUsageStop = resolve;
+  });
+  const usageReady = new Promise<void>((resolve) => {
+    resolveUsageReady = resolve;
   });
 
   async function endCallOnce(): Promise<void> {
@@ -104,6 +136,16 @@ export async function runLiveKitTelephoneSession(
     }
   }
 
+  async function endBoundaryAndCall(
+    reason: "maximum-duration" | "prolonged-silence",
+  ): Promise<void> {
+    try {
+      await options.boundaries.endSession(options.telephoneSessionId, reason);
+    } finally {
+      await endCallOnce();
+    }
+  }
+
   async function recordProviderFailureAndEnd(
     stage: "stt" | "coordinator" | "tts",
     error: unknown,
@@ -114,18 +156,30 @@ export async function runLiveKitTelephoneSession(
     const deliveryId = stableIdentifier(
       `${stage}:${taskId ?? options.telephoneSessionId}:${occurredAt}`,
     );
+    const providerEvent = mapProviderFailureEvent({
+      deliveryId,
+      error,
+      occurredAt,
+      stage,
+      ...(taskId === undefined ? {} : { taskId }),
+    });
     try {
       await coordinator.receiveProviderEvent(
-        mapProviderFailureEvent({
-          deliveryId,
-          error,
-          occurredAt,
-          stage,
-          ...(taskId === undefined ? {} : { taskId }),
-        }),
+        providerEvent,
       );
     } finally {
-      await playFailureAndEnd();
+      try {
+        await options.boundaries.recordProviderFailure({
+          failureClass:
+            providerEvent.kind === "provider-timeout"
+              ? "timeout"
+              : "unavailable",
+          sessionId: options.telephoneSessionId,
+          stage,
+        });
+      } finally {
+        await playFailureAndEnd();
+      }
     }
   }
 
@@ -134,6 +188,9 @@ export async function runLiveKitTelephoneSession(
   ): void {
     processing = processing
       .then(async () => {
+        if (providerEvent.kind === "turn-finalized") {
+          await options.boundaries.noteActivity(options.telephoneSessionId);
+        }
         const result = await coordinator.receiveProviderEvent(providerEvent);
         for (const action of result.actions) {
           await performConversationAction(
@@ -161,9 +218,14 @@ export async function runLiveKitTelephoneSession(
   session.on(voice.AgentSessionEventTypes.UserStateChanged, (event) => {
     if (event.newState === "speaking") {
       turnAdapter.speechStarted(event.createdAt);
+      processing = processing
+        .then(() => options.boundaries.noteActivity(options.telephoneSessionId))
+        .catch(() => undefined);
     }
     if (event.newState === "away") {
-      processing = processing.then(endCallOnce).catch(() => undefined);
+      processing = processing
+        .then(() => endBoundaryAndCall("prolonged-silence"))
+        .catch(() => undefined);
     }
   });
   session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
@@ -202,14 +264,58 @@ export async function runLiveKitTelephoneSession(
       record: false,
       room: options.room,
     });
-    await options.onStarted?.();
-    if (options.openingText !== undefined) {
-      await session
-        .say(options.openingText, {
-          addToChatCtx: false,
-          allowInterruptions: false,
-        })
-        .waitForPlayout();
+    rawAudioCapture = recordAuthorizedCallerAudio({
+      boundaries: options.boundaries,
+      room: options.room,
+      sessionId: options.telephoneSessionId,
+      stop: rawAudioStop,
+    }).catch(() => {
+      process.stderr.write("Raw-audio debug capture failed without affecting the call.\n");
+    });
+    usageMeter = meterTelephoneSessionUsage({
+      onFirstSliceComplete: resolveUsageReady,
+      onSpendingCeiling: async () => {
+        await options.boundaries.endSession(
+          options.telephoneSessionId,
+          "spending-ceiling",
+        );
+        await playFailureAndEnd();
+      },
+      ratesMicrousdPerMinute: options.usageRatesMicrousdPerMinute,
+      recordUsage: options.boundaries.recordUsage,
+      sessionId: options.telephoneSessionId,
+      stop: usageStop,
+      usageScopeId: stableIdentifier(
+        `usage:${options.telephoneSessionId}:${Date.now()}`,
+      ),
+    })
+      .catch(async () => {
+        await options.boundaries.endSession(
+          options.telephoneSessionId,
+          "spending-ceiling",
+        );
+        await playFailureAndEnd();
+      })
+      .finally(resolveUsageReady);
+    await usageReady;
+    if (!callEnding) {
+      await options.onStarted?.();
+      if (options.openingText !== undefined) {
+        try {
+          await session
+            .say(options.openingText, {
+              addToChatCtx: false,
+              allowInterruptions: false,
+            })
+            .waitForPlayout();
+        } catch (error) {
+          await recordProviderFailureAndEnd(
+            "tts",
+            error,
+            options.activeTaskId,
+          );
+        }
+      }
     }
     const endedBy = await Promise.race([
       options.disconnected.then(() => "disconnected" as const),
@@ -221,12 +327,28 @@ export async function runLiveKitTelephoneSession(
         );
       }),
     ]);
-    if (endedBy === "maximum-duration") await endCallOnce();
+    if (endedBy === "maximum-duration") {
+      await endBoundaryAndCall("maximum-duration");
+    } else if (endedBy === "disconnected") {
+      await options.boundaries.endSession(
+        options.telephoneSessionId,
+        "disconnected",
+      );
+    } else if (!failureEnded) {
+      await options.boundaries.endSession(
+        options.telephoneSessionId,
+        "completed",
+      );
+    }
   } finally {
+    resolveRawAudioStop();
+    resolveUsageStop();
     if (maximumDurationTimeout !== undefined) {
       clearTimeout(maximumDurationTimeout);
     }
     await session.close().catch(() => undefined);
+    await rawAudioCapture;
+    await usageMeter;
     await processing.catch(() => undefined);
     await interpreter.close();
   }
@@ -288,7 +410,10 @@ class LiveKitTelephoneTurnInterpreter implements TelephoneTurnInterpreter {
       role: "developer",
     });
     context.addMessage({ content: input.text, role: "user" });
-    const stream = this.#model.chat({ chatCtx: context });
+    const stream = this.#model.chat({
+      chatCtx: context,
+      connOptions: boundedProviderConnectOptions("coordinator"),
+    });
     const response = await collectWithTimeout(stream, coordinatorTimeoutMs);
     const intent = response.trim();
     if (
@@ -307,9 +432,16 @@ class LiveKitTelephoneTurnInterpreter implements TelephoneTurnInterpreter {
   }
 }
 
-function createConversationSession(): voice.AgentSession {
+function createConversationSession(prolongedSilenceMs: number): voice.AgentSession {
   return new voice.AgentSession({
+    connOptions: {
+      llmConnOptions: boundedProviderConnectOptions("coordinator"),
+      maxUnrecoverableErrors: 0,
+      sttConnOptions: boundedProviderConnectOptions("stt"),
+      ttsConnOptions: boundedProviderConnectOptions("tts"),
+    },
     stt: new inference.STT({
+      connOptions: boundedProviderConnectOptions("stt"),
       language: "en",
       model: "assemblyai/universal-streaming-multilingual",
       modelOptions: {
@@ -318,6 +450,7 @@ function createConversationSession(): voice.AgentSession {
     }),
     transcriptionTimeout: transcriptionTimeoutMs,
     tts: new inference.TTS({
+      connOptions: boundedProviderConnectOptions("tts"),
       language: "en",
       model: "inworld/inworld-tts-2",
       voice: process.env.VOICE_AGENT_TTS_VOICE ?? "Sarah",
@@ -330,7 +463,7 @@ function createConversationSession(): voice.AgentSession {
       turnDetection: new inference.TurnDetector(),
     },
     ttsReadIdleTimeout: ttsTimeoutMs,
-    userAwayTimeout: 60,
+    userAwayTimeout: Math.max(30, Math.ceil(prolongedSilenceMs / 1_000)),
   });
 }
 
@@ -419,7 +552,7 @@ async function performConversationAction(
   }
 }
 
-async function playPrerecordedProviderFailure(
+export async function playPrerecordedProviderFailure(
   session: voice.AgentSession,
 ): Promise<void> {
   const output = session.output.audio;
@@ -608,4 +741,14 @@ function providerTimeoutMs(
   if (stage === "stt") return transcriptionTimeoutMs;
   if (stage === "coordinator") return coordinatorTimeoutMs;
   return ttsTimeoutMs;
+}
+
+export function boundedProviderConnectOptions(
+  stage: "coordinator" | "stt" | "tts",
+) {
+  return {
+    maxRetry: 1,
+    retryIntervalMs: 250,
+    timeoutMs: providerTimeoutMs(stage),
+  } as const;
 }
