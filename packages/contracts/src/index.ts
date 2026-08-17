@@ -7,9 +7,17 @@ import {
   telephoneSessionEvidenceRecordProjectionSchema,
   type TelephoneSessionEvidenceRecordProjection,
 } from "./callback-handshake.ts";
+import {
+  telephoneProviderFailureEvidenceEventSchema,
+  telephoneProviderTimingEvidenceEventSchema,
+  telephoneResponseInterruptedEvidenceEventSchema,
+  telephoneSemanticResponseEvidenceEventSchema,
+  telephoneTurnFinalizedEvidenceEventSchema,
+} from "./telephone-session.ts";
 
 export * from "./promotion.ts";
 export * from "./callback-handshake.ts";
+export * from "./telephone-session.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -171,6 +179,10 @@ const eventFields = {
 };
 
 export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
+  telephoneTurnFinalizedEvidenceEventSchema,
+  telephoneProviderTimingEvidenceEventSchema,
+  telephoneProviderFailureEvidenceEventSchema,
+  telephoneResponseInterruptedEvidenceEventSchema,
   z.object({
     ...eventFields,
     details: z.object({ requestId: identifierSchema }),
@@ -200,6 +212,7 @@ export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
     details: z.object({}),
     kind: z.literal("task.completed"),
   }),
+  telephoneSemanticResponseEvidenceEventSchema,
 ]);
 
 export type EvidenceEventProjection = z.infer<

@@ -16,6 +16,7 @@ import {
 import type {
   ApplyCallbackTransitionPersistence,
   ApplyCallbackTransitionResult,
+  AppendCallbackEvidencePersistence,
   CallbackDeliveryResult,
   CallbackHandshakeStore,
   CreateCallbackHandshakePersistence,
@@ -38,6 +39,10 @@ interface CallbackEvidenceRow {
   readonly occurred_at: string;
   readonly sequence: number;
   readonly summary: string;
+}
+
+interface CallbackEvidenceIdentityRow {
+  readonly handshake_id: string;
 }
 
 const liveCallbackEvidenceRetentionDays = 90;
@@ -160,6 +165,15 @@ export function createSqliteCallbackHandshakeStore(
     INSERT INTO callback_evidence_events (
       id, handshake_id, sequence, kind, occurred_at, summary, details_json
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const findEvidenceById = database.prepare<
+    [eventId: string],
+    CallbackEvidenceIdentityRow
+  >(`
+    SELECT handshake_id FROM callback_evidence_events WHERE id = ?
+  `);
+  const updateProjection = database.prepare(`
+    UPDATE callback_handshakes SET projection_json = ? WHERE id = ?
   `);
   const tombstoneExpiredHandshakes = database.prepare(`
     INSERT OR IGNORE INTO expired_callback_handshake_ids (handshake_id, expired_at)
@@ -339,6 +353,56 @@ export function createSqliteCallbackHandshakeStore(
     },
   );
 
+  const appendEvidenceTransaction = database.transaction(
+    (
+      input: AppendCallbackEvidencePersistence,
+    ): TelephoneSessionEvidenceRecordProjection => {
+      const row = findHandshake.get(input.handshakeId);
+      if (row === undefined) {
+        throw new Error("Callback Handshake is unavailable");
+      }
+      const existing = findEvidenceById.get(input.event.id);
+      if (existing !== undefined) {
+        if (existing.handshake_id !== input.handshakeId) {
+          throw new Error(
+            "Telephone Evidence Event identity belongs to another Callback Handshake",
+          );
+        }
+        return loadRecord(row, input.handshakeId);
+      }
+      const record = loadRecord(row, input.handshakeId);
+      const occurredAt =
+        record.task.updatedAt < input.updatedAt
+          ? input.updatedAt
+          : record.task.updatedAt;
+      const event = telephoneEvidenceEventSchema.parse({
+        ...input.event,
+        sequence: record.evidence.length + 1,
+      });
+      insertEvidence.run(
+        event.id,
+        input.handshakeId,
+        event.sequence,
+        event.kind,
+        event.occurredAt,
+        event.summary,
+        JSON.stringify(event.details),
+      );
+      updateProjection.run(
+        projectionStateJson({
+          ...record,
+          evidence: [...record.evidence, event],
+          task: { ...record.task, updatedAt: occurredAt },
+        }),
+        input.handshakeId,
+      );
+      return loadRecord(
+        requireHandshake(findHandshake.get(input.handshakeId)),
+        input.handshakeId,
+      );
+    },
+  );
+
   const persistRejectedTransaction = database.transaction(
     (deliveryId: string, result: InboundTelephoneResult) => {
       const existing = findDelivery.get(deliveryId, deliveryId);
@@ -367,6 +431,10 @@ export function createSqliteCallbackHandshakeStore(
   expireOldEvidence();
 
   return {
+    async appendEvidence(input) {
+      expireOldEvidence();
+      return appendEvidenceTransaction.immediate(input);
+    },
     async applyTransition(input) {
       expireOldEvidence();
       return applyTransitionTransaction.immediate(input);
@@ -464,6 +532,15 @@ export function createSqliteCallbackHandshakeStore(
       return registration;
     },
   };
+}
+
+function requireHandshake(
+  row: CallbackHandshakeRow | undefined,
+): CallbackHandshakeRow {
+  if (row === undefined) {
+    throw new Error("Callback Handshake is unavailable");
+  }
+  return row;
 }
 
 function createCallbackSchema(database: Database.Database): void {

@@ -184,7 +184,7 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=11
+TOTAL_STAGES=12
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 banner "Voice Agent host setup"
@@ -478,9 +478,19 @@ sudo -u voice-agent env \
   VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite \
   /usr/bin/node --experimental-strip-types \
   /opt/voice-agent/current/apps/worker/src/callback-smoke.ts
+
+stage "Answer Bountywell by telephone"
+say "Keep the authorized callback connected. This smoke waits up to three minutes for a new finalized telephone health question and its complete Evidence Record."
+step "When the command begins waiting, ask naturally whether Bountywell is healthy."
+step "Listen for an answer that separates the primary health check from the expected authentication-boundary response."
+sudo -u voice-agent env \
+  VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite \
+  /usr/bin/node --experimental-strip-types \
+  /opt/voice-agent/current/apps/worker/src/telephone-smoke.ts
 open_url "https://voice.stephens.page"
-step "Open the new Callback Handshake Evidence Record and confirm it contains sanitized inbound, callback, machine-detection, DTMF, authorization, and outcome evidence."
-pause "Press Enter after the real PSTN evidence is visible."
+step "Open the Callback Handshake Evidence Record and confirm it contains sanitized inbound, callback, machine-detection, DTMF, authorization, and outcome evidence."
+step "Open the new Bountywell Evidence Record and confirm it contains the finalized turn, provider timing, Operation, bounded evidence, semantic response, and conclusion."
+pause "Press Enter after the real spoken and visual evidence is verified."
 
 stage "Run the bounded Bountywell production smoke"
 say "This creates one real Durable Task and verifies public, local, systemd, and resource evidence."

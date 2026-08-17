@@ -12,6 +12,7 @@ import {
 import type {
   AcceptedInquiryPersistence,
   ApplicationRegistry,
+  AppendedEvidencePersistence,
   ClaimedBountywellOperation,
   CompletedInquiryPersistence,
   DurableTaskStore,
@@ -43,6 +44,10 @@ interface EvidenceEventRow {
   readonly occurred_at: string;
   readonly sequence: number;
   readonly summary: string;
+}
+
+interface EvidenceEventIdentityRow {
+  readonly task_id: string;
 }
 
 interface OperationRow {
@@ -114,6 +119,12 @@ export function createSqliteDurableTaskStore(
     FROM evidence_events
     WHERE task_id = ?
     ORDER BY sequence
+  `);
+  const findEventById = database.prepare<
+    [eventId: string],
+    EvidenceEventIdentityRow
+  >(`
+    SELECT task_id FROM evidence_events WHERE id = ?
   `);
   const listTasks = database.prepare<[], TaskRow>(`
     SELECT id, kind, status, question, conclusion, created_at, updated_at
@@ -190,6 +201,11 @@ export function createSqliteDurableTaskStore(
     UPDATE durable_tasks
     SET status = 'completed', conclusion = ?, updated_at = ?
     WHERE id = ? AND status = 'pending'
+  `);
+  const updateTaskTimestamp = database.prepare(`
+    UPDATE durable_tasks
+    SET updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+    WHERE id = ?
   `);
   const readTaskMetrics = database.prepare<
     [],
@@ -372,6 +388,31 @@ export function createSqliteDurableTaskStore(
     },
   );
 
+  const appendEvidenceTransaction = database.transaction(
+    (input: AppendedEvidencePersistence): EvidenceRecordProjection => {
+      const task = findTaskById.get(input.taskId);
+      if (task === undefined) {
+        throw new Error("Durable Task is unavailable");
+      }
+      const existing = findEventById.get(input.event.id);
+      if (existing !== undefined) {
+        if (existing.task_id !== input.taskId) {
+          throw new Error("Evidence Event identity belongs to another Durable Task");
+        }
+        return loadRecord(task);
+      }
+      const previous = findEventsByTask.all(input.taskId).at(-1);
+      insertEvidence(input.taskId, [
+        {
+          ...input.event,
+          sequence: (previous?.sequence ?? 0) + 1,
+        } as EvidenceEventProjection,
+      ]);
+      updateTaskTimestamp.run(input.updatedAt, input.updatedAt, input.taskId);
+      return loadRecord(requireTask(findTaskById.get(input.taskId)));
+    },
+  );
+
   const expireTransaction = database.transaction((cutoff: string) => {
     tombstoneExpiredRequests.run(cutoff, cutoff);
     deleteExpiredEvents.run(cutoff);
@@ -388,6 +429,10 @@ export function createSqliteDurableTaskStore(
   expireOldEvidence();
 
   return {
+    async appendEvidence(input) {
+      expireOldEvidence();
+      return appendEvidenceTransaction.immediate(input);
+    },
     async claimBountywellOperation(input) {
       expireOldEvidence();
       return claimTransaction.immediate(input);

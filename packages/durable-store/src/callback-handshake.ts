@@ -4,6 +4,7 @@ import type {
   InboundTelephoneResult,
   RegisteredTelephone,
   RegisteredTelephoneInput,
+  TelephoneEvidenceEvent,
   TelephoneEvidenceRecordSummary,
   TelephoneSessionEvidenceRecordProjection,
 } from "@voice-agent/contracts";
@@ -45,12 +46,21 @@ export interface ApplyCallbackTransitionPersistence {
   readonly snapshot: CallbackHandshakeSnapshot;
 }
 
+export interface AppendCallbackEvidencePersistence {
+  readonly event: Omit<TelephoneEvidenceEvent, "sequence">;
+  readonly handshakeId: string;
+  readonly updatedAt: string;
+}
+
 export type ApplyCallbackTransitionResult =
   | { readonly kind: "applied"; readonly result: CallbackActionResult }
   | { readonly kind: "conflict" }
   | { readonly kind: "duplicate"; readonly result: CallbackDeliveryResult };
 
 export interface CallbackHandshakeStore {
+  appendEvidence(
+    input: AppendCallbackEvidencePersistence,
+  ): Promise<TelephoneSessionEvidenceRecordProjection>;
   applyTransition(
     input: ApplyCallbackTransitionPersistence,
   ): Promise<ApplyCallbackTransitionResult>;

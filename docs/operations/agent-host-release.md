@@ -1,9 +1,10 @@
 # Agent Host release and recovery
 
-Issues #4 and #6 introduce the read-only Bountywell health inquiry and its
-Telephone Session entry path: a durable Callback Handshake through Telnyx SIP
-and LiveKit Cloud. Production activation still follows the Human Merge boundary
-in ADR-0003. Never promote an unmerged branch.
+Issues #4, #6, and #7 introduce the read-only Bountywell health inquiry and its
+Telephone Session path: a durable Callback Handshake followed by a modular
+AssemblyAI, OpenAI, and Inworld conversation through Telnyx SIP and LiveKit
+Cloud. Production activation still follows the Human Merge boundary in
+ADR-0003. Never promote an unmerged branch.
 
 ## Fixed authority
 
@@ -57,7 +58,7 @@ From a clean checkout on the Agent Host after the pull request has been merged:
 ./ops/setup-agent-host.sh
 ```
 
-The eleven-stage wizard verifies `origin/main`, captures the LiveKit project
+The twelve-stage wizard verifies `origin/main`, captures the LiveKit project
 credentials and stored Telnyx/LiveKit route identifiers, builds the exact commit
 outside the live path, installs identities and units, obtains the TLS
 certificate, walks the owner through two-passkey bootstrap and Recovery Code
@@ -78,6 +79,14 @@ passes only when the durable Evidence Record contains the sanitized inbound,
 notice, callback, machine-detection, DTMF, and authorization events. Unknown,
 malformed, wrong-route, rate-limited, machine, and speech-only attempts do not
 authorize a Telephone Session, and the callback leg never leaves voicemail.
+
+The telephone Bountywell smoke continues in the authorized callback and waits
+for a natural health question. It succeeds only when one read-only Operation
+produces the supported spoken conclusion and the same Durable Task Evidence
+Record contains the sanitized finalized turn, STT/coordinator/TTS timing,
+bounded health evidence, semantic speech text, and final conclusion. Interim
+hypotheses, raw or generated audio, credentials, and raw provider streams are
+not retained.
 
 The bounded Bountywell smoke uses `production-smoke-<merge-commit>` as its request ID. A
 retry returns the same Durable Task and broker Operation rather than issuing a

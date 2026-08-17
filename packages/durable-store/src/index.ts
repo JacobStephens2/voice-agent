@@ -20,6 +20,12 @@ export interface AcceptedInquiryPersistence {
   readonly requestId: string;
 }
 
+export interface AppendedEvidencePersistence {
+  readonly event: Omit<EvidenceEventProjection, "sequence">;
+  readonly taskId: string;
+  readonly updatedAt: string;
+}
+
 export interface ClaimedBountywellOperation {
   readonly operationId: string;
   readonly taskId: string;
@@ -64,6 +70,9 @@ export interface VoiceAgentOperationalMetrics {
 }
 
 export interface DurableTaskStore {
+  appendEvidence(
+    input: AppendedEvidencePersistence,
+  ): Promise<EvidenceRecordProjection>;
   claimBountywellOperation(input: {
     readonly claimedAt: string;
     readonly leaseExpiresAt: string;
