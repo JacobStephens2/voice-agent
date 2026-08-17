@@ -30,10 +30,11 @@ const runtime = createDurableTaskRuntime({
   now: () => new Date().toISOString(),
   store,
 });
+const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
 const callbackRuntime = createCallbackHandshakeRuntime({
   nextId: randomUUID,
   now: () => new Date().toISOString(),
-  store: createSqliteCallbackHandshakeStore(databasePath),
+  store: callbackStore,
 });
 const agentName = "voice-agent-telephone";
 const liveKitConnection = {
@@ -44,6 +45,7 @@ const liveKitConnection = {
 const callbackAdapter = createProductionLiveKitCallbackAdapter({
   agentName,
   ...liveKitConnection,
+  placementClaims: callbackStore,
 });
 const telephoneServer = createLiveKitAgentServer({
   agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),

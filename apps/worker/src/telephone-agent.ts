@@ -31,15 +31,17 @@ const dtmfWindowMs = 15_000;
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
+    const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
     const runtime = createCallbackHandshakeRuntime({
       nextId: randomUUID,
       now: () => new Date().toISOString(),
-      store: createSqliteCallbackHandshakeStore(databasePath),
+      store: callbackStore,
     });
     const callbackAdapter = createProductionLiveKitCallbackAdapter({
       agentName,
       apiKey: requireEnvironment("LIVEKIT_API_KEY"),
       apiSecret: requireEnvironment("LIVEKIT_API_SECRET"),
+      placementClaims: callbackStore,
       url: requireEnvironment("LIVEKIT_URL"),
     });
     try {

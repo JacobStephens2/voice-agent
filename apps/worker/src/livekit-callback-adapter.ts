@@ -20,6 +20,12 @@ export interface LiveKitCallbackAdapter {
 
 export interface LiveKitCallbackAdapterOptions {
   readonly agentName: string;
+  readonly placementClaims: {
+    claimCallbackPlacement(
+      effectId: string,
+      handshakeId: string,
+    ): Promise<boolean>;
+  };
   readonly dispatch: {
     createDispatch(
       roomName: string,
@@ -62,7 +68,15 @@ export function createLiveKitCallbackAdapter(
         action.roomName,
         action.participantIdentity,
       );
+      const placementClaimed =
+        await options.placementClaims.claimCallbackPlacement(
+          action.effectId,
+          handshakeId,
+        );
       if (existingParticipant !== undefined) return existingParticipant;
+      if (!placementClaimed) {
+        throw new Error("Callback placement was already claimed");
+      }
 
       const metadata = {
         attempt: action.attempt,
@@ -70,23 +84,30 @@ export function createLiveKitCallbackAdapter(
         handshakeId,
         kind: "outbound-callback" as const,
         participantIdentity: action.participantIdentity,
+        placementState: "claimed" as const,
       };
-      const existingDispatches = await options.dispatch.listDispatch(
-        action.roomName,
-      );
-      if (
-        !existingDispatches.some(
-          (dispatch) =>
-            dispatch.metadata !== undefined &&
-            isMatchingDispatch(dispatch.metadata, action.effectId),
-        )
-      ) {
-        await options.dispatch.createDispatch(
+      let existingDispatches: readonly { readonly metadata?: string }[];
+      try {
+        existingDispatches = await options.dispatch.listDispatch(
           action.roomName,
-          options.agentName,
-          { metadata: JSON.stringify(metadata) },
         );
+      } catch (error) {
+        if (!isProviderNotFound(error)) throw error;
+        existingDispatches = [];
       }
+      const placementWasClaimed = existingDispatches.some(
+        (dispatch) =>
+          dispatch.metadata !== undefined &&
+          isMatchingDispatch(dispatch.metadata, action.effectId),
+      );
+      if (placementWasClaimed) {
+        throw new Error("Callback placement was already claimed");
+      }
+      await options.dispatch.createDispatch(
+        action.roomName,
+        options.agentName,
+        { metadata: JSON.stringify(metadata) },
+      );
 
       return options.sip.createSipParticipant(
         action.livekitOutboundTrunkId,
@@ -114,6 +135,7 @@ export function createProductionLiveKitCallbackAdapter(input: {
   readonly agentName: string;
   readonly apiKey: string;
   readonly apiSecret: string;
+  readonly placementClaims: LiveKitCallbackAdapterOptions["placementClaims"];
   readonly url: string;
 }): LiveKitCallbackAdapter {
   const dispatch = new AgentDispatchClient(
@@ -130,6 +152,7 @@ export function createProductionLiveKitCallbackAdapter(input: {
   return createLiveKitCallbackAdapter({
     agentName: input.agentName,
     dispatch,
+    placementClaims: input.placementClaims,
     rooms: {
       async findParticipant(roomName, participantIdentity) {
         try {
@@ -142,11 +165,7 @@ export function createProductionLiveKitCallbackAdapter(input: {
             sipCallId: participant.attributes["sip.callID"] ?? participant.sid,
           };
         } catch (error) {
-          if (
-            error instanceof Error &&
-            "status" in error &&
-            error.status === 404
-          ) {
+          if (isProviderNotFound(error)) {
             return undefined;
           }
           throw error;
@@ -185,4 +204,10 @@ function isMatchingDispatch(metadata: string, effectId: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isProviderNotFound(error: unknown): boolean {
+  return (
+    error instanceof Error && "status" in error && error.status === 404
+  );
 }

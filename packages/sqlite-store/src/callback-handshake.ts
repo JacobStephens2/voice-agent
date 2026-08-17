@@ -86,6 +86,11 @@ export function createSqliteCallbackHandshakeStore(
       delivery_id, handshake_id, result_json
     ) VALUES (?, ?, ?)
   `);
+  const insertCallbackPlacement = database.prepare(`
+    INSERT INTO callback_placement_claims (effect_id, handshake_id)
+    VALUES (?, ?)
+    ON CONFLICT (effect_id) DO NOTHING
+  `);
   const findHandshake = database.prepare<
     [handshakeId: string],
     CallbackHandshakeRow
@@ -366,6 +371,10 @@ export function createSqliteCallbackHandshakeStore(
       expireOldEvidence();
       return applyTransitionTransaction.immediate(input);
     },
+    async claimCallbackPlacement(effectId, handshakeId) {
+      expireOldEvidence();
+      return insertCallbackPlacement.run(effectId, handshakeId).changes === 1;
+    },
     async close() {
       database.close();
     },
@@ -486,6 +495,15 @@ function createCallbackSchema(database: Database.Database): void {
       handshake_id TEXT,
       result_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS callback_placement_claims (
+      effect_id TEXT PRIMARY KEY,
+      handshake_id TEXT NOT NULL REFERENCES callback_handshakes(id)
+        ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS callback_placement_claims_handshake
+      ON callback_placement_claims (handshake_id);
 
     CREATE TABLE IF NOT EXISTS expired_callback_handshake_ids (
       handshake_id TEXT PRIMARY KEY,
