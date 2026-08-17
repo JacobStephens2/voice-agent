@@ -1,4 +1,5 @@
 import {
+  APITimeoutError,
   AudioByteStream,
   inference,
   llm,
@@ -17,10 +18,14 @@ import type {
 import {
   createTelephoneSessionCoordinator,
   type DurableTaskRuntime,
+  type TelephoneSessionEvidenceSink,
   type TelephoneTurnInterpreter,
 } from "@voice-agent/runtime";
 
 const coordinatorTimeoutMs = 8_000;
+const maximumTelephoneSessionMs = 2 * 60 * 60 * 1_000;
+const transcriptionTimeoutMs = 5_000;
+const ttsTimeoutMs = 10_000;
 const providerFailureAudioPath = fileURLToPath(
   new URL("../assets/provider-failure.pcm", import.meta.url),
 );
@@ -30,18 +35,36 @@ export async function runLiveKitTelephoneSession(options: {
   readonly disconnected: Promise<void>;
   readonly endCall: () => Promise<void>;
   readonly room: Room;
+  readonly sessionEvidence: TelephoneSessionEvidenceSink;
   readonly tasks: DurableTaskRuntime;
   readonly telephoneSessionId: string;
 }): Promise<void> {
   const interpreter = new LiveKitTelephoneTurnInterpreter();
   const coordinator = createTelephoneSessionCoordinator({
     interpreter,
+    sessionEvidence: options.sessionEvidence,
     tasks: options.tasks,
   });
   const session = createConversationSession();
   let speechStartedAt: number | undefined;
   let processing = Promise.resolve();
   let failureEnded = false;
+  let callEnding = false;
+  let maximumDurationTimeout: ReturnType<typeof setTimeout> | undefined;
+  let resolveCallEndRequested: () => void = () => {};
+  const callEndRequested = new Promise<void>((resolve) => {
+    resolveCallEndRequested = resolve;
+  });
+
+  async function endCallOnce(): Promise<void> {
+    if (callEnding) return;
+    callEnding = true;
+    try {
+      await options.endCall();
+    } finally {
+      resolveCallEndRequested();
+    }
+  }
 
   async function playFailureAndEnd(): Promise<void> {
     if (failureEnded) return;
@@ -49,12 +72,40 @@ export async function runLiveKitTelephoneSession(options: {
     try {
       await playPrerecordedProviderFailure(session);
     } finally {
-      await options.endCall().catch(() => undefined);
+      await endCallOnce();
+    }
+  }
+
+  async function recordProviderFailureAndEnd(
+    stage: "stt" | "coordinator" | "tts",
+    error: unknown,
+    taskId?: string,
+  ): Promise<void> {
+    if (failureEnded) return;
+    const occurredAt = new Date().toISOString();
+    const deliveryId = providerDeliveryId(
+      `${stage}:${taskId ?? options.telephoneSessionId}:${occurredAt}`,
+    );
+    try {
+      await coordinator.receiveProviderEvent(
+        mapProviderFailureEvent({
+          deliveryId,
+          error,
+          occurredAt,
+          stage,
+          ...(taskId === undefined ? {} : { taskId }),
+        }),
+      );
+    } finally {
+      await playFailureAndEnd();
     }
   }
 
   session.on(voice.AgentSessionEventTypes.UserStateChanged, (event) => {
     if (event.newState === "speaking") speechStartedAt = event.createdAt;
+    if (event.newState === "away") {
+      processing = processing.then(endCallOnce).catch(() => undefined);
+    }
   });
   session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
     if (failureEnded) return;
@@ -93,13 +144,23 @@ export async function runLiveKitTelephoneSession(options: {
             coordinator,
             action,
             playFailureAndEnd,
+            recordProviderFailureAndEnd,
           );
         }
       })
-      .catch(playFailureAndEnd);
+      .catch((error: unknown) =>
+        recordProviderFailureAndEnd("coordinator", error),
+      );
   });
   session.on(voice.AgentSessionEventTypes.UserTranscriptionTimeout, () => {
-    processing = processing.then(playFailureAndEnd).catch(() => undefined);
+    processing = processing
+      .then(() =>
+        recordProviderFailureAndEnd(
+          "stt",
+          new APITimeoutError({ message: "Transcription timed out" }),
+        ),
+      )
+      .catch(() => undefined);
   });
 
   try {
@@ -108,8 +169,21 @@ export async function runLiveKitTelephoneSession(options: {
       record: false,
       room: options.room,
     });
-    await options.disconnected;
+    const endedBy = await Promise.race([
+      options.disconnected.then(() => "disconnected" as const),
+      callEndRequested.then(() => "end-requested" as const),
+      new Promise<"maximum-duration">((resolve) => {
+        maximumDurationTimeout = setTimeout(
+          () => resolve("maximum-duration"),
+          maximumTelephoneSessionMs,
+        );
+      }),
+    ]);
+    if (endedBy === "maximum-duration") await endCallOnce();
   } finally {
+    if (maximumDurationTimeout !== undefined) {
+      clearTimeout(maximumDurationTimeout);
+    }
     await session.close().catch(() => undefined);
     await processing.catch(() => undefined);
     await interpreter.close();
@@ -183,7 +257,7 @@ function createConversationSession(): voice.AgentSession {
         keyterms_prompt: ["Bountywell"],
       },
     }),
-    transcriptionTimeout: 5_000,
+    transcriptionTimeout: transcriptionTimeoutMs,
     tts: new inference.TTS({
       language: "en",
       model: "inworld/inworld-tts-2",
@@ -196,7 +270,7 @@ function createConversationSession(): voice.AgentSession {
       },
       turnDetection: new inference.TurnDetector(),
     },
-    ttsReadIdleTimeout: 10_000,
+    ttsReadIdleTimeout: ttsTimeoutMs,
     userAwayTimeout: 60,
   });
 }
@@ -206,6 +280,11 @@ async function performConversationAction(
   coordinator: ReturnType<typeof createTelephoneSessionCoordinator>,
   action: TelephoneSessionAction,
   playFailureAndEnd: () => Promise<void>,
+  recordProviderFailureAndEnd: (
+    stage: "stt" | "coordinator" | "tts",
+    error: unknown,
+    taskId?: string,
+  ) => Promise<void>,
 ): Promise<void> {
   if (action.kind === "play-prerecorded-failure-and-end") {
     await playFailureAndEnd();
@@ -221,48 +300,38 @@ async function performConversationAction(
     });
     await speech.waitForPlayout();
   } catch (error) {
-    if (action.kind === "speak-semantic-response") {
-      const failure = await coordinator.receiveProviderEvent({
-        deliveryId: providerDeliveryId(`tts-failure:${action.responseId}`),
-        failure: "unavailable",
-        kind: "provider-failure",
-        occurredAt: new Date().toISOString(),
-        provider: "inworld",
-        stage: "tts",
-        taskId: action.taskId,
-      });
-      if (
-        failure.actions.some(
-          (candidate) =>
-            candidate.kind === "play-prerecorded-failure-and-end",
-        )
-      ) {
-        await playFailureAndEnd();
-        return;
-      }
-    }
-    throw error;
+    await recordProviderFailureAndEnd(
+      "tts",
+      error,
+      action.kind === "speak-semantic-response" ? action.taskId : undefined,
+    );
+    return;
   }
 
-  if (action.kind !== "speak-semantic-response") return;
+  const responseId =
+    action.kind === "request-task-confirmation"
+      ? action.confirmationId
+      : action.responseId;
+  const taskId =
+    action.kind === "speak-semantic-response" ? action.taskId : undefined;
   const occurredAt = new Date().toISOString();
   await coordinator.receiveProviderEvent({
-    deliveryId: providerDeliveryId(`tts-timing:${action.responseId}`),
+    deliveryId: providerDeliveryId(`tts-timing:${responseId}`),
     durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
     kind: "provider-timing",
     occurredAt,
     provider: "inworld",
     stage: "tts",
-    taskId: action.taskId,
+    ...(taskId === undefined ? {} : { taskId }),
   });
   if (speech.interrupted) {
     await coordinator.receiveProviderEvent({
-      deliveryId: providerDeliveryId(`interruption:${action.responseId}`),
+      deliveryId: providerDeliveryId(`interruption:${responseId}`),
       durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
       kind: "response-interrupted",
       occurredAt,
-      responseId: action.responseId,
-      taskId: action.taskId,
+      responseId,
+      ...(taskId === undefined ? {} : { taskId }),
     });
   }
 }
@@ -295,7 +364,7 @@ async function collectWithTimeout(
       new Promise<never>((_resolve, reject) => {
         timeout = setTimeout(() => {
           stream.close();
-          reject(new Error("Telephone coordinator timed out"));
+          reject(new APITimeoutError({ message: "Coordinator timed out" }));
         }, timeoutMs);
       }),
     ]);
@@ -316,4 +385,49 @@ function finalizedDeliveryId(
 
 function providerDeliveryId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 32);
+}
+
+function providerForStage(
+  stage: "stt" | "coordinator" | "tts",
+): "assemblyai" | "openai" | "inworld" {
+  if (stage === "stt") return "assemblyai";
+  if (stage === "coordinator") return "openai";
+  return "inworld";
+}
+
+export function mapProviderFailureEvent(input: {
+  readonly deliveryId: string;
+  readonly error: unknown;
+  readonly occurredAt: string;
+  readonly stage: "stt" | "coordinator" | "tts";
+  readonly taskId?: string;
+}):
+  | Extract<TelephoneSessionProviderEvent, { kind: "provider-timeout" }>
+  | Extract<TelephoneSessionProviderEvent, { kind: "provider-failure" }> {
+  const common = {
+    deliveryId: input.deliveryId,
+    occurredAt: input.occurredAt,
+    provider: providerForStage(input.stage),
+    stage: input.stage,
+    ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
+  };
+  return input.error instanceof APITimeoutError
+    ? {
+        ...common,
+        kind: "provider-timeout",
+        timeoutMs: providerTimeoutMs(input.stage),
+      }
+    : {
+        ...common,
+        failure: "unavailable",
+        kind: "provider-failure",
+      };
+}
+
+function providerTimeoutMs(
+  stage: "stt" | "coordinator" | "tts",
+): number {
+  if (stage === "stt") return transcriptionTimeoutMs;
+  if (stage === "coordinator") return coordinatorTimeoutMs;
+  return ttsTimeoutMs;
 }

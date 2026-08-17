@@ -248,6 +248,20 @@ async function handleOutbound(
           disconnected: disconnected.promise,
           endCall: () => ctx.deleteRoom(),
           room: ctx.room,
+          sessionEvidence: {
+            async append(event) {
+              await runtime.appendTelephoneSessionEvidence(
+                dispatch.handshakeId,
+                event,
+              );
+            },
+            async requestFailureNotification(input) {
+              await runtime.requestTelephoneSessionFailureNotification(
+                dispatch.handshakeId,
+                input,
+              );
+            },
+          },
           tasks,
           telephoneSessionId: record.session.id,
         });

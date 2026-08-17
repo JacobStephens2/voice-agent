@@ -158,6 +158,50 @@ test("a registered caller completes one Callback Handshake only after human dete
       'voice_agent_callback_handshakes{outcome="authorized"} 1',
     );
     expect(metrics).toContain("voice_agent_callback_attempts 1");
+
+    const providerFailure = {
+      details: {
+        failure: "timeout" as const,
+        provider: "assemblyai",
+        stage: "stt" as const,
+        timeoutMs: 5_000,
+      },
+      id: "authorized-session-stt-timeout",
+      kind: "telephone.provider.failure" as const,
+      occurredAt: "2026-08-16T14:01:00.000Z",
+      summary: "A speech provider exceeded its bounded timeout.",
+    };
+    await scenario.appendTelephoneSessionEvidence(
+      "handshake-001",
+      providerFailure,
+    );
+    await scenario.appendTelephoneSessionEvidence(
+      "handshake-001",
+      providerFailure,
+    );
+    await scenario.requestTelephoneSessionFailureNotification(
+      "handshake-001",
+      {
+        failureEventId: providerFailure.id,
+        occurredAt: providerFailure.occurredAt,
+      },
+    );
+    const failedProviderRecord =
+      await scenario.readEvidenceRecord("handshake-001");
+    expect(
+      failedProviderRecord?.evidence.slice(-2).map((event) => event.kind),
+    ).toEqual(["telephone.provider.failure", "notification.requested"]);
+    expect(
+      failedProviderRecord?.evidence.filter(
+        (event) => event.id === providerFailure.id,
+      ),
+    ).toHaveLength(1);
+    const providerFailurePage = await scenario.readTaskPage(
+      "handshake-001",
+      "scenario-trusted-session",
+    );
+    expect(providerFailurePage.html).toContain("Speech provider failure");
+    expect(providerFailurePage.html).toContain("Silent Notification requested");
   } finally {
     await scenario.close();
   }

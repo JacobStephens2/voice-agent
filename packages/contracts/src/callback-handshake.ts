@@ -1,5 +1,13 @@
 import { z } from "zod";
 
+import {
+  telephoneProviderFailureEvidenceEventSchema,
+  telephoneProviderTimingEvidenceEventSchema,
+  telephoneResponseInterruptedEvidenceEventSchema,
+  telephoneSemanticResponseEvidenceEventSchema,
+  telephoneTurnFinalizedEvidenceEventSchema,
+} from "./telephone-session.ts";
+
 const callbackIdentifierSchema = z.string().min(1).max(120);
 const callbackTimestampSchema = z.iso.datetime();
 export const e164TelephoneNumberSchema = z
@@ -44,6 +52,11 @@ const telephoneEvidenceFields = {
 };
 
 export const telephoneEvidenceEventSchema = z.discriminatedUnion("kind", [
+  telephoneTurnFinalizedEvidenceEventSchema,
+  telephoneProviderTimingEvidenceEventSchema,
+  telephoneProviderFailureEvidenceEventSchema,
+  telephoneResponseInterruptedEvidenceEventSchema,
+  telephoneSemanticResponseEvidenceEventSchema,
   z.object({
     ...telephoneEvidenceFields,
     details: z.object({
@@ -139,7 +152,7 @@ export type TelephoneEvidenceEvent = z.infer<
 >;
 
 export const telephoneSessionEvidenceRecordProjectionSchema = z.object({
-  evidence: z.array(telephoneEvidenceEventSchema).max(100),
+  evidence: z.array(telephoneEvidenceEventSchema).max(1_000),
   session: z.object({
     attempt: z.union([z.literal(1), z.literal(2)]),
     authorizedAt: callbackTimestampSchema.optional(),

@@ -12,8 +12,13 @@ const eventLabels: Record<TelephoneEvidenceEvent["kind"], string> = {
   "telephone.inbound.notice": "Callback notice",
   "telephone.inbound.received": "Inbound call received",
   "telephone.machine.detected": "Answer classified",
+  "telephone.provider.failure": "Speech provider failure",
+  "telephone.provider.timing": "Speech provider timing",
+  "telephone.response.interrupted": "Spoken response interrupted",
   "telephone.retry.scheduled": "Retry scheduled",
+  "telephone.semantic.response": "Spoken response prepared",
   "telephone.session.authorized": "Telephone Session authorized",
+  "telephone.turn.finalized": "Finalized telephone turn",
 };
 
 export function CallbackTaskPage({

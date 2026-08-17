@@ -70,6 +70,20 @@ export const telephoneProviderFailureEvidenceEventSchema = z.object({
   kind: z.literal("telephone.provider.failure"),
 });
 
+export const telephoneConversationEvidenceEventSchema = z.discriminatedUnion(
+  "kind",
+  [
+    telephoneTurnFinalizedEvidenceEventSchema,
+    telephoneProviderTimingEvidenceEventSchema,
+    telephoneSemanticResponseEvidenceEventSchema,
+    telephoneResponseInterruptedEvidenceEventSchema,
+    telephoneProviderFailureEvidenceEventSchema,
+  ],
+);
+export type TelephoneConversationEvidenceEvent = z.infer<
+  typeof telephoneConversationEvidenceEventSchema
+>;
+
 export const finalizedTelephoneTurnSchema = z
   .object({
     deliveryId: deliveryIdentifierSchema,
@@ -104,7 +118,7 @@ export const telephoneResponseInterruptedProviderEventSchema = z
     kind: z.literal("response-interrupted"),
     occurredAt: timestampSchema,
     responseId: identifierSchema,
-    taskId: identifierSchema,
+    taskId: identifierSchema.optional(),
   })
   .strict();
 
@@ -116,7 +130,7 @@ export const telephoneProviderTimingEventSchema = z
     occurredAt: timestampSchema,
     provider: providerNameSchema,
     stage: z.enum(["stt", "coordinator", "tts"]),
-    taskId: identifierSchema,
+    taskId: identifierSchema.optional(),
   })
   .strict();
 
@@ -127,7 +141,7 @@ export const telephoneProviderTimeoutEventSchema = z
     occurredAt: timestampSchema,
     provider: providerNameSchema,
     stage: z.enum(["stt", "coordinator", "tts"]),
-    taskId: identifierSchema,
+    taskId: identifierSchema.optional(),
     timeoutMs: durationSchema,
   })
   .strict();
@@ -140,7 +154,7 @@ export const telephoneProviderFailureEventSchema = z
     occurredAt: timestampSchema,
     provider: providerNameSchema,
     stage: z.enum(["stt", "coordinator", "tts"]),
-    taskId: identifierSchema,
+    taskId: identifierSchema.optional(),
   })
   .strict();
 
@@ -190,7 +204,7 @@ const requestTaskConfirmationActionSchema = z.object({
 const playPrerecordedFailureActionSchema = z.object({
   interruptible: z.literal(false),
   kind: z.literal("play-prerecorded-failure-and-end"),
-  taskId: identifierSchema,
+  taskId: identifierSchema.optional(),
   text: z.literal(
     "The voice service is temporarily unavailable. Please check the Evidence Record.",
   ),

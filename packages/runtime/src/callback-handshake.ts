@@ -15,6 +15,7 @@ import {
   type InboundTelephoneResult,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
+  type TelephoneConversationEvidenceEvent,
   type TelephoneEvidenceEvent,
   type TelephoneEvidenceRecordSummary,
   type TelephoneSessionEvidenceRecordProjection,
@@ -27,6 +28,10 @@ const confirmation = "Telephone confirmed. Your secure session is ready." as con
 const rateLimitWindowMs = 5 * 60 * 1_000;
 
 export interface CallbackHandshakeRuntime {
+  appendTelephoneSessionEvidence(
+    handshakeId: string,
+    event: Omit<TelephoneConversationEvidenceEvent, "sequence">,
+  ): Promise<TelephoneSessionEvidenceRecordProjection>;
   close(): Promise<void>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
@@ -40,6 +45,10 @@ export interface CallbackHandshakeRuntime {
   readOperationalMetrics(): ReturnType<
     CallbackHandshakeStore["readOperationalMetrics"]
   >;
+  requestTelephoneSessionFailureNotification(
+    handshakeId: string,
+    input: { readonly failureEventId: string; readonly occurredAt: string },
+  ): Promise<TelephoneSessionEvidenceRecordProjection>;
   receiveInbound(event: InboundTelephoneEvent): Promise<InboundTelephoneResult>;
   receiveProviderEvent(
     handshakeId: string,
@@ -617,6 +626,12 @@ export function createCallbackHandshakeRuntime(
   }
 
   return {
+    appendTelephoneSessionEvidence: (handshakeId, event) =>
+      options.store.appendEvidence({
+        event,
+        handshakeId,
+        updatedAt: event.occurredAt,
+      }),
     close: () => options.store.close(),
     findRegisteredTelephone: () => options.store.findRegisteredTelephone(),
     listEvidenceRecords: () => options.store.listEvidenceRecords(),
@@ -624,6 +639,20 @@ export function createCallbackHandshakeRuntime(
     readEvidenceRecord: (handshakeId) =>
       options.store.findEvidenceRecord(handshakeId),
     readOperationalMetrics: () => options.store.readOperationalMetrics(),
+    requestTelephoneSessionFailureNotification: (handshakeId, input) => {
+      const correlation = fingerprint(input.failureEventId);
+      return options.store.appendEvidence({
+        event: {
+          details: { operationId: `notification-operation:${correlation}` },
+          id: `notification:${correlation}`,
+          kind: "notification.requested",
+          occurredAt: input.occurredAt,
+          summary: "A generic Silent Notification was requested.",
+        },
+        handshakeId,
+        updatedAt: input.occurredAt,
+      });
+    },
     receiveInbound,
     receiveProviderEvent,
     registerTelephone(input) {

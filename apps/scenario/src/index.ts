@@ -1,21 +1,23 @@
-import type {
-  BountywellHealthObservation,
-  BountywellHealthObserver,
-  BountywellHealthInquiryRequest,
-  BountywellHealthObservationRequest,
-  CallbackActionResult,
-  CallbackProviderEvent,
-  EvidenceRecordProjection,
-  TelephoneSessionActionResult,
-  TelephoneSessionProviderEvent,
-  InboundTelephoneEvent,
-  InboundTelephoneResult,
-  RegisteredTelephoneInput,
-  TelephoneSessionEvidenceRecordProjection,
+import {
+  bountywellHealthObservationSchema,
+  telephoneConversationEvidenceEventSchema,
+  type BountywellHealthObservation,
+  type BountywellHealthObserver,
+  type BountywellHealthInquiryRequest,
+  type BountywellHealthObservationRequest,
+  type CallbackActionResult,
+  type CallbackProviderEvent,
+  type EvidenceRecordProjection,
+  type TelephoneConversationEvidenceEvent,
+  type TelephoneSessionActionResult,
+  type TelephoneSessionProviderEvent,
+  type InboundTelephoneEvent,
+  type InboundTelephoneResult,
+  type RegisteredTelephoneInput,
+  type TelephoneSessionEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
 export * from "./human-merge-promotion.ts";
-import { bountywellHealthObservationSchema } from "@voice-agent/contracts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAuthenticationLifecycle,
@@ -40,6 +42,9 @@ import {
 } from "@voice-agent/sqlite-store";
 
 export interface CallbackHandshakeScenario {
+  appendTelephoneSessionEvidence: ReturnType<
+    typeof createCallbackHandshakeRuntime
+  >["appendTelephoneSessionEvidence"];
   close(): Promise<void>;
   processDueRetries(): ReturnType<
     ReturnType<typeof createCallbackHandshakeRuntime>["processDueRetries"]
@@ -50,6 +55,9 @@ export interface CallbackHandshakeScenario {
   readOperationalMetrics(): ReturnType<
     ReturnType<typeof createCallbackHandshakeRuntime>["readOperationalMetrics"]
   >;
+  requestTelephoneSessionFailureNotification: ReturnType<
+    typeof createCallbackHandshakeRuntime
+  >["requestTelephoneSessionFailureNotification"];
   readMetrics(): Promise<string>;
   readTaskPage(taskId: string, sessionToken?: string): Promise<{
     readonly body: unknown;
@@ -116,6 +124,8 @@ export async function createCallbackHandshakeScenario(
     },
   });
   return {
+    appendTelephoneSessionEvidence: (handshakeId, event) =>
+      runtime.appendTelephoneSessionEvidence(handshakeId, event),
     async close() {
       await api.close();
       await runtime.close();
@@ -124,6 +134,8 @@ export async function createCallbackHandshakeScenario(
     readEvidenceRecord: (handshakeId) =>
       runtime.readEvidenceRecord(handshakeId),
     readOperationalMetrics: () => runtime.readOperationalMetrics(),
+    requestTelephoneSessionFailureNotification: (handshakeId, input) =>
+      runtime.requestTelephoneSessionFailureNotification(handshakeId, input),
     async readMetrics() {
       const response = await api.inject({ method: "GET", url: "/metrics" });
       if (response.statusCode !== 200) {
@@ -170,6 +182,11 @@ export async function createCallbackHandshakeScenario(
 
 export interface TelephoneBountywellScenario {
   readonly brokerRequests: readonly BountywellHealthObservationRequest[];
+  readonly failureNotifications: readonly {
+    readonly failureEventId: string;
+    readonly occurredAt: string;
+  }[];
+  readonly sessionEvidence: readonly TelephoneConversationEvidenceEvent[];
   close(): Promise<void>;
   readEvidenceRecord(
     taskId: string,
@@ -231,8 +248,26 @@ export async function createTelephoneBountywellScenario(
       };
     },
   };
+  const sessionEvidence: TelephoneConversationEvidenceEvent[] = [];
+  const failureNotifications: Array<{
+    readonly failureEventId: string;
+    readonly occurredAt: string;
+  }> = [];
   const coordinator = createTelephoneSessionCoordinator({
     interpreter,
+    sessionEvidence: {
+      async append(event) {
+        sessionEvidence.push(
+          telephoneConversationEvidenceEventSchema.parse({
+            ...event,
+            sequence: sessionEvidence.length + 1,
+          }),
+        );
+      },
+      async requestFailureNotification(input) {
+        failureNotifications.push(input);
+      },
+    },
     tasks,
   });
   const api = createTaskApi({
@@ -246,6 +281,8 @@ export async function createTelephoneBountywellScenario(
 
   return {
     brokerRequests: broker.requests,
+    failureNotifications,
+    sessionEvidence,
     async close() {
       await api.close();
       await tasks.close();

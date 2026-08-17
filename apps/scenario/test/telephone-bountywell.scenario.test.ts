@@ -213,6 +213,15 @@ describe("Telephone Bountywell health inquiry", () => {
         ],
       });
       expect(scenario.brokerRequests).toEqual([]);
+      expect(scenario.sessionEvidence.map((event) => event.kind)).toEqual([
+        "telephone.turn.finalized",
+        "telephone.provider.timing",
+        "telephone.provider.timing",
+        "telephone.semantic.response",
+      ]);
+      expect(JSON.stringify(scenario.sessionEvidence)).toContain(
+        "What's the weather tomorrow?",
+      );
     } finally {
       await scenario.close();
     }
@@ -267,6 +276,112 @@ describe("Telephone Bountywell health inquiry", () => {
       expect(record?.task.conclusion).toBe(
         "Bountywell API health could not be confirmed.",
       );
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("a primary-only healthy observation answers with explicit authentication uncertainty", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-telephone-primary-only-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBountywellScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      ids: Array.from(
+        { length: 8 },
+        (_, index) => `primary-only-id-${index + 1}`,
+      ),
+      now: "2026-08-17T15:30:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { statusCode: 200 },
+            outcome: "pass",
+            source: "public-health",
+            summary: "The public health endpoint responded successfully.",
+          },
+        ],
+        observedAt: "2026-08-17T15:30:01.000Z",
+        rejectedEvidenceCount: 0,
+        uncertainty: "The authentication-boundary check was unavailable.",
+      },
+    });
+
+    try {
+      const result = await scenario.receiveProviderEvent({
+        deliveryId: "primary-only-delivery-001",
+        kind: "turn-finalized",
+        occurredAt: "2026-08-17T15:30:00.500Z",
+        stt: { durationMs: 300, provider: "assemblyai" },
+        telephoneSessionId: "telephone-session-primary-only",
+        transcript: "Is Bountywell healthy?",
+      });
+
+      expect(result.actions[0]).toMatchObject({
+        kind: "speak-semantic-response",
+        text:
+          "Bountywell's API is healthy. The primary /api/health check returned 200. The authentication-boundary check was unavailable. Some secondary registered checks were unavailable, so the answer is limited to the supported facts. Uncertainty: The authentication-boundary check was unavailable.",
+      });
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("spoken credential forms are redacted before session or task evidence is retained", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-telephone-redaction-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBountywellScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      ids: Array.from(
+        { length: 8 },
+        (_, index) => `redaction-id-${index + 1}`,
+      ),
+      now: "2026-08-17T15:45:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { statusCode: 200 },
+            outcome: "pass",
+            source: "public-health",
+            summary: "The public health endpoint responded successfully.",
+          },
+          {
+            facts: { statusCode: 401 },
+            outcome: "pass",
+            source: "authentication-boundary",
+            summary: "The protected data endpoint required authentication.",
+          },
+        ],
+        observedAt: "2026-08-17T15:45:01.000Z",
+        rejectedEvidenceCount: 0,
+      },
+    });
+
+    try {
+      const result = await scenario.receiveProviderEvent({
+        deliveryId: "redaction-delivery-001",
+        kind: "turn-finalized",
+        occurredAt: "2026-08-17T15:45:00.500Z",
+        stt: { durationMs: 300, provider: "assemblyai" },
+        telephoneSessionId: "telephone-session-redaction",
+        transcript:
+          "Is Bountywell healthy? My password is hunter2 and the API key is sk-live-secret",
+      });
+      const action = result.actions[0];
+      if (action?.kind !== "speak-semantic-response") {
+        throw new Error("Expected a semantic spoken response");
+      }
+      const record = await scenario.readEvidenceRecord(action.taskId);
+      const retained = JSON.stringify({
+        record,
+        sessionEvidence: scenario.sessionEvidence,
+      });
+      expect(retained).not.toContain("hunter2");
+      expect(retained).not.toContain("sk-live-secret");
+      expect(retained).toContain("[redacted]");
     } finally {
       await scenario.close();
     }
@@ -556,6 +671,16 @@ describe("Telephone Bountywell health inquiry", () => {
         },
         kind: "telephone.provider.failure",
       });
+      expect(scenario.failureNotifications).toEqual([
+        {
+          failureEventId: "tts-timeout-001:failure",
+          occurredAt: "2026-08-17T18:00:02.000Z",
+        },
+        {
+          failureEventId: "coordinator-failure-001:failure",
+          occurredAt: "2026-08-17T18:00:02.500Z",
+        },
+      ]);
       expect(JSON.stringify(record)).not.toContain("rawProviderPayload");
     } finally {
       await scenario.close();

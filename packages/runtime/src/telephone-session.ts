@@ -5,6 +5,7 @@ import {
   type EvidenceEventProjection,
   type EvidenceRecordProjection,
   type FinalizedTelephoneTurn,
+  type TelephoneConversationEvidenceEvent,
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type TelephoneTurnInterpretation,
@@ -36,8 +37,19 @@ export interface TelephoneSessionCoordinator {
   ): Promise<TelephoneSessionActionResult>;
 }
 
+export interface TelephoneSessionEvidenceSink {
+  append(
+    event: Omit<TelephoneConversationEvidenceEvent, "sequence">,
+  ): Promise<void>;
+  requestFailureNotification?(input: {
+    readonly failureEventId: string;
+    readonly occurredAt: string;
+  }): Promise<void>;
+}
+
 export function createTelephoneSessionCoordinator(options: {
   readonly interpreter: TelephoneTurnInterpreter;
+  readonly sessionEvidence?: TelephoneSessionEvidenceSink;
   readonly tasks: TelephoneBountywellTasks;
 }): TelephoneSessionCoordinator {
   return {
@@ -47,94 +59,87 @@ export function createTelephoneSessionCoordinator(options: {
         return telephoneSessionActionResultSchema.parse({ actions: [] });
       }
       if (event.kind === "response-interrupted") {
-        await options.tasks.appendTelephoneEvidence({
-          event: {
-            details: {
-              durationMs: event.durationMs,
-              responseId: event.responseId,
-            },
-            id: `${event.deliveryId}:interruption`,
-            kind: "telephone.response.interrupted",
-            occurredAt: event.occurredAt,
-            summary: "The caller interrupted semantic speech.",
+        const evidence = {
+          details: {
+            durationMs: event.durationMs,
+            responseId: event.responseId,
           },
-          taskId: event.taskId,
-        });
+          id: `${event.deliveryId}:interruption`,
+          kind: "telephone.response.interrupted" as const,
+          occurredAt: event.occurredAt,
+          summary: "The caller interrupted semantic speech.",
+        };
+        await options.sessionEvidence?.append(evidence);
+        if (event.taskId !== undefined) {
+          await options.tasks.appendTelephoneEvidence({
+            event: evidence,
+            taskId: event.taskId,
+          });
+        }
         return telephoneSessionActionResultSchema.parse({ actions: [] });
       }
       if (event.kind === "provider-timing") {
-        await options.tasks.appendTelephoneEvidence({
-          event: {
-            details: {
-              durationMs: event.durationMs,
-              outcome: "completed",
-              provider: event.provider,
-              stage: event.stage,
-            },
-            id: `${event.deliveryId}:timing`,
-            kind: "telephone.provider.timing",
-            occurredAt: event.occurredAt,
-            summary: "Bounded speech-provider timing was recorded.",
+        const evidence = {
+          details: {
+            durationMs: event.durationMs,
+            outcome: "completed" as const,
+            provider: event.provider,
+            stage: event.stage,
           },
-          taskId: event.taskId,
-        });
+          id: `${event.deliveryId}:timing`,
+          kind: "telephone.provider.timing" as const,
+          occurredAt: event.occurredAt,
+          summary: "Bounded speech-provider timing was recorded.",
+        };
+        await options.sessionEvidence?.append(evidence);
+        if (event.taskId !== undefined) {
+          await options.tasks.appendTelephoneEvidence({
+            event: evidence,
+            taskId: event.taskId,
+          });
+        }
         return telephoneSessionActionResultSchema.parse({ actions: [] });
       }
       if (event.kind === "provider-timeout") {
-        await options.tasks.appendTelephoneEvidence({
-          event: {
-            details: {
-              failure: "timeout",
-              provider: event.provider,
-              stage: event.stage,
-              timeoutMs: event.timeoutMs,
-            },
-            id: `${event.deliveryId}:failure`,
-            kind: "telephone.provider.failure",
-            occurredAt: event.occurredAt,
-            summary: "A speech provider exceeded its bounded timeout.",
-          },
-          taskId: event.taskId,
-        });
-        return telephoneSessionActionResultSchema.parse({
-          actions: [
-            {
-              interruptible: false,
-              kind: "play-prerecorded-failure-and-end",
-              taskId: event.taskId,
-              text: "The voice service is temporarily unavailable. Please check the Evidence Record.",
-            },
-          ],
+        return recordProviderFailure(options, event, {
+          failure: "timeout",
+          provider: event.provider,
+          stage: event.stage,
+          timeoutMs: event.timeoutMs,
         });
       }
       if (event.kind === "provider-failure") {
-        await options.tasks.appendTelephoneEvidence({
-          event: {
-            details: {
-              failure: event.failure,
-              provider: event.provider,
-              stage: event.stage,
-            },
-            id: `${event.deliveryId}:failure`,
-            kind: "telephone.provider.failure",
-            occurredAt: event.occurredAt,
-            summary: "A speech provider reported a bounded failure.",
-          },
-          taskId: event.taskId,
-        });
-        return telephoneSessionActionResultSchema.parse({
-          actions: [
-            {
-              interruptible: false,
-              kind: "play-prerecorded-failure-and-end",
-              taskId: event.taskId,
-              text: "The voice service is temporarily unavailable. Please check the Evidence Record.",
-            },
-          ],
+        return recordProviderFailure(options, event, {
+          failure: event.failure,
+          provider: event.provider,
+          stage: event.stage,
         });
       }
       const turn = event;
       const sanitizedTranscript = sanitizeFinalizedTurn(turn.transcript);
+      await options.sessionEvidence?.append({
+        details: {
+          telephoneSessionId: turn.telephoneSessionId,
+          text: sanitizedTranscript,
+          turnId: turn.deliveryId,
+        },
+        id: `${turn.deliveryId}:turn`,
+        kind: "telephone.turn.finalized",
+        occurredAt: turn.occurredAt,
+        summary: "A finalized sanitized telephone turn was accepted.",
+      });
+      await options.sessionEvidence?.append({
+        details: {
+          durationMs: turn.stt.durationMs,
+          outcome: "completed",
+          provider: turn.stt.provider,
+          stage: "stt",
+        },
+        id: `${turn.deliveryId}:stt`,
+        kind: "telephone.provider.timing",
+        occurredAt: turn.occurredAt,
+        summary: "Final speech recognition timing was recorded.",
+      });
       const interpretation = telephoneTurnInterpretationSchema.parse(
         await options.interpreter.interpret({
           telephoneSessionId: turn.telephoneSessionId,
@@ -142,29 +147,63 @@ export function createTelephoneSessionCoordinator(options: {
           turnId: turn.deliveryId,
         }),
       );
+      await options.sessionEvidence?.append({
+        details: {
+          durationMs: interpretation.durationMs,
+          outcome: "completed",
+          provider: interpretation.provider,
+          stage: "coordinator",
+        },
+        id: `${turn.deliveryId}:coordinator`,
+        kind: "telephone.provider.timing",
+        occurredAt: turn.occurredAt,
+        summary: "Telephone turn interpretation timing was recorded.",
+      });
       if (interpretation.intent === "state-changing") {
         const taskDescription = /[.!?]$/u.test(sanitizedTranscript)
           ? sanitizedTranscript
           : `${sanitizedTranscript}.`;
+        const confirmationId = `${turn.deliveryId}:confirmation`;
+        const text =
+          `Please confirm this state-changing task: ` +
+          `Bountywell production — ${taskDescription}`;
+        await options.sessionEvidence?.append({
+          details: { responseId: confirmationId, text },
+          id: confirmationId,
+          kind: "telephone.semantic.response",
+          occurredAt: turn.occurredAt,
+          summary: "A Task Confirmation was prepared for speech.",
+        });
         return telephoneSessionActionResultSchema.parse({
           actions: [
             {
-              confirmationId: `${turn.deliveryId}:confirmation`,
+              confirmationId,
               interruptible: true,
               kind: "request-task-confirmation",
-              text: `Please confirm this state-changing task: Bountywell production — ${taskDescription}`,
+              text,
             },
           ],
         });
       }
       if (interpretation.intent === "unrelated") {
+        const responseId = `${turn.deliveryId}:guidance`;
+        const text =
+          "I can only answer the registered read-only Bountywell health " +
+          "question in this Telephone Session.";
+        await options.sessionEvidence?.append({
+          details: { responseId, text },
+          id: responseId,
+          kind: "telephone.semantic.response",
+          occurredAt: turn.occurredAt,
+          summary: "Bounded Telephone Session guidance was prepared for speech.",
+        });
         return telephoneSessionActionResultSchema.parse({
           actions: [
             {
               interruptible: true,
               kind: "speak-guidance",
-              responseId: `${turn.deliveryId}:guidance`,
-              text: "I can only answer the registered read-only Bountywell health question in this Telephone Session.",
+              responseId,
+              text,
             },
           ],
         });
@@ -186,6 +225,13 @@ export function createTelephoneSessionCoordinator(options: {
         },
         taskId: record.task.id,
       });
+      await options.sessionEvidence?.append({
+        details: { responseId, text },
+        id: responseId,
+        kind: "telephone.semantic.response",
+        occurredAt: record.task.updatedAt,
+        summary: "A semantic telephone response was prepared for speech.",
+      });
       return telephoneSessionActionResultSchema.parse({
         actions: [
           {
@@ -201,12 +247,74 @@ export function createTelephoneSessionCoordinator(options: {
   };
 }
 
+async function recordProviderFailure(
+  options: {
+    readonly sessionEvidence?: TelephoneSessionEvidenceSink;
+    readonly tasks: TelephoneBountywellTasks;
+  },
+  event: {
+    readonly deliveryId: string;
+    readonly occurredAt: string;
+    readonly taskId?: string | undefined;
+  },
+  details:
+    | {
+        readonly failure: "timeout";
+        readonly provider: string;
+        readonly stage: "stt" | "coordinator" | "tts";
+        readonly timeoutMs: number;
+      }
+    | {
+        readonly failure: "unavailable";
+        readonly provider: string;
+        readonly stage: "stt" | "coordinator" | "tts";
+      },
+): Promise<TelephoneSessionActionResult> {
+  const evidence: Omit<
+    Extract<
+      TelephoneConversationEvidenceEvent,
+      { kind: "telephone.provider.failure" }
+    >,
+    "sequence"
+  > = {
+    details,
+    id: `${event.deliveryId}:failure`,
+    kind: "telephone.provider.failure",
+    occurredAt: event.occurredAt,
+    summary:
+      details.failure === "timeout"
+        ? "A speech provider exceeded its bounded timeout."
+        : "A speech provider reported a bounded failure.",
+  };
+  await options.sessionEvidence?.append(evidence);
+  await options.sessionEvidence?.requestFailureNotification?.({
+    failureEventId: evidence.id,
+    occurredAt: evidence.occurredAt,
+  });
+  if (event.taskId !== undefined) {
+    await options.tasks.appendTelephoneEvidence({
+      event: evidence,
+      taskId: event.taskId,
+    });
+  }
+  return telephoneSessionActionResultSchema.parse({
+    actions: [
+      {
+        interruptible: false,
+        kind: "play-prerecorded-failure-and-end",
+        ...(event.taskId === undefined ? {} : { taskId: event.taskId }),
+        text: "The voice service is temporarily unavailable. Please check the Evidence Record.",
+      },
+    ],
+  });
+}
+
 function sanitizeFinalizedTurn(transcript: string): string {
   return transcript
     .replace(/[\u0000-\u001f\u007f]/gu, " ")
     .replace(/\bBearer\s+\S+/giu, "Bearer [redacted]")
     .replace(
-      /\b(authorization|api[-_ ]?key|password|secret|token)\s*[:=]\s*\S+/giu,
+      /\b((?:(?:my|our|the)\s+)?(?:authorization|api[-_ ]?key|password|secret|token))\s*(?::|=|\bis\b)\s*\S+/giu,
       "$1: [redacted]",
     )
     .replace(/\s+/gu, " ")
@@ -231,20 +339,26 @@ function semanticBountywellAnswer(record: EvidenceRecordProjection): string {
   const resources = checks.find((check) => check.source === "resource-health");
 
   if (record.task.conclusion === "Bountywell API is healthy.") {
-    if (
-      primary?.source !== "public-health" ||
-      authentication?.source !== "authentication-boundary"
-    ) {
-      throw new Error("Healthy Bountywell evidence lacks required boundary facts");
+    if (primary?.source !== "public-health") {
+      throw new Error("Healthy Bountywell evidence lacks a primary health fact");
     }
-    const uncertainty = observed.details.uncertainty ?? "No material uncertainty was reported.";
+    const uncertainty =
+      observed.details.uncertainty ??
+      "No material uncertainty was reported.";
+    const authenticationSentence =
+      authentication?.source === "authentication-boundary"
+        ? authentication.outcome === "pass" &&
+          authentication.facts.statusCode === 401
+          ? "The authentication-boundary /api/data check returned the expected 401."
+          : `The authentication-boundary /api/data check returned ${authentication.facts.statusCode}.`
+        : "The authentication-boundary check was unavailable.";
     const secondaryFacts =
       local?.outcome === "pass" &&
       service?.outcome === "pass" &&
       resources?.outcome === "pass"
         ? "The registered local endpoint and service are healthy, and the bounded resource check passed."
-        : "Some secondary registered checks were unavailable, so the answer is limited to the primary and authentication-boundary facts.";
-    return `Bountywell's API is healthy. The primary /api/health check returned ${primary.facts.statusCode}. The authentication-boundary /api/data check returned the expected ${authentication.facts.statusCode}. ${secondaryFacts} Uncertainty: ${uncertainty}`;
+        : "Some secondary registered checks were unavailable, so the answer is limited to the supported facts.";
+    return `Bountywell's API is healthy. The primary /api/health check returned ${primary.facts.statusCode}. ${authenticationSentence} ${secondaryFacts} Uncertainty: ${uncertainty}`;
   }
 
   const primaryFact =
