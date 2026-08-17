@@ -12,6 +12,20 @@ test -f /opt/voice-agent/current/apps/pwa/dist/index.html
 test -S /run/voice-agent-broker/broker.sock
 curl --fail --silent --show-error --max-time 5 \
   http://127.0.0.1:3472/healthz >/dev/null
+worker_environment=$(systemctl show voice-agent-worker.service \
+  --property=Environment --value)
+worker_port=
+for assignment in $worker_environment; do
+  if [[ $assignment == VOICE_AGENT_WORKER_PORT=* ]]; then
+    worker_port=${assignment#VOICE_AGENT_WORKER_PORT=}
+  fi
+done
+if [[ ! $worker_port =~ ^[0-9]+$ ]]; then
+  printf 'Voice Agent worker port is not configured.\n' >&2
+  exit 1
+fi
+curl --fail --silent --show-error --max-time 5 \
+  "http://127.0.0.1:$worker_port/" >/dev/null
 curl --fail --silent --show-error --max-time 5 \
   --unix-socket /run/voice-agent-broker/broker.sock \
   http://localhost/healthz >/dev/null

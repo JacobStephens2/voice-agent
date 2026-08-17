@@ -13,6 +13,7 @@ WorkingDirectory=/opt/voice-agent/current
 Environment=NODE_ENV=production
 Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
 Environment=VOICE_AGENT_BROKER_SOCKET_PATH=/run/voice-agent-broker/broker.sock
+Environment=VOICE_AGENT_WORKER_PORT=3474
 Environment=VOICE_AGENT_TTS_VOICE=Sarah
 EnvironmentFile=/etc/voice-agent/livekit.env
 ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/worker/src/server.ts
