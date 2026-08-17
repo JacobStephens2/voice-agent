@@ -36,15 +36,19 @@ const callbackRuntime = createCallbackHandshakeRuntime({
   store: createSqliteCallbackHandshakeStore(databasePath),
 });
 const agentName = "voice-agent-telephone";
-const callbackAdapter = createProductionLiveKitCallbackAdapter({
-  agentName,
+const liveKitConnection = {
   apiKey: requireEnvironment("LIVEKIT_API_KEY"),
   apiSecret: requireEnvironment("LIVEKIT_API_SECRET"),
   url: requireEnvironment("LIVEKIT_URL"),
+};
+const callbackAdapter = createProductionLiveKitCallbackAdapter({
+  agentName,
+  ...liveKitConnection,
 });
 const telephoneServer = createLiveKitAgentServer({
   agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
   agentName,
+  ...liveKitConnection,
   port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
 });
 
