@@ -141,6 +141,12 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(wizard).toContain("install-prometheus-scrape.sh");
   expect(wizard).toContain("read-only Contents permission");
   expect(wizard).toContain("github-app-private-key.pem");
+  expect(wizard).toContain(
+    '"headers": {"X-Telnyx-Username": "<same Telnyx username>"}',
+  );
+  expect(wizard).toContain(
+    "headers_to_attributes maps response headers and does not send the initial INVITE header",
+  );
   if (promotion === undefined) throw new Error("promotion script is missing");
   expect(promotion).toContain("restore_unit_definitions");
   expect(promotionState).toContain("voice_agent_promotion_circuit_open");
