@@ -1,62 +1,89 @@
-import { APITimeoutError } from "@livekit/agents";
+import { APITimeoutError, llm } from "@livekit/agents";
 import { describe, expect, test } from "vitest";
 
 import {
-  mapFinalizedTranscriptionEvent,
+  LiveKitTelephoneTurnAdapter,
+  mapCompletedTelephoneTurnEvent,
   mapProviderFailureEvent,
 } from "../src/livekit-telephone-session.ts";
 
 describe("LiveKit finalized telephone turns", () => {
-  test("rejects a finalized turn without a speech boundary", () => {
+  test("rejects a completed turn without a LiveKit turn identity", () => {
     expect(() =>
-      mapFinalizedTranscriptionEvent({
+      mapCompletedTelephoneTurnEvent({
         createdAt: 1_776_444_000_500,
         itemId: null,
         speechStartedAt: undefined,
         telephoneSessionId: "telephone-session-001",
         transcript: "Is Bountywell healthy?",
       }),
-    ).toThrow("Finalized telephone turn boundary is unavailable");
+    ).toThrow("Completed telephone turn identity is unavailable");
   });
 
-  test("keeps provider deliveries distinct while preserving one logical speech turn", () => {
-    const first = mapFinalizedTranscriptionEvent({
-      createdAt: 1_776_444_000_500,
+  test("keeps interim and STT-final segments non-authoritative", () => {
+    const adapter = new LiveKitTelephoneTurnAdapter(
+      "telephone-session-001",
+    );
+    const interim = adapter.transcription({
+      createdAt: 1_776_444_000_250,
+      isFinal: false,
       itemId: "provider-item-001",
-      speechStartedAt: 1_776_444_000_000,
-      telephoneSessionId: "telephone-session-001",
-      transcript: "Is Bountywell healthy?",
+      transcript: "Is Bountywell",
     });
-    const redelivered = mapFinalizedTranscriptionEvent({
-      createdAt: 1_776_444_000_717,
+    const providerFinal = adapter.transcription({
+      createdAt: 1_776_444_000_500,
+      isFinal: true,
       itemId: "provider-item-002",
-      speechStartedAt: 1_776_444_000_000,
-      telephoneSessionId: "telephone-session-001",
       transcript: "Is Bountywell healthy?",
     });
 
-    expect(redelivered.deliveryId).not.toBe(first.deliveryId);
-    expect(redelivered.turnId).toBe(first.turnId);
+    expect(interim.kind).toBe("speech-hypothesis");
+    expect(providerFinal.kind).toBe("speech-hypothesis");
   });
 
-  test("assigns a new logical identity to a later speech turn", () => {
-    const first = mapFinalizedTranscriptionEvent({
-      createdAt: 1_776_444_000_500,
-      itemId: null,
-      speechStartedAt: 1_776_444_000_000,
-      telephoneSessionId: "telephone-session-001",
-      transcript: "Is Bountywell healthy?",
-    });
-    const repeatedLater = mapFinalizedTranscriptionEvent({
-      createdAt: 1_776_444_010_500,
-      itemId: null,
-      speechStartedAt: 1_776_444_010_000,
-      telephoneSessionId: "telephone-session-001",
-      transcript: "Is Bountywell healthy?",
-    });
+  test("assigns authoritative identity only to completed LiveKit turns", () => {
+    const adapter = new LiveKitTelephoneTurnAdapter(
+      "telephone-session-001",
+    );
+    adapter.speechStarted(1_776_444_000_000);
+    const first = adapter.completedTurn(
+      llm.ChatMessage.create({
+        content: "Is Bountywell healthy?",
+        createdAt: 1_776_444_000_500,
+        id: "completed-item-001",
+        role: "user",
+      }),
+    );
+    adapter.speechStarted(1_776_444_010_000);
+    const repeatedLater = adapter.completedTurn(
+      llm.ChatMessage.create({
+        content: "Is Bountywell healthy?",
+        createdAt: 1_776_444_010_500,
+        id: "completed-item-002",
+        role: "user",
+      }),
+    );
 
+    expect(first.kind).toBe("turn-finalized");
     expect(repeatedLater.deliveryId).not.toBe(first.deliveryId);
     expect(repeatedLater.turnId).not.toBe(first.turnId);
+  });
+
+  test("rejects a completed turn without a speech timing boundary", () => {
+    const adapter = new LiveKitTelephoneTurnAdapter(
+      "telephone-session-001",
+    );
+
+    expect(() =>
+      adapter.completedTurn(
+        llm.ChatMessage.create({
+          content: "Is Bountywell healthy?",
+          createdAt: 1_776_444_000_500,
+          id: "completed-item-001",
+          role: "user",
+        }),
+      ),
+    ).toThrow("Completed telephone turn speech boundary is unavailable");
   });
 });
 

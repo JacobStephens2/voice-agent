@@ -31,22 +31,39 @@ const providerFailureAudioPath = fileURLToPath(
 );
 const providerFailureSampleRate = 24_000;
 
-export async function runLiveKitTelephoneSession(options: {
-  readonly disconnected: Promise<void>;
-  readonly endCall: () => Promise<void>;
-  readonly room: Room;
-  readonly sessionEvidence: TelephoneSessionEvidenceSink;
-  readonly tasks: DurableTaskRuntime;
-  readonly telephoneSessionId: string;
-}): Promise<void> {
-  const interpreter = new LiveKitTelephoneTurnInterpreter();
+interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
+  close(): Promise<void>;
+}
+
+export interface LiveKitTelephoneSessionDependencies {
+  createConversationSession(): voice.AgentSession;
+  createInterpreter(): ClosableTelephoneTurnInterpreter;
+}
+
+export async function runLiveKitTelephoneSession(
+  options: {
+    readonly disconnected: Promise<void>;
+    readonly endCall: () => Promise<void>;
+    readonly room: Room;
+    readonly sessionEvidence: TelephoneSessionEvidenceSink;
+    readonly tasks: DurableTaskRuntime;
+    readonly telephoneSessionId: string;
+  },
+  dependencies: LiveKitTelephoneSessionDependencies = {
+    createConversationSession,
+    createInterpreter: () => new LiveKitTelephoneTurnInterpreter(),
+  },
+): Promise<void> {
+  const interpreter = dependencies.createInterpreter();
   const coordinator = createTelephoneSessionCoordinator({
     interpreter,
     sessionEvidence: options.sessionEvidence,
     tasks: options.tasks,
   });
-  const session = createConversationSession();
-  let speechStartedAt: number | undefined;
+  const session = dependencies.createConversationSession();
+  const turnAdapter = new LiveKitTelephoneTurnAdapter(
+    options.telephoneSessionId,
+  );
   let processing = Promise.resolve();
   let failureEnded = false;
   let callEnding = false;
@@ -101,39 +118,9 @@ export async function runLiveKitTelephoneSession(options: {
     }
   }
 
-  session.on(voice.AgentSessionEventTypes.UserStateChanged, (event) => {
-    if (event.newState === "speaking") speechStartedAt = event.createdAt;
-    if (event.newState === "away") {
-      processing = processing.then(endCallOnce).catch(() => undefined);
-    }
-  });
-  session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
-    if (failureEnded) return;
-    let providerEvent: TelephoneSessionProviderEvent;
-    try {
-      providerEvent = event.isFinal
-        ? mapFinalizedTranscriptionEvent({
-            createdAt: event.createdAt,
-            itemId: event.itemId,
-            speechStartedAt,
-            telephoneSessionId: options.telephoneSessionId,
-            transcript: event.transcript,
-          })
-        : {
-            deliveryId: stableIdentifier(
-              `interim:${options.telephoneSessionId}:${event.itemId ?? event.transcript}`,
-            ),
-            kind: "speech-hypothesis",
-            occurredAt: new Date(event.createdAt).toISOString(),
-            telephoneSessionId: options.telephoneSessionId,
-            transcript: event.transcript,
-          };
-    } catch (error) {
-      processing = processing
-        .then(() => recordProviderFailureAndEnd("stt", error))
-        .catch(() => undefined);
-      return;
-    }
+  function enqueueProviderEvent(
+    providerEvent: TelephoneSessionProviderEvent,
+  ): void {
     processing = processing
       .then(async () => {
         const result = await coordinator.receiveProviderEvent(providerEvent);
@@ -150,6 +137,32 @@ export async function runLiveKitTelephoneSession(options: {
       .catch((error: unknown) =>
         recordProviderFailureAndEnd("coordinator", error),
       );
+  }
+
+  function rejectTelephoneInput(error: unknown): void {
+    processing = processing
+      .then(() => recordProviderFailureAndEnd("stt", error))
+      .catch(() => undefined);
+  }
+
+  session.on(voice.AgentSessionEventTypes.UserStateChanged, (event) => {
+    if (event.newState === "speaking") {
+      turnAdapter.speechStarted(event.createdAt);
+    }
+    if (event.newState === "away") {
+      processing = processing.then(endCallOnce).catch(() => undefined);
+    }
+  });
+  session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
+    if (failureEnded) return;
+    let providerEvent: TelephoneSessionProviderEvent;
+    try {
+      providerEvent = turnAdapter.transcription(event);
+    } catch (error) {
+      rejectTelephoneInput(error);
+      return;
+    }
+    enqueueProviderEvent(providerEvent);
   });
   session.on(voice.AgentSessionEventTypes.UserTranscriptionTimeout, () => {
     processing = processing
@@ -163,8 +176,16 @@ export async function runLiveKitTelephoneSession(options: {
   });
 
   try {
+    const agent = new CoordinatorOnlyAgent((message) => {
+      if (failureEnded) return;
+      try {
+        enqueueProviderEvent(turnAdapter.completedTurn(message));
+      } catch (error) {
+        rejectTelephoneInput(error);
+      }
+    });
     await session.start({
-      agent: new CoordinatorOnlyAgent(),
+      agent,
       record: false,
       room: options.room,
     });
@@ -189,12 +210,28 @@ export async function runLiveKitTelephoneSession(options: {
   }
 }
 
-class CoordinatorOnlyAgent extends voice.Agent {
-  constructor() {
+export class CoordinatorOnlyAgent extends voice.Agent {
+  readonly #onUserTurnCompleted: (
+    message: llm.ChatMessage,
+  ) => Promise<void> | void;
+
+  constructor(
+    onUserTurnCompleted: (
+      message: llm.ChatMessage,
+    ) => Promise<void> | void,
+  ) {
     super({
       instructions:
         "Finalized user turns are handled by the typed Telephone Session coordinator. Do not generate an independent reply.",
     });
+    this.#onUserTurnCompleted = onUserTurnCompleted;
+  }
+
+  override async onUserTurnCompleted(
+    _chatCtx: llm.ChatContext,
+    newMessage: llm.ChatMessage,
+  ): Promise<void> {
+    await this.#onUserTurnCompleted(newMessage);
   }
 
   override async llmNode(): Promise<null> {
@@ -382,17 +419,17 @@ function finalizedDeliveryId(
   );
 }
 
-export function mapFinalizedTranscriptionEvent(input: {
+export function mapCompletedTelephoneTurnEvent(input: {
   readonly createdAt: number;
   readonly itemId: string | null;
   readonly speechStartedAt: number | undefined;
   readonly telephoneSessionId: string;
   readonly transcript: string;
 }): Extract<TelephoneSessionProviderEvent, { kind: "turn-finalized" }> {
-  const turnId = finalizedTurnId(
-    input.telephoneSessionId,
-    input.speechStartedAt,
-  );
+  const turnId = finalizedTurnId(input.telephoneSessionId, input.itemId);
+  if (input.speechStartedAt === undefined) {
+    throw new Error("Completed telephone turn speech boundary is unavailable");
+  }
   return {
     deliveryId: finalizedDeliveryId(
       input.telephoneSessionId,
@@ -402,10 +439,7 @@ export function mapFinalizedTranscriptionEvent(input: {
     kind: "turn-finalized",
     occurredAt: new Date(input.createdAt).toISOString(),
     stt: {
-      durationMs: Math.max(
-        0,
-        input.createdAt - (input.speechStartedAt ?? input.createdAt),
-      ),
+      durationMs: Math.max(0, input.createdAt - input.speechStartedAt),
       provider: "assemblyai",
     },
     telephoneSessionId: input.telephoneSessionId,
@@ -416,14 +450,68 @@ export function mapFinalizedTranscriptionEvent(input: {
 
 function finalizedTurnId(
   telephoneSessionId: string,
-  speechStartedAt: number | undefined,
+  itemId: string | null,
 ): string {
-  if (speechStartedAt === undefined) {
-    throw new Error("Finalized telephone turn boundary is unavailable");
+  if (itemId === null) {
+    throw new Error("Completed telephone turn identity is unavailable");
   }
-  return stableIdentifier(
-    `turn:${telephoneSessionId}:speech-start:${speechStartedAt}`,
-  );
+  return stableIdentifier(`turn:${telephoneSessionId}:completed:${itemId}`);
+}
+
+export class LiveKitTelephoneTurnAdapter {
+  readonly #telephoneSessionId: string;
+  #speechStartedAt: number | undefined;
+
+  constructor(telephoneSessionId: string) {
+    this.#telephoneSessionId = telephoneSessionId;
+  }
+
+  speechStarted(createdAt: number): void {
+    if (
+      this.#speechStartedAt === undefined ||
+      createdAt < this.#speechStartedAt
+    ) {
+      this.#speechStartedAt = createdAt;
+    }
+  }
+
+  transcription(input: {
+    readonly createdAt: number;
+    readonly isFinal: boolean;
+    readonly itemId: string | null;
+    readonly transcript: string;
+  }): Extract<
+    TelephoneSessionProviderEvent,
+    { kind: "speech-hypothesis" }
+  > {
+    return {
+      deliveryId: stableIdentifier(
+        `transcription:${this.#telephoneSessionId}:${input.createdAt}:${input.itemId ?? input.transcript}`,
+      ),
+      kind: "speech-hypothesis",
+      occurredAt: new Date(input.createdAt).toISOString(),
+      telephoneSessionId: this.#telephoneSessionId,
+      transcript: input.transcript,
+    };
+  }
+
+  completedTurn(
+    message: llm.ChatMessage,
+  ): Extract<TelephoneSessionProviderEvent, { kind: "turn-finalized" }> {
+    const transcript = message.rawTextContent;
+    if (transcript === undefined || transcript.trim().length === 0) {
+      throw new Error("Completed telephone turn transcript is unavailable");
+    }
+    const completedTurn = mapCompletedTelephoneTurnEvent({
+      createdAt: message.createdAt,
+      itemId: message.id,
+      speechStartedAt: this.#speechStartedAt,
+      telephoneSessionId: this.#telephoneSessionId,
+      transcript,
+    });
+    this.#speechStartedAt = undefined;
+    return completedTurn;
+  }
 }
 
 function stableIdentifier(value: string): string {
