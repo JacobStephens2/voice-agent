@@ -15,6 +15,7 @@ import type {
   CallbackAction,
   CallbackActionResult,
   CallbackProviderEvent,
+  TelephoneEvidenceEvent,
 } from "@voice-agent/contracts";
 import { createUnixSocketBountywellObserver } from "@voice-agent/operations-broker";
 import {
@@ -37,6 +38,7 @@ import {
 } from "./livekit-callback-adapter.ts";
 import {
   boundedProviderConnectOptions,
+  mapProviderFailureEvent,
   playPrerecordedProviderFailure,
   runLiveKitTelephoneSession,
 } from "./livekit-telephone-session.ts";
@@ -178,6 +180,15 @@ type OutboundDispatch =
   | AuthenticationCallbackDispatch
   | CompletionCallbackDispatch;
 
+class TelephoneSetupProviderError extends Error {
+  constructor(
+    readonly stage: "coordinator" | "stt" | "tts",
+    readonly providerError: unknown,
+  ) {
+    super(`Telephone ${stage} setup provider failed`);
+  }
+}
+
 async function handleInbound(
   ctx: JobContext,
   runtime: CallbackRuntime,
@@ -188,6 +199,16 @@ async function handleInbound(
   const participant = await ctx.waitForParticipant();
   const attributes = participant.attributes;
   const inboundCallId = providerCallId(participant);
+  if (
+    (await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
+      recordUsage: boundaries.recordUsage,
+      usageScopeId: `prelive:inbound:${providerDeliveryFingerprint(inboundCallId)}`,
+    })) === "safe-terminal-only"
+  ) {
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   const inbound = await runtime.receiveInbound({
     calledNumber: normalizeTelnyxSipTelephoneNumber(
       attributes["sip.trunkPhoneNumber"],
@@ -207,18 +228,6 @@ async function handleInbound(
   if (record === undefined) {
     throw new Error("Inbound Callback Handshake Evidence Record is unavailable");
   }
-  if (
-    (await reserveTelephoneUsageSlice({
-      ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
-      recordUsage: boundaries.recordUsage,
-      sessionId: record.session.id,
-      usageScopeId: `prelive:inbound:${inbound.handshakeId}`,
-    })) === "safe-terminal-only"
-  ) {
-    await ctx.deleteRoom().catch(() => undefined);
-    return;
-  }
-
   const session = createFixedSpeechSession();
   try {
     await session.start({
@@ -232,7 +241,7 @@ async function handleInbound(
     if (notice !== undefined) {
       await playFixedText(session, notice.text);
     }
-  } catch {
+  } catch (error) {
     await playPrerecordedProviderFailure(session).catch(() => undefined);
     const failed = await runtime.receiveProviderEvent(inbound.handshakeId!, {
       attempt: 1,
@@ -246,6 +255,7 @@ async function handleInbound(
       failureEventId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
       handshakeId: inbound.handshakeId!,
       occurredAt: new Date().toISOString(),
+      error,
       result: failed,
       runtime,
       telephoneSessionId: record.session.id,
@@ -317,7 +327,7 @@ async function handleOutbound(
       participant.identity,
     );
     const detection = await Promise.race([
-      detector.execute().then((prediction) => ({
+      executeMachineDetection(detector).then((prediction) => ({
         kind: "prediction" as const,
         prediction,
       })),
@@ -440,7 +450,7 @@ async function handleOutbound(
       providerCallId: callId,
     });
     await performMediaActions(session, ended);
-  } catch {
+  } catch (error) {
     await playPrerecordedProviderFailure(session).catch(() => undefined);
     const failed = await runtime.receiveProviderEvent(dispatch.handshakeId, {
       attempt: dispatch.attempt,
@@ -454,6 +464,7 @@ async function handleOutbound(
       failureEventId: `provider-failure:${dispatch.effectId}`,
       handshakeId: dispatch.handshakeId,
       occurredAt: new Date().toISOString(),
+      error,
       result: failed,
       runtime,
       telephoneSessionId,
@@ -515,7 +526,7 @@ async function handleCompletionOutbound(
       participant.identity,
     );
     const detection = await Promise.race([
-      detector.execute().then((prediction) => ({
+      executeMachineDetection(detector).then((prediction) => ({
         kind: "prediction" as const,
         prediction,
       })),
@@ -637,36 +648,17 @@ async function handleCompletionOutbound(
       prolongedSilenceMs: prolongedSilenceMs(),
       usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
-  } catch {
+  } catch (error) {
     await playPrerecordedProviderFailure(session).catch(() => undefined);
     const occurredAt = new Date().toISOString();
-    const failureId = `setup-provider-failure:${createHash("sha256")
-      .update(dispatch.effectId)
-      .digest("hex")
-      .slice(0, 32)}`;
-    await callback
-      .appendTelephoneSessionEvidenceBySessionId(
-        dispatch.telephoneSessionId,
-        {
-          details: {
-            failure: "unavailable",
-            provider: "livekit-setup",
-            stage: "coordinator",
-          },
-          id: failureId,
-          kind: "telephone.provider.failure",
-          occurredAt,
-          summary: "Telephone setup reached a bounded provider failure.",
-        },
-      )
-      .catch(() => undefined);
-    await boundaries
-      .recordProviderFailure({
-        failureClass: "unavailable",
-        sessionId: dispatch.telephoneSessionId,
-        stage: "coordinator",
-      })
-      .catch(() => undefined);
+    await recordCompletionSetupProviderFailure({
+      boundaries,
+      callback,
+      error,
+      failureEventId: dispatch.effectId,
+      occurredAt,
+      telephoneSessionId: dispatch.telephoneSessionId,
+    }).catch(() => undefined);
     if (authenticated) {
       await continuity
         .requestSessionFailureNotification({
@@ -806,6 +798,7 @@ function completionSessionEvidence(
 
 async function recordAuthenticationSetupProviderFailure(input: {
   readonly boundaries: BoundaryRuntime;
+  readonly error: unknown;
   readonly failureEventId: string;
   readonly handshakeId: string;
   readonly occurredAt: string;
@@ -813,25 +806,14 @@ async function recordAuthenticationSetupProviderFailure(input: {
   readonly runtime: CallbackRuntime;
   readonly telephoneSessionId: string;
 }): Promise<void> {
-  const correlation = createHash("sha256")
-    .update(input.failureEventId)
-    .digest("hex")
-    .slice(0, 32);
-  await input.runtime.appendTelephoneSessionEvidence(input.handshakeId, {
-    details: {
-      failure: "unavailable",
-      provider: "livekit-setup",
-      stage: "coordinator",
-    },
-    id: `setup-provider-failure:${correlation}`,
-    kind: "telephone.provider.failure",
+  await recordSetupProviderFailure({
+    append: (event) =>
+      input.runtime.appendTelephoneSessionEvidence(input.handshakeId, event),
+    boundaries: input.boundaries,
+    error: input.error,
+    failureEventId: input.failureEventId,
     occurredAt: input.occurredAt,
-    summary: "Telephone setup reached a bounded provider failure.",
-  });
-  await input.boundaries.recordProviderFailure({
-    failureClass: "unavailable",
-    sessionId: input.telephoneSessionId,
-    stage: "coordinator",
+    telephoneSessionId: input.telephoneSessionId,
   });
   const notification = input.result.actions.find(
     (action) => action.kind === "request-silent-notification",
@@ -845,6 +827,77 @@ async function recordAuthenticationSetupProviderFailure(input: {
       },
     );
   }
+}
+
+async function recordCompletionSetupProviderFailure(input: {
+  readonly boundaries: BoundaryRuntime;
+  readonly callback: CallbackRuntime;
+  readonly error: unknown;
+  readonly failureEventId: string;
+  readonly occurredAt: string;
+  readonly telephoneSessionId: string;
+}): Promise<void> {
+  await recordSetupProviderFailure({
+    append: (event) =>
+      input.callback.appendTelephoneSessionEvidenceBySessionId(
+        input.telephoneSessionId,
+        event,
+      ),
+    boundaries: input.boundaries,
+    error: input.error,
+    failureEventId: input.failureEventId,
+    occurredAt: input.occurredAt,
+    telephoneSessionId: input.telephoneSessionId,
+  });
+}
+
+async function recordSetupProviderFailure(input: {
+  readonly append: (
+    event: Omit<TelephoneEvidenceEvent, "sequence">,
+  ) => Promise<unknown>;
+  readonly boundaries: BoundaryRuntime;
+  readonly error: unknown;
+  readonly failureEventId: string;
+  readonly occurredAt: string;
+  readonly telephoneSessionId: string;
+}): Promise<void> {
+  if (!(input.error instanceof TelephoneSetupProviderError)) return;
+  const correlation = createHash("sha256")
+    .update(input.failureEventId)
+    .digest("hex")
+    .slice(0, 32);
+  const failure = mapProviderFailureEvent({
+    deliveryId: correlation,
+    error: input.error.providerError,
+    occurredAt: input.occurredAt,
+    stage: input.error.stage,
+  });
+  const failureClass =
+    failure.kind === "provider-timeout" ? "timeout" : "unavailable";
+  await input.append({
+    details:
+      failure.kind === "provider-timeout"
+        ? {
+            failure: "timeout",
+            provider: failure.provider,
+            stage: failure.stage,
+            timeoutMs: failure.timeoutMs,
+          }
+        : {
+            failure: "unavailable",
+            provider: failure.provider,
+            stage: failure.stage,
+          },
+    id: `setup-provider-failure:${correlation}`,
+    kind: "telephone.provider.failure",
+    occurredAt: input.occurredAt,
+    summary: "Telephone setup reached a bounded provider failure.",
+  });
+  await input.boundaries.recordProviderFailure({
+    failureClass,
+    sessionId: input.telephoneSessionId,
+    stage: input.error.stage,
+  });
 }
 
 function requireResumptionOperationId(
@@ -916,6 +969,16 @@ function createBoundedMachineDetector(
   });
 }
 
+async function executeMachineDetection(
+  detector: voice.AMD,
+): ReturnType<voice.AMD["execute"]> {
+  try {
+    return await detector.execute();
+  } catch (error) {
+    throw new TelephoneSetupProviderError("coordinator", error);
+  }
+}
+
 function fixedSpeechAgent(): voice.Agent {
   return new voice.Agent({
     instructions:
@@ -953,7 +1016,7 @@ async function playFixedText(
       lastFailure = error;
     }
   }
-  throw lastFailure;
+  throw new TelephoneSetupProviderError("tts", lastFailure);
 }
 
 async function placeCallbackOrRecordFailure(

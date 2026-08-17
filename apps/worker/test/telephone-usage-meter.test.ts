@@ -35,10 +35,43 @@ describe("Telephone Session paid-usage meter", () => {
     ]);
   });
 
+  test("meters rejected inbound media without creating a Telephone Session", async () => {
+    const recorded: unknown[] = [];
+    await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: {
+        api: 1,
+        "realtime-media": 2,
+        telephony: 3,
+      },
+      recordUsage: async (input) => {
+        recorded.push(input);
+        return { disposition: "continue" as const };
+      },
+      usageScopeId: "rejected-inbound-1",
+    });
+    expect(recorded).toEqual([
+      {
+        amountMicrousd: 1,
+        source: "api",
+        usageId: "rejected-inbound-1:api",
+      },
+      {
+        amountMicrousd: 3,
+        source: "telephony",
+        usageId: "rejected-inbound-1:telephony",
+      },
+      {
+        amountMicrousd: 2,
+        source: "realtime-media",
+        usageId: "rejected-inbound-1:realtime-media",
+      },
+    ]);
+  });
+
   test("combines all paid sources and enters a safe terminal state at the ceiling", async () => {
     const recorded: Array<{
       amountMicrousd: number;
-      sessionId: string;
+      sessionId?: string;
       source: string;
       usageId: string;
     }> = [];

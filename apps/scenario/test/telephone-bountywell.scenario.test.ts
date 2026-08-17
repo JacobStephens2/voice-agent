@@ -587,6 +587,7 @@ describe("Telephone Bountywell health inquiry", () => {
           stt: { durationMs: 280, provider: "assemblyai" },
           telephoneSessionId: "telephone-session-confirmation",
           transcript: "Yes, please",
+          turnId: "confirmation-delivery-002",
         }),
       ).resolves.toEqual({
         actions: [
@@ -607,6 +608,7 @@ describe("Telephone Bountywell health inquiry", () => {
           stt: { durationMs: 280, provider: "assemblyai" },
           telephoneSessionId: "telephone-session-confirmation",
           transcript: "Deploy the Bountywell fix now",
+          turnId: "confirmation-delivery-003",
         }),
       ).resolves.toMatchObject({
         actions: [{ kind: "request-task-confirmation" }],

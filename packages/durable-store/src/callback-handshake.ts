@@ -88,6 +88,7 @@ export interface CallbackHandshakeStore {
   findHandshake(
     handshakeId: string,
   ): Promise<CallbackHandshakeSnapshot | undefined>;
+  findPendingNotificationHandshakeIds(): Promise<readonly string[]>;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
   readOperationalMetrics(): Promise<CallbackHandshakeOperationalMetrics>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;

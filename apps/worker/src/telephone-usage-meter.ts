@@ -8,7 +8,7 @@ export type TelephoneUsageRates = Readonly<
 interface TelephoneUsageRecorder {
   (input: {
     readonly amountMicrousd: number;
-    readonly sessionId: string;
+    readonly sessionId?: string;
     readonly source: TelephoneUsageSource;
     readonly usageId: string;
   }): Promise<{ readonly disposition: "continue" | "safe-terminal-only" }>;
@@ -17,7 +17,7 @@ interface TelephoneUsageRecorder {
 export async function reserveTelephoneUsageSlice(options: {
   readonly ratesMicrousdPerMinute: TelephoneUsageRates;
   readonly recordUsage: TelephoneUsageRecorder;
-  readonly sessionId: string;
+  readonly sessionId?: string;
   readonly usageScopeId: string;
 }): Promise<"continue" | "safe-terminal-only"> {
   validateRates(options.ratesMicrousdPerMinute);
@@ -25,9 +25,11 @@ export async function reserveTelephoneUsageSlice(options: {
   for (const source of usageSources) {
     const result = await options.recordUsage({
       amountMicrousd: options.ratesMicrousdPerMinute[source],
-      sessionId: options.sessionId,
       source,
       usageId: `${options.usageScopeId}:${source}`,
+      ...(options.sessionId === undefined
+        ? {}
+        : { sessionId: options.sessionId }),
     });
     if (result.disposition === "safe-terminal-only") {
       disposition = "safe-terminal-only";

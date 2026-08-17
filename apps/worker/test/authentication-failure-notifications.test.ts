@@ -44,11 +44,12 @@ describe("authentication failure notification outbox", () => {
         };
         return record;
       },
-      async listEvidenceRecords() {
-        return [record.task];
-      },
-      async readEvidenceRecord() {
-        return record;
+      async findPendingNotificationEvidenceRecords() {
+        return record.evidence.some(
+          (event) => event.kind === "notification.sent",
+        )
+          ? []
+          : [record];
       },
     };
     const continuity = {

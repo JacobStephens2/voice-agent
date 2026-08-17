@@ -37,6 +37,9 @@ export interface CallbackHandshakeRuntime {
   ): Promise<TelephoneSessionEvidenceRecordProjection>;
   close(): Promise<void>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
+  findPendingNotificationEvidenceRecords(): Promise<
+    readonly TelephoneSessionEvidenceRecordProjection[]
+  >;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
   processDueRetries(): Promise<readonly {
     readonly handshakeId: string;
@@ -643,6 +646,17 @@ export function createCallbackHandshakeRuntime(
       }),
     close: () => options.store.close(),
     findRegisteredTelephone: () => options.store.findRegisteredTelephone(),
+    async findPendingNotificationEvidenceRecords() {
+      const records = await Promise.all(
+        (await options.store.findPendingNotificationHandshakeIds()).map((id) =>
+          options.store.findEvidenceRecord(id),
+        ),
+      );
+      return records.filter(
+        (record): record is TelephoneSessionEvidenceRecordProjection =>
+          record !== undefined,
+      );
+    },
     listEvidenceRecords: () => options.store.listEvidenceRecords(),
     processDueRetries,
     readEvidenceRecord: (handshakeId) =>
