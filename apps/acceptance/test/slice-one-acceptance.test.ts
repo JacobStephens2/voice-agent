@@ -159,6 +159,21 @@ test("the CLI initializes and atomically appends automated verification", async 
   }
 });
 
+test("the attended wizard verifies Prometheus ingestion before recording verification", async () => {
+  const wizard = await readFile(
+    fileURLToPath(
+      new URL("../../../ops/acceptance/run-slice-one.sh", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  expect(wizard).toContain("http://127.0.0.1:9090/api/v1/query");
+  expect(wizard).toContain(
+    'query=voice_agent_monitoring_same_host{job="voice-agent"} == 1',
+  );
+  expect(wizard).toContain("Prometheus has not ingested");
+});
+
 function verifiedRecord() {
   return appendSliceOneAcceptanceEvent(
     createSliceOneAcceptanceRecord({

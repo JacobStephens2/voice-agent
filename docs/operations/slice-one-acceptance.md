@@ -39,9 +39,11 @@ and an outdoor walking run within those five.
 
 Before calls, the wizard verifies the exact Release with monorepo typechecking,
 the full automated test suite, the deployment-health check, and the private
-Prometheus scrape. It then asks the owner to inspect **Voice Agent · Slice One
-Operational Path** in Grafana, including its same-host warning and the explicit
-Voice Agent and registered Bountywell API probes.
+metrics endpoint. It also queries Prometheus's local API and requires a healthy,
+ingested `voice_agent_monitoring_same_host` sample for the `voice-agent` scrape
+job. It then asks the owner to inspect **Voice Agent · Slice One Operational
+Path** in Grafana, including its same-host warning and the explicit Voice Agent
+and registered Bountywell API probes.
 
 The monitoring is intentionally same-host. It can diagnose component, provider,
 application, resource, and policy failures, but cannot independently establish

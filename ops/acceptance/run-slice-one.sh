@@ -208,6 +208,26 @@ elif [[ $(jq -r .releaseCommit "$ACCEPTANCE_RECORD") != "$RELEASE_COMMIT" ]]; th
   exit 1
 fi
 
+verify_prometheus_ingestion() {
+  local attempt response
+  for attempt in {1..6}; do
+    if response=$(curl --fail --silent --show-error --max-time 5 \
+      --get \
+      --data-urlencode 'query=voice_agent_monitoring_same_host{job="voice-agent"} == 1' \
+      http://127.0.0.1:9090/api/v1/query) && \
+      jq -e \
+        '.status == "success" and (.data.result | length) >= 1 and all(.data.result[]; .value[1] == "1")' \
+        <<<"$response" >/dev/null; then
+      return 0
+    fi
+    if (( attempt < 6 )); then
+      sleep 5
+    fi
+  done
+  warn "Prometheus has not ingested a healthy Voice Agent scrape."
+  return 1
+}
+
 record_run() {
   local carrier="$1" environment="$2" instructions="$3"
   local sequence callback_ms health_answer_ms interruption_count
@@ -293,6 +313,7 @@ if ! jq -e --arg commit "$RELEASE_COMMIT" \
   curl --fail --silent --show-error --max-time 5 \
     http://127.0.0.1:3472/metrics | \
     grep -F 'voice_agent_monitoring_same_host 1' >/dev/null
+  verify_prometheus_ingestion
   /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" \
     record-verification \
     --record "$ACCEPTANCE_RECORD" \
