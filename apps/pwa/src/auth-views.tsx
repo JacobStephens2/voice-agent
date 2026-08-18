@@ -10,6 +10,8 @@ import type {
   TelephoneBoundaryStatus,
 } from "@voice-agent/contracts";
 
+import { normalizeOwnerTelephoneInput } from "./owner-telephone-input.ts";
+
 export function Shell({
   children,
   message,
@@ -179,6 +181,7 @@ export function RecoveryCodesView(props: {
 export function TaskList(props: {
   bountywellRegistration?: BountywellRegistration | undefined;
   registeredTelephone?: RegisteredTelephone | undefined;
+  telephoneRegistrationLoaded?: boolean;
   telephoneBoundaries?: TelephoneBoundaryStatus | undefined;
   notificationPreference?: NotificationPreference | undefined;
   tasks: readonly EvidenceRecordSummary[];
@@ -200,12 +203,14 @@ export function TaskList(props: {
       {props.message === undefined ? null : (
         <p className="notice" role="status">{props.message}</p>
       )}
-      <TelephoneRegistrationControl
-        key={props.registeredTelephone?.revision ?? 0}
-        busy={props.busy}
-        registration={props.registeredTelephone}
-        onRegister={props.onRegisterTelephone}
-      />
+      {props.registeredTelephone === undefined &&
+      props.telephoneRegistrationLoaded !== true ? null : (
+        <TelephoneRegistrationControl
+          busy={props.busy}
+          registration={props.registeredTelephone}
+          onRegister={props.onRegisterTelephone}
+        />
+      )}
       <TelephoneSpendingControl
         busy={props.busy}
         onChange={props.onChangeSpendingCeiling}
@@ -472,11 +477,15 @@ function TelephoneRegistrationControl(props: {
         <label>
           Owner telephone (E.164)
           <input
-            autoComplete="tel"
+            autoComplete="off"
+            inputMode="tel"
             pattern="\+[1-9][0-9]{7,14}"
             required
+            spellCheck={false}
             value={telephoneNumber}
-            onChange={(event) => setTelephoneNumber(event.target.value)}
+            onChange={(event) =>
+              setTelephoneNumber(normalizeOwnerTelephoneInput(event.target.value))
+            }
           />
         </label>
         <label>
