@@ -7,13 +7,33 @@ import {
 } from "../src/telephone-setup-provider-failure.ts";
 
 describe("fixed-speech Telephone Session setup failures", () => {
-  test("classifies an unwrapped session-start error as sanitized setup failure", async () => {
+  test("does not attribute an unclassified catch-path error to a provider", async () => {
     const append = vi.fn(async () => undefined);
     const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
 
     await recordTelephoneSetupProviderFailure({
       append,
-      error: new Error("raw LiveKit room details"),
+      error: new Error("durable application write failed"),
+      failureEventId: "unclassified-catch-path-failure",
+      occurredAt: "2026-08-17T20:00:00.000Z",
+      recordProviderFailure,
+      telephoneSessionId: "telephone-session-unclassified",
+    });
+
+    expect(append).not.toHaveBeenCalled();
+    expect(recordProviderFailure).not.toHaveBeenCalled();
+  });
+
+  test("records a classified session-start failure as sanitized setup failure", async () => {
+    const append = vi.fn(async () => undefined);
+    const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
+
+    await recordTelephoneSetupProviderFailure({
+      append,
+      error: new TelephoneSetupProviderError(
+        "setup",
+        new Error("raw LiveKit room details"),
+      ),
       failureEventId: "fixed-session-start-failure",
       occurredAt: "2026-08-17T20:00:00.000Z",
       recordProviderFailure,

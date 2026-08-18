@@ -6,15 +6,16 @@ import {
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
   telephoneAudioDebugRevokedEvidenceEventSchema,
+  telephoneProviderFailureStages,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
   type TelephoneBoundaryEvidenceEvent,
+  type TelephoneProviderFailureStage,
 } from "@voice-agent/contracts";
 import type {
   TelephoneBoundaryStore,
   TelephoneProviderFailureClass,
-  TelephoneProviderStage,
   TelephoneUsageSource,
 } from "@voice-agent/durable-store";
 
@@ -517,7 +518,7 @@ export function createTelephoneBoundaryRuntime(
     async recordProviderFailure(input: {
       readonly failureClass: TelephoneProviderFailureClass;
       readonly sessionId: string;
-      readonly stage: TelephoneProviderStage;
+      readonly stage: TelephoneProviderFailureStage;
     }) {
       await options.store.recordProviderFailure(input);
       return endSession(input.sessionId, "provider-failure");
@@ -717,7 +718,7 @@ export function formatTelephoneBoundaryPrometheusMetrics(
       (outcome) =>
         `voice_agent_raw_audio_cleanup_total{outcome="${outcome}"} ${metrics.audioDebug.cleanup[outcome]}`,
     ),
-    ...(["stt", "coordinator", "tts", "setup"] as const).flatMap((stage) =>
+    ...telephoneProviderFailureStages.flatMap((stage) =>
       (["timeout", "unavailable"] as const).map(
         (failureClass) =>
           `voice_agent_telephone_provider_failures_total{stage="${stage}",class="${failureClass}"} ${metrics.providerFailures[stage][failureClass]}`,

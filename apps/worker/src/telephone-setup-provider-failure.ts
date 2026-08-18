@@ -1,15 +1,15 @@
 import { createHash } from "node:crypto";
 
-import type { TelephoneEvidenceEvent } from "@voice-agent/contracts";
+import type {
+  TelephoneEvidenceEvent,
+  TelephoneProviderFailureStage,
+} from "@voice-agent/contracts";
 
 import { mapProviderFailureEvent } from "./livekit-telephone-session.ts";
 
-type SpeechProviderStage = "coordinator" | "stt" | "tts";
-type ProviderFailureStage = SpeechProviderStage | "setup";
-
 export class TelephoneSetupProviderError extends Error {
   constructor(
-    readonly stage: SpeechProviderStage,
+    readonly stage: TelephoneProviderFailureStage,
     readonly providerError: unknown,
   ) {
     super(`Telephone ${stage} setup provider failed`);
@@ -26,14 +26,15 @@ export async function recordTelephoneSetupProviderFailure(input: {
   readonly recordProviderFailure: (input: {
     readonly failureClass: "timeout" | "unavailable";
     readonly sessionId: string;
-    readonly stage: ProviderFailureStage;
+    readonly stage: TelephoneProviderFailureStage;
   }) => Promise<unknown>;
   readonly telephoneSessionId: string;
 }): Promise<void> {
-  const classified =
-    input.error instanceof TelephoneSetupProviderError
-      ? { error: input.error.providerError, stage: input.error.stage }
-      : { error: input.error, stage: "setup" as const };
+  if (!(input.error instanceof TelephoneSetupProviderError)) return;
+  const classified = {
+    error: input.error.providerError,
+    stage: input.error.stage,
+  };
   const correlation = createHash("sha256")
     .update(input.failureEventId)
     .digest("hex")

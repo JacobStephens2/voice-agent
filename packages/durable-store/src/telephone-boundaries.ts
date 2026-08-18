@@ -1,4 +1,5 @@
 import type {
+  TelephoneProviderFailureStage,
   TelephoneUsageReservationResult,
   TelephoneUsageResult,
   TelephoneUsageSource,
@@ -42,7 +43,6 @@ export type TelephoneBoundaryDecision =
     };
 
 export type TelephoneProviderFailureClass = "timeout" | "unavailable";
-export type TelephoneProviderStage = "coordinator" | "setup" | "stt" | "tts";
 
 export interface TelephoneBoundaryMetrics {
   readonly audioDebug: {
@@ -67,7 +67,7 @@ export interface TelephoneBoundaryMetrics {
     readonly warmSessions: number;
   };
   readonly providerFailures: Record<
-    TelephoneProviderStage,
+    TelephoneProviderFailureStage,
     Record<TelephoneProviderFailureClass, number>
   >;
   readonly sessionEndings: {
@@ -162,7 +162,7 @@ export interface TelephoneBoundaryStore {
   readMetrics(now: string): Promise<TelephoneBoundaryMetrics>;
   recordProviderFailure(input: {
     readonly failureClass: TelephoneProviderFailureClass;
-    readonly stage: TelephoneProviderStage;
+    readonly stage: TelephoneProviderFailureStage;
   }): Promise<void>;
   recordRawAudioCleanup(input: {
     readonly outcome: "deleted" | "failed" | "missing";

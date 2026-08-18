@@ -11,6 +11,7 @@ import {
   type EvidenceRecordProjection,
   type TelephoneConversationEvidenceEvent,
   type TelephoneBoundaryEvidenceEvent,
+  type TelephoneProviderFailureStage,
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type InboundTelephoneEvent,
@@ -105,7 +106,7 @@ export interface TelephoneBoundaryScenario {
   recordProviderFailure(input: {
     readonly failureClass: "timeout" | "unavailable";
     readonly sessionId: string;
-    readonly stage: "coordinator" | "setup" | "stt" | "tts";
+    readonly stage: TelephoneProviderFailureStage;
   }): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["recordProviderFailure"]
   >;

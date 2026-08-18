@@ -6,6 +6,7 @@ import {
   type EvidenceRecordProjection,
   type FinalizedTelephoneTurn,
   type TelephoneConversationEvidenceEvent,
+  type TelephoneProviderFailureStage,
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type TelephoneTurnInterpretation,
@@ -506,13 +507,13 @@ async function recordProviderFailure(
     | {
         readonly failure: "timeout";
         readonly provider: string;
-        readonly stage: "stt" | "coordinator" | "tts" | "setup";
+        readonly stage: TelephoneProviderFailureStage;
         readonly timeoutMs: number;
       }
     | {
         readonly failure: "unavailable";
         readonly provider: string;
-        readonly stage: "stt" | "coordinator" | "tts" | "setup";
+        readonly stage: TelephoneProviderFailureStage;
       },
 ): Promise<TelephoneSessionActionResult> {
   const evidence: Omit<

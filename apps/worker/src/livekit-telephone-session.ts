@@ -10,8 +10,10 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import type {
+  TelephoneProviderFailureStage,
   TelephoneSessionAction,
   TelephoneSessionProviderEvent,
+  TelephoneSpeechProviderStage,
   TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import {
@@ -37,8 +39,6 @@ const providerFailureAudioPath = fileURLToPath(
   new URL("../assets/provider-failure.pcm", import.meta.url),
 );
 const providerFailureSampleRate = 24_000;
-type SpeechProviderStage = "coordinator" | "stt" | "tts";
-type ProviderFailureStage = SpeechProviderStage | "setup";
 
 interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
   close(): Promise<void>;
@@ -170,7 +170,7 @@ export async function runLiveKitTelephoneSession(
   }
 
   async function recordProviderFailureAndEnd(
-    stage: ProviderFailureStage,
+    stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
   ): Promise<void> {
@@ -544,7 +544,7 @@ async function performConversationAction(
   action: TelephoneSessionAction,
   playFailureAndEnd: () => Promise<void>,
   recordProviderFailureAndEnd: (
-    stage: ProviderFailureStage,
+    stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
   ) => Promise<void>,
@@ -784,7 +784,7 @@ function stableIdentifier(value: string): string {
 }
 
 function providerForStage(
-  stage: ProviderFailureStage,
+  stage: TelephoneProviderFailureStage,
 ): "assemblyai" | "inworld" | "livekit" | "openai" {
   if (stage === "stt") return "assemblyai";
   if (stage === "coordinator") return "openai";
@@ -794,7 +794,7 @@ function providerForStage(
 
 function providerStageForSessionError(error: {
   readonly type: string;
-}): SpeechProviderStage | undefined {
+}): TelephoneSpeechProviderStage | undefined {
   if (error.type === "stt_error") return "stt";
   if (error.type === "tts_error") return "tts";
   if (error.type === "llm_error" || error.type === "realtime_model_error") {
@@ -807,7 +807,7 @@ export function mapProviderFailureEvent(input: {
   readonly deliveryId: string;
   readonly error: unknown;
   readonly occurredAt: string;
-  readonly stage: ProviderFailureStage;
+  readonly stage: TelephoneProviderFailureStage;
   readonly taskId?: string;
 }):
   | Extract<TelephoneSessionProviderEvent, { kind: "provider-timeout" }>
@@ -832,14 +832,14 @@ export function mapProviderFailureEvent(input: {
       };
 }
 
-function providerTimeoutMs(stage: SpeechProviderStage): number {
+function providerTimeoutMs(stage: TelephoneSpeechProviderStage): number {
   if (stage === "stt") return transcriptionTimeoutMs;
   if (stage === "coordinator") return coordinatorTimeoutMs;
   return ttsTimeoutMs;
 }
 
 export function boundedProviderConnectOptions(
-  stage: SpeechProviderStage,
+  stage: TelephoneSpeechProviderStage,
 ) {
   return {
     maxRetry: 1,

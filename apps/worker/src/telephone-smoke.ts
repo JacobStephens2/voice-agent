@@ -1,3 +1,4 @@
+import { telephoneSpeechProviderStages } from "@voice-agent/contracts";
 import { createSqliteDurableTaskStore } from "@voice-agent/sqlite-store";
 
 const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
@@ -41,9 +42,9 @@ try {
             : [],
         ),
       );
-      const hasRequiredTiming = (
-        ["stt", "coordinator", "tts"] as const
-      ).every((requiredStage) => timingStages.has(requiredStage));
+      const hasRequiredTiming = telephoneSpeechProviderStages.every(
+        (requiredStage) => timingStages.has(requiredStage),
+      );
       if (!hasRequiredTiming) continue;
       const observed = record.evidence.find(
         (event) => event.kind === "evidence.observed",

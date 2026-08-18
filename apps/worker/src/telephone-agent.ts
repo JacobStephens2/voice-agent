@@ -254,11 +254,7 @@ async function handleInbound(
   }
   const session = createFixedSpeechSession();
   try {
-    await session.start({
-      agent: fixedSpeechAgent(),
-      record: false,
-      room: ctx.room,
-    });
+    await startFixedSpeechSession(session, ctx.room);
     const notice = inbound.actions.find(
       (action) => action.kind === "play-inbound-notice-and-end",
     );
@@ -336,11 +332,7 @@ async function handleOutbound(
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
   try {
-    await session.start({
-      agent: fixedSpeechAgent(),
-      record: false,
-      room: ctx.room,
-    });
+    await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
@@ -538,11 +530,7 @@ async function handleCompletionOutbound(
   let authenticated = false;
   let handedOffToRecovery = false;
   try {
-    await session.start({
-      agent: fixedSpeechAgent(),
-      record: false,
-      room: ctx.room,
-    });
+    await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
@@ -955,6 +943,21 @@ function createFixedSpeechSession(): voice.AgentSession {
     }),
     ttsReadIdleTimeout: 10_000,
   });
+}
+
+async function startFixedSpeechSession(
+  session: voice.AgentSession,
+  room: Room,
+): Promise<void> {
+  try {
+    await session.start({
+      agent: fixedSpeechAgent(),
+      record: false,
+      room,
+    });
+  } catch (error) {
+    throw new TelephoneSetupProviderError("setup", error);
+  }
 }
 
 function createBoundedMachineDetector(

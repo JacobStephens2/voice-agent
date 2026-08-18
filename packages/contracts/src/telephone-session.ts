@@ -6,13 +6,21 @@ const turnIdentifierSchema = z.string().min(1).max(80);
 const timestampSchema = z.iso.datetime();
 const providerNameSchema = z.string().min(1).max(80);
 const durationSchema = z.number().int().nonnegative().max(120_000);
-const providerStageSchema = z.enum(["stt", "coordinator", "tts"]);
-const providerFailureStageSchema = z.enum([
+export const telephoneSpeechProviderStages = [
   "stt",
   "coordinator",
   "tts",
+] as const;
+export type TelephoneSpeechProviderStage =
+  (typeof telephoneSpeechProviderStages)[number];
+export const telephoneProviderFailureStages = [
+  ...telephoneSpeechProviderStages,
   "setup",
-]);
+] as const;
+export type TelephoneProviderFailureStage =
+  (typeof telephoneProviderFailureStages)[number];
+const providerStageSchema = z.enum(telephoneSpeechProviderStages);
+const providerFailureStageSchema = z.enum(telephoneProviderFailureStages);
 
 const telephoneEvidenceFields = {
   id: identifierSchema,
