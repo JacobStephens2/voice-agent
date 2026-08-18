@@ -166,6 +166,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(resumeService).toContain("ProtectSystem=strict");
   expect(resumeService).toContain("ProtectHome=true");
   expect(resumeService).toContain("LoadCredential=github-app-key:");
+  expect(resumeService).toContain("/var/lib/voice-agent-broker");
   expect(promotion).toContain('"$script_directory/systemd/$unit"');
   expect(promotion).not.toContain('"$release/ops/systemd/$unit"');
   expect(promotion.indexOf("candidate-preflight.sh")).toBeLessThan(
