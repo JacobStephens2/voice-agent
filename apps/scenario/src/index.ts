@@ -22,6 +22,7 @@ import {
 
 export * from "./human-merge-promotion.ts";
 export * from "./task-continuity.ts";
+export * from "./bountywell-outage.ts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAuthenticationLifecycle,
@@ -398,7 +399,8 @@ export async function createTelephoneBountywellScenario(
       const normalized = input.text.toLocaleLowerCase("en-US");
       const stateChanging =
         normalized.includes("bountywell") &&
-        /\b(delete|deploy|fix|restart|start|stop|update)\b/u.test(normalized);
+        (normalized.includes("unavailable") ||
+          /\b(delete|deploy|fix|restart|start|stop|update)\b/u.test(normalized));
       const bountywellHealthQuestion =
         normalized.includes("bountywell") &&
         /\b(doing|health|healthy|okay|running|status|up)\b/u.test(normalized);

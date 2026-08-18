@@ -11,6 +11,7 @@ import {
   authorizeRawAudioDebugRequestSchema,
   authorizeRawAudioDebugResultSchema,
   authenticationStatusSchema,
+  bountywellOutageInjectionSchema,
   bountywellRegistrationSchema,
   bountywellRegistrationStatusSchema,
   changeTelephoneSpendingCeilingRequestSchema,
@@ -34,6 +35,11 @@ import {
   recoveryRequestSchema,
   recoverySessionResponseSchema,
   registerBountywellRequestSchema,
+  grantBountywellRestartRequestSchema,
+  armBountywellRecoveryTimerRequestSchema,
+  injectBountywellOutageRequestSchema,
+  bountywellRecoveryTimerSchema,
+  bountywellRecoveryTimerProofSchema,
   registrationOptionsRequestSchema,
   submitBountywellHealthRequestSchema,
   telephoneBoundaryStatusSchema,
@@ -41,6 +47,10 @@ import {
   trustedBrowserSessionResponseSchema,
   updateNotificationPreferenceRequestSchema,
   voiceAgentEvidenceRecordProjectionSchema,
+  type BountywellBaselineEvidence,
+  type BountywellOutageInjection,
+  type BountywellRecoveryTimer,
+  type BountywellRecoveryTimerProof,
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
@@ -118,7 +128,20 @@ export interface BountywellTaskControls {
     readonly question: "Is Bountywell healthy?";
     readonly requestId: string;
   }): Promise<EvidenceRecordProjection>;
+  armBountywellRecoveryTimer?(): Promise<BountywellRecoveryTimer>;
+  captureBountywellBaseline?(): Promise<BountywellBaselineEvidence>;
   getBountywellRegistration(): Promise<BountywellRegistration | undefined>;
+  grantBountywellRestart?(source: "fresh-passkey"): Promise<
+    | { readonly decision: "denied"; readonly reason: string }
+    | {
+        readonly decision: "granted";
+        readonly registration: BountywellRegistration;
+      }
+  >;
+  injectBountywellOutage?(input: {
+    readonly ownerAvailable: boolean;
+  }): Promise<BountywellOutageInjection>;
+  proveBountywellRecoveryTimer?(): Promise<BountywellRecoveryTimerProof>;
   registerBountywell(): Promise<BountywellRegistration>;
   requestStop?(input: {
     readonly requestId: string;
@@ -638,6 +661,115 @@ function registerBountywellControlRoutes(
     },
   );
 
+  api.post(
+    "/api/applications/bountywell/restart-authority",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = grantBountywellRestartRequestSchema.parse(request.body);
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      if (
+        options.authentication.hasFreshPasskeyAction === undefined ||
+        !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+      ) {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(403).send({ error: "Fresh Passkey Action required" });
+      }
+      if (options.controls.grantBountywellRestart === undefined) {
+        return reply.code(409).send({ error: "Bountywell restart grant is unavailable" });
+      }
+      const granted = await options.controls.grantBountywellRestart("fresh-passkey");
+      if (granted.decision !== "granted") {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(403).send({ error: granted.reason });
+      }
+      return bountywellRegistrationSchema.parse(granted.registration);
+    },
+  );
+
+  api.post(
+    "/api/operations/bountywell-outage-drill/arm-timer",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
+      const sessionToken = await authorizeFreshDrillAction(
+        request,
+        reply,
+        options,
+        body.csrfToken,
+      );
+      if (sessionToken === undefined) return;
+      if (options.controls.armBountywellRecoveryTimer === undefined) {
+        return reply.code(409).send({ error: "Recovery timer control is unavailable" });
+      }
+      return bountywellRecoveryTimerSchema.parse(
+        await options.controls.armBountywellRecoveryTimer(),
+      );
+    },
+  );
+
+  api.post(
+    "/api/operations/bountywell-outage-drill/prove-timer",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
+      const sessionToken = await authorizeFreshDrillAction(
+        request,
+        reply,
+        options,
+        body.csrfToken,
+      );
+      if (sessionToken === undefined) return;
+      if (options.controls.proveBountywellRecoveryTimer === undefined) {
+        return reply.code(409).send({ error: "Recovery timer proof is unavailable" });
+      }
+      return bountywellRecoveryTimerProofSchema.parse(
+        await options.controls.proveBountywellRecoveryTimer(),
+      );
+    },
+  );
+
+  api.post(
+    "/api/operations/bountywell-outage-drill/inject",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const parsed = injectBountywellOutageRequestSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "The live drill occurs only while the owner is available" });
+      }
+      const sessionToken = await authorizeFreshDrillAction(
+        request,
+        reply,
+        options,
+        parsed.data.csrfToken,
+      );
+      if (sessionToken === undefined) return;
+      if (options.controls.injectBountywellOutage === undefined) {
+        return reply.code(409).send({ error: "Outage drill control is unavailable" });
+      }
+      try {
+        const injected = await options.controls.injectBountywellOutage({
+          ownerAvailable: parsed.data.ownerAvailable,
+        });
+        return reply.code(202).send(bountywellOutageInjectionSchema.parse(injected));
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === "The live drill occurs only while the owner is available"
+        ) {
+          return reply.code(400).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
   api.post("/api/tasks/bountywell-health", async (request, reply) => {
     if (!requireOrigin(request, reply, options.origin)) return;
     const body = submitBountywellHealthRequestSchema.parse(request.body);
@@ -866,6 +998,34 @@ async function authorizeStateChange(
   ) {
     await records.recordPolicyDenial?.();
     void reply.code(403).send({ error: "CSRF validation failed" });
+    return undefined;
+  }
+  return sessionToken;
+}
+
+async function authorizeFreshDrillAction(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly records: EvidenceRecordReader;
+  },
+  csrfToken: string,
+): Promise<string | undefined> {
+  const sessionToken = await authorizeStateChange(
+    request,
+    reply,
+    options.authentication,
+    csrfToken,
+    options.records,
+  );
+  if (sessionToken === undefined) return undefined;
+  if (
+    options.authentication.hasFreshPasskeyAction === undefined ||
+    !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+  ) {
+    await options.records.recordPolicyDenial?.();
+    void reply.code(403).send({ error: "Fresh Passkey Action required" });
     return undefined;
   }
   return sessionToken;

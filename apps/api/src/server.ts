@@ -16,6 +16,11 @@ import { rmSync } from "node:fs";
 import { open, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
+import {
+  createUnixSocketBountywellController,
+  createUnixSocketBountywellObserver,
+} from "@voice-agent/operations-broker";
+
 import { createVoiceApi } from "./index.ts";
 import {
   createCallbackHandshakeRuntime,
@@ -43,10 +48,17 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
+const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({
   applicationRegistry: taskStore,
   nextId: randomUUID,
   now: () => new Date().toISOString(),
+  ...(brokerSocketPath === undefined
+    ? {}
+    : {
+        healthObserver: createUnixSocketBountywellObserver(brokerSocketPath),
+        serviceController: createUnixSocketBountywellController(brokerSocketPath),
+      }),
   store: taskStore,
 });
 const callbackStore = createSqliteCallbackHandshakeStore(databasePath);

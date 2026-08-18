@@ -12,6 +12,12 @@ import type {
 
 import { normalizeOwnerTelephoneInput } from "./owner-telephone-input.ts";
 
+function hasBountywellRestart(registration: BountywellRegistration): boolean {
+  return registration.capabilities.some(
+    (capability) => capability === "bountywell.service.restart",
+  );
+}
+
 export function Shell({
   children,
   message,
@@ -191,6 +197,10 @@ export function TaskList(props: {
   onApplyEvidenceRetention(): Promise<void>;
   onResumePromotions(): Promise<void>;
   onRegisterBountywell(): Promise<void>;
+  onGrantBountywellRestart(): Promise<void>;
+  onArmRecoveryTimer(): Promise<void>;
+  onProveRecoveryTimer(): Promise<void>;
+  onStartOutageDrill(): Promise<void>;
   onRegisterTelephone(input: RegisteredTelephoneInput): Promise<void>;
   onChangeSpendingCeiling(ceilingMicrousd: number): Promise<void>;
   onUpdateNotificationPreference(input: NotificationPreferenceInput): Promise<void>;
@@ -256,8 +266,10 @@ export function TaskList(props: {
           <>
             <p>
               <strong>{props.bountywellRegistration.serviceUnit}</strong> is
-              registered with five read-only capabilities. No restart or
-              service-control authority is present.
+              registered at revision {props.bountywellRegistration.revision}
+              {hasBountywellRestart(props.bountywellRegistration)
+                ? " with the exact bountywell-api.service restart capability."
+                : " with five read-only capabilities. No restart or service-control authority is present."}
             </p>
             <button
               disabled={props.busy}
@@ -265,6 +277,40 @@ export function TaskList(props: {
             >
               Run Bountywell health inquiry
             </button>
+            {hasBountywellRestart(props.bountywellRegistration) ? (
+              <>
+                <p>
+                  The guarded drill arms an independent ten-minute recovery
+                  timer, then stops only bountywell-api.service while you are
+                  available.
+                </p>
+                <button
+                  disabled={props.busy}
+                  onClick={() => void props.onArmRecoveryTimer()}
+                >
+                  Arm recovery timer
+                </button>
+                <button
+                  disabled={props.busy}
+                  onClick={() => void props.onProveRecoveryTimer()}
+                >
+                  Prove recovery timer
+                </button>
+                <button
+                  disabled={props.busy}
+                  onClick={() => void props.onStartOutageDrill()}
+                >
+                  Start guarded outage drill
+                </button>
+              </>
+            ) : (
+              <button
+                disabled={props.busy}
+                onClick={() => void props.onGrantBountywellRestart()}
+              >
+                Grant Bountywell restart authority
+              </button>
+            )}
           </>
         )}
       </section>

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import type { CallbackAction } from "@voice-agent/contracts";
 import {
+  createUnixSocketBountywellController,
   createUnixSocketBountywellObserver,
 } from "@voice-agent/operations-broker";
 import {
@@ -43,6 +44,7 @@ const runtime = createDurableTaskRuntime({
   healthObserver: createUnixSocketBountywellObserver(socketPath),
   nextId: randomUUID,
   now: () => new Date().toISOString(),
+  serviceController: createUnixSocketBountywellController(socketPath),
   store,
 });
 const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
@@ -150,6 +152,8 @@ while (!stopping) {
       nextAuthenticationNotificationAt = Date.now() + 5_000;
     }
     if ((await runtime.getBountywellRegistration()) !== undefined) {
+      const outage = await runtime.processNextBountywellOutageRecovery();
+      if (outage !== undefined) continue;
       const record = await runtime.processNextBountywellHealthInquiry();
       if (record !== undefined) continue;
     }

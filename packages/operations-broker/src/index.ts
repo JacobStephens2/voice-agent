@@ -10,6 +10,8 @@ import {
   type BountywellHealthObservation,
   type BountywellHealthObservationRequest,
   type BountywellHealthObserver,
+  type BountywellRecoveryTimer,
+  type BountywellRecoveryTimerProof,
 } from "@voice-agent/contracts";
 
 const SAME_HOST_UNCERTAINTY =
@@ -191,6 +193,7 @@ export interface OperationsBrokerServer {
 }
 
 export function createOperationsBrokerServer(options: {
+  readonly controller?: BountywellServiceController;
   readonly observer: BountywellHealthObserver;
 }): OperationsBrokerServer {
   let activeSocketPath: string | undefined;
@@ -202,21 +205,37 @@ export function createOperationsBrokerServer(options: {
       response.end(JSON.stringify({ status: "ok" }));
       return;
     }
-    if (request.method !== "POST" || request.url !== "/v1/bountywell/health") {
+    if (request.method !== "POST") {
       response.writeHead(404);
       response.end(JSON.stringify({ error: "Not found" }));
       return;
     }
     try {
       const body = await readBoundedBody(request, 4_096);
-      const operationRequest = bountywellHealthObservationRequestSchema.parse(
-        JSON.parse(body),
-      );
-      const observation = bountywellHealthObservationSchema.parse(
-        await options.observer.observe(operationRequest),
-      );
+      if (request.url === "/v1/bountywell/health") {
+        const operationRequest = bountywellHealthObservationRequestSchema.parse(
+          JSON.parse(body),
+        );
+        const observation = bountywellHealthObservationSchema.parse(
+          await options.observer.observe(operationRequest),
+        );
+        response.writeHead(200);
+        response.end(JSON.stringify(observation));
+        return;
+      }
+      if (options.controller === undefined) {
+        response.writeHead(404);
+        response.end(JSON.stringify({ error: "Not found" }));
+        return;
+      }
+      const result = await dispatchServiceControl(options.controller, request.url);
+      if (result === undefined) {
+        response.writeHead(404);
+        response.end(JSON.stringify({ error: "Not found" }));
+        return;
+      }
       response.writeHead(200);
-      response.end(JSON.stringify(observation));
+      response.end(JSON.stringify(result));
     } catch {
       response.writeHead(400);
       response.end(JSON.stringify({ error: "Invalid broker request" }));
@@ -666,10 +685,454 @@ async function readBoundedBody(
   return Buffer.concat(chunks).toString("utf8");
 }
 
+async function dispatchServiceControl(
+  controller: BountywellServiceController,
+  url: string | undefined,
+): Promise<unknown> {
+  switch (url) {
+    case "/v1/bountywell/service/start":
+      return controller.startRegisteredUnit();
+    case "/v1/bountywell/service/stop":
+      return controller.stopRegisteredUnit();
+    case "/v1/bountywell/timer/arm":
+      return controller.armRecoveryTimer();
+    case "/v1/bountywell/timer/read":
+      return controller.readRecoveryTimer();
+    case "/v1/bountywell/timer/remove":
+      return controller.removeRecoveryTimer();
+    case "/v1/bountywell/timer/fire":
+      return controller.fireDueTimers();
+    case "/v1/bountywell/timer/inspect":
+      return controller.inspectRecoveryTimer();
+    default:
+      return undefined;
+  }
+}
+
+export function createUnixSocketBountywellController(
+  socketPath: string,
+): BountywellServiceController {
+  return {
+    armRecoveryTimer: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/timer/arm"),
+    fireDueTimers: () => postBrokerJson(socketPath, "/v1/bountywell/timer/fire"),
+    inspectRecoveryTimer: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/timer/inspect"),
+    readRecoveryTimer: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/timer/read"),
+    removeRecoveryTimer: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/timer/remove"),
+    startRegisteredUnit: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/service/start"),
+    stopRegisteredUnit: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/service/stop"),
+  };
+}
+
+async function postBrokerJson<T>(
+  socketPath: string,
+  path: string,
+): Promise<T> {
+  const responseBody = await new Promise<string>((resolve, reject) => {
+    const request = requestHttp(
+      {
+        headers: {
+          "Content-Length": 2,
+          "Content-Type": "application/json",
+        },
+        method: "POST",
+        path,
+        socketPath,
+        timeout: 10_000,
+      },
+      (response) => {
+        readBoundedBody(response, 64 * 1_024)
+          .then((body) => {
+            if (response.statusCode !== 200) {
+              reject(new Error("Operations Broker rejected the service-control request"));
+              return;
+            }
+            resolve(body);
+          })
+          .catch(reject);
+      },
+    );
+    request.on("error", reject);
+    request.on("timeout", () => {
+      request.destroy(new Error("Operations Broker timed out"));
+    });
+    request.end("{}");
+  });
+  return JSON.parse(responseBody) as T;
+}
+
 function isMissingFile(error: unknown): boolean {
   return (
     error instanceof Error &&
     "code" in error &&
     error.code === "ENOENT"
   );
+}
+
+export interface BountywellHostCommand {
+  readonly action: "install-timer" | "remove-timer" | "start" | "stop";
+  readonly unit: "bountywell-api.service";
+}
+
+export interface BountywellServiceController {
+  armRecoveryTimer(): Promise<BountywellRecoveryTimer>;
+  fireDueTimers(): Promise<readonly { readonly unit: "bountywell-api.service" }[]>;
+  inspectRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
+  readRecoveryTimer(): Promise<BountywellRecoveryTimer>;
+  removeRecoveryTimer(): Promise<{ readonly removed: boolean }>;
+  startRegisteredUnit(): Promise<{
+    readonly previousActive: boolean;
+    readonly started: boolean;
+  }>;
+  stopRegisteredUnit(): Promise<{ readonly stopped: boolean }>;
+}
+
+export interface DeterministicBountywellHost {
+  readonly commands: readonly BountywellHostCommand[];
+  readonly controller: BountywellServiceController;
+  readonly probes: BountywellHostProbes;
+  readonly timer: BountywellRecoveryTimer;
+  setAfterStart(
+    next:
+      | {
+          readonly authenticationBoundary: number;
+          readonly publicHealth: number;
+        }
+      | undefined,
+  ): void;
+  setStartFailure(fails: boolean): void;
+}
+
+export function createDeterministicBountywellHost(options: {
+  readonly advanceMs: (milliseconds: number) => void;
+  readonly now: () => string;
+}): DeterministicBountywellHost {
+  const commands: BountywellHostCommand[] = [];
+  let active = true;
+  let publicHealth = 200;
+  let authenticationBoundary = 401;
+  let localHealth = 200;
+  let startFails = false;
+  let afterStart:
+    | {
+        readonly authenticationBoundary: number;
+        readonly publicHealth: number;
+      }
+    | undefined;
+  let timer: { armed: boolean; firesAtMs: number } | undefined;
+
+  function applyHealthyEndpoints(): void {
+    if (afterStart !== undefined) {
+      publicHealth = afterStart.publicHealth;
+      authenticationBoundary = afterStart.authenticationBoundary;
+      localHealth = afterStart.publicHealth;
+      return;
+    }
+    publicHealth = 200;
+    authenticationBoundary = 401;
+    localHealth = 200;
+  }
+
+  function applyUnavailableEndpoints(): void {
+    publicHealth = 503;
+    authenticationBoundary = 503;
+    localHealth = 503;
+  }
+
+  function startUnit(): { previousActive: boolean; started: boolean } {
+    commands.push({ action: "start", unit: BOUNTYWELL_UNIT });
+    const previousActive = active;
+    if (startFails) {
+      return { previousActive, started: false };
+    }
+    active = true;
+    applyHealthyEndpoints();
+    return { previousActive, started: true };
+  }
+
+  const probes: BountywellHostProbes = {
+    async readAuthenticationBoundaryStatus() {
+      return authenticationBoundary;
+    },
+    async readLocalHealthStatus() {
+      return localHealth;
+    },
+    async readPublicHealthStatus() {
+      return publicHealth;
+    },
+    async readResourceEvidence() {
+      return {
+        availability: "available",
+        memoryPressure: false,
+        taskPressure: false,
+      };
+    },
+    async readServiceMetadata() {
+      return {
+        active,
+        subState: active ? "running" : "not-running",
+      };
+    },
+  };
+
+  const controller: BountywellServiceController = {
+    async armRecoveryTimer() {
+      timer = {
+        armed: true,
+        firesAtMs: Date.parse(options.now()) + 600_000,
+      };
+      commands.push({ action: "install-timer", unit: BOUNTYWELL_UNIT });
+      return {
+        armed: true,
+        delaySeconds: 600,
+        unit: BOUNTYWELL_UNIT,
+      };
+    },
+    async fireDueTimers() {
+      if (timer === undefined || !timer.armed) return [];
+      if (Date.parse(options.now()) < timer.firesAtMs) return [];
+      timer = { ...timer, armed: false };
+      startUnit();
+      return [{ unit: BOUNTYWELL_UNIT }];
+    },
+    async inspectRecoveryTimer() {
+      if (timer?.armed !== true) {
+        throw new Error("Recovery timer is not armed");
+      }
+      return {
+        capable: true as const,
+        delaySeconds: 600 as const,
+        unit: BOUNTYWELL_UNIT,
+      };
+    },
+    async readRecoveryTimer() {
+      return {
+        armed: timer?.armed === true,
+        delaySeconds: 600,
+        unit: BOUNTYWELL_UNIT,
+      };
+    },
+    async removeRecoveryTimer() {
+      if (timer?.armed !== true) return { removed: false };
+      timer = { armed: false, firesAtMs: timer.firesAtMs };
+      commands.push({ action: "remove-timer", unit: BOUNTYWELL_UNIT });
+      return { removed: true };
+    },
+    async startRegisteredUnit() {
+      return startUnit();
+    },
+    async stopRegisteredUnit() {
+      commands.push({ action: "stop", unit: BOUNTYWELL_UNIT });
+      active = false;
+      applyUnavailableEndpoints();
+      return { stopped: true };
+    },
+  };
+
+  return {
+    commands,
+    controller,
+    probes,
+    get timer() {
+      return {
+        armed: timer?.armed === true,
+        delaySeconds: 600 as const,
+        unit: "bountywell-api.service" as const,
+      };
+    },
+    setAfterStart(next) {
+      afterStart = next;
+    },
+    setStartFailure(fails) {
+      startFails = fails;
+    },
+  };
+}
+
+export function createSystemdBountywellServiceController(
+  dependencies: {
+    readonly execute?: (
+      command: string,
+      args: readonly string[],
+    ) => Promise<string>;
+    readonly unitDirectory?: string;
+  } = {},
+): BountywellServiceController {
+  const execute = dependencies.execute ?? executeSystemctl;
+  const unitDirectory = dependencies.unitDirectory ?? "/run/voice-agent-broker";
+  const timerUnit = "bountywell-api-recovery.timer";
+  const serviceUnit = "bountywell-api-recovery.service";
+
+  return {
+    async armRecoveryTimer() {
+      await writeRecoveryUnits(unitDirectory, execute);
+      await execute("systemctl", ["daemon-reload"]);
+      await execute("systemctl", ["start", timerUnit]);
+      return {
+        armed: true,
+        delaySeconds: 600,
+        unit: BOUNTYWELL_UNIT,
+      };
+    },
+    async fireDueTimers() {
+      return [];
+    },
+    async inspectRecoveryTimer() {
+      const shown = await execute("systemctl", [
+        "cat",
+        timerUnit,
+        serviceUnit,
+      ]);
+      if (
+        !shown.includes("OnActiveSec=10min") ||
+        !shown.includes(`systemctl start ${BOUNTYWELL_UNIT}`)
+      ) {
+        throw new Error("Recovery timer is not proven for bountywell-api.service");
+      }
+      return {
+        capable: true as const,
+        delaySeconds: 600 as const,
+        unit: BOUNTYWELL_UNIT,
+      };
+    },
+    async readRecoveryTimer() {
+      try {
+        const state = await execute("systemctl", [
+          "show",
+          timerUnit,
+          "--property=ActiveState",
+        ]);
+        return {
+          armed: state.includes("ActiveState=active"),
+          delaySeconds: 600,
+          unit: BOUNTYWELL_UNIT,
+        };
+      } catch {
+        return {
+          armed: false,
+          delaySeconds: 600,
+          unit: BOUNTYWELL_UNIT,
+        };
+      }
+    },
+    async removeRecoveryTimer() {
+      try {
+        await execute("systemctl", ["stop", timerUnit]);
+        await execute("systemctl", ["disable", timerUnit]);
+      } catch {
+        return { removed: false };
+      }
+      return { removed: true };
+    },
+    async startRegisteredUnit() {
+      const previous = await readSystemdUnitProperties(BOUNTYWELL_UNIT);
+      await execute("systemctl", ["start", BOUNTYWELL_UNIT]);
+      const current = await readSystemdUnitProperties(BOUNTYWELL_UNIT);
+      return {
+        previousActive: previous.ActiveState === "active",
+        started: current.ActiveState === "active",
+      };
+    },
+    async stopRegisteredUnit() {
+      await execute("systemctl", ["stop", BOUNTYWELL_UNIT]);
+      return { stopped: true };
+    },
+  };
+
+  async function writeRecoveryUnits(
+    directory: string,
+    run: (command: string, args: readonly string[]) => Promise<string>,
+  ): Promise<void> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(directory, { recursive: true });
+    const servicePath = `${directory}/${serviceUnit}`;
+    const timerPath = `${directory}/${timerUnit}`;
+    await writeFile(
+      servicePath,
+      [
+        "[Unit]",
+        "Description=Independent Bountywell API recovery",
+        "[Service]",
+        "Type=oneshot",
+        `ExecStart=/usr/bin/systemctl start ${BOUNTYWELL_UNIT}`,
+        "",
+      ].join("\n"),
+    );
+    await writeFile(
+      timerPath,
+      [
+        "[Unit]",
+        "Description=Independent Bountywell API recovery timer",
+        "[Timer]",
+        "OnActiveSec=10min",
+        "AccuracySec=1s",
+        "Unit=bountywell-api-recovery.service",
+        "RemainAfterElapse=false",
+        "",
+      ].join("\n"),
+    );
+    await run("systemctl", ["link", servicePath, timerPath]);
+  }
+}
+
+async function executeSystemctl(
+  command: string,
+  args: readonly string[],
+): Promise<string> {
+  if (command !== "systemctl") {
+    throw new Error("Unsupported service-control command");
+  }
+  if (args.some((arg) => arg.includes("..") || arg.includes("/"))) {
+    const allowedPaths = args.filter((arg) => arg.startsWith("/"));
+    if (
+      allowedPaths.some(
+        (arg) => !arg.startsWith("/run/voice-agent-broker/bountywell-api-recovery."),
+      )
+    ) {
+      throw new Error("Unsupported systemd unit path");
+    }
+  }
+  const allowedUnits = new Set([
+    "bountywell-api.service",
+    "bountywell-api-recovery.service",
+    "bountywell-api-recovery.timer",
+    "cat",
+    "daemon-reload",
+    "disable",
+    "link",
+    "show",
+    "start",
+    "stop",
+    "--property=ActiveState",
+  ]);
+  if (args.some((arg) => !allowedUnits.has(arg) && !arg.startsWith("/run/voice-agent-broker/"))) {
+    throw new Error("Unsupported systemd argument");
+  }
+  const { stdout } = await executeFile(command, [...args], { timeout: 10_000 });
+  return stdout;
+}
+
+export async function proveBountywellRecoveryTimer(options: {
+  readonly advanceMs: (milliseconds: number) => void;
+  readonly controller: BountywellServiceController;
+}): Promise<BountywellRecoveryTimerProof> {
+  const timer = await options.controller.readRecoveryTimer();
+  if (!timer.armed) {
+    throw new Error("Recovery timer is not armed");
+  }
+  options.advanceMs(600_000);
+  const fired = await options.controller.fireDueTimers();
+  if (fired[0]?.unit !== BOUNTYWELL_UNIT) {
+    throw new Error("Recovery timer did not start bountywell-api.service");
+  }
+  return {
+    capable: true,
+    delaySeconds: 600,
+    unit: BOUNTYWELL_UNIT,
+  };
 }

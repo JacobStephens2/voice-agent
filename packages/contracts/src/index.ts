@@ -30,12 +30,21 @@ import {
   taskCancellationRequestedEvidenceEventSchema,
   taskCancelledEvidenceEventSchema,
 } from "./task-continuity.ts";
+import {
+  bountywellDiagnosisRecordedEvidenceEventSchema,
+  bountywellFaultReportedEvidenceEventSchema,
+  bountywellOutageTaskSchema,
+  bountywellPolicyDecidedEvidenceEventSchema,
+  bountywellRestartCapabilitiesSchema,
+  bountywellTimerLifecycleEvidenceEventSchema,
+} from "./bountywell-outage.ts";
 
 export * from "./promotion.ts";
 export * from "./callback-handshake.ts";
 export * from "./telephone-session.ts";
 export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
+export * from "./bountywell-outage.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -56,9 +65,14 @@ export const bountywellReadCapabilitiesSchema = z.tuple([
   z.literal("bountywell.resource-evidence.read"),
 ]);
 
+export const bountywellCapabilitiesSchema = z.union([
+  bountywellReadCapabilitiesSchema,
+  bountywellRestartCapabilitiesSchema,
+]);
+
 export const bountywellRegistrationSchema = z.object({
   applicationId: z.literal("bountywell-production"),
-  capabilities: bountywellReadCapabilitiesSchema,
+  capabilities: bountywellCapabilitiesSchema,
   healthSemantics: z.object({
     authenticationBoundary: z.object({
       expectedStatus: z.literal(401),
@@ -242,6 +256,10 @@ export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
     details: z.object({}),
     kind: z.literal("task.completed"),
   }),
+  bountywellFaultReportedEvidenceEventSchema,
+  bountywellDiagnosisRecordedEvidenceEventSchema,
+  bountywellPolicyDecidedEvidenceEventSchema,
+  bountywellTimerLifecycleEvidenceEventSchema,
   telephoneSemanticResponseEvidenceEventSchema,
 ]);
 
@@ -249,22 +267,34 @@ export type EvidenceEventProjection = z.infer<
   typeof evidenceEventProjectionSchema
 >;
 
+export const bountywellHealthTaskConclusionSchema = z.enum([
+  "Bountywell inquiry is pending.",
+  "Bountywell API is healthy.",
+  "Bountywell API health could not be confirmed.",
+  "Bountywell inquiry cancelled.",
+]);
+export type BountywellHealthTaskConclusion = z.infer<
+  typeof bountywellHealthTaskConclusionSchema
+>;
+
+export const bountywellHealthTaskSchema = z.object({
+  conclusion: bountywellHealthTaskConclusionSchema,
+  createdAt: timestampSchema,
+  id: identifierSchema,
+  kind: z.literal("bountywell.health.inquiry"),
+  question: z.literal("Is Bountywell healthy?"),
+  status: z.enum(["pending", "completed", "cancelled"]),
+  updatedAt: timestampSchema,
+});
+
+export const bountywellTaskSchema = z.discriminatedUnion("kind", [
+  bountywellHealthTaskSchema,
+  bountywellOutageTaskSchema,
+]);
+
 export const evidenceRecordProjectionSchema = z.object({
   evidence: z.array(evidenceEventProjectionSchema).max(100),
-  task: z.object({
-    conclusion: z.enum([
-      "Bountywell inquiry is pending.",
-      "Bountywell API is healthy.",
-      "Bountywell API health could not be confirmed.",
-      "Bountywell inquiry cancelled.",
-    ]),
-    createdAt: timestampSchema,
-    id: identifierSchema,
-    kind: z.literal("bountywell.health.inquiry"),
-    question: z.literal("Is Bountywell healthy?"),
-    status: z.enum(["pending", "completed", "cancelled"]),
-    updatedAt: timestampSchema,
-  }),
+  task: bountywellTaskSchema,
 });
 
 export type EvidenceRecordProjection = z.infer<
@@ -283,7 +313,8 @@ export const voiceAgentEvidenceRecordProjectionSchema = z.union([
 ]);
 
 export const evidenceRecordSummarySchema = z.discriminatedUnion("kind", [
-  evidenceRecordProjectionSchema.shape.task,
+  bountywellHealthTaskSchema,
+  bountywellOutageTaskSchema,
   promotionEvidenceRecordProjectionSchema.shape.task,
   telephoneSessionEvidenceRecordProjectionSchema.shape.task,
 ]);

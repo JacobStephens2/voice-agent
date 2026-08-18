@@ -29,6 +29,10 @@ import {
   loginWithPasskey,
   performFreshPasskeyAction as requestFreshPasskeyAction,
   readCsrfCookie,
+  armBountywellRecoveryTimer,
+  grantBountywellRestart,
+  injectBountywellOutage,
+  proveBountywellRecoveryTimer,
   registerBountywell,
   registerTelephone,
   resumePromotionQueue,
@@ -230,6 +234,50 @@ function App() {
     });
   }
 
+  async function grantRestart() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before granting Bountywell restart authority.");
+      return;
+    }
+    await run(async () => {
+      setBountywellRegistration(await grantBountywellRestart(csrfToken));
+      setMessage("Bountywell restart authority is enrolled for bountywell-api.service.");
+    });
+  }
+
+  async function armTimer() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before arming the recovery timer.");
+      return;
+    }
+    await run(async () => {
+      await armBountywellRecoveryTimer(csrfToken);
+      setMessage("Independent recovery timer armed for bountywell-api.service.");
+    });
+  }
+
+  async function proveTimer() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before proving the recovery timer.");
+      return;
+    }
+    await run(async () => {
+      await proveBountywellRecoveryTimer(csrfToken);
+      setMessage("Recovery timer was proven capable of starting bountywell-api.service.");
+    });
+  }
+
+  async function startOutageDrill() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before starting the guarded drill.");
+      return;
+    }
+    await run(async () => {
+      const injected = await injectBountywellOutage(csrfToken);
+      window.location.assign(`/?task=${encodeURIComponent(injected.taskId)}`);
+    });
+  }
+
   async function enrollTelephone(input: RegisteredTelephoneInput) {
     if (csrfToken === undefined) {
       setMessage("Sign in again before changing the Registered Telephone.");
@@ -419,6 +467,10 @@ function App() {
       onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}
       onRegisterBountywell={enrollBountywell}
+      onGrantBountywellRestart={grantRestart}
+      onArmRecoveryTimer={armTimer}
+      onProveRecoveryTimer={proveTimer}
+      onStartOutageDrill={startOutageDrill}
       onRegisterTelephone={enrollTelephone}
       onChangeSpendingCeiling={saveSpendingCeiling}
       onUpdateNotificationPreference={saveNotificationPreference}

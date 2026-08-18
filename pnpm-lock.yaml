@@ -45,6 +45,9 @@ importers:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@voice-agent/operations-broker':
+        specifier: workspace:*
+        version: link:../../packages/operations-broker
       '@voice-agent/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -106,6 +109,9 @@ importers:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@voice-agent/operations-broker':
+        specifier: workspace:*
+        version: link:../../packages/operations-broker
       '@voice-agent/pwa':
         specifier: workspace:*
         version: link:../pwa
