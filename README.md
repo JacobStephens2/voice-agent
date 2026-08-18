@@ -84,6 +84,19 @@ run. Failed attempts remain in the record and reset the consecutive sequence;
 the validator refuses to append the terminal acceptance event until every gate
 passes. See [`docs/operations/slice-one-acceptance.md`](docs/operations/slice-one-acceptance.md).
 
+Run the attended Bountywell Outage Drill wizard on the Agent Host from a
+checkout that contains the script (this branch, or the promoted Release):
+
+```bash
+./ops/acceptance/run-bountywell-outage-drill.sh
+```
+
+The wizard waits for Human Merge and Promotion of PR #45, installs the narrow
+`voice-broker` systemd allowlist, walks the Fresh Passkey grant, arms and proves
+the independent recovery timer, starts the guarded drill while the owner is
+available, and prints a close comment for issue #11. It does not close the
+issue.
+
 The CI-ready verification commands are:
 
 ```bash
