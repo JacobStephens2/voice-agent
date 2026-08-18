@@ -449,6 +449,7 @@ async function handleOutbound(
           boundaries,
           disconnected: disconnected.promise,
           endCall: () => ctx.deleteRoom(),
+          initialUsageScopeId: `prelive:${dispatch.effectId}`,
           room: ctx.room,
           requestCompletionCallback: (input) =>
             requestCompletionCallback(runtime, continuity, input),
@@ -661,6 +662,7 @@ async function handleCompletionOutbound(
       boundaries,
       disconnected: disconnected.promise,
       endCall: () => ctx.deleteRoom(),
+      initialUsageScopeId: `prelive:${dispatch.operationId}`,
       openingText: `Your task concluded: ${record.task.conclusion}`,
       onStarted: () =>
         continuity.recordCompletionResumption({

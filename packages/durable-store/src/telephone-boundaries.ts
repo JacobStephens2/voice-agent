@@ -1,3 +1,5 @@
+import type { TelephoneSpendingWarningThreshold } from "@voice-agent/contracts";
+
 export type TelephoneBoundaryResource =
   | "active-session"
   | "monthly-spend"
@@ -32,7 +34,7 @@ export interface TelephoneUsageResult {
   readonly disposition: "continue" | "safe-terminal-only";
   readonly month: string;
   readonly totalMicrousd: number;
-  readonly warnings: readonly (25_000_000 | 40_000_000)[];
+  readonly warnings: readonly TelephoneSpendingWarningThreshold[];
 }
 
 export interface TelephoneUsageReservationResult extends TelephoneUsageResult {

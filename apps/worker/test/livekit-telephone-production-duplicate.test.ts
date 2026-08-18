@@ -188,47 +188,93 @@ describe("production-shaped LiveKit telephone turns", () => {
   });
 
   test.each([
-    {
-      event: {
-        error: {
-          error: new Error("secret AssemblyAI response"),
-          label: "assemblyai",
-          recoverable: false,
-          timestamp: 1_776_444_000_000,
-          type: "stt_error",
-        },
-        kind: "error",
-      },
-      label: "error event",
-      suffix: "error",
-    },
-    {
-      event: {
-        error: {
-          error: new Error("secret AssemblyAI close response"),
-          label: "assemblyai",
-          recoverable: false,
-          timestamp: 1_776_444_000_000,
-          type: "stt_error",
-        },
-        kind: "close",
-        reason: voice.CloseReason.ERROR,
-      },
-      label: "close event",
-      suffix: "close",
-    },
-  ] satisfies readonly {
-    readonly event: PostStartFailureEvent;
-    readonly label: string;
-    readonly suffix: string;
-  }[])(
-    "an unrecoverable post-start STT $label ends through the local fail-closed path",
-    ({ event, suffix }) => expectPostStartProviderFailure(event, suffix),
+    postStartFailureCase("stt", "stt_error", "error"),
+    postStartFailureCase("stt", "stt_error", "close"),
+    postStartFailureCase("coordinator", "llm_error", "error"),
+    postStartFailureCase("coordinator", "llm_error", "close"),
+    postStartFailureCase("tts", "tts_error", "error"),
+    postStartFailureCase("tts", "tts_error", "close"),
+  ])(
+    "an unrecoverable post-start $stage $kind event ends through the local fail-closed path",
+    ({ event, stage, suffix }) =>
+      expectPostStartProviderFailure(event, stage, suffix),
   );
+
+  test("an unknown session-start failure is not attributed to a speech provider", async () => {
+    const session = new StartFailureSessionHarness();
+    const endCall = vi.fn(async () => undefined);
+    const endSession = vi.fn(async () => ({
+      durationMs: 0,
+      ended: true as const,
+      reason: "provider-failure" as const,
+    }));
+    const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
+    const evidence: unknown[] = [];
+    const notifications: unknown[] = [];
+
+    await runLiveKitTelephoneSession(
+      {
+        boundaries: {
+          async claimStateChangingTask() {
+            return { decision: "accepted", resource: "state-changing-task" };
+          },
+          endSession,
+          async noteActivity() {},
+          recordProviderFailure,
+          async releaseStateChangingTask() {
+            return {};
+          },
+          async reserveUsageSlice() {
+            throw new Error("Usage must not start after session startup fails");
+          },
+        } as unknown as Parameters<
+          typeof runLiveKitTelephoneSession
+        >[0]["boundaries"],
+        disconnected: new Promise<void>(() => {}),
+        endCall,
+        room: {} as Room,
+        sessionEvidence: {
+          async append(event) {
+            evidence.push(event);
+          },
+          async requestFailureNotification(input) {
+            notifications.push(input);
+          },
+        },
+        tasks: {} as Parameters<typeof runLiveKitTelephoneSession>[0]["tasks"],
+        telephoneSessionId: "telephone-session-start-failure",
+        usageRatesMicrousdPerMinute: {
+          api: 1,
+          "realtime-media": 1,
+          telephony: 1,
+        },
+      },
+      {
+        createConversationSession: () => session.asAgentSession(),
+        createInterpreter: () => ({
+          async close() {},
+          async interpret() {
+            throw new Error("Interpreter must not run after startup failure");
+          },
+        }),
+      },
+    );
+
+    expect(recordProviderFailure).not.toHaveBeenCalled();
+    expect(endSession).toHaveBeenCalledWith(
+      "telephone-session-start-failure",
+      "provider-failure",
+    );
+    expect(evidence).toEqual([]);
+    expect(notifications).toHaveLength(1);
+    expect(session.playedFailureFrames).toBeGreaterThan(0);
+    expect(endCall).toHaveBeenCalledOnce();
+  });
 });
 
 async function expectPostStartProviderFailure(
   event: PostStartFailureEvent,
+  stage: "coordinator" | "stt" | "tts",
   suffix: string,
 ): Promise<void> {
   const directory = await mkdtemp(
@@ -256,11 +302,7 @@ async function expectPostStartProviderFailure(
   const evidence: unknown[] = [];
   const notifications: unknown[] = [];
   const endCall = vi.fn(async () => undefined);
-  let disconnect: () => void = () => {};
-  const disconnected = new Promise<void>((resolve) => {
-    disconnect = resolve;
-  });
-  const fallbackDisconnect = setTimeout(disconnect, 50);
+  const disconnected = new Promise<void>(() => {});
 
   try {
     await runLiveKitTelephoneSession(
@@ -290,7 +332,7 @@ async function expectPostStartProviderFailure(
         createInterpreter: () => ({
           async close() {},
           async interpret() {
-            throw new Error("Interpreter must not run after STT failure");
+            throw new Error("Interpreter must not run after provider failure");
           },
         }),
       },
@@ -300,7 +342,7 @@ async function expectPostStartProviderFailure(
     expect(session.playedFailureFrames).toBeGreaterThan(0);
     expect(evidence).toEqual([
       expect.objectContaining({
-        details: expect.objectContaining({ stage: "stt" }),
+        details: expect.objectContaining({ stage }),
         kind: "telephone.provider.failure",
       }),
     ]);
@@ -309,7 +351,6 @@ async function expectPostStartProviderFailure(
       state: "ended",
     });
   } finally {
-    clearTimeout(fallbackDisconnect);
     await boundaries.close();
     await tasks.close();
   }
@@ -383,7 +424,7 @@ interface PostStartFailureDetails {
     readonly label: string;
     readonly recoverable: boolean;
     readonly timestamp: number;
-    readonly type: "stt_error";
+    readonly type: "llm_error" | "stt_error" | "tts_error";
   };
 }
 
@@ -393,6 +434,34 @@ type PostStartFailureEvent =
       readonly kind: "close";
       readonly reason: voice.CloseReason.ERROR;
     });
+
+function postStartFailureCase(
+  stage: "coordinator" | "stt" | "tts",
+  type: PostStartFailureDetails["error"]["type"],
+  kind: "close" | "error",
+): {
+  readonly event: PostStartFailureEvent;
+  readonly kind: "close" | "error";
+  readonly stage: "coordinator" | "stt" | "tts";
+  readonly suffix: string;
+} {
+  const error = {
+    error: new Error(`secret ${stage} response`),
+    label: stage,
+    recoverable: false,
+    timestamp: 1_776_444_000_000,
+    type,
+  };
+  return {
+    event:
+      kind === "error"
+        ? { error, kind }
+        : { error, kind, reason: voice.CloseReason.ERROR },
+    kind,
+    stage,
+    suffix: `${stage}-${kind}`,
+  };
+}
 
 class PostStartFailureSessionHarness {
   playedFailureFrames = 0;
@@ -440,6 +509,32 @@ class PostStartFailureSessionHarness {
                 type: "close",
               } as never),
         );
+      },
+    } as unknown as voice.AgentSession;
+  }
+}
+
+class StartFailureSessionHarness {
+  playedFailureFrames = 0;
+
+  asAgentSession(): voice.AgentSession {
+    const harness = this;
+    return {
+      async close() {},
+      on() {
+        return this;
+      },
+      output: {
+        audio: {
+          async captureFrame() {
+            harness.playedFailureFrames += 1;
+          },
+          flush() {},
+          async waitForPlayout() {},
+        },
+      },
+      async start() {
+        throw new Error("unknown LiveKit setup failure");
       },
     } as unknown as voice.AgentSession;
   }

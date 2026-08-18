@@ -1,3 +1,5 @@
+import type { TelephoneSpendingWarningThreshold } from "@voice-agent/contracts";
+
 const usageSources = ["api", "telephony", "realtime-media"] as const;
 type TelephoneUsageSource = (typeof usageSources)[number];
 
@@ -10,7 +12,7 @@ interface TelephoneUsageSliceResult {
   readonly month: string;
   readonly reservedSources: readonly TelephoneUsageSource[];
   readonly totalMicrousd: number;
-  readonly warnings: readonly (25_000_000 | 40_000_000)[];
+  readonly warnings: readonly TelephoneSpendingWarningThreshold[];
 }
 
 interface TelephoneUsageSliceRecorder {
@@ -23,7 +25,7 @@ interface TelephoneUsageSliceRecorder {
 
 export interface TelephoneSpendingWarning {
   readonly month: string;
-  readonly thresholdMicrousd: 25_000_000 | 40_000_000;
+  readonly thresholdMicrousd: TelephoneSpendingWarningThreshold;
   readonly totalMicrousd: number;
 }
 
@@ -81,6 +83,7 @@ export function telephoneUsageRatesFromEnvironment(): TelephoneUsageRates {
  * call from running paid work after the durable monthly ceiling is reached.
  */
 export async function meterTelephoneSessionUsage(options: {
+  readonly initialUsageScopeId?: string;
   readonly intervalMs?: number;
   readonly onFirstSliceComplete?: () => void;
   readonly onSpendingWarning: (warning: TelephoneSpendingWarning) => void;
@@ -106,7 +109,10 @@ export async function meterTelephoneSessionUsage(options: {
       ratesMicrousdPerMinute: options.ratesMicrousdPerMinute,
       reserveUsageSlice: options.reserveUsageSlice,
       sessionId: options.sessionId,
-      usageScopeId: `${usageScopeId}:minute:${minute}`,
+      usageScopeId:
+        minute === 1 && options.initialUsageScopeId !== undefined
+          ? options.initialUsageScopeId
+          : `${usageScopeId}:minute:${minute}`,
     });
     if (result.disposition === "safe-terminal-only") {
       await options.onSpendingCeiling();

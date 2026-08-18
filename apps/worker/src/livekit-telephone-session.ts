@@ -62,6 +62,7 @@ export async function runLiveKitTelephoneSession(
     >;
     readonly disconnected: Promise<void>;
     readonly endCall: () => Promise<void>;
+    readonly initialUsageScopeId?: string;
     readonly openingText?: string;
     readonly onStarted?: () => Promise<void>;
     readonly requestCompletionCallback?: (input: {
@@ -203,6 +204,46 @@ export async function runLiveKitTelephoneSession(
     }
   }
 
+  async function recordUnknownSetupFailureAndEnd(): Promise<void> {
+    const occurredAt = new Date().toISOString();
+    try {
+      await options.sessionEvidence?.requestFailureNotification?.({
+        failureEventId: stableIdentifier(
+          `session-setup:${options.telephoneSessionId}:${occurredAt}`,
+        ),
+        occurredAt,
+      });
+    } finally {
+      try {
+        await options.boundaries.endSession(
+          options.telephoneSessionId,
+          "provider-failure",
+        );
+      } finally {
+        await playFailureAndEnd();
+      }
+    }
+  }
+
+  function enqueueSessionProviderFailure(providerError: {
+    readonly error?: unknown;
+    readonly recoverable: boolean;
+    readonly type: string;
+  }): void {
+    if (callEnding || failureEnded || providerError.recoverable) return;
+    const stage = providerStageForSessionError(providerError);
+    if (stage === undefined) return;
+    processing = processing
+      .then(() =>
+        recordProviderFailureAndEnd(
+          stage,
+          providerError.error ?? providerError,
+          options.activeTaskId,
+        ),
+      )
+      .catch(() => undefined);
+  }
+
   function enqueueProviderEvent(
     providerEvent: TelephoneSessionProviderEvent,
   ): void {
@@ -272,17 +313,7 @@ export async function runLiveKitTelephoneSession(
       .catch(() => undefined);
   });
   session.on(voice.AgentSessionEventTypes.Error, (event) => {
-    const stage = providerStageForSessionError(event.error);
-    if (event.error.recoverable || stage === undefined) return;
-    processing = processing
-      .then(() =>
-        recordProviderFailureAndEnd(
-          stage,
-          "error" in event.error ? event.error.error : event.error,
-          options.activeTaskId,
-        ),
-      )
-      .catch(() => undefined);
+    enqueueSessionProviderFailure(event.error);
   });
   session.on(voice.AgentSessionEventTypes.Close, (event) => {
     if (
@@ -293,18 +324,7 @@ export async function runLiveKitTelephoneSession(
     ) {
       return;
     }
-    const providerError = event.error;
-    const stage = providerStageForSessionError(providerError);
-    if (stage === undefined) return;
-    processing = processing
-      .then(() =>
-        recordProviderFailureAndEnd(
-          stage,
-          "error" in providerError ? providerError.error : providerError,
-          options.activeTaskId,
-        ),
-      )
-      .catch(() => undefined);
+    enqueueSessionProviderFailure(event.error);
   });
 
   try {
@@ -322,8 +342,8 @@ export async function runLiveKitTelephoneSession(
         record: false,
         room: options.room,
       });
-    } catch (error) {
-      await recordProviderFailureAndEnd("tts", error, options.activeTaskId);
+    } catch {
+      await recordUnknownSetupFailureAndEnd();
       return;
     }
     resetProlongedSilenceDeadline();
@@ -336,6 +356,9 @@ export async function runLiveKitTelephoneSession(
       process.stderr.write("Raw-audio debug capture failed without affecting the call.\n");
     });
     usageMeter = meterTelephoneSessionUsage({
+      ...(options.initialUsageScopeId === undefined
+        ? {}
+        : { initialUsageScopeId: options.initialUsageScopeId }),
       onFirstSliceComplete: resolveUsageReady,
       onSpendingWarning: reportTelephoneSpendingWarning,
       onSpendingCeiling: async () => {

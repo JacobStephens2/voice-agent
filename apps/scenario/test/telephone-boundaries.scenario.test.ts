@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 describe("Telephone fail-closed boundaries", () => {
-  test("excess sessions, state-changing tasks, and Subagents are explicitly rejected or queued", async () => {
+  test("excess sessions and state-changing tasks are explicitly rejected or queued", async () => {
     const directory = await mkdtemp(join(tmpdir(), "voice-agent-boundaries-"));
     temporaryDirectories.push(directory);
     const scenario = await createTelephoneBoundaryScenario({
@@ -77,50 +77,28 @@ describe("Telephone fail-closed boundaries", () => {
         resource: "state-changing-task",
       });
 
-      await expect(scenario.claimSubagent("delegation-1")).resolves.toEqual({
-        decision: "accepted",
-        resource: "subagent",
-      });
-      await expect(scenario.claimSubagent("delegation-2")).resolves.toEqual({
-        decision: "queued",
-        position: 1,
-        resource: "subagent",
-      });
-      await expect(scenario.claimSubagent("delegation-3")).resolves.toEqual({
-        decision: "queued",
-        position: 2,
-        resource: "subagent",
-      });
-
       await expect(
         scenario.releaseStateChangingTask("session-1", "task-2"),
       ).resolves.toEqual({});
-      await expect(scenario.releaseSubagent("delegation-2")).resolves.toEqual(
-        {},
-      );
 
       await expect(
         scenario.releaseStateChangingTask("session-1", "task-1"),
       ).resolves.toEqual({ promotedOwnerId: "task-3" });
-      await expect(scenario.releaseSubagent("delegation-1")).resolves.toEqual({
-        promotedOwnerId: "delegation-3",
-      });
 
       const metrics = await scenario.readMetrics();
       expect(metrics.limitDecisions).toEqual({
-        accepted: 5,
-        queued: 4,
+        accepted: 4,
+        queued: 2,
         rejected: 3,
       });
       expect(metrics.resources).toEqual({
         activeSessions: 1,
         queuedStateChangingTasks: 0,
         queuedSubagents: 0,
-        runningSubagents: 1,
+        runningSubagents: 0,
         warmSessions: 1,
       });
       expect(JSON.stringify(metrics)).not.toContain("task-1");
-      expect(JSON.stringify(metrics)).not.toContain("delegation-1");
     } finally {
       await scenario.close();
     }
@@ -158,17 +136,23 @@ describe("Telephone fail-closed boundaries", () => {
       );
       await firstStarted;
 
-      await expect(
-        scenario.executeSubagent("delegation-overlap-2", async () => {
-          executionOrder.push("second-started-too-early");
+      let secondSettled = false;
+      const second = scenario
+        .executeSubagent("delegation-overlap-2", async () => {
+          executionOrder.push("second-started");
           return "second-result";
-        }),
-      ).resolves.toEqual({
-        decision: "queued",
-        position: 1,
-        resource: "subagent",
+        })
+        .finally(() => {
+          secondSettled = true;
+        });
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: {
+          queuedSubagents: 1,
+          runningSubagents: 1,
+        },
       });
       expect(executionOrder).toEqual(["first-started"]);
+      expect(secondSettled).toBe(false);
 
       releaseFirst();
       await expect(first).resolves.toEqual({
@@ -176,12 +160,7 @@ describe("Telephone fail-closed boundaries", () => {
         resource: "subagent",
         result: "first-result",
       });
-      await expect(
-        scenario.executeSubagent("delegation-overlap-2", async () => {
-          executionOrder.push("second-started");
-          return "second-result";
-        }),
-      ).resolves.toEqual({
+      await expect(second).resolves.toEqual({
         decision: "accepted",
         resource: "subagent",
         result: "second-result",
@@ -197,6 +176,61 @@ describe("Telephone fail-closed boundaries", () => {
           runningSubagents: 0,
         },
       });
+    } finally {
+      releaseFirst();
+      await scenario.close();
+    }
+  });
+
+  test("cancelling a queued Subagent prevents its adapter from running", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-cancellation-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      now: "2026-08-17T12:00:00.000Z",
+    });
+    let releaseFirst: () => void = () => {};
+    let markFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const cancellation = new AbortController();
+    let cancelledAdapterRan = false;
+
+    try {
+      const first = scenario.executeSubagent("delegation-cancel-1", async () => {
+        markFirstStarted();
+        await holdFirst;
+      });
+      await firstStarted;
+      const cancelled = scenario.executeSubagent(
+        "delegation-cancel-2",
+        async () => {
+          cancelledAdapterRan = true;
+        },
+        cancellation.signal,
+      );
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: { queuedSubagents: 1, runningSubagents: 1 },
+      });
+
+      cancellation.abort();
+      await expect(cancelled).resolves.toEqual({
+        decision: "cancelled",
+        resource: "subagent",
+      });
+      expect(cancelledAdapterRan).toBe(false);
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: { queuedSubagents: 0, runningSubagents: 1 },
+      });
+
+      releaseFirst();
+      await expect(first).resolves.toMatchObject({ decision: "accepted" });
     } finally {
       releaseFirst();
       await scenario.close();

@@ -70,6 +70,10 @@ export interface TelephoneBoundaryRuntimeOptions {
 export function createTelephoneBoundaryRuntime(
   options: TelephoneBoundaryRuntimeOptions,
 ) {
+  const subagentPromotionWaiters = new Map<
+    string,
+    (outcome: "cancelled" | "promoted") => void
+  >();
   const prolongedSilenceMs =
     options.prolongedSilenceMs ?? 60 * 1_000;
   if (
@@ -140,6 +144,14 @@ export function createTelephoneBoundaryRuntime(
       );
     }
     return { durationMs, ended: true, reason } as const;
+  }
+
+  async function releaseSubagent(delegationId: string) {
+    const released = await options.store.releaseSubagent(delegationId);
+    if (released.promotedOwnerId !== undefined) {
+      subagentPromotionWaiters.get(released.promotedOwnerId)?.("promoted");
+    }
+    return released;
   }
 
   return {
@@ -275,26 +287,54 @@ export function createTelephoneBoundaryRuntime(
         taskId,
       });
     },
-    claimSubagent(delegationId: string) {
-      return options.store.claimSubagent({
-        delegationId,
-        requestedAt: options.now(),
-      });
-    },
+    /**
+     * Runs the Subagent adapter only after its durable global lease is active.
+     * Queued adapters remain pending here and are resumed by lease promotion;
+     * callers never need a separate claim/retry path.
+     */
     async executeSubagent<Result>(
       delegationId: string,
       execute: () => Promise<Result>,
+      signal?: AbortSignal,
     ) {
-      const decision = await options.store.claimSubagent({
-        delegationId,
-        requestedAt: options.now(),
+      if (subagentPromotionWaiters.has(delegationId)) {
+        throw new Error("Subagent execution is already pending");
+      }
+      let settlePending: (outcome: "cancelled" | "promoted") => void =
+        () => {};
+      const pending = new Promise<"cancelled" | "promoted">((resolve) => {
+        settlePending = resolve;
       });
-      if (decision.decision !== "accepted") return decision;
+      const cancelPending = () => settlePending("cancelled");
+      signal?.addEventListener("abort", cancelPending, { once: true });
+      if (signal?.aborted === true) cancelPending();
+      subagentPromotionWaiters.set(delegationId, settlePending);
+      let ownsSlot = false;
       try {
+        const decision = await options.store.claimSubagent({
+          delegationId,
+          requestedAt: options.now(),
+        });
+        if (decision.decision === "queued") {
+          if ((await pending) === "cancelled") {
+            await releaseSubagent(delegationId);
+            return { decision: "cancelled", resource: "subagent" } as const;
+          }
+        } else if (decision.decision !== "accepted") {
+          return decision;
+        }
+        if (signal?.aborted === true) {
+          await releaseSubagent(delegationId);
+          return { decision: "cancelled", resource: "subagent" } as const;
+        }
+        ownsSlot = true;
+        subagentPromotionWaiters.delete(delegationId);
         const result = await execute();
-        return { ...decision, result } as const;
+        return { decision: "accepted", resource: "subagent", result } as const;
       } finally {
-        await options.store.releaseSubagent(delegationId);
+        signal?.removeEventListener("abort", cancelPending);
+        subagentPromotionWaiters.delete(delegationId);
+        if (ownsSlot) await releaseSubagent(delegationId);
       }
     },
     async changeSpendingCeiling(input: {
@@ -544,8 +584,6 @@ export function createTelephoneBoundaryRuntime(
     releaseStateChangingTask(sessionId: string, taskId: string) {
       return options.store.releaseStateChangingTask({ sessionId, taskId });
     },
-    releaseSubagent: (delegationId: string) =>
-      options.store.releaseSubagent(delegationId),
     reserveWarmSession(sessionId: string) {
       return options.store.reserveWarmSession({
         reservedAt: options.now(),

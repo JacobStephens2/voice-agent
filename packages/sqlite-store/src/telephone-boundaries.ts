@@ -1,5 +1,9 @@
 import Database from "better-sqlite3";
 
+import {
+  telephoneSpendingWarningThresholds,
+  type TelephoneSpendingWarningThreshold,
+} from "@voice-agent/contracts";
 import type {
   TelephoneBoundaryDecision,
   TelephoneBoundaryMetrics,
@@ -729,11 +733,10 @@ function rejected(
 function crossedSpendingWarnings(
   before: number,
   after: number,
-): readonly (25_000_000 | 40_000_000)[] {
-  const warnings: Array<25_000_000 | 40_000_000> = [];
-  if (before < 25_000_000 && after >= 25_000_000) warnings.push(25_000_000);
-  if (before < 40_000_000 && after >= 40_000_000) warnings.push(40_000_000);
-  return warnings;
+): readonly TelephoneSpendingWarningThreshold[] {
+  return telephoneSpendingWarningThresholds.filter(
+    (threshold) => before < threshold && after >= threshold,
+  );
 }
 
 function createSchema(database: Database.Database): void {

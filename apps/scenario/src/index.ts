@@ -67,9 +67,6 @@ export interface TelephoneBoundaryScenario {
   }): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["claimRawAudioCapture"]
   >;
-  claimSubagent(delegationId: string): ReturnType<
-    ReturnType<typeof createTelephoneBoundaryRuntime>["claimSubagent"]
-  >;
   changeSpendingCeiling(input: {
     readonly ceilingMicrousd: number;
     readonly freshPasskey: boolean;
@@ -132,9 +129,6 @@ export interface TelephoneBoundaryScenario {
   >;
   releaseStateChangingTask(sessionId: string, taskId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["releaseStateChangingTask"]
-  >;
-  releaseSubagent(delegationId: string): ReturnType<
-    ReturnType<typeof createTelephoneBoundaryRuntime>["releaseSubagent"]
   >;
   reserveWarmSession(sessionId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["reserveWarmSession"]

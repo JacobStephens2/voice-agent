@@ -128,6 +128,35 @@ describe("Telephone Session paid-usage meter", () => {
     });
   });
 
+  test("reconciles the pre-live reservation as the first live minute", async () => {
+    const usageScopes: string[] = [];
+
+    await meterTelephoneSessionUsage({
+      initialUsageScopeId: "prelive:callback-effect-1",
+      onSpendingCeiling: async () => {},
+      onSpendingWarning: () => {},
+      ratesMicrousdPerMinute: {
+        api: 50_000,
+        "realtime-media": 100_000,
+        telephony: 50_000,
+      },
+      reserveUsageSlice: async (input) => {
+        usageScopes.push(input.usageScopeId);
+        return {
+          disposition: "continue",
+          month: "2026-08",
+          reservedSources: [],
+          totalMicrousd: 200_000,
+          warnings: [],
+        };
+      },
+      sessionId: "session-prelive",
+      stop: Promise.resolve(),
+    });
+
+    expect(usageScopes).toEqual(["prelive:callback-effect-1"]);
+  });
+
   test("combines all paid sources and enters a safe terminal state at the ceiling", async () => {
     const recorded: unknown[] = [];
     const onSpendingCeiling = vi.fn(async () => undefined);
