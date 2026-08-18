@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
@@ -36,4 +37,20 @@ test("the LiveKit worker uses the configured cloud credentials", () => {
     apiSecret: "cloud-secret",
     wsURL: "wss://livekit.example.test",
   });
+});
+
+test("the production TypeScript loader initializes the telephone child", () => {
+  const result = spawnSync(
+    process.execPath,
+    [
+      "--experimental-strip-types",
+      fileURLToPath(new URL("../src/telephone-agent.ts", import.meta.url)),
+    ],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+
+  expect(result.status, result.stderr).toBe(0);
 });

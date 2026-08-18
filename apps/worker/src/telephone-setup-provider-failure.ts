@@ -8,11 +8,16 @@ import type {
 import { mapProviderFailureEvent } from "./livekit-telephone-session.ts";
 
 export class TelephoneSetupProviderError extends Error {
+  readonly stage: TelephoneProviderFailureStage;
+  readonly providerError: unknown;
+
   constructor(
-    readonly stage: TelephoneProviderFailureStage,
-    readonly providerError: unknown,
+    stage: TelephoneProviderFailureStage,
+    providerError: unknown,
   ) {
     super(`Telephone ${stage} setup provider failed`);
+    this.stage = stage;
+    this.providerError = providerError;
   }
 }
 
