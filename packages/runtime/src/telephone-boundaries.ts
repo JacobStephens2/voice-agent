@@ -358,16 +358,20 @@ export function createTelephoneBoundaryRuntime(
         let renewal = Promise.resolve();
         const renewLease = () => {
           renewal = renewal.then(async () => {
-            const renewedAt = options.now();
-            const renewed = await options.store.renewSubagentLease({
-              delegationId,
-              executionId,
-              leaseExpiresAt: addMilliseconds(
-                renewedAt,
-                subagentLeaseDurationMs,
-              ),
-            });
-            if (!renewed) leaseLost.abort();
+            try {
+              const renewedAt = options.now();
+              const renewed = await options.store.renewSubagentLease({
+                delegationId,
+                executionId,
+                leaseExpiresAt: addMilliseconds(
+                  renewedAt,
+                  subagentLeaseDurationMs,
+                ),
+              });
+              if (!renewed) leaseLost.abort();
+            } catch {
+              leaseLost.abort();
+            }
           });
         };
         const heartbeat = setInterval(
@@ -376,6 +380,9 @@ export function createTelephoneBoundaryRuntime(
         );
         try {
           const result = await execute(executionSignal);
+          if (executionSignal.aborted) {
+            return { decision: "cancelled", resource: "subagent" } as const;
+          }
           return {
             decision: "accepted",
             resource: "subagent",

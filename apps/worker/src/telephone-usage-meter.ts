@@ -1,11 +1,9 @@
-import type {
-  TelephoneSpendingWarningThreshold,
-  TelephoneUsageReservationResult,
-  TelephoneUsageSource,
+import {
+  telephoneUsageSources,
+  type TelephoneSpendingWarningThreshold,
+  type TelephoneUsageReservationResult,
+  type TelephoneUsageSource,
 } from "@voice-agent/contracts";
-
-const usageSources = ["api", "telephony", "realtime-media"] as const satisfies
-  readonly TelephoneUsageSource[];
 
 export type TelephoneUsageRates = Readonly<
   Record<TelephoneUsageSource, number>
@@ -123,7 +121,7 @@ export async function meterTelephoneSessionUsage(options: {
 }
 
 function validateRates(rates: TelephoneUsageRates): void {
-  for (const source of usageSources) {
+  for (const source of telephoneUsageSources) {
     const rate = rates[source];
     if (!Number.isInteger(rate) || rate < 1) {
       throw new Error(`Telephone ${source} rate must be positive microusd`);

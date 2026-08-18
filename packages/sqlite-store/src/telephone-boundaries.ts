@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 
 import {
   telephoneSpendingWarningThresholds,
+  telephoneUsageSources,
   type TelephoneSpendingWarningThreshold,
 } from "@voice-agent/contracts";
 import type {
@@ -12,8 +13,6 @@ import type {
   TelephoneUsageResult,
   TelephoneUsageSource,
 } from "@voice-agent/durable-store";
-
-const usageSources = ["api", "telephony", "realtime-media"] as const;
 
 interface CountRow {
   readonly value: number;
@@ -574,7 +573,7 @@ export function createSqliteTelephoneBoundaryStore(
       readonly usageScopeId: string;
     }): TelephoneUsageReservationResult =>
       persistUsageEntries({
-        entries: usageSources.map((source) => ({
+        entries: telephoneUsageSources.map((source) => ({
           amountMicrousd: input.amountsMicrousd[source],
           source,
           usageId: `${input.usageScopeId}:${source}`,

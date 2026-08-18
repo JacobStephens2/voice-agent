@@ -1,9 +1,12 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { formatTelephoneBoundaryPrometheusMetrics } from "@voice-agent/runtime";
+import {
+  createTelephoneBoundaryRuntime,
+  formatTelephoneBoundaryPrometheusMetrics,
+} from "@voice-agent/runtime";
 import { createSqliteTelephoneBoundaryStore } from "@voice-agent/sqlite-store";
 
 import { createTelephoneBoundaryScenario } from "../src/index.ts";
@@ -11,6 +14,7 @@ import { createTelephoneBoundaryScenario } from "../src/index.ts";
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { force: true, recursive: true }),
@@ -315,6 +319,68 @@ describe("Telephone fail-closed boundaries", () => {
       ).resolves.toBe(false);
     } finally {
       await store.close();
+    }
+  });
+
+  test("a lease-renewal failure aborts active Subagent execution", async () => {
+    vi.useFakeTimers();
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-renewal-failure-"),
+    );
+    temporaryDirectories.push(directory);
+    const durableStore = createSqliteTelephoneBoundaryStore(
+      join(directory, "voice-agent.sqlite"),
+    );
+    const cancellation = new AbortController();
+    const runtime = createTelephoneBoundaryRuntime({
+      nextId: () => "unused-renewal-failure-id",
+      now: () => "2026-08-17T12:00:00.000Z",
+      store: {
+        ...durableStore,
+        async renewSubagentLease() {
+          throw new Error("injected durable lease renewal failure");
+        },
+      },
+      subagentLeaseDurationMs: 3_000,
+    });
+    let executionSignal: AbortSignal | undefined;
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const execution = runtime
+      .executeSubagent(
+        "delegation-renewal-failure",
+        async (signal) => {
+          executionSignal = signal;
+          markStarted();
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            }
+          });
+          return "adapter-stopped";
+        },
+        cancellation.signal,
+      )
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (error: unknown) => ({ error, status: "rejected" as const }),
+      );
+
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(executionSignal?.aborted).toBe(true);
+      await expect(execution).resolves.toEqual({
+        status: "resolved",
+        value: { decision: "cancelled", resource: "subagent" },
+      });
+    } finally {
+      cancellation.abort();
+      await execution;
+      await runtime.close();
     }
   });
 

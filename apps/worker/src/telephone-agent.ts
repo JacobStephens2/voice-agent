@@ -38,7 +38,6 @@ import {
 } from "./livekit-callback-adapter.ts";
 import {
   boundedProviderConnectOptions,
-  mapProviderFailureEvent,
   playPrerecordedProviderFailure,
   runLiveKitTelephoneSession,
 } from "./livekit-telephone-session.ts";
@@ -48,6 +47,10 @@ import {
   reserveTelephoneUsageSlice,
   telephoneUsageRatesFromEnvironment,
 } from "./telephone-usage-meter.ts";
+import {
+  recordTelephoneSetupProviderFailure,
+  TelephoneSetupProviderError,
+} from "./telephone-setup-provider-failure.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -180,15 +183,6 @@ interface CompletionCallbackDispatch {
 type OutboundDispatch =
   | AuthenticationCallbackDispatch
   | CompletionCallbackDispatch;
-
-class TelephoneSetupProviderError extends Error {
-  constructor(
-    readonly stage: "coordinator" | "stt" | "tts",
-    readonly providerError: unknown,
-  ) {
-    super(`Telephone ${stage} setup provider failed`);
-  }
-}
 
 interface WarmSessionLease {
   release(): Promise<void>;
@@ -898,42 +892,14 @@ async function recordSetupProviderFailure(input: {
   readonly occurredAt: string;
   readonly telephoneSessionId: string;
 }): Promise<void> {
-  if (!(input.error instanceof TelephoneSetupProviderError)) return;
-  const correlation = createHash("sha256")
-    .update(input.failureEventId)
-    .digest("hex")
-    .slice(0, 32);
-  const failure = mapProviderFailureEvent({
-    deliveryId: correlation,
-    error: input.error.providerError,
+  await recordTelephoneSetupProviderFailure({
+    append: input.append,
+    error: input.error,
+    failureEventId: input.failureEventId,
     occurredAt: input.occurredAt,
-    stage: input.error.stage,
-  });
-  const failureClass =
-    failure.kind === "provider-timeout" ? "timeout" : "unavailable";
-  await input.append({
-    details:
-      failure.kind === "provider-timeout"
-        ? {
-            failure: "timeout",
-            provider: failure.provider,
-            stage: failure.stage,
-            timeoutMs: failure.timeoutMs,
-          }
-        : {
-            failure: "unavailable",
-            provider: failure.provider,
-            stage: failure.stage,
-          },
-    id: `setup-provider-failure:${correlation}`,
-    kind: "telephone.provider.failure",
-    occurredAt: input.occurredAt,
-    summary: "Telephone setup reached a bounded provider failure.",
-  });
-  await input.boundaries.recordProviderFailure({
-    failureClass,
-    sessionId: input.telephoneSessionId,
-    stage: input.error.stage,
+    recordProviderFailure: (failure) =>
+      input.boundaries.recordProviderFailure(failure),
+    telephoneSessionId: input.telephoneSessionId,
   });
 }
 

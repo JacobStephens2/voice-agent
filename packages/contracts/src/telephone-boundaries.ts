@@ -5,7 +5,12 @@ const timestampSchema = z.iso.datetime();
 const durationSchema = z.number().int().nonnegative().max(7_200_000);
 const moneySchema = z.number().int().nonnegative().max(1_000_000_000_000);
 const spendingCeilingSchema = moneySchema.max(1_000_000_000);
-const usageSourceSchema = z.enum(["api", "telephony", "realtime-media"]);
+export const telephoneUsageSources = [
+  "api",
+  "telephony",
+  "realtime-media",
+] as const;
+const usageSourceSchema = z.enum(telephoneUsageSources);
 export type TelephoneUsageSource = z.infer<typeof usageSourceSchema>;
 export const telephoneSpendingWarningThresholds = [
   25_000_000,
