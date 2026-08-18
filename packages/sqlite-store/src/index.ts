@@ -60,6 +60,13 @@ interface OperationRow {
   readonly task_id: string;
 }
 
+interface SpeechTimingMetricRow {
+  readonly count: number;
+  readonly provider: string;
+  readonly stage: string;
+  readonly total_duration_ms: number;
+}
+
 export function createSqliteDurableTaskStore(
   databasePath: string,
 ): DurableTaskStore & ApplicationRegistry {
@@ -274,6 +281,45 @@ export function createSqliteDurableTaskStore(
     INSERT INTO operational_counters (name, value)
     VALUES ('policy_denials', 1)
     ON CONFLICT(name) DO UPDATE SET value = value + 1
+  `);
+  const readNotificationMetrics = database.prepare<
+    [],
+    { readonly requested: number; readonly sent: number }
+  >(`
+    SELECT
+      SUM(CASE WHEN kind = 'notification.requested' THEN 1 ELSE 0 END) AS requested,
+      SUM(CASE WHEN kind = 'notification.sent' THEN 1 ELSE 0 END) AS sent
+    FROM evidence_events
+  `);
+  const readSpeechTimingMetrics = database.prepare<[], SpeechTimingMetricRow>(`
+    SELECT
+      stage,
+      provider,
+      COUNT(*) AS count,
+      COALESCE(SUM(duration_ms), 0) AS total_duration_ms
+    FROM (
+      SELECT
+        json_extract(details_json, '$.stage') AS stage,
+        CASE json_extract(details_json, '$.provider')
+          WHEN 'assemblyai' THEN 'assemblyai'
+          WHEN 'inworld' THEN 'inworld'
+          WHEN 'openai' THEN 'openai'
+          ELSE 'other'
+        END AS provider,
+        json_extract(details_json, '$.durationMs') AS duration_ms
+      FROM evidence_events
+      WHERE kind = 'telephone.provider.timing'
+    ) AS sanitized_speech_timing
+    GROUP BY stage, provider
+  `);
+  const readTelephoneConversationMetrics = database.prepare<
+    [],
+    { readonly interruptions: number; readonly turns: number }
+  >(`
+    SELECT
+      SUM(CASE WHEN kind = 'telephone.response.interrupted' THEN 1 ELSE 0 END) AS interruptions,
+      SUM(CASE WHEN kind = 'telephone.turn.finalized' THEN 1 ELSE 0 END) AS turns
+    FROM evidence_events
   `);
   const readLatestObservation = database.prepare<
     [],
@@ -591,6 +637,14 @@ export function createSqliteDurableTaskStore(
         running: 0,
       };
       const latestObservation = readLatestObservation.get();
+      const notificationMetrics = readNotificationMetrics.get() ?? {
+        requested: 0,
+        sent: 0,
+      };
+      const conversationMetrics = readTelephoneConversationMetrics.get() ?? {
+        interruptions: 0,
+        turns: 0,
+      };
       let bountywellChecks: Array<{
         readonly outcome: "fail" | "pass";
         readonly source:
@@ -621,7 +675,27 @@ export function createSqliteDurableTaskStore(
           completed: operationMetrics.completed ?? 0,
           running: operationMetrics.running ?? 0,
         },
+        notifications: {
+          requested: notificationMetrics.requested ?? 0,
+          sent: notificationMetrics.sent ?? 0,
+        },
         policyDenials: readPolicyDenials.get()?.value ?? 0,
+        speech: {
+          interruptions: conversationMetrics.interruptions ?? 0,
+          timings: readSpeechTimingMetrics
+            .all()
+            .flatMap((row) => {
+              const stage = operationalSpeechStage(row.stage);
+              if (stage === undefined) return [];
+              return [{
+                count: row.count,
+                provider: operationalSpeechProvider(row.provider),
+                stage,
+                totalDurationMs: row.total_duration_ms,
+              }];
+            }),
+          turns: conversationMetrics.turns ?? 0,
+        },
         storage: readStorageMetrics(databasePath),
         tasks: {
           completed: taskMetrics.completed ?? 0,
@@ -668,6 +742,22 @@ export function createSqliteDurableTaskStore(
       return registration;
     },
   };
+}
+
+function operationalSpeechProvider(
+  provider: string,
+): "assemblyai" | "inworld" | "openai" | "other" {
+  return provider === "assemblyai" || provider === "inworld" || provider === "openai"
+    ? provider
+    : "other";
+}
+
+function operationalSpeechStage(
+  stage: string,
+): "coordinator" | "stt" | "tts" | undefined {
+  return stage === "coordinator" || stage === "stt" || stage === "tts"
+    ? stage
+    : undefined;
 }
 
 function createSchema(database: Database.Database): void {

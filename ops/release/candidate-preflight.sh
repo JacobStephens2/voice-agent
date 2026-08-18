@@ -16,11 +16,15 @@ fi
 
 test -f "$release/apps/pwa/dist/index.html"
 test -f "$release/packages/sqlite-store/src/database-maintenance-cli.ts"
+test -f "$release/apps/broker/src/probe-metrics-cli.ts"
+test -f "$release/ops/grafana/voice-agent-slice-one.json"
 script_directory=$(cd "$(dirname "$0")" && pwd)
 systemd-analyze verify \
   "$script_directory/systemd/voice-agent-api.service" \
   "$script_directory/systemd/voice-agent-worker.service" \
   "$script_directory/systemd/voice-agent-broker.service" \
+  "$script_directory/systemd/voice-agent-probes.service" \
+  "$script_directory/systemd/voice-agent-probes.timer" \
   "$script_directory/systemd/voice-agent-promotion-resume.path" \
   "$script_directory/systemd/voice-agent-promotion-resume.service"
 

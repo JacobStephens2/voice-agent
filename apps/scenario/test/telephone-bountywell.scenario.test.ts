@@ -101,6 +101,16 @@ describe("Telephone Bountywell health inquiry", () => {
         },
       ]);
 
+      await scenario.receiveProviderEvent({
+        deliveryId: "turn-delivery-001:alternate-coordinator-timing",
+        durationMs: 16,
+        kind: "provider-timing",
+        occurredAt: "2026-08-17T12:00:02.000Z",
+        provider: "another-unbounded-coordinator-name",
+        stage: "coordinator",
+        taskId: "task-telephone-001",
+      });
+
       const record = await scenario.readEvidenceRecord("task-telephone-001");
       expect(record?.task.conclusion).toBe("Bountywell API is healthy.");
       expect(record?.evidence.map((event) => event.kind)).toEqual([
@@ -113,6 +123,7 @@ describe("Telephone Bountywell health inquiry", () => {
         "operation.completed",
         "task.completed",
         "telephone.semantic.response",
+        "telephone.provider.timing",
       ]);
       expect(JSON.stringify(record)).toContain(
         "Could you tell me how Bountywell is doing?",
@@ -129,6 +140,26 @@ describe("Telephone Bountywell health inquiry", () => {
       expect(page.html).toContain("Health check accepted");
       expect(page.html).toContain("Spoken response prepared");
       expect(page.html).toContain("Bountywell API is healthy.");
+      const metrics = await scenario.readMetrics();
+      expect(metrics).toContain(
+        'voice_agent_speech_stage_duration_ms_sum{stage="stt",provider="assemblyai"} 320',
+      );
+      expect(metrics).toContain(
+        'voice_agent_speech_stage_duration_ms_count{stage="stt",provider="assemblyai"} 1',
+      );
+      expect(metrics).toContain(
+        'voice_agent_speech_stage_duration_ms_sum{stage="coordinator",provider="other"} 40',
+      );
+      expect(
+        metrics.match(
+          /voice_agent_speech_stage_duration_ms_sum\{stage="coordinator",provider="other"\}/gu,
+        ),
+      ).toHaveLength(1);
+      expect(metrics).toContain("voice_agent_telephone_turns 1");
+      expect(metrics).toContain("voice_agent_telephone_interruptions 0");
+      expect(metrics).not.toContain("Could you tell me how Bountywell is doing?");
+      expect(metrics).not.toContain("deterministic-scenario-coordinator");
+      expect(metrics).not.toContain("another-unbounded-coordinator-name");
     } finally {
       await scenario.close();
     }

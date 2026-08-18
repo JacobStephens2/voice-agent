@@ -165,6 +165,15 @@ export function createSqliteCallbackHandshakeStore(
     FROM callback_evidence_events
     WHERE kind = 'telephone.callback.requested'
   `);
+  const readNotificationMetrics = database.prepare<
+    [],
+    { readonly requested: number; readonly sent: number }
+  >(`
+    SELECT
+      SUM(CASE WHEN kind = 'notification.requested' THEN 1 ELSE 0 END) AS requested,
+      SUM(CASE WHEN kind = 'notification.sent' THEN 1 ELSE 0 END) AS sent
+    FROM callback_evidence_events
+  `);
   const insertHandshake = database.prepare(`
     INSERT INTO callback_handshakes (
       id, caller_fingerprint, revision, state, accepted_at, retry_due_at,
@@ -518,6 +527,10 @@ export function createSqliteCallbackHandshakeStore(
             (states.get("awaiting-machine") ?? 0) +
             (states.get("awaiting-dtmf") ?? 0) +
             (states.get("retry-scheduled") ?? 0),
+        },
+        notifications: {
+          requested: readNotificationMetrics.get()?.requested ?? 0,
+          sent: readNotificationMetrics.get()?.sent ?? 0,
         },
       };
     },

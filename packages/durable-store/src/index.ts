@@ -71,7 +71,21 @@ export interface VoiceAgentOperationalMetrics {
     readonly completed: number;
     readonly running: number;
   };
+  readonly notifications: {
+    readonly requested: number;
+    readonly sent: number;
+  };
   readonly policyDenials: number;
+  readonly speech: {
+    readonly interruptions: number;
+    readonly timings: readonly {
+      readonly count: number;
+      readonly provider: "assemblyai" | "inworld" | "openai" | "other";
+      readonly stage: "coordinator" | "stt" | "tts";
+      readonly totalDurationMs: number;
+    }[];
+    readonly turns: number;
+  };
   readonly storage: {
     readonly databaseBytes: number;
     readonly filesystemAvailableBytes: number;

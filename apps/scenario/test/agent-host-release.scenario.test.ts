@@ -202,3 +202,73 @@ test("the broker socket remains reachable through the worker security boundary",
     "runuser --user voice-agent --group voice-broker-client -- /usr/bin/curl",
   );
 });
+
+test("slice-one observability installs explicit probes and a same-host Grafana dashboard", async () => {
+  const [
+    probeCli,
+    probeService,
+    probeTimer,
+    apiServer,
+    apiUnit,
+    health,
+    preflight,
+    promotion,
+    setup,
+    dashboardSource,
+    dashboardInstaller,
+  ] = await Promise.all(
+    [
+      "apps/broker/src/probe-metrics-cli.ts",
+      "ops/systemd/voice-agent-probes.service",
+      "ops/systemd/voice-agent-probes.timer",
+      "apps/api/src/server.ts",
+      "ops/systemd/voice-agent-api.service",
+      "ops/release/deployment-health.sh",
+      "ops/release/candidate-preflight.sh",
+      "ops/release/promote-release.sh",
+      "ops/setup-agent-host.sh",
+      "ops/grafana/voice-agent-slice-one.json",
+      "ops/grafana/install-dashboard.sh",
+    ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
+  );
+  if (dashboardSource === undefined) throw new Error("dashboard is missing");
+  const dashboard = JSON.parse(dashboardSource) as {
+    readonly panels: readonly { readonly description?: string; readonly title: string }[];
+    readonly tags: readonly string[];
+    readonly title: string;
+  };
+
+  expect(probeCli).toContain("renderApplicationProbeMetrics");
+  expect(probeCli).toContain("/api/health");
+  expect(probeCli).toContain("/api/data");
+  expect(probeService).toContain("StateDirectory=voice-agent-probes");
+  expect(probeService).toContain("ProtectSystem=strict");
+  expect(probeTimer).toContain("OnUnitActiveSec=30s");
+  expect(apiServer).toContain("VOICE_AGENT_APPLICATION_PROBE_METRICS_PATH");
+  expect(apiUnit).toContain("/var/lib/voice-agent-probes/probes.prom");
+  expect(health).toContain("voice_agent_monitoring_same_host 1");
+  expect(preflight).toContain("voice-agent-probes.service");
+  expect(promotion).toContain("voice-agent-probes.timer");
+  expect(setup).toContain("install-grafana-dashboard.sh");
+  expect(setup).toContain("voice-agent-probes.timer");
+  expect(dashboardInstaller).toContain("voice-agent-slice-one.json");
+  expect(dashboardInstaller).toContain(
+    "/var/lib/grafana/dashboards/voice-agent",
+  );
+  expect(dashboard.title).toContain("Slice One");
+  expect(dashboard.tags).toContain("same-host-monitoring");
+  expect(
+    dashboard.panels.some((panel) =>
+      panel.description?.includes("same Agent Host failure domain")),
+  ).toBe(true);
+  expect(dashboard.panels.map((panel) => panel.title)).toEqual(
+    expect.arrayContaining([
+      "Callback Handshake",
+      "Telephone Sessions",
+      "Speech Provider Timing",
+      "Application and API Probes",
+      "Host Resources",
+      "Spending",
+    ]),
+  );
+});

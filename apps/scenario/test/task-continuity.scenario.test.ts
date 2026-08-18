@@ -163,6 +163,14 @@ test("a missed Completion Callback leaves one generic voicemail and falls back t
     expect(
       record?.evidence.filter((event) => event.kind === "notification.sent"),
     ).toHaveLength(1);
+    const metrics = await scenario.readMetrics();
+    expect(metrics).toContain(
+      'voice_agent_notifications{outcome="requested"} 1',
+    );
+    expect(metrics).toContain(
+      'voice_agent_notifications{outcome="sent"} 1',
+    );
+    expect(metrics).not.toContain("owner@example.com");
   } finally {
     await scenario.close();
   }

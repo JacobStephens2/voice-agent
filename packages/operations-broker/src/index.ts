@@ -99,6 +99,76 @@ export interface BountywellHostProbes {
   }>;
 }
 
+export interface VoiceAgentApplicationProbes {
+  readApiHealthStatus(): Promise<number>;
+  readBrokerHealthStatus(): Promise<number>;
+  readWorkerHealthStatus(): Promise<number>;
+}
+
+export async function renderApplicationProbeMetrics(options: {
+  readonly bountywell: BountywellHostProbes;
+  readonly now?: () => Date;
+  readonly voiceAgent: VoiceAgentApplicationProbes;
+}): Promise<string> {
+  const probes = await Promise.all([
+    probe("voice-agent", "api-health", async () =>
+      (await options.voiceAgent.readApiHealthStatus()) === 200),
+    probe("voice-agent", "worker-health", async () =>
+      (await options.voiceAgent.readWorkerHealthStatus()) === 200),
+    probe("voice-agent", "broker-health", async () =>
+      (await options.voiceAgent.readBrokerHealthStatus()) === 200),
+    probe("bountywell", "public-health", async () =>
+      (await options.bountywell.readPublicHealthStatus()) === 200),
+    probe("bountywell", "authentication-boundary", async () =>
+      (await options.bountywell.readAuthenticationBoundaryStatus()) === 401),
+    probe("bountywell", "local-health", async () =>
+      (await options.bountywell.readLocalHealthStatus()) === 200),
+    probe("bountywell", "service-state", async () => {
+      const service = await options.bountywell.readServiceMetadata();
+      return service.active && service.subState === "running";
+    }),
+    probe("bountywell", "resource-health", async () => {
+      const resources = await options.bountywell.readResourceEvidence();
+      return resources.availability === "available" &&
+        !resources.memoryPressure && !resources.taskPressure;
+    }),
+  ]);
+  const now = options.now?.() ?? new Date();
+  const lines = [
+    "# HELP voice_agent_application_probe_success Whether an explicit bounded application or API probe passed.",
+    "# TYPE voice_agent_application_probe_success gauge",
+    ...probes.map(
+      ({ application, name, success }) =>
+        `voice_agent_application_probe_success{application="${application}",probe="${name}"} ${success ? 1 : 0}`,
+    ),
+    "# HELP voice_agent_application_probe_last_run_unixtime_seconds Unix time of the latest explicit probe run.",
+    "# TYPE voice_agent_application_probe_last_run_unixtime_seconds gauge",
+    `voice_agent_application_probe_last_run_unixtime_seconds ${Math.floor(now.getTime() / 1_000)}`,
+    "# HELP voice_agent_monitoring_same_host Monitoring shares the Agent Host failure domain and is not an independent availability signal.",
+    "# TYPE voice_agent_monitoring_same_host gauge",
+    "voice_agent_monitoring_same_host 1",
+  ];
+  return `${lines.join("\n")}\n`;
+}
+
+async function probe(
+  application: "bountywell" | "voice-agent",
+  name: "api-health" | "authentication-boundary" | "broker-health" |
+    "local-health" | "public-health" | "resource-health" | "service-state" |
+    "worker-health",
+  check: () => Promise<boolean>,
+): Promise<{
+  readonly application: "bountywell" | "voice-agent";
+  readonly name: typeof name;
+  readonly success: boolean;
+}> {
+  try {
+    return { application, name, success: await check() };
+  } catch {
+    return { application, name, success: false };
+  }
+}
+
 export interface BrokerOperationStore {
   begin(
     request: BountywellHealthObservationRequest,

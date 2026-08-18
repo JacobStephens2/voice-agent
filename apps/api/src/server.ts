@@ -94,14 +94,18 @@ const authentication = createAuthenticationLifecycle({
 });
 const api = createVoiceApi({
   additionalMetrics: async () => {
-    const [promotionMetrics, boundaryMetrics] = await Promise.all([
+    const [promotionMetrics, probeMetrics, boundaryMetrics] = await Promise.all([
       readAdditionalMetrics(
         process.env.VOICE_AGENT_PROMOTION_METRICS_PATH ??
           "/var/lib/voice-agent-promotions/promotions.prom",
       ),
+      readAdditionalMetrics(
+        process.env.VOICE_AGENT_APPLICATION_PROBE_METRICS_PATH ??
+          "/var/lib/voice-agent-probes/probes.prom",
+      ),
       boundaries.readMetrics(),
     ]);
-    return `${promotionMetrics}${formatTelephoneBoundaryPrometheusMetrics(
+    return `${promotionMetrics}${probeMetrics}${formatTelephoneBoundaryPrometheusMetrics(
       boundaryMetrics,
     )}`;
   },
@@ -148,10 +152,23 @@ const api = createVoiceApi({
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
         .slice(0, 100);
     },
-    readOperationalMetrics: async () => ({
-      ...(await runtime.readOperationalMetrics()),
-      callbacks: await callbackRuntime.readOperationalMetrics(),
-    }),
+    readOperationalMetrics: async () => {
+      const [taskMetrics, callbackMetrics] = await Promise.all([
+        runtime.readOperationalMetrics(),
+        callbackRuntime.readOperationalMetrics(),
+      ]);
+      return {
+        ...taskMetrics,
+        callbacks: callbackMetrics,
+        notifications: {
+          requested:
+            taskMetrics.notifications.requested +
+            callbackMetrics.notifications.requested,
+          sent:
+            taskMetrics.notifications.sent + callbackMetrics.notifications.sent,
+        },
+      };
+    },
     recordPolicyDenial: () => runtime.recordPolicyDenial(),
   },
   telephoneControls: callbackRuntime,

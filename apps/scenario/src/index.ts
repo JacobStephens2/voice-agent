@@ -270,14 +270,19 @@ export async function createCallbackHandshakeScenario(
     records: {
       getEvidenceRecord: (taskId) => runtime.readEvidenceRecord(taskId),
       listEvidenceRecords: () => runtime.listEvidenceRecords(),
-      readOperationalMetrics: async () => ({
-        bountywellChecks: [],
-        callbacks: await runtime.readOperationalMetrics(),
-        operations: { accepted: 0, completed: 0, running: 0 },
-        policyDenials: 0,
-        storage: { databaseBytes: 0, filesystemAvailableBytes: 0 },
-        tasks: { completed: 0, pending: 0 },
-      }),
+      readOperationalMetrics: async () => {
+        const callbacks = await runtime.readOperationalMetrics();
+        return {
+          bountywellChecks: [],
+          callbacks,
+          notifications: callbacks.notifications,
+          operations: { accepted: 0, completed: 0, running: 0 },
+          policyDenials: 0,
+          speech: { interruptions: 0, timings: [], turns: 0 },
+          storage: { databaseBytes: 0, filesystemAvailableBytes: 0 },
+          tasks: { completed: 0, pending: 0 },
+        };
+      },
     },
   });
   return {
@@ -346,6 +351,7 @@ export interface TelephoneBountywellScenario {
   }[];
   readonly sessionEvidence: readonly TelephoneConversationEvidenceEvent[];
   close(): Promise<void>;
+  readMetrics(): Promise<string>;
   readEvidenceRecord(
     taskId: string,
   ): Promise<EvidenceRecordProjection | undefined>;
@@ -469,6 +475,13 @@ export async function createTelephoneBountywellScenario(
     async close() {
       await api.close();
       await tasks.close();
+    },
+    async readMetrics() {
+      const response = await api.inject({ method: "GET", url: "/metrics" });
+      if (response.statusCode !== 200) {
+        throw new Error("Telephone metrics endpoint was unavailable");
+      }
+      return response.body;
     },
     readEvidenceRecord: (taskId) => tasks.getEvidenceRecord(taskId),
     async readTaskPage(taskId, sessionToken) {

@@ -20,6 +20,10 @@ export interface CallbackHandshakeOperationalMetrics {
     readonly failed: number;
     readonly pending: number;
   };
+  readonly notifications: {
+    readonly requested: number;
+    readonly sent: number;
+  };
 }
 
 export interface CreateCallbackHandshakePersistence {

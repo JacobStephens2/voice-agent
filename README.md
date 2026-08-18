@@ -71,6 +71,19 @@ pnpm scenario:telephone
 
 The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. The telephone and continuity scenarios cover paraphrases, background-work callback consent, authenticated resumption, call and process loss, safe cancellation, provider failures, generic notification fallback, idempotent replay, and the authenticated 90-day Evidence lifecycle policy. They persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
 
+After an exact Human Merge has been promoted, the attended slice-one campaign is
+run with:
+
+```bash
+./ops/acceptance/run-slice-one.sh
+```
+
+The wizard runs automated verification, opens the same-host monitoring review,
+and appends five real PSTN attempts across AT&T, Tello, and an outdoor walking
+run. Failed attempts remain in the record and reset the consecutive sequence;
+the validator refuses to append the terminal acceptance event until every gate
+passes. See [`docs/operations/slice-one-acceptance.md`](docs/operations/slice-one-acceptance.md).
+
 The CI-ready verification commands are:
 
 ```bash

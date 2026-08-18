@@ -371,8 +371,20 @@ if ! sudo test -e "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"; then
     "$REPOSITORY_ROOT/ops/prometheus/install-scrape.sh" \
     "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"
 fi
+if sudo test -e "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh" && \
+  ! sudo cmp -s "$REPOSITORY_ROOT/ops/grafana/install-dashboard.sh" \
+    "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"; then
+  warn "Pinned Grafana dashboard installer differs; this wizard will not overwrite it."
+  exit 1
+fi
+if ! sudo test -e "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"; then
+  sudo install -o root -g root -m 0755 \
+    "$REPOSITORY_ROOT/ops/grafana/install-dashboard.sh" \
+    "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"
+fi
 for unit in \
   voice-agent-api.service voice-agent-worker.service voice-agent-broker.service \
+  voice-agent-probes.service voice-agent-probes.timer \
   voice-agent-promotion-resume.path voice-agent-promotion-resume.service; do
   if sudo test -e "$ROOT_ORCHESTRATOR/systemd/$unit" && \
     ! sudo cmp -s "$REPOSITORY_ROOT/ops/systemd/$unit" \
@@ -425,8 +437,10 @@ fi
 sudo systemctl enable --now voice-agent-promotion-resume.path
 sudo "$ROOT_ORCHESTRATOR/promote-release.sh" "$MERGED_COMMIT"
 sudo "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"
+sudo "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh" "$REPOSITORY_ROOT"
 sudo systemd-analyze security \
   voice-agent-api.service voice-agent-worker.service voice-agent-broker.service \
+  voice-agent-probes.service \
   voice-agent-promotion-resume.service \
   --no-pager || true
 pause "Review the hardening report, then press Enter."

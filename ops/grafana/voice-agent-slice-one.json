@@ -1,0 +1,210 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "description": "Prometheus and Grafana share the same Agent Host failure domain as the Voice Agent. This view diagnoses partial failures; it cannot independently detect loss of the entire host or its network.",
+      "gridPos": { "h": 3, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "content": "# Same-host monitoring\nThis dashboard shares the **same Agent Host failure domain** as the Voice Agent. Treat missing telemetry as unknown host availability, not proof that the host is healthy.",
+        "mode": "markdown"
+      },
+      "title": "Monitoring Boundary",
+      "type": "text"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Current Callback Handshakes by bounded outcome.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 3 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "voice_agent_callback_handshakes", "legendFormat": "{{outcome}}", "refId": "A" }],
+      "title": "Callback Handshake",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Warm and active Telephone Sessions plus bounded terminal outcomes.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 3 },
+      "id": 3,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "voice_agent_telephone_sessions", "legendFormat": "current {{state}}", "refId": "A" },
+        { "expr": "increase(voice_agent_telephone_session_endings_total[$__rate_interval])", "legendFormat": "ended {{reason}}", "refId": "B" }
+      ],
+      "title": "Telephone Sessions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Mean retained provider duration by bounded speech stage and provider.",
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 3 },
+      "id": 4,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "voice_agent_speech_stage_duration_ms_sum / clamp_min(voice_agent_speech_stage_duration_ms_count, 1)", "legendFormat": "{{stage}} · {{provider}}", "refId": "A" }],
+      "title": "Speech Provider Timing",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Bounded timeout and unavailable outcomes by speech stage.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 3 },
+      "id": 5,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "voice_agent_telephone_provider_failures_total", "legendFormat": "{{stage}} · {{class}}", "refId": "A" }],
+      "title": "Provider Failures",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Durable Tasks and Operations across their retained lifecycle states.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 9 },
+      "id": 6,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "voice_agent_durable_tasks", "legendFormat": "task {{status}}", "refId": "A" },
+        { "expr": "voice_agent_operations", "legendFormat": "operation {{status}}", "refId": "B" }
+      ],
+      "title": "Durable Tasks and Operations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "General policy denials and telephone-boundary decisions.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 9 },
+      "id": 7,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "voice_agent_policy_denials_total", "legendFormat": "policy denials", "refId": "A" },
+        { "expr": "voice_agent_telephone_limit_decisions_total", "legendFormat": "telephone {{decision}}", "refId": "B" }
+      ],
+      "title": "Policy Decisions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Requested and sent generic Silent Notifications.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 9 },
+      "id": 8,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "voice_agent_notifications", "legendFormat": "{{outcome}}", "refId": "A" }],
+      "title": "Silent Notifications",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Current UTC-month metered spend by source against the configured ceiling.",
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 9 },
+      "id": 9,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "voice_agent_telephone_usage_microusd / 1000000", "legendFormat": "{{source}}", "refId": "A" },
+        { "expr": "voice_agent_telephone_spending_ceiling_microusd / 1000000", "legendFormat": "ceiling", "refId": "B" }
+      ],
+      "title": "Spending",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Explicit Voice Agent component and Bountywell API probes; these do not infer health from a homepage.",
+      "fieldConfig": { "defaults": { "max": 1, "min": 0 }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 15 },
+      "id": 10,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "voice_agent_application_probe_success", "legendFormat": "{{application}} · {{probe}}", "refId": "A" }],
+      "title": "Application and API Probes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Latest registered Bountywell inquiry checks retained as sanitized evidence.",
+      "fieldConfig": { "defaults": { "max": 1, "min": 0 }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 15 },
+      "id": 11,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [{ "expr": "voice_agent_bountywell_check_pass", "legendFormat": "{{source}}", "refId": "A" }],
+      "title": "Bountywell Evidence Checks",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "SQLite and filesystem capacity used by the Voice Agent application.",
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 15 },
+      "id": 12,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "voice_agent_sqlite_database_bytes", "legendFormat": "SQLite + WAL", "refId": "A" },
+        { "expr": "voice_agent_sqlite_filesystem_available_bytes", "legendFormat": "filesystem available", "refId": "B" }
+      ],
+      "title": "Application Resources",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Same-host node-exporter memory, filesystem, and load signals. Absence is not independent outage detection.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 22 },
+      "id": 13,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "node_memory_MemAvailable_bytes", "legendFormat": "memory available", "refId": "A" },
+        { "expr": "min(node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\"})", "legendFormat": "filesystem available", "refId": "B" },
+        { "expr": "node_load1", "legendFormat": "load 1m", "refId": "C" }
+      ],
+      "title": "Host Resources",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "$datasource" },
+      "description": "Promotion outcome and Deployment Circuit Breaker state.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 22 },
+      "id": 14,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        { "expr": "voice_agent_promotion_last_attempt_success", "legendFormat": "last attempt success", "refId": "A" },
+        { "expr": "voice_agent_promotion_circuit_open", "legendFormat": "circuit open", "refId": "B" },
+        { "expr": "voice_agent_promotion_consecutive_failures", "legendFormat": "consecutive failures", "refId": "C" }
+      ],
+      "title": "Promotion Health",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["voice-agent", "slice-one", "same-host-monitoring"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus",
+        "multi": false,
+        "name": "datasource",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "title": "Voice Agent · Slice One Operational Path",
+  "uid": "voice-agent-slice-one",
+  "version": 1
+}

@@ -152,6 +152,7 @@ test("a registered caller completes one Callback Handshake only after human dete
     await expect(scenario.readOperationalMetrics()).resolves.toEqual({
       attempts: 1,
       handshakes: { authorized: 1, failed: 0, pending: 0 },
+      notifications: { requested: 0, sent: 0 },
     });
     const metrics = await scenario.readMetrics();
     expect(metrics).toContain(
@@ -202,6 +203,9 @@ test("a registered caller completes one Callback Handshake only after human dete
     );
     expect(providerFailurePage.html).toContain("Speech provider failure");
     expect(providerFailurePage.html).toContain("Silent Notification requested");
+    expect(await scenario.readMetrics()).toContain(
+      'voice_agent_notifications{outcome="requested"} 1',
+    );
   } finally {
     await scenario.close();
   }

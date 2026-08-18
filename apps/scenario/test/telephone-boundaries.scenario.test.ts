@@ -459,6 +459,12 @@ describe("Telephone fail-closed boundaries", () => {
       expect(JSON.stringify(metrics)).not.toContain("maximum-session");
       const renderedMetrics = formatTelephoneBoundaryPrometheusMetrics(metrics);
       expect(renderedMetrics).toContain(
+        'voice_agent_telephone_sessions{state="active"} 0',
+      );
+      expect(renderedMetrics).toContain(
+        'voice_agent_telephone_sessions{state="warm"} 0',
+      );
+      expect(renderedMetrics).toContain(
         'voice_agent_telephone_provider_failures_total{stage="stt",class="timeout"} 1',
       );
       expect(renderedMetrics).not.toContain("failed-session");
