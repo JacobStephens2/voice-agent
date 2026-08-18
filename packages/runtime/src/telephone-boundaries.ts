@@ -10,6 +10,7 @@ import {
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
+  telephoneUsageSources,
   type TelephoneBoundaryEvidenceEvent,
   type TelephoneProviderFailureStage,
 } from "@voice-agent/contracts";
@@ -699,7 +700,7 @@ export function formatTelephoneBoundaryPrometheusMetrics(
     ),
     "# HELP voice_agent_telephone_usage_microusd Current UTC-month metered usage.",
     "# TYPE voice_agent_telephone_usage_microusd gauge",
-    ...(["api", "telephony", "realtime-media"] as const).map(
+    ...telephoneUsageSources.map(
       (source) =>
         `voice_agent_telephone_usage_microusd{source="${source}"} ${metrics.spending.bySourceMicrousd[source]}`,
     ),
