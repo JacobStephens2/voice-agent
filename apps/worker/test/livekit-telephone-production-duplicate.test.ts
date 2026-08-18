@@ -187,6 +187,140 @@ describe("production-shaped LiveKit telephone turns", () => {
     }
   });
 
+  test("a late completed LiveKit turn after the accepted answer does not fail-close", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-livekit-late-completed-turn-"),
+    );
+    temporaryDirectories.push(directory);
+    const store = createSqliteDurableTaskStore(
+      join(directory, "voice-agent.sqlite"),
+    );
+    await store.registerBountywell("2026-08-18T04:14:10.226Z");
+    const ids = Array.from(
+      { length: 12 },
+      (_, index) => `late-turn-id-${index + 1}`,
+    );
+    const tasks = createDurableTaskRuntime({
+      applicationRegistry: store,
+      healthObserver: {
+        async observe() {
+          return {
+            checks: [
+              {
+                facts: { statusCode: 200 },
+                outcome: "pass" as const,
+                source: "public-health" as const,
+                summary: "The public health endpoint responded successfully.",
+              },
+              {
+                facts: { statusCode: 401 },
+                outcome: "pass" as const,
+                source: "authentication-boundary" as const,
+                summary:
+                  "The protected data endpoint required authentication.",
+              },
+            ],
+            observedAt: "2026-08-18T04:14:11.515Z",
+            rejectedEvidenceCount: 0,
+          };
+        },
+      },
+      nextId() {
+        const id = ids.shift();
+        if (id === undefined) {
+          throw new Error("The regression exhausted its deterministic IDs");
+        }
+        return id;
+      },
+      now: () => "2026-08-18T04:14:10.226Z",
+      store,
+    });
+    const session = new LiveKitSessionHarness({
+      extraCompletedTurns: [
+        llm.ChatMessage.create({
+          content: "Is Bounty Well Healthy.",
+          createdAt: 1_787_026_450_386,
+          id: "completed-item-001-late",
+          role: "user",
+        }),
+      ],
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 797,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-regression",
+          };
+        },
+      }),
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          boundaries: {
+            async claimRawAudioCapture() {
+              return {
+                decision: "rejected" as const,
+                reason: "debug-grant-required" as const,
+              };
+            },
+            async claimStateChangingTask() {
+              return {
+                decision: "accepted" as const,
+                resource: "state-changing-task" as const,
+              };
+            },
+            async endSession() {
+              return { ended: false as const };
+            },
+            async noteActivity() {},
+            recordProviderFailure,
+            async reserveUsageSlice() {
+              return {
+                disposition: "continue" as const,
+                month: "2026-08",
+                reservedSources: [
+                  "api" as const,
+                  "telephony" as const,
+                  "realtime-media" as const,
+                ],
+                totalMicrousd: 1,
+                warnings: [],
+              };
+            },
+            async releaseStateChangingTask() {
+              return {};
+            },
+          },
+          disconnected: Promise.resolve(),
+          async endCall() {},
+          room: {} as Room,
+          sessionEvidence: { async append() {} },
+          tasks,
+          telephoneSessionId: "telephone-session-att-indoor-001",
+          usageRatesMicrousdPerMinute: {
+            api: 1,
+            "realtime-media": 1,
+            telephony: 1,
+          },
+        },
+        dependencies,
+      );
+
+      expect(recordProviderFailure).not.toHaveBeenCalled();
+      expect(session.spokenTexts).toHaveLength(1);
+      expect(session.playedFailureFrames).toBe(0);
+    } finally {
+      await tasks.close();
+    }
+  });
+
   test.each([
     postStartFailureCase("stt", "stt_error", "error"),
     postStartFailureCase("stt", "stt_error", "close"),
@@ -374,8 +508,16 @@ async function expectPostStartProviderFailure(
 }
 
 class LiveKitSessionHarness {
+  playedFailureFrames = 0;
   readonly spokenTexts: string[] = [];
+  readonly #extraCompletedTurns: readonly llm.ChatMessage[];
   readonly #handlers = new Map<string, (event: never) => void>();
+
+  constructor(
+    options: { readonly extraCompletedTurns?: readonly llm.ChatMessage[] } = {},
+  ) {
+    this.#extraCompletedTurns = options.extraCompletedTurns ?? [];
+  }
 
   asAgentSession(): voice.AgentSession {
     const harness = this;
@@ -384,6 +526,15 @@ class LiveKitSessionHarness {
       on(eventType: string, handler: (event: never) => void) {
         harness.#handlers.set(eventType, handler);
         return this;
+      },
+      output: {
+        audio: {
+          async captureFrame() {
+            harness.playedFailureFrames += 1;
+          },
+          flush() {},
+          async waitForPlayout() {},
+        },
       },
       say(text: string) {
         harness.spokenTexts.push(text);
@@ -422,6 +573,12 @@ class LiveKitSessionHarness {
             role: "user",
           }),
         );
+        for (const extra of harness.#extraCompletedTurns) {
+          await input.agent.onUserTurnCompleted(
+            llm.ChatContext.empty(),
+            extra,
+          );
+        }
       },
     } as unknown as voice.AgentSession;
   }

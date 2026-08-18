@@ -66,6 +66,10 @@ describe("LiveKit finalized telephone turns", () => {
     );
 
     expect(first.kind).toBe("turn-finalized");
+    expect(repeatedLater.kind).toBe("turn-finalized");
+    if (first.kind !== "turn-finalized" || repeatedLater.kind !== "turn-finalized") {
+      throw new Error("Expected two completed LiveKit turns");
+    }
     expect(repeatedLater.deliveryId).not.toBe(first.deliveryId);
     expect(repeatedLater.turnId).not.toBe(first.turnId);
   });
@@ -85,6 +89,41 @@ describe("LiveKit finalized telephone turns", () => {
         }),
       ),
     ).toThrow("Completed telephone turn speech boundary is unavailable");
+  });
+
+  test("keeps a late completed LiveKit turn after the accepted answer non-authoritative", () => {
+    const adapter = new LiveKitTelephoneTurnAdapter(
+      "telephone-session-001",
+    );
+    adapter.speechStarted(1_787_026_448_269);
+    const first = adapter.completedTurn(
+      llm.ChatMessage.create({
+        content: "Is Bounty Well Healthy.",
+        createdAt: 1_787_026_450_226,
+        id: "completed-item-001",
+        role: "user",
+      }),
+    );
+    const late = adapter.completedTurn(
+      llm.ChatMessage.create({
+        content: "Is Bounty Well Healthy.",
+        createdAt: 1_787_026_450_386,
+        id: "completed-item-001-late",
+        role: "user",
+      }),
+    );
+
+    expect(first).toMatchObject({
+      kind: "turn-finalized",
+      transcript: "Is Bounty Well Healthy.",
+    });
+    expect(late).toEqual({
+      deliveryId: expect.any(String),
+      kind: "speech-hypothesis",
+      occurredAt: "2026-08-18T04:14:10.386Z",
+      telephoneSessionId: "telephone-session-001",
+      transcript: "Is Bounty Well Healthy.",
+    });
   });
 });
 

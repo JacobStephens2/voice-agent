@@ -725,6 +725,7 @@ function finalizedTurnId(
 
 export class LiveKitTelephoneTurnAdapter {
   readonly #telephoneSessionId: string;
+  #acceptedCompletedTurn = false;
   #speechStartedAt: number | undefined;
 
   constructor(telephoneSessionId: string) {
@@ -762,10 +763,21 @@ export class LiveKitTelephoneTurnAdapter {
 
   completedTurn(
     message: llm.ChatMessage,
-  ): Extract<TelephoneSessionProviderEvent, { kind: "turn-finalized" }> {
+  ): Extract<
+    TelephoneSessionProviderEvent,
+    { kind: "speech-hypothesis" | "turn-finalized" }
+  > {
     const transcript = message.rawTextContent;
     if (transcript === undefined || transcript.trim().length === 0) {
       throw new Error("Completed telephone turn transcript is unavailable");
+    }
+    if (this.#speechStartedAt === undefined && this.#acceptedCompletedTurn) {
+      return this.transcription({
+        createdAt: message.createdAt,
+        isFinal: true,
+        itemId: message.id,
+        transcript,
+      });
     }
     const completedTurn = mapCompletedTelephoneTurnEvent({
       createdAt: message.createdAt,
@@ -775,6 +787,7 @@ export class LiveKitTelephoneTurnAdapter {
       transcript,
     });
     this.#speechStartedAt = undefined;
+    this.#acceptedCompletedTurn = true;
     return completedTurn;
   }
 }
