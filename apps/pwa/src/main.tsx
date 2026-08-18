@@ -64,6 +64,8 @@ function App() {
     useState<BountywellRegistration>();
   const [registeredTelephone, setRegisteredTelephone] =
     useState<RegisteredTelephone>();
+  const [telephoneRegistrationLoaded, setTelephoneRegistrationLoaded] =
+    useState(false);
   const [telephoneBoundaries, setTelephoneBoundaries] =
     useState<TelephoneBoundaryStatus>();
   const [notificationPreference, setNotificationPreference] =
@@ -85,6 +87,7 @@ function App() {
     if (content.kind === "authentication-required") {
       setTasks(undefined);
       setRecord(undefined);
+      setTelephoneRegistrationLoaded(false);
       return false;
     }
     if (content.kind === "tasks") {
@@ -98,11 +101,13 @@ function App() {
       ]);
       setBountywellRegistration(bountywell);
       setRegisteredTelephone(telephone);
+      setTelephoneRegistrationLoaded(true);
       setNotificationPreference(notification);
       setTelephoneBoundaries(boundaries);
     } else {
       setRecord(content.record);
       setTasks(undefined);
+      setTelephoneRegistrationLoaded(false);
     }
     return true;
   }, []);
@@ -404,6 +409,7 @@ function App() {
     <TaskList
       bountywellRegistration={bountywellRegistration}
       registeredTelephone={registeredTelephone}
+      telephoneRegistrationLoaded={telephoneRegistrationLoaded}
       telephoneBoundaries={telephoneBoundaries}
       notificationPreference={notificationPreference}
       tasks={tasks ?? []}
