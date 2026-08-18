@@ -7,6 +7,7 @@ import {
   type BountywellRegistration,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
+  type TelephoneBoundaryStatus,
   type NotificationPreference,
   type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
@@ -14,12 +15,15 @@ import {
 } from "@voice-agent/contracts";
 import {
   applyEvidenceLifecyclePolicy,
+  authorizeRawAudioDebug,
+  changeTelephoneSpendingCeiling,
   confirmRecoveryCodes,
   enrollBootstrapPasskey,
   enrollReplacementPasskey,
   loadAuthenticationStatus,
   loadBountywellRegistration,
   loadRegisteredTelephone,
+  loadTelephoneBoundaryStatus,
   loadNotificationPreference,
   loadProtectedContent as fetchProtectedContent,
   loginWithPasskey,
@@ -41,6 +45,7 @@ import {
   ReplacementView,
   SetupView,
   Shell,
+  RawAudioDebugControl,
   TaskList,
 } from "./auth-views.tsx";
 import { EvidenceRecordPage } from "./evidence-record-page.tsx";
@@ -59,6 +64,8 @@ function App() {
     useState<BountywellRegistration>();
   const [registeredTelephone, setRegisteredTelephone] =
     useState<RegisteredTelephone>();
+  const [telephoneBoundaries, setTelephoneBoundaries] =
+    useState<TelephoneBoundaryStatus>();
   const [notificationPreference, setNotificationPreference] =
     useState<NotificationPreference>();
   const [csrfToken, setCsrfToken] = useState<string | undefined>(readCsrfCookie);
@@ -83,14 +90,16 @@ function App() {
     if (content.kind === "tasks") {
       setTasks(content.tasks);
       setRecord(undefined);
-      const [bountywell, telephone, notification] = await Promise.all([
+      const [bountywell, telephone, notification, boundaries] = await Promise.all([
         loadBountywellRegistration(),
         loadRegisteredTelephone(),
         loadNotificationPreference(),
+        loadTelephoneBoundaryStatus(),
       ]);
       setBountywellRegistration(bountywell);
       setRegisteredTelephone(telephone);
       setNotificationPreference(notification);
+      setTelephoneBoundaries(boundaries);
     } else {
       setRecord(content.record);
       setTasks(undefined);
@@ -240,6 +249,31 @@ function App() {
     });
   }
 
+  async function saveSpendingCeiling(ceilingMicrousd: number) {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before changing the spending ceiling.");
+      return;
+    }
+    await run(async () => {
+      await changeTelephoneSpendingCeiling(csrfToken, ceilingMicrousd);
+      setTelephoneBoundaries(await loadTelephoneBoundaryStatus());
+      setMessage("Monthly paid-provider spending ceiling updated.");
+    });
+  }
+
+  async function enableRawAudioDebug(sessionId: string) {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before enabling raw-audio debugging.");
+      return;
+    }
+    await run(async () => {
+      const result = await authorizeRawAudioDebug(csrfToken, sessionId);
+      setMessage(
+        `RAW AUDIO DEBUGGING ENABLED until ${formatTime(result.expiresAt)} for this session only.`,
+      );
+    });
+  }
+
   async function retainOrdinaryEvidence() {
     if (csrfToken === undefined) {
       setMessage("Sign in again before applying Evidence retention.");
@@ -341,9 +375,23 @@ function App() {
     );
   }
   if (record !== undefined) {
+    const rawAudioSessionId =
+      record.task.kind === "callback.handshake" &&
+      "session" in record &&
+      record.session.outcome === "authorized" &&
+      record.session.endedAt === undefined
+        ? record.session.id
+        : undefined;
     return (
       <>
         <EvidenceRecordPage record={record} />
+        {rawAudioSessionId === undefined ? null : (
+          <RawAudioDebugControl
+            busy={busy}
+            onEnable={enableRawAudioDebug}
+            sessionId={rawAudioSessionId}
+          />
+        )}
         <ActionFooter
           busy={busy}
           onFresh={freshPasskeyAction}
@@ -356,6 +404,7 @@ function App() {
     <TaskList
       bountywellRegistration={bountywellRegistration}
       registeredTelephone={registeredTelephone}
+      telephoneBoundaries={telephoneBoundaries}
       notificationPreference={notificationPreference}
       tasks={tasks ?? []}
       message={message}
@@ -365,6 +414,7 @@ function App() {
       onResumePromotions={resumePromotions}
       onRegisterBountywell={enrollBountywell}
       onRegisterTelephone={enrollTelephone}
+      onChangeSpendingCeiling={saveSpendingCeiling}
       onUpdateNotificationPreference={saveNotificationPreference}
       onRunBountywell={runBountywellInquiry}
     />

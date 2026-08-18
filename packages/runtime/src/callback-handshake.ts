@@ -15,7 +15,6 @@ import {
   type InboundTelephoneResult,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
-  type TelephoneConversationEvidenceEvent,
   type TelephoneEvidenceEvent,
   type TelephoneEvidenceRecordSummary,
   type TelephoneSessionEvidenceRecordProjection,
@@ -30,10 +29,17 @@ const rateLimitWindowMs = 5 * 60 * 1_000;
 export interface CallbackHandshakeRuntime {
   appendTelephoneSessionEvidence(
     handshakeId: string,
-    event: Omit<TelephoneConversationEvidenceEvent, "sequence">,
+    event: Omit<TelephoneEvidenceEvent, "sequence">,
+  ): Promise<TelephoneSessionEvidenceRecordProjection>;
+  appendTelephoneSessionEvidenceBySessionId(
+    telephoneSessionId: string,
+    event: Omit<TelephoneEvidenceEvent, "sequence">,
   ): Promise<TelephoneSessionEvidenceRecordProjection>;
   close(): Promise<void>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
+  findPendingNotificationEvidenceRecords(): Promise<
+    readonly TelephoneSessionEvidenceRecordProjection[]
+  >;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
   processDueRetries(): Promise<readonly {
     readonly handshakeId: string;
@@ -632,8 +638,25 @@ export function createCallbackHandshakeRuntime(
         handshakeId,
         updatedAt: event.occurredAt,
       }),
+    appendTelephoneSessionEvidenceBySessionId: (telephoneSessionId, event) =>
+      options.store.appendEvidenceByTelephoneSessionId({
+        event,
+        telephoneSessionId,
+        updatedAt: event.occurredAt,
+      }),
     close: () => options.store.close(),
     findRegisteredTelephone: () => options.store.findRegisteredTelephone(),
+    async findPendingNotificationEvidenceRecords() {
+      const records = await Promise.all(
+        (await options.store.findPendingNotificationHandshakeIds()).map((id) =>
+          options.store.findEvidenceRecord(id),
+        ),
+      );
+      return records.filter(
+        (record): record is TelephoneSessionEvidenceRecordProjection =>
+          record !== undefined,
+      );
+    },
     listEvidenceRecords: () => options.store.listEvidenceRecords(),
     processDueRetries,
     readEvidenceRecord: (handshakeId) =>

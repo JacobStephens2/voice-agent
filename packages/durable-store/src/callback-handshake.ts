@@ -64,6 +64,11 @@ export interface CallbackHandshakeStore {
   appendEvidence(
     input: AppendCallbackEvidencePersistence,
   ): Promise<TelephoneSessionEvidenceRecordProjection>;
+  appendEvidenceByTelephoneSessionId(input: {
+    readonly event: Omit<TelephoneEvidenceEvent, "sequence">;
+    readonly telephoneSessionId: string;
+    readonly updatedAt: string;
+  }): Promise<TelephoneSessionEvidenceRecordProjection>;
   applyTransition(
     input: ApplyCallbackTransitionPersistence,
   ): Promise<ApplyCallbackTransitionResult>;
@@ -83,6 +88,7 @@ export interface CallbackHandshakeStore {
   findHandshake(
     handshakeId: string,
   ): Promise<CallbackHandshakeSnapshot | undefined>;
+  findPendingNotificationHandshakeIds(): Promise<readonly string[]>;
   listEvidenceRecords(): Promise<readonly TelephoneEvidenceRecordSummary[]>;
   readOperationalMetrics(): Promise<CallbackHandshakeOperationalMetrics>;
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;

@@ -15,6 +15,12 @@ Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
 Environment=VOICE_AGENT_BROKER_SOCKET_PATH=/run/voice-agent-broker/broker.sock
 Environment=VOICE_AGENT_WORKER_PORT=3474
 Environment=VOICE_AGENT_TTS_VOICE=Sarah
+Environment=VOICE_AGENT_PROLONGED_SILENCE_SECONDS=60
+Environment=VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY=/var/lib/voice-agent/raw-audio-debug
+# Conservative budget-accounting rates; provider-specific overrides belong in livekit.env.
+Environment=VOICE_AGENT_API_MICROUSD_PER_MINUTE=50000
+Environment=VOICE_AGENT_TELEPHONY_MICROUSD_PER_MINUTE=50000
+Environment=VOICE_AGENT_REALTIME_MEDIA_MICROUSD_PER_MINUTE=100000
 EnvironmentFile=/etc/voice-agent/livekit.env
 EnvironmentFile=/etc/voice-agent/resend.env
 ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/worker/src/server.ts

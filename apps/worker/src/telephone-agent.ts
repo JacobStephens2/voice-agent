@@ -15,25 +15,38 @@ import type {
   CallbackAction,
   CallbackActionResult,
   CallbackProviderEvent,
+  TelephoneEvidenceEvent,
 } from "@voice-agent/contracts";
 import { createUnixSocketBountywellObserver } from "@voice-agent/operations-broker";
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createNodeRawAudioArtifactRemover,
   createTaskContinuityRuntime,
+  createTelephoneBoundaryRuntime,
 } from "@voice-agent/runtime";
 import {
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteTaskContinuityStore,
+  createSqliteTelephoneBoundaryStore,
 } from "@voice-agent/sqlite-store";
 
 import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
 } from "./livekit-callback-adapter.ts";
-import { runLiveKitTelephoneSession } from "./livekit-telephone-session.ts";
+import {
+  boundedProviderConnectOptions,
+  mapProviderFailureEvent,
+  playPrerecordedProviderFailure,
+  runLiveKitTelephoneSession,
+} from "./livekit-telephone-session.ts";
 import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
+import {
+  reserveTelephoneUsageSlice,
+  telephoneUsageRatesFromEnvironment,
+} from "./telephone-usage-meter.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -47,6 +60,24 @@ export default defineAgent({
       nextId: randomUUID,
       now: () => new Date().toISOString(),
       store: callbackStore,
+    });
+    const boundaries = createTelephoneBoundaryRuntime({
+      evidence: {
+        async append(telephoneSessionId, event) {
+          await runtime.appendTelephoneSessionEvidenceBySessionId(
+            telephoneSessionId,
+            event,
+          );
+        },
+      },
+      nextId: randomUUID,
+      now: () => new Date().toISOString(),
+      prolongedSilenceMs: prolongedSilenceMs(),
+      rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
+      rawAudioDebugDirectory:
+        process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
+        "/var/lib/voice-agent/raw-audio-debug",
+      store: createSqliteTelephoneBoundaryStore(databasePath),
     });
     const taskStore = createSqliteDurableTaskStore(databasePath);
     const tasks = createDurableTaskRuntime({
@@ -75,9 +106,21 @@ export default defineAgent({
     try {
       const dispatch = parseOutboundDispatch(ctx.job.metadata);
       if (dispatch === undefined) {
-        await handleInbound(ctx, runtime, callbackAdapter);
+        await handleInbound(
+          ctx,
+          runtime,
+          boundaries,
+          callbackAdapter,
+        );
       } else if (dispatch.kind === "authentication") {
-        await handleOutbound(ctx, runtime, tasks, continuity, dispatch);
+        await handleOutbound(
+          ctx,
+          runtime,
+          tasks,
+          continuity,
+          boundaries,
+          dispatch,
+        );
       } else {
         if (dispatch.resumption) {
           await handleCompletionResumption(
@@ -85,6 +128,7 @@ export default defineAgent({
             runtime,
             tasks,
             continuity,
+            boundaries,
             dispatch,
           );
         } else {
@@ -93,11 +137,14 @@ export default defineAgent({
             runtime,
             tasks,
             continuity,
+            boundaries,
             dispatch,
           );
         }
       }
     } finally {
+      await boundaries.cleanupExpiredRawAudio();
+      await boundaries.close();
       await continuity.close();
       await tasks.close();
       await runtime.close();
@@ -108,6 +155,7 @@ export default defineAgent({
 type CallbackRuntime = ReturnType<typeof createCallbackHandshakeRuntime>;
 type TaskRuntime = ReturnType<typeof createDurableTaskRuntime>;
 type ContinuityRuntime = ReturnType<typeof createTaskContinuityRuntime>;
+type BoundaryRuntime = ReturnType<typeof createTelephoneBoundaryRuntime>;
 
 interface AuthenticationCallbackDispatch {
   readonly attempt: 1 | 2;
@@ -132,15 +180,35 @@ type OutboundDispatch =
   | AuthenticationCallbackDispatch
   | CompletionCallbackDispatch;
 
+class TelephoneSetupProviderError extends Error {
+  constructor(
+    readonly stage: "coordinator" | "stt" | "tts",
+    readonly providerError: unknown,
+  ) {
+    super(`Telephone ${stage} setup provider failed`);
+  }
+}
+
 async function handleInbound(
   ctx: JobContext,
   runtime: CallbackRuntime,
+  boundaries: BoundaryRuntime,
   callbackAdapter: LiveKitCallbackAdapter,
 ): Promise<void> {
   await ctx.connect();
   const participant = await ctx.waitForParticipant();
   const attributes = participant.attributes;
   const inboundCallId = providerCallId(participant);
+  if (
+    (await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
+      recordUsage: boundaries.recordUsage,
+      usageScopeId: `prelive:inbound:${providerDeliveryFingerprint(inboundCallId)}`,
+    })) === "safe-terminal-only"
+  ) {
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   const inbound = await runtime.receiveInbound({
     calledNumber: normalizeTelnyxSipTelephoneNumber(
       attributes["sip.trunkPhoneNumber"],
@@ -156,7 +224,10 @@ async function handleInbound(
     await ctx.deleteRoom();
     return;
   }
-
+  const record = await runtime.readEvidenceRecord(inbound.handshakeId!);
+  if (record === undefined) {
+    throw new Error("Inbound Callback Handshake Evidence Record is unavailable");
+  }
   const session = createFixedSpeechSession();
   try {
     await session.start({
@@ -170,13 +241,24 @@ async function handleInbound(
     if (notice !== undefined) {
       await playFixedText(session, notice.text);
     }
-  } catch {
-    await runtime.receiveProviderEvent(inbound.handshakeId!, {
+  } catch (error) {
+    await playPrerecordedProviderFailure(session).catch(() => undefined);
+    const failed = await runtime.receiveProviderEvent(inbound.handshakeId!, {
       attempt: 1,
       deliveryId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
       kind: "ended",
       outcome: "failed",
       providerCallId: inboundCallId,
+    });
+    await recordAuthenticationSetupProviderFailure({
+      boundaries,
+      failureEventId: `provider-failure:${inbound.handshakeId}:inbound-notice`,
+      handshakeId: inbound.handshakeId!,
+      occurredAt: new Date().toISOString(),
+      error,
+      result: failed,
+      runtime,
+      telephoneSessionId: record.session.id,
     });
     return;
   } finally {
@@ -186,7 +268,12 @@ async function handleInbound(
 
   for (const action of inbound.actions) {
     if (action.kind !== "place-callback") continue;
-    await placeCallbackOrRecordFailure(runtime, callbackAdapter, action);
+    await placeCallbackOrRecordFailure(
+      runtime,
+      boundaries,
+      callbackAdapter,
+      action,
+    );
   }
 }
 
@@ -195,8 +282,26 @@ async function handleOutbound(
   runtime: CallbackRuntime,
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
+  boundaries: BoundaryRuntime,
   dispatch: AuthenticationCallbackDispatch,
 ): Promise<void> {
+  const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
+  if (pendingRecord === undefined) {
+    throw new Error("Callback Handshake Evidence Record is unavailable");
+  }
+  const telephoneSessionId = pendingRecord.session.id;
+  const warmDecision = await boundaries.reserveWarmSession(telephoneSessionId);
+  if (warmDecision.decision !== "accepted") {
+    await runtime.requestTelephoneSessionFailureNotification(
+      dispatch.handshakeId,
+      {
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
+        occurredAt: new Date().toISOString(),
+      },
+    );
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   const session = createFixedSpeechSession();
   let callId = dispatch.effectId;
   let detector: voice.AMD | undefined;
@@ -213,19 +318,16 @@ async function handleOutbound(
       dispatch.participantIdentity,
     );
     callId = providerCallId(participant);
-    detector = new voice.AMD(session, {
-      interruptOnMachine: true,
-      llm: "openai/gpt-5.4",
-      participantIdentity: dispatch.participantIdentity,
-      stt: "assemblyai/universal-streaming-multilingual",
-      waitUntilFinished: true,
-    });
+    detector = createBoundedMachineDetector(
+      session,
+      dispatch.participantIdentity,
+    );
     disconnected = waitForParticipantDisconnect(
       ctx.room,
       participant.identity,
     );
     const detection = await Promise.race([
-      detector.execute().then((prediction) => ({
+      executeMachineDetection(detector).then((prediction) => ({
         kind: "prediction" as const,
         prediction,
       })),
@@ -296,9 +398,22 @@ async function handleOutbound(
         if (record?.session.outcome !== "authorized") {
           throw new Error("Telephone Session was not durably authorized");
         }
+        const admission = await boundaries.activateSession(telephoneSessionId);
+        if (admission.decision !== "accepted") {
+          await runtime.requestTelephoneSessionFailureNotification(
+            dispatch.handshakeId,
+            {
+              failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(admission)}`,
+              occurredAt: new Date().toISOString(),
+            },
+          );
+          await playPrerecordedProviderFailure(session);
+          return;
+        }
         await session.close();
         await detector.aclose();
         await runLiveKitTelephoneSession({
+          boundaries,
           disconnected: disconnected.promise,
           endCall: () => ctx.deleteRoom(),
           room: ctx.room,
@@ -320,6 +435,8 @@ async function handleOutbound(
           },
           tasks,
           telephoneSessionId: record.session.id,
+          prolongedSilenceMs: prolongedSilenceMs(),
+          usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
         });
         return;
       }
@@ -333,15 +450,27 @@ async function handleOutbound(
       providerCallId: callId,
     });
     await performMediaActions(session, ended);
-  } catch {
-    await runtime.receiveProviderEvent(dispatch.handshakeId, {
+  } catch (error) {
+    await playPrerecordedProviderFailure(session).catch(() => undefined);
+    const failed = await runtime.receiveProviderEvent(dispatch.handshakeId, {
       attempt: dispatch.attempt,
       deliveryId: `provider-failure:${dispatch.effectId}`,
       kind: "ended",
       outcome: "failed",
       providerCallId: callId,
     });
+    await recordAuthenticationSetupProviderFailure({
+      boundaries,
+      failureEventId: `provider-failure:${dispatch.effectId}`,
+      handshakeId: dispatch.handshakeId,
+      occurredAt: new Date().toISOString(),
+      error,
+      result: failed,
+      runtime,
+      telephoneSessionId,
+    });
   } finally {
+    await boundaries.releaseWarmSession(telephoneSessionId);
     disconnected?.cancel();
     await detector?.aclose().catch(() => undefined);
     await session.close().catch(() => undefined);
@@ -354,8 +483,23 @@ async function handleCompletionOutbound(
   callback: CallbackRuntime,
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
+  boundaries: BoundaryRuntime,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
+  const warmDecision = await boundaries.reserveWarmSession(
+    dispatch.telephoneSessionId,
+  );
+  if (warmDecision.decision !== "accepted") {
+    await continuity
+      .requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
+        occurredAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   const session = createFixedSpeechSession();
   let detector: voice.AMD | undefined;
   let disconnected:
@@ -373,19 +517,16 @@ async function handleCompletionOutbound(
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
-    detector = new voice.AMD(session, {
-      interruptOnMachine: true,
-      llm: "openai/gpt-5.4",
-      participantIdentity: dispatch.participantIdentity,
-      stt: "assemblyai/universal-streaming-multilingual",
-      waitUntilFinished: true,
-    });
+    detector = createBoundedMachineDetector(
+      session,
+      dispatch.participantIdentity,
+    );
     disconnected = waitForParticipantDisconnect(
       ctx.room,
       participant.identity,
     );
     const detection = await Promise.race([
-      detector.execute().then((prediction) => ({
+      executeMachineDetection(detector).then((prediction) => ({
         kind: "prediction" as const,
         prediction,
       })),
@@ -467,10 +608,23 @@ async function handleCompletionOutbound(
       session,
       "Telephone confirmed. Resuming your Voice Agent task.",
     );
+    const admission = await boundaries.activateSession(
+      resume.telephoneSessionId,
+    );
+    if (admission.decision !== "accepted") {
+      await continuity.requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(admission)}`,
+        occurredAt: new Date().toISOString(),
+      });
+      await playPrerecordedProviderFailure(session);
+      return;
+    }
     await session.close();
     await detector.aclose();
     await runLiveKitTelephoneSession({
       activeTaskId: resume.taskId,
+      boundaries,
       disconnected: disconnected.promise,
       endCall: () => ctx.deleteRoom(),
       openingText: `Your task concluded: ${record.task.conclusion}`,
@@ -491,8 +645,20 @@ async function handleCompletionOutbound(
       },
       tasks,
       telephoneSessionId: resume.telephoneSessionId,
+      prolongedSilenceMs: prolongedSilenceMs(),
+      usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
-  } catch {
+  } catch (error) {
+    await playPrerecordedProviderFailure(session).catch(() => undefined);
+    const occurredAt = new Date().toISOString();
+    await recordCompletionSetupProviderFailure({
+      boundaries,
+      callback,
+      error,
+      failureEventId: dispatch.effectId,
+      occurredAt,
+      telephoneSessionId: dispatch.telephoneSessionId,
+    }).catch(() => undefined);
     if (authenticated) {
       await continuity
         .requestSessionFailureNotification({
@@ -511,6 +677,7 @@ async function handleCompletionOutbound(
         .catch(() => undefined);
     }
   } finally {
+    await boundaries.releaseWarmSession(dispatch.telephoneSessionId);
     disconnected?.cancel();
     await detector?.aclose().catch(() => undefined);
     await session.close().catch(() => undefined);
@@ -525,8 +692,23 @@ async function handleCompletionResumption(
   callback: CallbackRuntime,
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
+  boundaries: BoundaryRuntime,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
+  const warmDecision = await boundaries.reserveWarmSession(
+    dispatch.telephoneSessionId,
+  );
+  if (warmDecision.decision !== "accepted") {
+    await continuity
+      .requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
+        occurredAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+    await ctx.deleteRoom().catch(() => undefined);
+    return;
+  }
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
@@ -541,8 +723,20 @@ async function handleCompletionResumption(
     if (record === undefined) {
       throw new Error("Resumed Durable Task is unavailable");
     }
+    const admission = await boundaries.activateSession(
+      dispatch.telephoneSessionId,
+    );
+    if (admission.decision !== "accepted") {
+      await continuity.requestSessionFailureNotification({
+        callbackOperationId: dispatch.operationId,
+        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(admission)}`,
+        occurredAt: new Date().toISOString(),
+      });
+      return;
+    }
     await runLiveKitTelephoneSession({
       activeTaskId: dispatch.taskId,
+      boundaries,
       disconnected: disconnected.promise,
       endCall: () => ctx.deleteRoom(),
       openingText: `Your task concluded: ${record.task.conclusion}`,
@@ -561,6 +755,8 @@ async function handleCompletionResumption(
       ),
       tasks,
       telephoneSessionId: dispatch.telephoneSessionId,
+      prolongedSilenceMs: prolongedSilenceMs(),
+      usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
   } catch {
     await continuity
@@ -571,6 +767,7 @@ async function handleCompletionResumption(
       })
       .catch(() => undefined);
   } finally {
+    await boundaries.releaseWarmSession(dispatch.telephoneSessionId);
     disconnected?.cancel();
     await ctx.deleteRoom().catch(() => undefined);
   }
@@ -597,6 +794,110 @@ function completionSessionEvidence(
       });
     },
   };
+}
+
+async function recordAuthenticationSetupProviderFailure(input: {
+  readonly boundaries: BoundaryRuntime;
+  readonly error: unknown;
+  readonly failureEventId: string;
+  readonly handshakeId: string;
+  readonly occurredAt: string;
+  readonly result: CallbackActionResult;
+  readonly runtime: CallbackRuntime;
+  readonly telephoneSessionId: string;
+}): Promise<void> {
+  await recordSetupProviderFailure({
+    append: (event) =>
+      input.runtime.appendTelephoneSessionEvidence(input.handshakeId, event),
+    boundaries: input.boundaries,
+    error: input.error,
+    failureEventId: input.failureEventId,
+    occurredAt: input.occurredAt,
+    telephoneSessionId: input.telephoneSessionId,
+  });
+  const notification = input.result.actions.find(
+    (action) => action.kind === "request-silent-notification",
+  );
+  if (notification === undefined) {
+    await input.runtime.requestTelephoneSessionFailureNotification(
+      input.handshakeId,
+      {
+        failureEventId: input.failureEventId,
+        occurredAt: input.occurredAt,
+      },
+    );
+  }
+}
+
+async function recordCompletionSetupProviderFailure(input: {
+  readonly boundaries: BoundaryRuntime;
+  readonly callback: CallbackRuntime;
+  readonly error: unknown;
+  readonly failureEventId: string;
+  readonly occurredAt: string;
+  readonly telephoneSessionId: string;
+}): Promise<void> {
+  await recordSetupProviderFailure({
+    append: (event) =>
+      input.callback.appendTelephoneSessionEvidenceBySessionId(
+        input.telephoneSessionId,
+        event,
+      ),
+    boundaries: input.boundaries,
+    error: input.error,
+    failureEventId: input.failureEventId,
+    occurredAt: input.occurredAt,
+    telephoneSessionId: input.telephoneSessionId,
+  });
+}
+
+async function recordSetupProviderFailure(input: {
+  readonly append: (
+    event: Omit<TelephoneEvidenceEvent, "sequence">,
+  ) => Promise<unknown>;
+  readonly boundaries: BoundaryRuntime;
+  readonly error: unknown;
+  readonly failureEventId: string;
+  readonly occurredAt: string;
+  readonly telephoneSessionId: string;
+}): Promise<void> {
+  if (!(input.error instanceof TelephoneSetupProviderError)) return;
+  const correlation = createHash("sha256")
+    .update(input.failureEventId)
+    .digest("hex")
+    .slice(0, 32);
+  const failure = mapProviderFailureEvent({
+    deliveryId: correlation,
+    error: input.error.providerError,
+    occurredAt: input.occurredAt,
+    stage: input.error.stage,
+  });
+  const failureClass =
+    failure.kind === "provider-timeout" ? "timeout" : "unavailable";
+  await input.append({
+    details:
+      failure.kind === "provider-timeout"
+        ? {
+            failure: "timeout",
+            provider: failure.provider,
+            stage: failure.stage,
+            timeoutMs: failure.timeoutMs,
+          }
+        : {
+            failure: "unavailable",
+            provider: failure.provider,
+            stage: failure.stage,
+          },
+    id: `setup-provider-failure:${correlation}`,
+    kind: "telephone.provider.failure",
+    occurredAt: input.occurredAt,
+    summary: "Telephone setup reached a bounded provider failure.",
+  });
+  await input.boundaries.recordProviderFailure({
+    failureClass,
+    sessionId: input.telephoneSessionId,
+    stage: input.error.stage,
+  });
 }
 
 function requireResumptionOperationId(
@@ -639,12 +940,43 @@ async function performCompletionMediaActions(
 
 function createFixedSpeechSession(): voice.AgentSession {
   return new voice.AgentSession({
+    connOptions: {
+      maxUnrecoverableErrors: 0,
+      ttsConnOptions: boundedProviderConnectOptions("tts"),
+    },
     tts: new inference.TTS({
+      connOptions: boundedProviderConnectOptions("tts"),
       language: "en",
       model: "inworld/inworld-tts-2",
       voice: process.env.VOICE_AGENT_TTS_VOICE ?? "Sarah",
     }),
+    ttsReadIdleTimeout: 10_000,
   });
+}
+
+function createBoundedMachineDetector(
+  session: voice.AgentSession,
+  participantIdentity: string,
+): voice.AMD {
+  return new voice.AMD(session, {
+    detectionTimeoutMs: 10_000,
+    interruptOnMachine: true,
+    llm: "openai/gpt-5.4",
+    noSpeechTimeoutMs: 5_000,
+    participantIdentity,
+    stt: "assemblyai/universal-streaming-multilingual",
+    waitUntilFinished: false,
+  });
+}
+
+async function executeMachineDetection(
+  detector: voice.AMD,
+): ReturnType<voice.AMD["execute"]> {
+  try {
+    return await detector.execute();
+  } catch (error) {
+    throw new TelephoneSetupProviderError("coordinator", error);
+  }
 }
 
 function fixedSpeechAgent(): voice.Agent {
@@ -684,19 +1016,55 @@ async function playFixedText(
       lastFailure = error;
     }
   }
-  throw lastFailure;
+  throw new TelephoneSetupProviderError("tts", lastFailure);
 }
 
 async function placeCallbackOrRecordFailure(
   runtime: CallbackRuntime,
+  boundaries: BoundaryRuntime,
   adapter: LiveKitCallbackAdapter,
   action: Extract<CallbackAction, { kind: "place-callback" }>,
 ): Promise<void> {
+  const handshakeId = requireHandshakeId(action.roomName);
+  const record = await runtime.readEvidenceRecord(handshakeId);
+  if (record === undefined) {
+    throw new Error("Callback Handshake Evidence Record is unavailable");
+  }
+  const decision = await boundaries.reserveWarmSession(record.session.id);
+  if (decision.decision !== "accepted") {
+    await runtime.receiveProviderEvent(handshakeId, {
+      attempt: action.attempt,
+      deliveryId: `admission-rejected:${action.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: action.effectId,
+    });
+    return;
+  }
+  if (
+    (await reserveTelephoneUsageSlice({
+      ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
+      recordUsage: boundaries.recordUsage,
+      sessionId: record.session.id,
+      usageScopeId: `prelive:${action.effectId}`,
+    })) === "safe-terminal-only"
+  ) {
+    await boundaries.releaseWarmSession(record.session.id);
+    await runtime.receiveProviderEvent(handshakeId, {
+      attempt: action.attempt,
+      deliveryId: `spending-ceiling:${action.effectId}`,
+      kind: "ended",
+      outcome: "failed",
+      providerCallId: action.effectId,
+    });
+    return;
+  }
   try {
     await adapter.placeCallback(action);
   } catch {
+    await boundaries.releaseWarmSession(record.session.id);
     await runtime.receiveProviderEvent(
-      requireHandshakeId(action.roomName),
+      handshakeId,
       {
         attempt: action.attempt,
         deliveryId: `placement-failed:${action.effectId}`,
@@ -859,4 +1227,27 @@ function requireEnvironment(name: string): string {
     throw new Error(`${name} is required`);
   }
   return value;
+}
+
+function prolongedSilenceMs(): number {
+  const configured = Number(
+    process.env.VOICE_AGENT_PROLONGED_SILENCE_SECONDS ?? "60",
+  );
+  if (!Number.isInteger(configured) || configured < 30 || configured > 900) {
+    throw new Error(
+      "VOICE_AGENT_PROLONGED_SILENCE_SECONDS must be between 30 and 900",
+    );
+  }
+  return configured * 1_000;
+}
+
+function boundaryDenialReason(
+  decision: Awaited<ReturnType<BoundaryRuntime["activateSession"]>>,
+): string {
+  if (decision.decision === "accepted") {
+    throw new Error("Accepted boundary decision has no denial reason");
+  }
+  return decision.decision === "rejected"
+    ? decision.reason
+    : `${decision.resource}-queued`;
 }

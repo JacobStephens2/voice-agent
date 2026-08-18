@@ -7,6 +7,7 @@ import {
   createSqliteAuthenticationStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteTelephoneBoundaryStore,
   createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
 import staticFiles from "@fastify/static";
@@ -19,7 +20,10 @@ import { createVoiceApi } from "./index.ts";
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createNodeRawAudioArtifactRemover,
+  createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
+  formatTelephoneBoundaryPrometheusMetrics,
 } from "@voice-agent/runtime";
 
 const databasePath = process.env.VOICE_AGENT_DATABASE_PATH;
@@ -51,6 +55,24 @@ const callbackRuntime = createCallbackHandshakeRuntime({
   now: () => new Date().toISOString(),
   store: callbackStore,
 });
+const boundaries = createTelephoneBoundaryRuntime({
+  evidence: {
+    async append(telephoneSessionId, event) {
+      await callbackRuntime.appendTelephoneSessionEvidenceBySessionId(
+        telephoneSessionId,
+        event,
+      );
+    },
+  },
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
+  rawAudioDebugDirectory:
+    process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
+    "/var/lib/voice-agent/raw-audio-debug",
+  store: createSqliteTelephoneBoundaryStore(databasePath),
+});
+await boundaries.cleanupExpiredRawAudio();
 const continuityRuntime = createTaskContinuityRuntime({
   callbackEvidenceRetention: callbackStore,
   evidenceOrigin: origin,
@@ -71,11 +93,37 @@ const authentication = createAuthenticationLifecycle({
   store: authenticationStore,
 });
 const api = createVoiceApi({
-  additionalMetrics: () => readAdditionalMetrics(
-    process.env.VOICE_AGENT_PROMOTION_METRICS_PATH ??
-      "/var/lib/voice-agent-promotions/promotions.prom",
-  ),
+  additionalMetrics: async () => {
+    const [promotionMetrics, boundaryMetrics] = await Promise.all([
+      readAdditionalMetrics(
+        process.env.VOICE_AGENT_PROMOTION_METRICS_PATH ??
+          "/var/lib/voice-agent-promotions/promotions.prom",
+      ),
+      boundaries.readMetrics(),
+    ]);
+    return `${promotionMetrics}${formatTelephoneBoundaryPrometheusMetrics(
+      boundaryMetrics,
+    )}`;
+  },
   authentication,
+  boundaryControls: {
+    async authorizeRawAudioDebug({ sessionId }) {
+      const result = await boundaries.authorizeRawAudioDebug({
+        actor: "owner",
+        freshPasskey: true,
+        sessionId,
+      });
+      return result.decision === "accepted"
+        ? { ...result, sessionId }
+        : result;
+    },
+    changeSpendingCeiling: ({ ceilingMicrousd }) =>
+      boundaries.changeSpendingCeiling({
+        ceilingMicrousd,
+        freshPasskey: true,
+      }),
+    readBoundaryStatus: () => boundaries.readBoundaryStatus(),
+  },
   completionControls: continuityRuntime,
   controls: runtime,
   origin,
@@ -115,6 +163,7 @@ await api.register(staticFiles, {
 const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
+  await boundaries.close();
   await callbackRuntime.close();
   await continuityRuntime.close();
   await runtime.close();

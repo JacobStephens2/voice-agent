@@ -102,6 +102,16 @@ export function createSqliteCallbackHandshakeStore(
     FROM callback_handshakes
     WHERE id = ?
   `);
+  const findHandshakeIdByTelephoneSession = database.prepare<
+    [telephoneSessionId: string],
+    { readonly id: string }
+  >(`
+    SELECT id
+    FROM callback_handshakes
+    WHERE json_extract(snapshot_json, '$.telephoneSessionId') = ?
+    ORDER BY accepted_at DESC
+    LIMIT 1
+  `);
   const findDueRetries = database.prepare<
     [now: string],
     { readonly snapshot_json: string }
@@ -116,6 +126,23 @@ export function createSqliteCallbackHandshakeStore(
     FROM callback_handshakes
     ORDER BY accepted_at DESC, id DESC
     LIMIT 100
+  `);
+  const findPendingNotificationHandshakeIds = database.prepare<
+    [],
+    { readonly handshake_id: string }
+  >(`
+    SELECT DISTINCT requested.handshake_id
+    FROM callback_evidence_events AS requested
+    WHERE requested.kind = 'notification.requested'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM callback_evidence_events AS sent
+        WHERE sent.handshake_id = requested.handshake_id
+          AND sent.kind = 'notification.sent'
+          AND json_extract(sent.details_json, '$.operationId') =
+            json_extract(requested.details_json, '$.operationId')
+      )
+    ORDER BY requested.occurred_at, requested.handshake_id
   `);
   const countRecentHandshakes = database.prepare<
     [callerFingerprint: string, cutoff: string],
@@ -362,6 +389,15 @@ export function createSqliteCallbackHandshakeStore(
         projectionStateJson({
           ...record,
           evidence: [...record.evidence, event],
+          session:
+            event.kind === "telephone.session.ended"
+              ? {
+                  ...record.session,
+                  durationMs: event.details.durationMs,
+                  endedAt: event.occurredAt,
+                  endReason: event.details.reason,
+                }
+              : record.session,
           task: { ...record.task, updatedAt: occurredAt },
         }),
         input.handshakeId,
@@ -395,6 +431,19 @@ export function createSqliteCallbackHandshakeStore(
     async appendEvidence(input) {
       return appendEvidenceTransaction.immediate(input);
     },
+    async appendEvidenceByTelephoneSessionId(input) {
+      const row = findHandshakeIdByTelephoneSession.get(
+        input.telephoneSessionId,
+      );
+      if (row === undefined) {
+        throw new Error("Telephone Session Evidence Record is unavailable");
+      }
+      return appendEvidenceTransaction.immediate({
+        event: input.event,
+        handshakeId: row.id,
+        updatedAt: input.updatedAt,
+      });
+    },
     async applyTransition(input) {
       return applyTransitionTransaction.immediate(input);
     },
@@ -427,6 +476,11 @@ export function createSqliteCallbackHandshakeStore(
       return row === undefined
         ? undefined
         : callbackHandshakeSnapshotSchema.parse(JSON.parse(row.snapshot_json));
+    },
+    async findPendingNotificationHandshakeIds() {
+      return findPendingNotificationHandshakeIds
+        .all()
+        .map((row) => row.handshake_id);
     },
     async findRegisteredTelephone() {
       const row = findRegistration.get();
@@ -553,6 +607,8 @@ function createCallbackSchema(database: Database.Database): void {
       details_json TEXT NOT NULL,
       UNIQUE (handshake_id, sequence)
     );
+    CREATE INDEX IF NOT EXISTS callback_evidence_events_kind
+      ON callback_evidence_events (kind, handshake_id);
 
     CREATE TRIGGER IF NOT EXISTS registered_telephone_no_update
     BEFORE UPDATE ON registered_telephone_revisions

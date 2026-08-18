@@ -89,12 +89,49 @@ describe("production-shaped LiveKit telephone turns", () => {
     try {
       await runLiveKitTelephoneSession(
         {
+          boundaries: {
+            async claimRawAudioCapture() {
+              return {
+                decision: "rejected" as const,
+                reason: "debug-grant-required" as const,
+              };
+            },
+            async claimStateChangingTask() {
+              return {
+                decision: "accepted" as const,
+                resource: "state-changing-task" as const,
+              };
+            },
+            async endSession() {
+              return { ended: false as const };
+            },
+            async noteActivity() {},
+            async recordProviderFailure() {
+              return { ended: false as const };
+            },
+            async recordUsage() {
+              return {
+                disposition: "continue" as const,
+                month: "2026-08",
+                totalMicrousd: 1,
+                warnings: [],
+              };
+            },
+            async releaseStateChangingTask() {
+              return {};
+            },
+          },
           disconnected: Promise.resolve(),
           async endCall() {},
           room: {} as Room,
           sessionEvidence: { async append() {} },
           tasks,
           telephoneSessionId: "199afc7a-9d64-4aac-987b-aa734e19553b",
+          usageRatesMicrousdPerMinute: {
+            api: 1,
+            "realtime-media": 1,
+            telephony: 1,
+          },
         },
         dependencies,
       );

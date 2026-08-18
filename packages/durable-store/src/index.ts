@@ -6,6 +6,7 @@ import type {
 } from "@voice-agent/contracts";
 
 export * from "./callback-handshake.ts";
+export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
 
 export interface ApplicationRegistry {

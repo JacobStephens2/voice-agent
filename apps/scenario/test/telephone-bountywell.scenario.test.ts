@@ -554,6 +554,7 @@ describe("Telephone Bountywell health inquiry", () => {
         observedAt: "2026-08-17T17:00:01.000Z",
         rejectedEvidenceCount: 0,
       },
+      stateChangingDecisions: ["accepted", "accepted"],
     });
 
     try {
@@ -577,6 +578,40 @@ describe("Telephone Bountywell health inquiry", () => {
               "Please confirm this state-changing task: Bountywell production — Restart Bountywell production so the API becomes healthy.",
           },
         ],
+      });
+      await expect(
+        scenario.receiveProviderEvent({
+          deliveryId: "confirmation-delivery-002",
+          kind: "turn-finalized",
+          occurredAt: "2026-08-17T17:00:01.500Z",
+          stt: { durationMs: 280, provider: "assemblyai" },
+          telephoneSessionId: "telephone-session-confirmation",
+          transcript: "Yes, please",
+          turnId: "confirmation-delivery-002",
+        }),
+      ).resolves.toEqual({
+        actions: [
+          {
+            interruptible: true,
+            kind: "speak-guidance",
+            responseId: "confirmation-delivery-002:guidance",
+            text:
+              "Task confirmation recorded. Use the secure app to authorize execution.",
+          },
+        ],
+      });
+      await expect(
+        scenario.receiveProviderEvent({
+          deliveryId: "confirmation-delivery-003",
+          kind: "turn-finalized",
+          occurredAt: "2026-08-17T17:00:02.500Z",
+          stt: { durationMs: 280, provider: "assemblyai" },
+          telephoneSessionId: "telephone-session-confirmation",
+          transcript: "Deploy the Bountywell fix now",
+          turnId: "confirmation-delivery-003",
+        }),
+      ).resolves.toMatchObject({
+        actions: [{ kind: "request-task-confirmation" }],
       });
       expect(scenario.brokerRequests).toEqual([]);
     } finally {

@@ -18,6 +18,7 @@ import {
 } from "@voice-agent/policy";
 
 export * from "./callback-handshake.ts";
+export * from "./telephone-boundaries.ts";
 export * from "./telephone-session.ts";
 export * from "./task-continuity.ts";
 

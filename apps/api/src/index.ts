@@ -8,9 +8,13 @@ import Fastify, {
 import type { AuthenticationLifecycle } from "@voice-agent/auth";
 import {
   applyEvidenceRetentionRequestSchema,
+  authorizeRawAudioDebugRequestSchema,
+  authorizeRawAudioDebugResultSchema,
   authenticationStatusSchema,
   bountywellRegistrationSchema,
   bountywellRegistrationStatusSchema,
+  changeTelephoneSpendingCeilingRequestSchema,
+  changeTelephoneSpendingCeilingResultSchema,
   csrfRequestSchema,
   evidenceRecordProjectionSchema,
   evidenceRetentionResultSchema,
@@ -32,6 +36,7 @@ import {
   registerBountywellRequestSchema,
   registrationOptionsRequestSchema,
   submitBountywellHealthRequestSchema,
+  telephoneBoundaryStatusSchema,
   stopTaskRequestSchema,
   trustedBrowserSessionResponseSchema,
   updateNotificationPreferenceRequestSchema,
@@ -42,6 +47,7 @@ import {
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
   type NotificationPreference,
+  type TelephoneBoundaryStatus,
   type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
@@ -119,9 +125,34 @@ export interface CompletionControls {
   getNotificationPreference(): Promise<NotificationPreference | undefined>;
 }
 
+export interface TelephoneBoundaryControls {
+  authorizeRawAudioDebug(input: {
+    readonly sessionId: string;
+  }): Promise<
+    | {
+        readonly decision: "accepted";
+        readonly expiresAt: string;
+        readonly sessionId: string;
+      }
+    | { readonly decision: "rejected"; readonly reason: string }
+  >;
+  changeSpendingCeiling(input: {
+    readonly ceilingMicrousd: number;
+  }): Promise<
+    | {
+        readonly ceilingMicrousd: number;
+        readonly decision: "accepted";
+        readonly revision: number;
+      }
+    | { readonly decision: "rejected"; readonly reason: string }
+  >;
+  readBoundaryStatus(): Promise<TelephoneBoundaryStatus>;
+}
+
 export interface TaskApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: EvidenceRecordAuthentication;
+  readonly boundaryControls?: TelephoneBoundaryControls | undefined;
   readonly controls?: BountywellTaskControls;
   readonly completionControls?: CompletionControls | undefined;
   readonly origin?: string;
@@ -135,6 +166,7 @@ export interface TaskApiOptions {
 export interface VoiceApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
   readonly authentication: AuthenticationLifecycle;
+  readonly boundaryControls?: TelephoneBoundaryControls | undefined;
   readonly controls?: BountywellTaskControls;
   readonly completionControls?: CompletionControls | undefined;
   readonly origin: string;
@@ -290,6 +322,14 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       records: options.records,
     });
   }
+  if (options.boundaryControls !== undefined && options.origin !== undefined) {
+    registerTelephoneBoundaryRoutes(api, {
+      authentication: options.authentication,
+      controls: options.boundaryControls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
   if (options.completionControls !== undefined && options.origin !== undefined) {
     registerCompletionControlRoutes(api, {
       authentication: options.authentication,
@@ -299,6 +339,84 @@ function createApi(options: TaskApiOptions): FastifyInstance {
     });
   }
   return api;
+}
+
+function registerTelephoneBoundaryRoutes(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: TelephoneBoundaryControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.get("/api/telephone/boundaries", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return telephoneBoundaryStatusSchema.parse(
+      await options.controls.readBoundaryStatus(),
+    );
+  });
+
+  api.post("/api/telephone/spending-ceiling", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = changeTelephoneSpendingCeilingRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    if (
+      options.authentication.hasFreshPasskeyAction === undefined ||
+      !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+    ) {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: "Fresh Passkey Action required" });
+    }
+    const result = await options.controls.changeSpendingCeiling({
+      ceilingMicrousd: body.ceilingMicrousd,
+    });
+    if (result.decision === "rejected") {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(409).send({ error: result.reason });
+    }
+    return changeTelephoneSpendingCeilingResultSchema.parse(result);
+  });
+
+  api.post<{ Params: { sessionId: string } }>(
+    "/api/telephone/sessions/:sessionId/raw-audio-debug",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = authorizeRawAudioDebugRequestSchema.parse(request.body);
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      if (
+        options.authentication.hasFreshPasskeyAction === undefined ||
+        !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+      ) {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(403).send({ error: "Fresh Passkey Action required" });
+      }
+      const result = await options.controls.authorizeRawAudioDebug({
+        sessionId: request.params.sessionId,
+      });
+      if (result.decision === "rejected") {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(409).send({ error: result.reason });
+      }
+      return authorizeRawAudioDebugResultSchema.parse(result);
+    },
+  );
 }
 
 function registerCompletionControlRoutes(

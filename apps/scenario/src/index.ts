@@ -1,5 +1,6 @@
 import {
   bountywellHealthObservationSchema,
+  telephoneBoundaryEvidenceEventSchema,
   telephoneConversationEvidenceEventSchema,
   type BountywellHealthObservation,
   type BountywellHealthObserver,
@@ -9,6 +10,7 @@ import {
   type CallbackProviderEvent,
   type EvidenceRecordProjection,
   type TelephoneConversationEvidenceEvent,
+  type TelephoneBoundaryEvidenceEvent,
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type InboundTelephoneEvent,
@@ -33,6 +35,7 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createTelephoneBoundaryRuntime,
   createTelephoneSessionCoordinator,
   type TelephoneTurnInterpreter,
 } from "@voice-agent/runtime";
@@ -40,7 +43,150 @@ import {
   createSqliteAuthenticationStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteTelephoneBoundaryStore,
 } from "@voice-agent/sqlite-store";
+
+export interface TelephoneBoundaryScenario {
+  readonly evidence: readonly TelephoneBoundaryEvidenceEvent[];
+  activateSession(sessionId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["activateSession"]
+  >;
+  authorizeRawAudioDebug(input: {
+    readonly actor: "owner" | "subagent";
+    readonly freshPasskey: boolean;
+    readonly sessionId: string;
+  }): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["authorizeRawAudioDebug"]
+  >;
+  claimStateChangingTask(sessionId: string, taskId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["claimStateChangingTask"]
+  >;
+  claimRawAudioCapture(input: {
+    readonly actor: "subagent" | "voice-agent";
+    readonly sessionId: string;
+  }): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["claimRawAudioCapture"]
+  >;
+  claimSubagent(delegationId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["claimSubagent"]
+  >;
+  changeSpendingCeiling(input: {
+    readonly ceilingMicrousd: number;
+    readonly freshPasskey: boolean;
+  }): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["changeSpendingCeiling"]
+  >;
+  close(): Promise<void>;
+  cleanupExpiredRawAudio(): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["cleanupExpiredRawAudio"]
+  >;
+  enforceDeadline(sessionId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["enforceDeadline"]
+  >;
+  enforceDeadlines(): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["enforceDeadlines"]
+  >;
+  endSession(
+    sessionId: string,
+    reason: "completed" | "disconnected" | "provider-failure",
+  ): ReturnType<ReturnType<typeof createTelephoneBoundaryRuntime>["endSession"]>;
+  noteActivity(sessionId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["noteActivity"]
+  >;
+  readMetrics(): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["readMetrics"]
+  >;
+  readBoundaryStatus(): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["readBoundaryStatus"]
+  >;
+  readSession(sessionId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["readSession"]
+  >;
+  recordProviderFailure(input: {
+    readonly failureClass: "timeout" | "unavailable";
+    readonly sessionId: string;
+    readonly stage: "coordinator" | "stt" | "tts";
+  }): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["recordProviderFailure"]
+  >;
+  recordUsage(input: {
+    readonly amountMicrousd: number;
+    readonly sessionId?: string;
+    readonly source: "api" | "realtime-media" | "telephony";
+    readonly usageId: string;
+  }): ReturnType<ReturnType<typeof createTelephoneBoundaryRuntime>["recordUsage"]>;
+  releaseWarmSession(sessionId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["releaseWarmSession"]
+  >;
+  releaseStateChangingTask(sessionId: string, taskId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["releaseStateChangingTask"]
+  >;
+  releaseSubagent(delegationId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["releaseSubagent"]
+  >;
+  reserveWarmSession(sessionId: string): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["reserveWarmSession"]
+  >;
+  setTime(now: string): void;
+}
+
+export async function createTelephoneBoundaryScenario(options: {
+  readonly databasePath: string;
+  readonly endSessionOnEvidenceKinds?: readonly TelephoneBoundaryEvidenceEvent["kind"][];
+  readonly failEvidenceKinds?: readonly TelephoneBoundaryEvidenceEvent["kind"][];
+  readonly now: string;
+  readonly prolongedSilenceMs?: number;
+  readonly rawAudioDebugDirectory?: string;
+}): Promise<TelephoneBoundaryScenario> {
+  let currentNow = options.now;
+  let sequence = 0;
+  const evidence: TelephoneBoundaryEvidenceEvent[] = [];
+  const store = createSqliteTelephoneBoundaryStore(options.databasePath);
+  const runtime = createTelephoneBoundaryRuntime({
+    evidence: {
+      async append(_sessionId, event) {
+        if (options.failEvidenceKinds?.includes(event.kind)) {
+          throw new Error("Injected Telephone Boundary evidence failure");
+        }
+        evidence.push(
+          telephoneBoundaryEvidenceEventSchema.parse({
+            ...event,
+            sequence: evidence.length + 1,
+          }),
+        );
+        if (options.endSessionOnEvidenceKinds?.includes(event.kind)) {
+          await store.endSession({
+            durationMs: 0,
+            endedAt: event.occurredAt,
+            reason: "disconnected",
+            sessionId: _sessionId,
+          });
+        }
+      },
+    },
+    nextId: () => `telephone-boundary-event-${(sequence += 1)}`,
+    now: () => currentNow,
+    ...(options.prolongedSilenceMs === undefined
+      ? {}
+      : { prolongedSilenceMs: options.prolongedSilenceMs }),
+    rawAudioArtifacts: {
+      async remove() {
+        return "deleted";
+      },
+    },
+    ...(options.rawAudioDebugDirectory === undefined
+      ? {}
+      : { rawAudioDebugDirectory: options.rawAudioDebugDirectory }),
+    store,
+  });
+  return {
+    ...runtime,
+    evidence,
+    setTime(now) {
+      currentNow = now;
+    },
+  };
+}
 
 export interface CallbackHandshakeScenario {
   applyEvidenceRetention(input: {
@@ -211,6 +357,7 @@ export interface TelephoneBountywellScenarioOptions {
   readonly ids: readonly string[];
   readonly now: string;
   readonly observation: BountywellHealthObservation;
+  readonly stateChangingDecisions?: readonly ("accepted" | "queued")[];
 }
 
 export async function createTelephoneBountywellScenario(
@@ -258,6 +405,7 @@ export async function createTelephoneBountywellScenario(
     readonly failureEventId: string;
     readonly occurredAt: string;
   }> = [];
+  const stateChangingDecisions = [...(options.stateChangingDecisions ?? [])];
   const coordinator = createTelephoneSessionCoordinator({
     interpreter,
     sessionEvidence: {
@@ -273,6 +421,29 @@ export async function createTelephoneBountywellScenario(
         failureNotifications.push(input);
       },
     },
+    ...(options.stateChangingDecisions === undefined
+      ? {}
+      : {
+          stateChangingTasks: {
+            async claim() {
+              const decision = stateChangingDecisions.shift();
+              if (decision === "accepted") {
+                return {
+                  decision,
+                  resource: "state-changing-task" as const,
+                };
+              }
+              return {
+                decision: "queued" as const,
+                position: 1,
+                resource: "state-changing-task" as const,
+              };
+            },
+            async release() {
+              return {};
+            },
+          },
+        }),
     tasks,
   });
   const api = createTaskApi({

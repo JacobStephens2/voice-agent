@@ -7,12 +7,14 @@ import {
 
 import {
   authenticationStatusSchema,
+  authorizeRawAudioDebugResultSchema,
   bountywellRegistrationSchema,
   bountywellRegistrationStatusSchema,
   evidenceRecordProjectionSchema,
   evidenceRetentionResultSchema,
   evidenceRecordSummaryListSchema,
   freshPasskeyActionResponseSchema,
+  changeTelephoneSpendingCeilingResultSchema,
   notificationPreferenceSchema,
   notificationPreferenceStatusSchema,
   passkeyEnrollmentResultSchema,
@@ -22,8 +24,10 @@ import {
   voiceAgentEvidenceRecordProjectionSchema,
   registeredTelephoneSchema,
   registeredTelephoneStatusSchema,
+  telephoneBoundaryStatusSchema,
   webAuthnOptionsSchema,
   type AuthenticationStatus,
+  type TelephoneBoundaryStatus,
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
@@ -86,6 +90,56 @@ export async function loadRegisteredTelephone(): Promise<
   if (!response.ok) throw new Error("Registered Telephone is unavailable.");
   const result = registeredTelephoneStatusSchema.parse(await response.json());
   return result.registration ?? undefined;
+}
+
+export async function loadTelephoneBoundaryStatus(): Promise<
+  TelephoneBoundaryStatus | undefined
+> {
+  const response = await fetch("/api/telephone/boundaries");
+  if (response.status === 401) return undefined;
+  if (!response.ok) throw new Error("Telephone boundary status is unavailable.");
+  return telephoneBoundaryStatusSchema.parse(await response.json());
+}
+
+export async function changeTelephoneSpendingCeiling(
+  csrfToken: string,
+  ceilingMicrousd: number,
+) {
+  const response = await fetch("/api/telephone/spending-ceiling", {
+    body: JSON.stringify({ ceilingMicrousd, csrfToken }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before changing the spending ceiling."
+        : "The spending ceiling could not be changed.",
+    );
+  }
+  return changeTelephoneSpendingCeilingResultSchema.parse(await response.json());
+}
+
+export async function authorizeRawAudioDebug(
+  csrfToken: string,
+  sessionId: string,
+) {
+  const response = await fetch(
+    `/api/telephone/sessions/${encodeURIComponent(sessionId)}/raw-audio-debug`,
+    {
+      body: JSON.stringify({ csrfToken }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before enabling raw-audio debugging."
+        : "Raw-audio debugging was not enabled for this active session.",
+    );
+  }
+  return authorizeRawAudioDebugResultSchema.parse(await response.json());
 }
 
 export async function registerTelephone(
