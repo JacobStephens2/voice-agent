@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "acceptance:slice-one": "pnpm --filter @voice-agent/acceptance cli --",
     "auth:bootstrap": "pnpm --filter @voice-agent/api bootstrap-code --",
     "browser:test": "playwright test",
     "build": "pnpm -r --if-present build",

@@ -43,9 +43,13 @@ The socket-only `voice-broker-client` group cannot read the broker's
 Neither service control, metrics, SQLite, nor the broker has a public port.
 Prometheus scrapes `/metrics` directly on the API's localhost-only port. Those
 metrics cover Durable Tasks, Operations, Callback Handshake outcomes and
-attempts, policy denials, the latest bounded Bountywell checks, SQLite
-bytes/free-disk capacity, and Promotion/circuit-breaker state; Apache does not
-proxy the endpoint. The authenticated live Evidence window is bounded to 90
+attempts, Telephone Sessions, bounded speech-stage/provider timing and failures,
+policy decisions, Silent Notifications, spending, the latest bounded Bountywell
+checks, explicit Voice Agent and Bountywell API probes, SQLite bytes/free-disk
+capacity, and Promotion/circuit-breaker state; Apache does not proxy the
+endpoint. A restricted timer refreshes probe metrics every 30 seconds, and the
+existing node-exporter scrape supplies Agent Host resource health. Apache does
+not proxy either surface. The authenticated live Evidence window is bounded to 90
 days. Expiry atomically removes the underlying task, Operation, callback state,
 and Evidence Events while retaining only sanitized delivery/request tombstones
 needed to prevent an old retry from repeating its Operation.
@@ -58,7 +62,7 @@ From a clean checkout on the Agent Host after the pull request has been merged:
 ./ops/setup-agent-host.sh
 ```
 
-The twelve-stage wizard verifies `origin/main`, captures the LiveKit project
+The fourteen-stage wizard verifies `origin/main`, captures the LiveKit project
 credentials and stored Telnyx/LiveKit route identifiers, builds the exact commit
 outside the live path, installs identities and units, obtains the TLS
 certificate, walks the owner through two-passkey bootstrap and Recovery Code
@@ -67,6 +71,12 @@ Telephone revisions, configures the restricted Human Merge trigger, and runs
 the real production smokes.
 Bootstrap and Recovery Codes are shown only to the human and are not written to
 repository or environment files.
+
+The provisioned Grafana dashboard is **Voice Agent · Slice One Operational
+Path** in the **Voice Agent** folder. Its first panel explicitly states that
+Prometheus, Grafana, and the observed services share the Agent Host failure
+domain. This telemetry diagnoses partial failures but cannot independently
+detect loss of the entire host or network.
 
 LiveKit credentials are installed as root-owned mode `0600`
 `/etc/voice-agent/livekit.env` and are exposed only to the telephone worker.

@@ -10,6 +10,7 @@ WorkingDirectory=/opt/voice-agent/current
 Environment=NODE_ENV=production
 Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
 Environment=VOICE_AGENT_PROMOTION_METRICS_PATH=/var/lib/voice-agent-promotions/promotions.prom
+Environment=VOICE_AGENT_APPLICATION_PROBE_METRICS_PATH=/var/lib/voice-agent-probes/probes.prom
 Environment=VOICE_AGENT_PROMOTION_RESUME_PATH=/var/lib/voice-agent-promotion-resume/resume.request
 Environment=VOICE_AGENT_PROMOTION_STATE_PATH=/var/lib/voice-agent-promotions/state.tsv
 Environment=VOICE_AGENT_PORT=3472

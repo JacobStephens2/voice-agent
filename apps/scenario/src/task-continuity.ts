@@ -45,6 +45,7 @@ export interface TaskContinuityScenario {
   recordCompletionResumption(input: {
     readonly operationId: string;
   }): Promise<void>;
+  readMetrics(): Promise<string>;
   readTask(taskId: string): Promise<EvidenceRecordProjection | undefined>;
   requestCompletionCallback(input: {
     readonly requestId: string;
@@ -182,6 +183,13 @@ export async function createTaskContinuityScenario(options: {
       continuity.recordNotificationDelivery(input),
     recordCompletionResumption: (input) =>
       continuity.recordCompletionResumption(input),
+    async readMetrics() {
+      const response = await api.inject({ method: "GET", url: "/metrics" });
+      if (response.statusCode !== 200) {
+        throw new Error("Task continuity metrics endpoint was unavailable");
+      }
+      return response.body;
+    },
     readTask: (taskId) => tasks.getEvidenceRecord(taskId),
     requestCompletionCallback: (input) =>
       continuity.requestCompletionCallback({

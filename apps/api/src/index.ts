@@ -80,7 +80,21 @@ export interface EvidenceRecordReader {
       readonly completed: number;
       readonly running: number;
     };
+    readonly notifications: {
+      readonly requested: number;
+      readonly sent: number;
+    };
     readonly policyDenials: number;
+    readonly speech: {
+      readonly interruptions: number;
+      readonly timings: readonly {
+        readonly count: number;
+        readonly provider: "assemblyai" | "inworld" | "openai" | "other";
+        readonly stage: "coordinator" | "stt" | "tts";
+        readonly totalDurationMs: number;
+      }[];
+      readonly turns: number;
+    };
     readonly storage: {
       readonly databaseBytes: number;
       readonly filesystemAvailableBytes: number;
@@ -862,8 +876,10 @@ function emptyOperationalMetrics(): Awaited<
 > {
   return {
     bountywellChecks: [],
+    notifications: { requested: 0, sent: 0 },
     operations: { accepted: 0, completed: 0, running: 0 },
     policyDenials: 0,
+    speech: { interruptions: 0, timings: [], turns: 0 },
     storage: { databaseBytes: 0, filesystemAvailableBytes: 0 },
     tasks: { completed: 0, pending: 0 },
   };
@@ -908,6 +924,27 @@ function renderOperationalMetrics(
     "# HELP voice_agent_callback_attempts Callback attempts retained in the live evidence window.",
     "# TYPE voice_agent_callback_attempts gauge",
     `voice_agent_callback_attempts ${metrics.callbacks?.attempts ?? 0}`,
+    "# HELP voice_agent_notifications Silent Notification lifecycle events retained in the Evidence window.",
+    "# TYPE voice_agent_notifications gauge",
+    `voice_agent_notifications{outcome="requested"} ${metrics.notifications.requested}`,
+    `voice_agent_notifications{outcome="sent"} ${metrics.notifications.sent}`,
+    "# HELP voice_agent_telephone_turns Sanitized finalized Telephone Session turns retained in the Evidence window.",
+    "# TYPE voice_agent_telephone_turns gauge",
+    `voice_agent_telephone_turns ${metrics.speech.turns}`,
+    "# HELP voice_agent_telephone_interruptions Interrupted semantic responses retained in the Evidence window.",
+    "# TYPE voice_agent_telephone_interruptions gauge",
+    `voice_agent_telephone_interruptions ${metrics.speech.interruptions}`,
+    "# HELP voice_agent_speech_stage_duration_ms_sum Sum of sanitized provider timing retained by bounded speech stage and provider.",
+    "# TYPE voice_agent_speech_stage_duration_ms_sum gauge",
+    "# HELP voice_agent_speech_stage_duration_ms_count Count of sanitized provider timing retained by bounded speech stage and provider.",
+    "# TYPE voice_agent_speech_stage_duration_ms_count gauge",
+    ...metrics.speech.timings.flatMap((timing) => {
+      const labels = `stage="${timing.stage}",provider="${timing.provider}"`;
+      return [
+        `voice_agent_speech_stage_duration_ms_sum{${labels}} ${timing.totalDurationMs}`,
+        `voice_agent_speech_stage_duration_ms_count{${labels}} ${timing.count}`,
+      ];
+    }),
   ];
   if (additionalMetrics.trim().length > 0) {
     lines.push(additionalMetrics.trim());

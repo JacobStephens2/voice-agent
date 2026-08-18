@@ -13,9 +13,17 @@ end_marker='# END voice-agent scrape'
 
 verify_live_metrics() {
   curl --fail --silent --show-error --max-time 5 \
-    http://127.0.0.1:3472/metrics >/dev/null
+    http://127.0.0.1:3472/metrics | \
+    grep -F 'voice_agent_monitoring_same_host 1' >/dev/null
   curl --fail --silent --show-error --max-time 5 \
     http://127.0.0.1:9090/-/ready >/dev/null
+  host_metrics=$(curl --fail --silent --show-error --max-time 5 \
+    --get --data-urlencode 'query=node_uname_info' \
+    http://127.0.0.1:9090/api/v1/query)
+  if [[ $(jq '.data.result | length' <<<"$host_metrics") -lt 1 ]]; then
+    printf 'Prometheus does not currently receive Agent Host node-exporter metrics.\n' >&2
+    exit 1
+  fi
 }
 
 if [[ ! -f $configuration ]]; then

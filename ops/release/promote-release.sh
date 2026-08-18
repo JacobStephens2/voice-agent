@@ -17,13 +17,15 @@ unit_definitions=(
   voice-agent-api.service
   voice-agent-worker.service
   voice-agent-broker.service
+  voice-agent-probes.service
+  voice-agent-probes.timer
 )
 runtime_units=(
   voice-agent-api.service
   voice-agent-worker.service
   voice-agent-broker.service
 )
-enabled_units=("${runtime_units[@]}")
+enabled_units=("${runtime_units[@]}" voice-agent-probes.timer)
 if [[ ! -f "$release/.voice-agent-release" ]] || \
   [[ $(<"$release/.voice-agent-release") != "$commit" ]]; then
   printf 'Immutable release %s is unavailable.\n' "$commit" >&2
@@ -74,6 +76,12 @@ rollback_failed_promotion() {
     ln -sfn "$previous" "$candidate"
     mv -Tf "$candidate" /opt/voice-agent/current
     systemctl restart "${runtime_units[@]}"
+    if systemctl cat voice-agent-probes.timer >/dev/null 2>&1; then
+      systemctl restart voice-agent-probes.timer
+      systemctl start voice-agent-probes.service
+    else
+      systemctl stop voice-agent-probes.timer voice-agent-probes.service || true
+    fi
     if systemctl cat voice-agent-promotion-resume.path >/dev/null 2>&1; then
       systemctl restart voice-agent-promotion-resume.path
     else
@@ -152,6 +160,8 @@ ln -sfn "$release" "$candidate"
 mv -Tf "$candidate" /opt/voice-agent/current
 switched=true
 systemctl restart voice-agent-broker.service voice-agent-api.service voice-agent-worker.service
+systemctl restart voice-agent-probes.timer
+systemctl start voice-agent-probes.service
 systemctl restart voice-agent-promotion-resume.path
 
 healthy=false

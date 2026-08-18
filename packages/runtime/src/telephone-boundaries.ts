@@ -698,6 +698,13 @@ export function formatTelephoneBoundaryPrometheusMetrics(
       (decision) =>
         `voice_agent_telephone_limit_decisions_total{decision="${decision}"} ${metrics.limitDecisions[decision]}`,
     ),
+    "# HELP voice_agent_telephone_sessions Current Telephone Sessions by bounded lifecycle state.",
+    "# TYPE voice_agent_telephone_sessions gauge",
+    `voice_agent_telephone_sessions{state="active"} ${metrics.resources.activeSessions}`,
+    `voice_agent_telephone_sessions{state="warm"} ${metrics.resources.warmSessions}`,
+    `voice_agent_state_changing_tasks_queued ${metrics.resources.queuedStateChangingTasks}`,
+    `voice_agent_subagents{state="queued"} ${metrics.resources.queuedSubagents}`,
+    `voice_agent_subagents{state="running"} ${metrics.resources.runningSubagents}`,
     "# HELP voice_agent_telephone_usage_microusd Current UTC-month metered usage.",
     "# TYPE voice_agent_telephone_usage_microusd gauge",
     ...telephoneUsageSources.map(

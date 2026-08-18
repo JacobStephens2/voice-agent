@@ -129,6 +129,20 @@ describe("Telephone Bountywell health inquiry", () => {
       expect(page.html).toContain("Health check accepted");
       expect(page.html).toContain("Spoken response prepared");
       expect(page.html).toContain("Bountywell API is healthy.");
+      const metrics = await scenario.readMetrics();
+      expect(metrics).toContain(
+        'voice_agent_speech_stage_duration_ms_sum{stage="stt",provider="assemblyai"} 320',
+      );
+      expect(metrics).toContain(
+        'voice_agent_speech_stage_duration_ms_count{stage="stt",provider="assemblyai"} 1',
+      );
+      expect(metrics).toContain(
+        'voice_agent_speech_stage_duration_ms_sum{stage="coordinator",provider="other"} 24',
+      );
+      expect(metrics).toContain("voice_agent_telephone_turns 1");
+      expect(metrics).toContain("voice_agent_telephone_interruptions 0");
+      expect(metrics).not.toContain("Could you tell me how Bountywell is doing?");
+      expect(metrics).not.toContain("deterministic-scenario-coordinator");
     } finally {
       await scenario.close();
     }

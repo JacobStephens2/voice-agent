@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Voice Agent bounded application and API probe metrics
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Unit=voice-agent-probes.service
+
+[Install]
+WantedBy=timers.target

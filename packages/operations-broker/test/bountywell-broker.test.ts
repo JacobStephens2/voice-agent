@@ -7,6 +7,7 @@ import {
   createBountywellHostProbes,
   createBountywellOperationsBroker,
   createOperationsBrokerServer,
+  renderApplicationProbeMetrics,
   createSqliteBrokerOperationStore,
   createUnixSocketBountywellObserver,
   type BountywellHostProbes,
@@ -183,6 +184,48 @@ test("unavailable resource properties remain unknown instead of claiming pressur
   expect(await probes.readResourceEvidence()).toEqual({
     availability: "unavailable",
   });
+});
+
+test("monitoring probes publish only bounded application and API health labels", async () => {
+  const metrics = await renderApplicationProbeMetrics({
+    bountywell: {
+      async readAuthenticationBoundaryStatus() { return 401; },
+      async readLocalHealthStatus() { return 200; },
+      async readPublicHealthStatus() { return 200; },
+      async readResourceEvidence() {
+        return {
+          availability: "available",
+          memoryPressure: false,
+          taskPressure: false,
+        };
+      },
+      async readServiceMetadata() {
+        return { active: true, subState: "running" };
+      },
+    },
+    now: () => new Date("2026-08-17T20:00:00.000Z"),
+    voiceAgent: {
+      async readApiHealthStatus() { return 200; },
+      async readBrokerHealthStatus() { return 200; },
+      async readWorkerHealthStatus() { return 200; },
+    },
+  });
+
+  expect(metrics).toContain(
+    'voice_agent_application_probe_success{application="voice-agent",probe="api-health"} 1',
+  );
+  expect(metrics).toContain(
+    'voice_agent_application_probe_success{application="bountywell",probe="authentication-boundary"} 1',
+  );
+  expect(metrics).toContain(
+    'voice_agent_application_probe_success{application="bountywell",probe="resource-health"} 1',
+  );
+  expect(metrics).toContain("voice_agent_monitoring_same_host 1");
+  expect(metrics).toContain(
+    "voice_agent_application_probe_last_run_unixtime_seconds 1786996800",
+  );
+  expect(metrics).not.toContain("https://bountywell.com");
+  expect(metrics).not.toContain("bountywell-api.service");
 });
 
 test("a broker restart completes an accepted Operation as uncertain without repeating probes", async () => {
