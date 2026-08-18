@@ -15,7 +15,7 @@ if ! getent passwd grafana >/dev/null; then
 fi
 
 source_dashboard=$1/ops/grafana/voice-agent-slice-one.json
-dashboard_directory=/var/lib/grafana/dashboards
+dashboard_directory=/var/lib/grafana/dashboards/voice-agent
 provisioning_directory=/etc/grafana/provisioning/dashboards
 dashboard=$dashboard_directory/voice-agent-slice-one.json
 provider=$provisioning_directory/voice-agent.yml
@@ -41,7 +41,7 @@ printf '%s\n' \
   '    editable: false' \
   '    updateIntervalSeconds: 30' \
   '    options:' \
-  '      path: /var/lib/grafana/dashboards' \
+  '      path: /var/lib/grafana/dashboards/voice-agent' \
   > "$provider_candidate"
 install -o root -g grafana -m 0644 "$provider_candidate" "$provider"
 systemctl restart grafana-server.service

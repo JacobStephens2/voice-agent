@@ -185,7 +185,6 @@ function passingRun(
   environment: "indoor" | "outdoor-walking",
 ): PstnRunEvent {
   return {
-    boundaries: "passed",
     bountywellAnswer: "correct",
     callbackHandshake: "passed",
     carrier,
@@ -203,6 +202,7 @@ function passingRun(
     result: "passed",
     sequence,
     taskUrl: `https://voice.stephens.page/?task=task-${sequence}`,
+    telephoneBoundaryChecks: "passed",
     transcriptionObservation: "Bountywell and the health question were transcribed correctly.",
   };
 }

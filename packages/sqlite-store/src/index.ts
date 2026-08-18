@@ -293,12 +293,23 @@ export function createSqliteDurableTaskStore(
   `);
   const readSpeechTimingMetrics = database.prepare<[], SpeechTimingMetricRow>(`
     SELECT
-      json_extract(details_json, '$.stage') AS stage,
-      json_extract(details_json, '$.provider') AS provider,
+      stage,
+      provider,
       COUNT(*) AS count,
-      COALESCE(SUM(json_extract(details_json, '$.durationMs')), 0) AS total_duration_ms
-    FROM evidence_events
-    WHERE kind = 'telephone.provider.timing'
+      COALESCE(SUM(duration_ms), 0) AS total_duration_ms
+    FROM (
+      SELECT
+        json_extract(details_json, '$.stage') AS stage,
+        CASE json_extract(details_json, '$.provider')
+          WHEN 'assemblyai' THEN 'assemblyai'
+          WHEN 'inworld' THEN 'inworld'
+          WHEN 'openai' THEN 'openai'
+          ELSE 'other'
+        END AS provider,
+        json_extract(details_json, '$.durationMs') AS duration_ms
+      FROM evidence_events
+      WHERE kind = 'telephone.provider.timing'
+    ) AS sanitized_speech_timing
     GROUP BY stage, provider
   `);
   const readTelephoneConversationMetrics = database.prepare<

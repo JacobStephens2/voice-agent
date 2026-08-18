@@ -252,6 +252,9 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
   expect(setup).toContain("install-grafana-dashboard.sh");
   expect(setup).toContain("voice-agent-probes.timer");
   expect(dashboardInstaller).toContain("voice-agent-slice-one.json");
+  expect(dashboardInstaller).toContain(
+    "/var/lib/grafana/dashboards/voice-agent",
+  );
   expect(dashboard.title).toContain("Slice One");
   expect(dashboard.tags).toContain("same-host-monitoring");
   expect(

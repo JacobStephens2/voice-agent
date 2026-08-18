@@ -212,7 +212,7 @@ record_run() {
   local carrier="$1" environment="$2" instructions="$3"
   local sequence callback_ms health_answer_ms interruption_count
   local callback_handshake bountywell_answer evidence_record completion_notice
-  local manual_intervention boundaries result recorded_at
+  local manual_intervention telephone_boundary_checks result recorded_at
   sequence=$(($(jq '[.events[] | select(.kind == "pstn-run")] | length' "$ACCEPTANCE_RECORD") + 1))
   say "$instructions"
   step "Call the dedicated Voice Agent number from the named carrier, wait for the callback, answer as a human, and press DTMF 1."
@@ -229,14 +229,14 @@ record_run() {
   bountywell_answer=incorrect
   evidence_record=incomplete
   manual_intervention=true
-  boundaries=failed
+  telephone_boundary_checks=failed
   confirm "Did the complete Callback Handshake pass?" && callback_handshake=passed
   confirm "Did the Voice Agent correctly answer the Bountywell health question?" && bountywell_answer=correct
   confirm "Is the authenticated Evidence Record complete?" && evidence_record=complete
   if ! confirm "Did this run require any manual process, database, or service intervention after the inbound ring?"; then
     manual_intervention=false
   fi
-  confirm "Did privacy, concurrency, spending, duration, and fail-closed boundaries remain satisfied?" && boundaries=passed
+  confirm "Did privacy, concurrency, spending, duration, and fail-closed boundaries remain satisfied?" && telephone_boundary_checks=passed
   callback_ms=$CALLBACK_MS
   health_answer_ms=$HEALTH_ANSWER_MS
   interruption_count=$INTERRUPTION_COUNT
@@ -250,7 +250,7 @@ record_run() {
   result=failed
   if [[ $callback_handshake == passed && $bountywell_answer == correct && \
     $evidence_record == complete && $completion_notice != failed && \
-    $manual_intervention == false && $boundaries == passed ]]; then
+    $manual_intervention == false && $telephone_boundary_checks == passed ]]; then
     result=passed
   fi
   recorded_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
@@ -272,7 +272,7 @@ record_run() {
     --evidence-record "$evidence_record" \
     --completion-notice "$completion_notice" \
     --manual-intervention "$manual_intervention" \
-    --boundaries "$boundaries"
+    --telephone-boundary-checks "$telephone_boundary_checks"
   if [[ $result == failed ]]; then
     warn "Run $sequence failed and remains in the record. It breaks the consecutive sequence."
   else

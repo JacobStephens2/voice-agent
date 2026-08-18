@@ -16,7 +16,6 @@ const automatedVerificationEventSchema = z.object({
   recordedAt: timestampSchema,
 }).strict();
 const pstnRunEventSchema = z.object({
-  boundaries: z.enum(["failed", "passed"]),
   bountywellAnswer: z.enum(["correct", "incorrect"]),
   callbackHandshake: z.enum(["failed", "passed"]),
   carrier: z.enum(["att", "tello"]),
@@ -40,6 +39,7 @@ const pstnRunEventSchema = z.object({
   taskUrl: z.string().url().max(500).refine(isAuthenticatedTaskUrl, {
     message: "Task link must use the authenticated Voice Agent origin",
   }),
+  telephoneBoundaryChecks: z.enum(["failed", "passed"]),
   transcriptionObservation: z.string().min(1).max(500),
 }).strict();
 const sliceOneAcceptedEventSchema = z.object({
@@ -194,7 +194,7 @@ function isPassingRun(run: PstnRunEvent): boolean {
     run.evidenceRecord === "complete" &&
     run.completionNotice !== "failed" &&
     !run.manualIntervention &&
-    run.boundaries === "passed";
+    run.telephoneBoundaryChecks === "passed";
 }
 
 function isAuthenticatedTaskUrl(value: string): boolean {

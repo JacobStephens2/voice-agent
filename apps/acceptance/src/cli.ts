@@ -45,7 +45,6 @@ if (command === "init") {
     }));
 } else if (command === "record-run") {
   requireOnlyOptions(options, [
-    "boundaries",
     "bountywell-answer",
     "callback-handshake",
     "callback-ms",
@@ -63,12 +62,12 @@ if (command === "init") {
     "result",
     "sequence",
     "task-url",
+    "telephone-boundary-checks",
     "transcription-observation",
   ]);
   const notes = options.get("notes");
   await updateRecord(requiredOption(options, "record"), (record) =>
     appendSliceOneAcceptanceEvent(record, {
-      boundaries: requiredOption(options, "boundaries"),
       bountywellAnswer: requiredOption(options, "bountywell-answer"),
       callbackHandshake: requiredOption(options, "callback-handshake"),
       carrier: requiredOption(options, "carrier"),
@@ -90,6 +89,10 @@ if (command === "init") {
       result: requiredOption(options, "result"),
       sequence: requiredIntegerOption(options, "sequence"),
       taskUrl: requiredOption(options, "task-url"),
+      telephoneBoundaryChecks: requiredOption(
+        options,
+        "telephone-boundary-checks",
+      ),
       transcriptionObservation: requiredOption(
         options,
         "transcription-observation",
