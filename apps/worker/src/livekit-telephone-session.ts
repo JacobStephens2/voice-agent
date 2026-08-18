@@ -1,11 +1,10 @@
 import {
   APITimeoutError,
-  AudioByteStream,
   inference,
   llm,
   voice,
 } from "@livekit/agents";
-import type { Room } from "@livekit/rtc-node";
+import { AudioFrame, type Room } from "@livekit/rtc-node";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -26,6 +25,7 @@ import {
 import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
 import {
   meterTelephoneSessionUsage,
+  reportTelephoneSpendingWarning,
   type TelephoneUsageRates,
 } from "./telephone-usage-meter.ts";
 
@@ -57,8 +57,8 @@ export async function runLiveKitTelephoneSession(
       | "endSession"
       | "noteActivity"
       | "recordProviderFailure"
-      | "recordUsage"
       | "releaseStateChangingTask"
+      | "reserveUsageSlice"
     >;
     readonly disconnected: Promise<void>;
     readonly endCall: () => Promise<void>;
@@ -271,6 +271,41 @@ export async function runLiveKitTelephoneSession(
       )
       .catch(() => undefined);
   });
+  session.on(voice.AgentSessionEventTypes.Error, (event) => {
+    const stage = providerStageForSessionError(event.error);
+    if (event.error.recoverable || stage === undefined) return;
+    processing = processing
+      .then(() =>
+        recordProviderFailureAndEnd(
+          stage,
+          "error" in event.error ? event.error.error : event.error,
+          options.activeTaskId,
+        ),
+      )
+      .catch(() => undefined);
+  });
+  session.on(voice.AgentSessionEventTypes.Close, (event) => {
+    if (
+      callEnding ||
+      failureEnded ||
+      event.reason !== voice.CloseReason.ERROR ||
+      event.error === null
+    ) {
+      return;
+    }
+    const providerError = event.error;
+    const stage = providerStageForSessionError(providerError);
+    if (stage === undefined) return;
+    processing = processing
+      .then(() =>
+        recordProviderFailureAndEnd(
+          stage,
+          "error" in providerError ? providerError.error : providerError,
+          options.activeTaskId,
+        ),
+      )
+      .catch(() => undefined);
+  });
 
   try {
     const agent = new CoordinatorOnlyAgent((message) => {
@@ -302,6 +337,7 @@ export async function runLiveKitTelephoneSession(
     });
     usageMeter = meterTelephoneSessionUsage({
       onFirstSliceComplete: resolveUsageReady,
+      onSpendingWarning: reportTelephoneSpendingWarning,
       onSpendingCeiling: async () => {
         await options.boundaries.endSession(
           options.telephoneSessionId,
@@ -310,7 +346,7 @@ export async function runLiveKitTelephoneSession(
         await playFailureAndEnd();
       },
       ratesMicrousdPerMinute: options.usageRatesMicrousdPerMinute,
-      recordUsage: options.boundaries.recordUsage,
+      reserveUsageSlice: options.boundaries.reserveUsageSlice,
       sessionId: options.telephoneSessionId,
       stop: usageStop,
       usageScopeId: stableIdentifier(
@@ -591,9 +627,23 @@ export async function playPrerecordedProviderFailure(
     throw new Error("Telephone audio output is unavailable");
   }
   const bytes = await readFile(providerFailureAudioPath);
-  const audio = new AudioByteStream(providerFailureSampleRate, 1);
-  const frames = [...audio.write(bytes), ...audio.flush()];
-  for (const frame of frames) {
+  const audioBytes = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  const samples = new Int16Array(audioBytes);
+  const samplesPerFrame = providerFailureSampleRate / 10;
+  for (let offset = 0; offset < samples.length; offset += samplesPerFrame) {
+    const frameSamples = samples.subarray(
+      offset,
+      Math.min(offset + samplesPerFrame, samples.length),
+    );
+    const frame = new AudioFrame(
+      frameSamples,
+      providerFailureSampleRate,
+      1,
+      frameSamples.length,
+    );
     await output.captureFrame(frame);
   }
   output.flush();
@@ -735,6 +785,17 @@ function providerForStage(
   if (stage === "stt") return "assemblyai";
   if (stage === "coordinator") return "openai";
   return "inworld";
+}
+
+function providerStageForSessionError(error: {
+  readonly type: string;
+}): "coordinator" | "stt" | "tts" | undefined {
+  if (error.type === "stt_error") return "stt";
+  if (error.type === "tts_error") return "tts";
+  if (error.type === "llm_error" || error.type === "realtime_model_error") {
+    return "coordinator";
+  }
+  return undefined;
 }
 
 export function mapProviderFailureEvent(input: {

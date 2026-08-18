@@ -49,7 +49,7 @@ export async function deliverPendingAuthenticationFailureNotifications(
         clickTracking: false,
         evidenceRecordUrl: `https://voice.stephens.page/?task=${encodeURIComponent(handshakeId)}`,
         from: preference.from,
-        idempotencyKey: `telephone-failure:${correlation}`,
+        idempotencyKey: event.details.operationId,
         kind: "send-silent-notification",
         openTracking: false,
         operationId: event.details.operationId,

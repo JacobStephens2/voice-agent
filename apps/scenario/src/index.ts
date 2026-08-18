@@ -86,6 +86,9 @@ export interface TelephoneBoundaryScenario {
   enforceDeadlines(): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["enforceDeadlines"]
   >;
+  executeSubagent: ReturnType<
+    typeof createTelephoneBoundaryRuntime
+  >["executeSubagent"];
   endSession(
     sessionId: string,
     reason: "completed" | "disconnected" | "provider-failure",
@@ -115,6 +118,15 @@ export interface TelephoneBoundaryScenario {
     readonly source: "api" | "realtime-media" | "telephony";
     readonly usageId: string;
   }): ReturnType<ReturnType<typeof createTelephoneBoundaryRuntime>["recordUsage"]>;
+  reserveUsageSlice(input: {
+    readonly amountsMicrousd: Readonly<
+      Record<"api" | "realtime-media" | "telephony", number>
+    >;
+    readonly sessionId?: string;
+    readonly usageScopeId: string;
+  }): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["reserveUsageSlice"]
+  >;
   releaseWarmSession(sessionId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["releaseWarmSession"]
   >;

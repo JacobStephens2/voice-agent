@@ -4,8 +4,12 @@ import type {
   TelephoneBoundaryDecision,
   TelephoneBoundaryMetrics,
   TelephoneBoundaryStore,
+  TelephoneUsageReservationResult,
   TelephoneUsageResult,
+  TelephoneUsageSource,
 } from "@voice-agent/durable-store";
+
+const usageSources = ["api", "telephony", "realtime-media"] as const;
 
 interface CountRow {
   readonly value: number;
@@ -425,43 +429,90 @@ export function createSqliteTelephoneBoundaryStore(
       return { ended: true };
     },
   );
+  function persistUsageEntries(input: {
+    readonly entries: readonly {
+      readonly amountMicrousd: number;
+      readonly source: TelephoneUsageSource;
+      readonly usageId: string;
+    }[];
+    readonly recordedAt: string;
+    readonly sessionId?: string;
+  }): TelephoneUsageReservationResult {
+    const month = input.recordedAt.slice(0, 7);
+    const before = sumUsage.get(month)?.value ?? 0;
+    const pending = input.entries.filter(
+      (entry) => findUsage.get(entry.usageId) === undefined,
+    );
+    const proposedTotal =
+      before + pending.reduce((total, entry) => total + entry.amountMicrousd, 0);
+    const ceiling = requireSpendingPolicy(
+      readSpendingPolicy.get(),
+    ).ceiling_microusd;
+    if (proposedTotal > ceiling) {
+      markActiveSessionsSafeTerminal.run();
+      return {
+        disposition: "safe-terminal-only",
+        month,
+        reservedSources: [],
+        totalMicrousd: before,
+        warnings: [],
+      };
+    }
+    for (const entry of pending) {
+      insertUsage.run(
+        entry.usageId,
+        input.sessionId ?? null,
+        entry.source,
+        entry.amountMicrousd,
+        input.recordedAt,
+      );
+    }
+    const totalMicrousd = sumUsage.get(month)?.value ?? 0;
+    if (totalMicrousd >= ceiling) markActiveSessionsSafeTerminal.run();
+    return {
+      disposition:
+        totalMicrousd >= ceiling ? "safe-terminal-only" : "continue",
+      month,
+      reservedSources: pending.map((entry) => entry.source),
+      totalMicrousd,
+      warnings: crossedSpendingWarnings(before, totalMicrousd),
+    };
+  }
   const persistUsage = database.transaction(
     (input: {
       readonly amountMicrousd: number;
       readonly recordedAt: string;
       readonly sessionId?: string;
-      readonly source: "api" | "realtime-media" | "telephony";
+      readonly source: TelephoneUsageSource;
       readonly usageId: string;
     }): TelephoneUsageResult => {
-      const month = input.recordedAt.slice(0, 7);
-      const before = sumUsage.get(month)?.value ?? 0;
-      if (findUsage.get(input.usageId) === undefined) {
-        insertUsage.run(
-          input.usageId,
-          input.sessionId ?? null,
-          input.source,
-          input.amountMicrousd,
-          input.recordedAt,
-        );
-      }
-      const totalMicrousd = sumUsage.get(month)?.value ?? 0;
-      const ceiling = requireSpendingPolicy(readSpendingPolicy.get()).ceiling_microusd;
-      if (totalMicrousd >= ceiling) markActiveSessionsSafeTerminal.run();
-      const warnings: Array<25_000_000 | 40_000_000> = [];
-      if (before < 25_000_000 && totalMicrousd >= 25_000_000) {
-        warnings.push(25_000_000);
-      }
-      if (before < 40_000_000 && totalMicrousd >= 40_000_000) {
-        warnings.push(40_000_000);
-      }
-      return {
-        disposition:
-          totalMicrousd >= ceiling ? "safe-terminal-only" : "continue",
-        month,
-        totalMicrousd,
-        warnings,
-      };
+      const { reservedSources: _reservedSources, ...result } =
+        persistUsageEntries({
+          entries: [input],
+          recordedAt: input.recordedAt,
+          ...(input.sessionId === undefined
+            ? {}
+            : { sessionId: input.sessionId }),
+        });
+      return result;
     },
+  );
+  const persistUsageSlice = database.transaction(
+    (input: {
+      readonly amountsMicrousd: Readonly<Record<TelephoneUsageSource, number>>;
+      readonly recordedAt: string;
+      readonly sessionId?: string;
+      readonly usageScopeId: string;
+    }): TelephoneUsageReservationResult =>
+      persistUsageEntries({
+        entries: usageSources.map((source) => ({
+          amountMicrousd: input.amountsMicrousd[source],
+          source,
+          usageId: `${input.usageScopeId}:${source}`,
+        })),
+        recordedAt: input.recordedAt,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      }),
   );
   const persistSpendingPolicy = database.transaction(
     (input: { readonly ceilingMicrousd: number; readonly changedAt: string }) => {
@@ -619,6 +670,7 @@ export function createSqliteTelephoneBoundaryStore(
       };
     },
     recordUsage: async (input) => persistUsage.immediate(input),
+    reserveUsageSlice: async (input) => persistUsageSlice.immediate(input),
     async recordProviderFailure(input) {
       incrementDecision.run(
         `provider-failure:${input.stage}:${input.failureClass}`,
@@ -672,6 +724,16 @@ function rejected(
     | "warm-session-limit",
 ): TelephoneBoundaryDecision {
   return { decision: "rejected", reason, resource };
+}
+
+function crossedSpendingWarnings(
+  before: number,
+  after: number,
+): readonly (25_000_000 | 40_000_000)[] {
+  const warnings: Array<25_000_000 | 40_000_000> = [];
+  if (before < 25_000_000 && after >= 25_000_000) warnings.push(25_000_000);
+  if (before < 40_000_000 && after >= 40_000_000) warnings.push(40_000_000);
+  return warnings;
 }
 
 function createSchema(database: Database.Database): void {

@@ -126,6 +126,83 @@ describe("Telephone fail-closed boundaries", () => {
     }
   });
 
+  test("Subagent execution admits only one overlapping adapter globally", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-execution-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      now: "2026-08-17T12:00:00.000Z",
+    });
+    let releaseFirst: () => void = () => {};
+    let markFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const executionOrder: string[] = [];
+
+    try {
+      const first = scenario.executeSubagent(
+        "delegation-overlap-1",
+        async () => {
+          executionOrder.push("first-started");
+          markFirstStarted();
+          await holdFirst;
+          executionOrder.push("first-finished");
+          return "first-result";
+        },
+      );
+      await firstStarted;
+
+      await expect(
+        scenario.executeSubagent("delegation-overlap-2", async () => {
+          executionOrder.push("second-started-too-early");
+          return "second-result";
+        }),
+      ).resolves.toEqual({
+        decision: "queued",
+        position: 1,
+        resource: "subagent",
+      });
+      expect(executionOrder).toEqual(["first-started"]);
+
+      releaseFirst();
+      await expect(first).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+        result: "first-result",
+      });
+      await expect(
+        scenario.executeSubagent("delegation-overlap-2", async () => {
+          executionOrder.push("second-started");
+          return "second-result";
+        }),
+      ).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+        result: "second-result",
+      });
+      expect(executionOrder).toEqual([
+        "first-started",
+        "first-finished",
+        "second-started",
+      ]);
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: {
+          queuedSubagents: 0,
+          runningSubagents: 0,
+        },
+      });
+    } finally {
+      releaseFirst();
+      await scenario.close();
+    }
+  });
+
   test("active sessions end at configured prolonged silence and the two-hour maximum", async () => {
     const directory = await mkdtemp(join(tmpdir(), "voice-agent-deadlines-"));
     temporaryDirectories.push(directory);
@@ -353,6 +430,51 @@ describe("Telephone fail-closed boundaries", () => {
         totalMicrousd: 0,
       });
       expect(JSON.stringify(metrics)).not.toContain("usage-api");
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("rejects a complete paid slice atomically when it would exceed the monthly ceiling", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-spending-slice-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      now: "2026-08-17T12:00:00.000Z",
+    });
+
+    try {
+      await scenario.recordUsage({
+        amountMicrousd: 49_900_000,
+        source: "api",
+        usageId: "usage-before-slice",
+      });
+
+      await expect(
+        scenario.reserveUsageSlice({
+          amountsMicrousd: {
+            api: 50_000,
+            "realtime-media": 100_000,
+            telephony: 50_000,
+          },
+          usageScopeId: "prelive:callback-1",
+        }),
+      ).resolves.toMatchObject({
+        disposition: "safe-terminal-only",
+        totalMicrousd: 49_900_000,
+      });
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        spending: {
+          bySourceMicrousd: {
+            api: 49_900_000,
+            "realtime-media": 0,
+            telephony: 0,
+          },
+          totalMicrousd: 49_900_000,
+        },
+      });
     } finally {
       await scenario.close();
     }

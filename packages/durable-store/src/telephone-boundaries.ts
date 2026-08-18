@@ -35,6 +35,10 @@ export interface TelephoneUsageResult {
   readonly warnings: readonly (25_000_000 | 40_000_000)[];
 }
 
+export interface TelephoneUsageReservationResult extends TelephoneUsageResult {
+  readonly reservedSources: readonly TelephoneUsageSource[];
+}
+
 export interface TelephoneBoundaryMetrics {
   readonly audioDebug: {
     readonly activeGrants: number;
@@ -160,6 +164,12 @@ export interface TelephoneBoundaryStore {
     readonly source: TelephoneUsageSource;
     readonly usageId: string;
   }): Promise<TelephoneUsageResult>;
+  reserveUsageSlice(input: {
+    readonly amountsMicrousd: Readonly<Record<TelephoneUsageSource, number>>;
+    readonly recordedAt: string;
+    readonly sessionId?: string;
+    readonly usageScopeId: string;
+  }): Promise<TelephoneUsageReservationResult>;
   revokeRawAudioDebug(sessionId: string): Promise<void>;
   releaseWarmSession(sessionId: string): Promise<void>;
   releaseStateChangingTask(input: {

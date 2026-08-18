@@ -281,6 +281,22 @@ export function createTelephoneBoundaryRuntime(
         requestedAt: options.now(),
       });
     },
+    async executeSubagent<Result>(
+      delegationId: string,
+      execute: () => Promise<Result>,
+    ) {
+      const decision = await options.store.claimSubagent({
+        delegationId,
+        requestedAt: options.now(),
+      });
+      if (decision.decision !== "accepted") return decision;
+      try {
+        const result = await execute();
+        return { ...decision, result } as const;
+      } finally {
+        await options.store.releaseSubagent(delegationId);
+      }
+    },
     async changeSpendingCeiling(input: {
       readonly ceilingMicrousd: number;
       readonly freshPasskey: boolean;
@@ -467,6 +483,62 @@ export function createTelephoneBoundaryRuntime(
       }
       return result;
     },
+    async reserveUsageSlice(input: {
+      readonly amountsMicrousd: Readonly<Record<TelephoneUsageSource, number>>;
+      readonly sessionId?: string;
+      readonly usageScopeId: string;
+    }) {
+      for (const amountMicrousd of Object.values(input.amountsMicrousd)) {
+        validateUsageAmount(amountMicrousd);
+      }
+      const recordedAt = options.now();
+      const result = await options.store.reserveUsageSlice({
+        ...input,
+        recordedAt,
+      });
+      if (
+        input.sessionId !== undefined &&
+        options.evidence !== undefined &&
+        options.nextId !== undefined
+      ) {
+        for (const source of result.reservedSources) {
+          await options.evidence.append(
+            input.sessionId,
+            telephoneUsageRecordedEvidenceEventSchema
+              .omit({ sequence: true })
+              .parse({
+                details: {
+                  amountMicrousd: input.amountsMicrousd[source],
+                  monthTotalMicrousd: result.totalMicrousd,
+                  source,
+                },
+                id: options.nextId(),
+                kind: "telephone.usage.recorded",
+                occurredAt: recordedAt,
+                summary: "Sanitized metered provider usage was recorded.",
+              }),
+          );
+        }
+        for (const thresholdMicrousd of result.warnings) {
+          await options.evidence.append(
+            input.sessionId,
+            telephoneSpendingWarningEvidenceEventSchema
+              .omit({ sequence: true })
+              .parse({
+                details: {
+                  monthTotalMicrousd: result.totalMicrousd,
+                  thresholdMicrousd,
+                },
+                id: options.nextId(),
+                kind: "telephone.spending.warning",
+                occurredAt: recordedAt,
+                summary: "The monthly provider spending warning was reached.",
+              }),
+          );
+        }
+      }
+      return result;
+    },
     releaseWarmSession: (sessionId: string) =>
       options.store.releaseWarmSession(sessionId),
     releaseStateChangingTask(sessionId: string, taskId: string) {
@@ -481,6 +553,16 @@ export function createTelephoneBoundaryRuntime(
       });
     },
   };
+}
+
+function validateUsageAmount(amountMicrousd: number): void {
+  if (
+    !Number.isInteger(amountMicrousd) ||
+    amountMicrousd <= 0 ||
+    amountMicrousd > 1_000_000_000
+  ) {
+    throw new Error("Metered usage must be between one microusd and $1,000");
+  }
 }
 
 export function formatTelephoneBoundaryPrometheusMetrics(

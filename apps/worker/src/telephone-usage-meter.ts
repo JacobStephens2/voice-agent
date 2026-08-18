@@ -5,37 +5,57 @@ export type TelephoneUsageRates = Readonly<
   Record<TelephoneUsageSource, number>
 >;
 
-interface TelephoneUsageRecorder {
+interface TelephoneUsageSliceResult {
+  readonly disposition: "continue" | "safe-terminal-only";
+  readonly month: string;
+  readonly reservedSources: readonly TelephoneUsageSource[];
+  readonly totalMicrousd: number;
+  readonly warnings: readonly (25_000_000 | 40_000_000)[];
+}
+
+interface TelephoneUsageSliceRecorder {
   (input: {
-    readonly amountMicrousd: number;
+    readonly amountsMicrousd: TelephoneUsageRates;
     readonly sessionId?: string;
-    readonly source: TelephoneUsageSource;
-    readonly usageId: string;
-  }): Promise<{ readonly disposition: "continue" | "safe-terminal-only" }>;
+    readonly usageScopeId: string;
+  }): Promise<TelephoneUsageSliceResult>;
+}
+
+export interface TelephoneSpendingWarning {
+  readonly month: string;
+  readonly thresholdMicrousd: 25_000_000 | 40_000_000;
+  readonly totalMicrousd: number;
+}
+
+export function reportTelephoneSpendingWarning(
+  warning: TelephoneSpendingWarning,
+): void {
+  process.stderr.write(
+    `Telephone provider spending crossed ${warning.thresholdMicrousd} microusd for ${warning.month}; monthly total is ${warning.totalMicrousd} microusd.\n`,
+  );
 }
 
 export async function reserveTelephoneUsageSlice(options: {
+  readonly onSpendingWarning: (warning: TelephoneSpendingWarning) => void;
   readonly ratesMicrousdPerMinute: TelephoneUsageRates;
-  readonly recordUsage: TelephoneUsageRecorder;
+  readonly reserveUsageSlice: TelephoneUsageSliceRecorder;
   readonly sessionId?: string;
   readonly usageScopeId: string;
-}): Promise<"continue" | "safe-terminal-only"> {
+}): Promise<TelephoneUsageSliceResult> {
   validateRates(options.ratesMicrousdPerMinute);
-  let disposition: "continue" | "safe-terminal-only" = "continue";
-  for (const source of usageSources) {
-    const result = await options.recordUsage({
-      amountMicrousd: options.ratesMicrousdPerMinute[source],
-      source,
-      usageId: `${options.usageScopeId}:${source}`,
-      ...(options.sessionId === undefined
-        ? {}
-        : { sessionId: options.sessionId }),
+  const result = await options.reserveUsageSlice({
+    amountsMicrousd: options.ratesMicrousdPerMinute,
+    usageScopeId: options.usageScopeId,
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+  });
+  for (const thresholdMicrousd of result.warnings) {
+    options.onSpendingWarning({
+      month: result.month,
+      thresholdMicrousd,
+      totalMicrousd: result.totalMicrousd,
     });
-    if (result.disposition === "safe-terminal-only") {
-      disposition = "safe-terminal-only";
-    }
   }
-  return disposition;
+  return result;
 }
 
 export function telephoneUsageRatesFromEnvironment(): TelephoneUsageRates {
@@ -63,9 +83,10 @@ export function telephoneUsageRatesFromEnvironment(): TelephoneUsageRates {
 export async function meterTelephoneSessionUsage(options: {
   readonly intervalMs?: number;
   readonly onFirstSliceComplete?: () => void;
+  readonly onSpendingWarning: (warning: TelephoneSpendingWarning) => void;
   readonly onSpendingCeiling: () => Promise<void>;
   readonly ratesMicrousdPerMinute: TelephoneUsageRates;
-  readonly recordUsage: TelephoneUsageRecorder;
+  readonly reserveUsageSlice: TelephoneUsageSliceRecorder;
   readonly sessionId: string;
   readonly stop: Promise<void>;
   readonly usageScopeId?: string;
@@ -80,13 +101,14 @@ export async function meterTelephoneSessionUsage(options: {
   const usageScopeId = options.usageScopeId ?? options.sessionId;
   while (true) {
     minute += 1;
-    const disposition = await reserveTelephoneUsageSlice({
+    const result = await reserveTelephoneUsageSlice({
+      onSpendingWarning: options.onSpendingWarning,
       ratesMicrousdPerMinute: options.ratesMicrousdPerMinute,
-      recordUsage: options.recordUsage,
+      reserveUsageSlice: options.reserveUsageSlice,
       sessionId: options.sessionId,
       usageScopeId: `${usageScopeId}:minute:${minute}`,
     });
-    if (disposition === "safe-terminal-only") {
+    if (result.disposition === "safe-terminal-only") {
       await options.onSpendingCeiling();
       if (minute === 1) options.onFirstSliceComplete?.();
       return;
