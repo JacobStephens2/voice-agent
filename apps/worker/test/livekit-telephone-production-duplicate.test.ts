@@ -203,12 +203,16 @@ describe("production-shaped LiveKit telephone turns", () => {
   test("an unknown session-start failure is not attributed to a speech provider", async () => {
     const session = new StartFailureSessionHarness();
     const endCall = vi.fn(async () => undefined);
-    const endSession = vi.fn(async () => ({
-      durationMs: 0,
-      ended: true as const,
-      reason: "provider-failure" as const,
-    }));
-    const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
+    const endSession = vi.fn(
+      async (_sessionId: string, _reason: "provider-failure") => ({
+        durationMs: 0,
+        ended: true as const,
+        reason: "provider-failure" as const,
+      }),
+    );
+    const recordProviderFailure = vi.fn(async () =>
+      endSession("telephone-session-start-failure", "provider-failure"),
+    );
     const evidence: unknown[] = [];
     const notifications: unknown[] = [];
 
@@ -260,12 +264,25 @@ describe("production-shaped LiveKit telephone turns", () => {
       },
     );
 
-    expect(recordProviderFailure).not.toHaveBeenCalled();
+    expect(recordProviderFailure).toHaveBeenCalledWith({
+      failureClass: "unavailable",
+      sessionId: "telephone-session-start-failure",
+      stage: "setup",
+    });
     expect(endSession).toHaveBeenCalledWith(
       "telephone-session-start-failure",
       "provider-failure",
     );
-    expect(evidence).toEqual([]);
+    expect(evidence).toEqual([
+      expect.objectContaining({
+        details: expect.objectContaining({
+          failure: "unavailable",
+          provider: "livekit",
+          stage: "setup",
+        }),
+        kind: "telephone.provider.failure",
+      }),
+    ]);
     expect(notifications).toHaveLength(1);
     expect(session.playedFailureFrames).toBeGreaterThan(0);
     expect(endCall).toHaveBeenCalledOnce();

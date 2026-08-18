@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -24,6 +24,8 @@ const rawAudioDebugLifetimeMs = 23 * 60 * 60 * 1_000;
 const maximumProlongedSilenceMs = 15 * 60 * 1_000;
 const minimumProlongedSilenceMs = 30 * 1_000;
 const maximumWarmSessionMs = 5 * 60 * 1_000;
+const defaultSubagentLeaseDurationMs = 30_000;
+const defaultSubagentPollIntervalMs = 25;
 
 export interface TelephoneBoundaryEvidenceSink {
   append(
@@ -65,15 +67,29 @@ export interface TelephoneBoundaryRuntimeOptions {
   readonly rawAudioArtifacts?: RawAudioArtifactRemover;
   readonly rawAudioDebugDirectory?: string;
   readonly store: TelephoneBoundaryStore;
+  readonly subagentLeaseDurationMs?: number;
+  readonly subagentPollIntervalMs?: number;
 }
 
 export function createTelephoneBoundaryRuntime(
   options: TelephoneBoundaryRuntimeOptions,
 ) {
-  const subagentPromotionWaiters = new Map<
-    string,
-    (outcome: "cancelled" | "promoted") => void
-  >();
+  const subagentExecutions = new Set<string>();
+  const subagentLeaseDurationMs =
+    options.subagentLeaseDurationMs ?? defaultSubagentLeaseDurationMs;
+  const subagentPollIntervalMs =
+    options.subagentPollIntervalMs ?? defaultSubagentPollIntervalMs;
+  if (
+    !Number.isInteger(subagentLeaseDurationMs) ||
+    subagentLeaseDurationMs < 3_000 ||
+    !Number.isInteger(subagentPollIntervalMs) ||
+    subagentPollIntervalMs < 1 ||
+    subagentPollIntervalMs >= subagentLeaseDurationMs / 3
+  ) {
+    throw new Error(
+      "Subagent polling must be positive and shorter than one third of a lease of at least three seconds",
+    );
+  }
   const prolongedSilenceMs =
     options.prolongedSilenceMs ?? 60 * 1_000;
   if (
@@ -146,12 +162,11 @@ export function createTelephoneBoundaryRuntime(
     return { durationMs, ended: true, reason } as const;
   }
 
-  async function releaseSubagent(delegationId: string) {
-    const released = await options.store.releaseSubagent(delegationId);
-    if (released.promotedOwnerId !== undefined) {
-      subagentPromotionWaiters.get(released.promotedOwnerId)?.("promoted");
-    }
-    return released;
+  async function releaseSubagent(
+    delegationId: string,
+    executionId: string,
+  ): Promise<void> {
+    await options.store.releaseSubagent({ delegationId, executionId });
   }
 
   return {
@@ -289,52 +304,90 @@ export function createTelephoneBoundaryRuntime(
     },
     /**
      * Runs the Subagent adapter only after its durable global lease is active.
-     * Queued adapters remain pending here and are resumed by lease promotion;
-     * callers never need a separate claim/retry path.
+     * Queued adapters poll the durable lease, so separate runtime processes
+     * observe release and expired owners without a caller-managed retry path.
      */
     async executeSubagent<Result>(
       delegationId: string,
-      execute: () => Promise<Result>,
+      execute: (signal: AbortSignal) => Promise<Result>,
       signal?: AbortSignal,
     ) {
-      if (subagentPromotionWaiters.has(delegationId)) {
+      if (subagentExecutions.has(delegationId)) {
         throw new Error("Subagent execution is already pending");
       }
-      let settlePending: (outcome: "cancelled" | "promoted") => void =
-        () => {};
-      const pending = new Promise<"cancelled" | "promoted">((resolve) => {
-        settlePending = resolve;
-      });
-      const cancelPending = () => settlePending("cancelled");
-      signal?.addEventListener("abort", cancelPending, { once: true });
-      if (signal?.aborted === true) cancelPending();
-      subagentPromotionWaiters.set(delegationId, settlePending);
+      subagentExecutions.add(delegationId);
+      const executionId = randomUUID();
+      const leaseLost = new AbortController();
+      const executionSignal =
+        signal === undefined
+          ? leaseLost.signal
+          : AbortSignal.any([signal, leaseLost.signal]);
       let ownsSlot = false;
       try {
-        const decision = await options.store.claimSubagent({
-          delegationId,
-          requestedAt: options.now(),
-        });
-        if (decision.decision === "queued") {
-          if ((await pending) === "cancelled") {
-            await releaseSubagent(delegationId);
+        while (true) {
+          const requestedAt = options.now();
+          const decision = await options.store.claimSubagent({
+            delegationId,
+            executionId,
+            leaseExpiresAt: addMilliseconds(
+              requestedAt,
+              subagentLeaseDurationMs,
+            ),
+            requestedAt,
+          });
+          if (decision.decision === "accepted") {
+            ownsSlot = true;
+            break;
+          }
+          if (decision.decision === "rejected") return decision;
+          if (
+            (await waitForDelayOrAbort(
+              subagentPollIntervalMs,
+              executionSignal,
+            )) === "aborted"
+          ) {
+            await releaseSubagent(delegationId, executionId);
             return { decision: "cancelled", resource: "subagent" } as const;
           }
-        } else if (decision.decision !== "accepted") {
-          return decision;
         }
-        if (signal?.aborted === true) {
-          await releaseSubagent(delegationId);
+        if (executionSignal.aborted) {
+          await releaseSubagent(delegationId, executionId);
+          ownsSlot = false;
           return { decision: "cancelled", resource: "subagent" } as const;
         }
-        ownsSlot = true;
-        subagentPromotionWaiters.delete(delegationId);
-        const result = await execute();
-        return { decision: "accepted", resource: "subagent", result } as const;
+        let renewal = Promise.resolve();
+        const renewLease = () => {
+          renewal = renewal.then(async () => {
+            const renewedAt = options.now();
+            const renewed = await options.store.renewSubagentLease({
+              delegationId,
+              executionId,
+              leaseExpiresAt: addMilliseconds(
+                renewedAt,
+                subagentLeaseDurationMs,
+              ),
+            });
+            if (!renewed) leaseLost.abort();
+          });
+        };
+        const heartbeat = setInterval(
+          renewLease,
+          Math.floor(subagentLeaseDurationMs / 3),
+        );
+        try {
+          const result = await execute(executionSignal);
+          return {
+            decision: "accepted",
+            resource: "subagent",
+            result,
+          } as const;
+        } finally {
+          clearInterval(heartbeat);
+          await renewal;
+        }
       } finally {
-        signal?.removeEventListener("abort", cancelPending);
-        subagentPromotionWaiters.delete(delegationId);
-        if (ownsSlot) await releaseSubagent(delegationId);
+        subagentExecutions.delete(delegationId);
+        if (ownsSlot) await releaseSubagent(delegationId, executionId);
       }
     },
     async changeSpendingCeiling(input: {
@@ -593,6 +646,29 @@ export function createTelephoneBoundaryRuntime(
   };
 }
 
+function addMilliseconds(timestamp: string, durationMs: number): string {
+  return new Date(new Date(timestamp).getTime() + durationMs).toISOString();
+}
+
+async function waitForDelayOrAbort(
+  durationMs: number,
+  signal: AbortSignal,
+): Promise<"aborted" | "elapsed"> {
+  if (signal.aborted) return "aborted";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: () => void = () => {};
+  try {
+    return await new Promise<"aborted" | "elapsed">((resolve) => {
+      abort = () => resolve("aborted");
+      signal.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => resolve("elapsed"), durationMs);
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+  }
+}
+
 function validateUsageAmount(amountMicrousd: number): void {
   if (
     !Number.isInteger(amountMicrousd) ||
@@ -634,7 +710,7 @@ export function formatTelephoneBoundaryPrometheusMetrics(
       (outcome) =>
         `voice_agent_raw_audio_cleanup_total{outcome="${outcome}"} ${metrics.audioDebug.cleanup[outcome]}`,
     ),
-    ...(["stt", "coordinator", "tts"] as const).flatMap((stage) =>
+    ...(["stt", "coordinator", "tts", "setup"] as const).flatMap((stage) =>
       (["timeout", "unavailable"] as const).map(
         (failureClass) =>
           `voice_agent_telephone_provider_failures_total{stage="${stage}",class="${failureClass}"} ${metrics.providerFailures[stage][failureClass]}`,

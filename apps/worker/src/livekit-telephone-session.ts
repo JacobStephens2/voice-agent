@@ -37,6 +37,8 @@ const providerFailureAudioPath = fileURLToPath(
   new URL("../assets/provider-failure.pcm", import.meta.url),
 );
 const providerFailureSampleRate = 24_000;
+type SpeechProviderStage = "coordinator" | "stt" | "tts";
+type ProviderFailureStage = SpeechProviderStage | "setup";
 
 interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
   close(): Promise<void>;
@@ -168,7 +170,7 @@ export async function runLiveKitTelephoneSession(
   }
 
   async function recordProviderFailureAndEnd(
-    stage: "stt" | "coordinator" | "tts",
+    stage: ProviderFailureStage,
     error: unknown,
     taskId?: string,
   ): Promise<void> {
@@ -198,27 +200,6 @@ export async function runLiveKitTelephoneSession(
           sessionId: options.telephoneSessionId,
           stage,
         });
-      } finally {
-        await playFailureAndEnd();
-      }
-    }
-  }
-
-  async function recordUnknownSetupFailureAndEnd(): Promise<void> {
-    const occurredAt = new Date().toISOString();
-    try {
-      await options.sessionEvidence?.requestFailureNotification?.({
-        failureEventId: stableIdentifier(
-          `session-setup:${options.telephoneSessionId}:${occurredAt}`,
-        ),
-        occurredAt,
-      });
-    } finally {
-      try {
-        await options.boundaries.endSession(
-          options.telephoneSessionId,
-          "provider-failure",
-        );
       } finally {
         await playFailureAndEnd();
       }
@@ -342,8 +323,8 @@ export async function runLiveKitTelephoneSession(
         record: false,
         room: options.room,
       });
-    } catch {
-      await recordUnknownSetupFailureAndEnd();
+    } catch (error) {
+      await recordProviderFailureAndEnd("setup", error, options.activeTaskId);
       return;
     }
     resetProlongedSilenceDeadline();
@@ -563,7 +544,7 @@ async function performConversationAction(
   action: TelephoneSessionAction,
   playFailureAndEnd: () => Promise<void>,
   recordProviderFailureAndEnd: (
-    stage: "stt" | "coordinator" | "tts",
+    stage: ProviderFailureStage,
     error: unknown,
     taskId?: string,
   ) => Promise<void>,
@@ -803,16 +784,17 @@ function stableIdentifier(value: string): string {
 }
 
 function providerForStage(
-  stage: "stt" | "coordinator" | "tts",
-): "assemblyai" | "openai" | "inworld" {
+  stage: ProviderFailureStage,
+): "assemblyai" | "inworld" | "livekit" | "openai" {
   if (stage === "stt") return "assemblyai";
   if (stage === "coordinator") return "openai";
-  return "inworld";
+  if (stage === "tts") return "inworld";
+  return "livekit";
 }
 
 function providerStageForSessionError(error: {
   readonly type: string;
-}): "coordinator" | "stt" | "tts" | undefined {
+}): SpeechProviderStage | undefined {
   if (error.type === "stt_error") return "stt";
   if (error.type === "tts_error") return "tts";
   if (error.type === "llm_error" || error.type === "realtime_model_error") {
@@ -825,7 +807,7 @@ export function mapProviderFailureEvent(input: {
   readonly deliveryId: string;
   readonly error: unknown;
   readonly occurredAt: string;
-  readonly stage: "stt" | "coordinator" | "tts";
+  readonly stage: ProviderFailureStage;
   readonly taskId?: string;
 }):
   | Extract<TelephoneSessionProviderEvent, { kind: "provider-timeout" }>
@@ -837,7 +819,7 @@ export function mapProviderFailureEvent(input: {
     stage: input.stage,
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
   };
-  return input.error instanceof APITimeoutError
+  return input.stage !== "setup" && input.error instanceof APITimeoutError
     ? {
         ...common,
         kind: "provider-timeout",
@@ -850,16 +832,14 @@ export function mapProviderFailureEvent(input: {
       };
 }
 
-function providerTimeoutMs(
-  stage: "stt" | "coordinator" | "tts",
-): number {
+function providerTimeoutMs(stage: SpeechProviderStage): number {
   if (stage === "stt") return transcriptionTimeoutMs;
   if (stage === "coordinator") return coordinatorTimeoutMs;
   return ttsTimeoutMs;
 }
 
 export function boundedProviderConnectOptions(
-  stage: "coordinator" | "stt" | "tts",
+  stage: SpeechProviderStage,
 ) {
   return {
     maxRetry: 1,

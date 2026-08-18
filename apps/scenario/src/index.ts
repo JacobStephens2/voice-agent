@@ -105,7 +105,7 @@ export interface TelephoneBoundaryScenario {
   recordProviderFailure(input: {
     readonly failureClass: "timeout" | "unavailable";
     readonly sessionId: string;
-    readonly stage: "coordinator" | "stt" | "tts";
+    readonly stage: "coordinator" | "setup" | "stt" | "tts";
   }): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["recordProviderFailure"]
   >;

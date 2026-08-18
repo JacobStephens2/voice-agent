@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { formatTelephoneBoundaryPrometheusMetrics } from "@voice-agent/runtime";
+import { createSqliteTelephoneBoundaryStore } from "@voice-agent/sqlite-store";
 
 import { createTelephoneBoundaryScenario } from "../src/index.ts";
 
@@ -109,8 +110,13 @@ describe("Telephone fail-closed boundaries", () => {
       join(tmpdir(), "voice-agent-subagent-execution-"),
     );
     temporaryDirectories.push(directory);
+    const databasePath = join(directory, "voice-agent.sqlite");
     const scenario = await createTelephoneBoundaryScenario({
-      databasePath: join(directory, "voice-agent.sqlite"),
+      databasePath,
+      now: "2026-08-17T12:00:00.000Z",
+    });
+    const otherRuntime = await createTelephoneBoundaryScenario({
+      databasePath,
       now: "2026-08-17T12:00:00.000Z",
     });
     let releaseFirst: () => void = () => {};
@@ -135,9 +141,26 @@ describe("Telephone fail-closed boundaries", () => {
         },
       );
       await firstStarted;
+      let duplicateAdapterRan = false;
+      await expect(
+        scenario.executeSubagent("delegation-overlap-1", async () => {
+          duplicateAdapterRan = true;
+        }),
+      ).rejects.toThrow("Subagent execution is already pending");
+      expect(duplicateAdapterRan).toBe(false);
+      await expect(
+        otherRuntime.executeSubagent("delegation-overlap-1", async () => {
+          duplicateAdapterRan = true;
+        }),
+      ).resolves.toEqual({
+        decision: "rejected",
+        reason: "duplicate-delegation",
+        resource: "subagent",
+      });
+      expect(duplicateAdapterRan).toBe(false);
 
       let secondSettled = false;
-      const second = scenario
+      const second = otherRuntime
         .executeSubagent("delegation-overlap-2", async () => {
           executionOrder.push("second-started");
           return "second-result";
@@ -145,7 +168,7 @@ describe("Telephone fail-closed boundaries", () => {
         .finally(() => {
           secondSettled = true;
         });
-      await expect(scenario.readMetrics()).resolves.toMatchObject({
+      await expect(otherRuntime.readMetrics()).resolves.toMatchObject({
         resources: {
           queuedSubagents: 1,
           runningSubagents: 1,
@@ -178,6 +201,7 @@ describe("Telephone fail-closed boundaries", () => {
       });
     } finally {
       releaseFirst();
+      await otherRuntime.close();
       await scenario.close();
     }
   });
@@ -234,6 +258,63 @@ describe("Telephone fail-closed boundaries", () => {
     } finally {
       releaseFirst();
       await scenario.close();
+    }
+  });
+
+  test("an expired Subagent lease cannot strand later execution", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-expiry-"),
+    );
+    temporaryDirectories.push(directory);
+    const store = createSqliteTelephoneBoundaryStore(
+      join(directory, "voice-agent.sqlite"),
+    );
+
+    try {
+      await expect(
+        store.claimSubagent({
+          delegationId: "delegation-abandoned",
+          executionId: "execution-abandoned",
+          leaseExpiresAt: "2026-08-17T12:00:30.000Z",
+          requestedAt: "2026-08-17T12:00:00.000Z",
+        }),
+      ).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+      });
+      await expect(
+        store.claimSubagent({
+          delegationId: "delegation-next",
+          executionId: "execution-next",
+          leaseExpiresAt: "2026-08-17T12:00:30.000Z",
+          requestedAt: "2026-08-17T12:00:00.000Z",
+        }),
+      ).resolves.toEqual({
+        decision: "queued",
+        position: 1,
+        resource: "subagent",
+      });
+
+      await expect(
+        store.claimSubagent({
+          delegationId: "delegation-next",
+          executionId: "execution-next",
+          leaseExpiresAt: "2026-08-17T12:01:01.000Z",
+          requestedAt: "2026-08-17T12:00:31.000Z",
+        }),
+      ).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+      });
+      await expect(
+        store.renewSubagentLease({
+          delegationId: "delegation-abandoned",
+          executionId: "execution-abandoned",
+          leaseExpiresAt: "2026-08-17T12:01:01.000Z",
+        }),
+      ).resolves.toBe(false);
+    } finally {
+      await store.close();
     }
   });
 
@@ -304,6 +385,7 @@ describe("Telephone fail-closed boundaries", () => {
       });
       expect(metrics.providerFailures).toEqual({
         coordinator: { timeout: 0, unavailable: 0 },
+        setup: { timeout: 0, unavailable: 0 },
         stt: { timeout: 1, unavailable: 0 },
         tts: { timeout: 0, unavailable: 0 },
       });

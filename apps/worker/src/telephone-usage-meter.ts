@@ -1,26 +1,22 @@
-import type { TelephoneSpendingWarningThreshold } from "@voice-agent/contracts";
+import type {
+  TelephoneSpendingWarningThreshold,
+  TelephoneUsageReservationResult,
+  TelephoneUsageSource,
+} from "@voice-agent/contracts";
 
-const usageSources = ["api", "telephony", "realtime-media"] as const;
-type TelephoneUsageSource = (typeof usageSources)[number];
+const usageSources = ["api", "telephony", "realtime-media"] as const satisfies
+  readonly TelephoneUsageSource[];
 
 export type TelephoneUsageRates = Readonly<
   Record<TelephoneUsageSource, number>
 >;
-
-interface TelephoneUsageSliceResult {
-  readonly disposition: "continue" | "safe-terminal-only";
-  readonly month: string;
-  readonly reservedSources: readonly TelephoneUsageSource[];
-  readonly totalMicrousd: number;
-  readonly warnings: readonly TelephoneSpendingWarningThreshold[];
-}
 
 interface TelephoneUsageSliceRecorder {
   (input: {
     readonly amountsMicrousd: TelephoneUsageRates;
     readonly sessionId?: string;
     readonly usageScopeId: string;
-  }): Promise<TelephoneUsageSliceResult>;
+  }): Promise<TelephoneUsageReservationResult>;
 }
 
 export interface TelephoneSpendingWarning {
@@ -43,7 +39,7 @@ export async function reserveTelephoneUsageSlice(options: {
   readonly reserveUsageSlice: TelephoneUsageSliceRecorder;
   readonly sessionId?: string;
   readonly usageScopeId: string;
-}): Promise<TelephoneUsageSliceResult> {
+}): Promise<TelephoneUsageReservationResult> {
   validateRates(options.ratesMicrousdPerMinute);
   const result = await options.reserveUsageSlice({
     amountsMicrousd: options.ratesMicrousdPerMinute,

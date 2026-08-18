@@ -506,13 +506,13 @@ async function recordProviderFailure(
     | {
         readonly failure: "timeout";
         readonly provider: string;
-        readonly stage: "stt" | "coordinator" | "tts";
+        readonly stage: "stt" | "coordinator" | "tts" | "setup";
         readonly timeoutMs: number;
       }
     | {
         readonly failure: "unavailable";
         readonly provider: string;
-        readonly stage: "stt" | "coordinator" | "tts";
+        readonly stage: "stt" | "coordinator" | "tts" | "setup";
       },
 ): Promise<TelephoneSessionActionResult> {
   const evidence: Omit<
