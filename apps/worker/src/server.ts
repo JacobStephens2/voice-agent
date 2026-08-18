@@ -30,6 +30,7 @@ import { createProductionLiveKitCompletionCallbackAdapter } from "./livekit-comp
 import { createLiveKitAgentServer } from "./livekit-agent-server.ts";
 import { createProductionResendSilentNotificationAdapter } from "./resend-silent-notification.ts";
 import {
+  reportTelephoneSpendingWarning,
   reserveTelephoneUsageSlice,
   telephoneUsageRatesFromEnvironment,
 } from "./telephone-usage-meter.ts";
@@ -167,11 +168,12 @@ while (!stopping) {
       }
       if (
         (await reserveTelephoneUsageSlice({
+          onSpendingWarning: reportTelephoneSpendingWarning,
           ratesMicrousdPerMinute: telephoneUsageRates,
-          recordUsage: telephoneBoundaries.recordUsage,
+          reserveUsageSlice: telephoneBoundaries.reserveUsageSlice,
           sessionId: report.telephoneSessionId,
           usageScopeId: `prelive:${report.operationId}`,
-        })) === "safe-terminal-only"
+        })).disposition === "safe-terminal-only"
       ) {
         await telephoneBoundaries.releaseWarmSession(report.telephoneSessionId);
         await continuityRuntime.requestSessionFailureNotification({
@@ -276,11 +278,12 @@ async function placeCallbackOrRecordFailure(
   }
   if (
     (await reserveTelephoneUsageSlice({
+      onSpendingWarning: reportTelephoneSpendingWarning,
       ratesMicrousdPerMinute: telephoneUsageRates,
-      recordUsage: boundaries.recordUsage,
+      reserveUsageSlice: boundaries.reserveUsageSlice,
       sessionId: record.session.id,
       usageScopeId: `prelive:${action.effectId}`,
-    })) === "safe-terminal-only"
+    })).disposition === "safe-terminal-only"
   ) {
     await boundaries.releaseWarmSession(record.session.id);
     await callback.receiveProviderEvent(handshakeId, {

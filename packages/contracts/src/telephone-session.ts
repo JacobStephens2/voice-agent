@@ -6,6 +6,21 @@ const turnIdentifierSchema = z.string().min(1).max(80);
 const timestampSchema = z.iso.datetime();
 const providerNameSchema = z.string().min(1).max(80);
 const durationSchema = z.number().int().nonnegative().max(120_000);
+export const telephoneSpeechProviderStages = [
+  "stt",
+  "coordinator",
+  "tts",
+] as const;
+export type TelephoneSpeechProviderStage =
+  (typeof telephoneSpeechProviderStages)[number];
+export const telephoneProviderFailureStages = [
+  ...telephoneSpeechProviderStages,
+  "setup",
+] as const;
+export type TelephoneProviderFailureStage =
+  (typeof telephoneProviderFailureStages)[number];
+const providerStageSchema = z.enum(telephoneSpeechProviderStages);
+const providerFailureStageSchema = z.enum(telephoneProviderFailureStages);
 
 const telephoneEvidenceFields = {
   id: identifierSchema,
@@ -30,7 +45,7 @@ export const telephoneProviderTimingEvidenceEventSchema = z.object({
     durationMs: durationSchema,
     outcome: z.literal("completed"),
     provider: providerNameSchema,
-    stage: z.enum(["stt", "coordinator", "tts"]),
+    stage: providerStageSchema,
   }),
   kind: z.literal("telephone.provider.timing"),
 });
@@ -59,13 +74,13 @@ export const telephoneProviderFailureEvidenceEventSchema = z.object({
     z.object({
       failure: z.literal("timeout"),
       provider: providerNameSchema,
-      stage: z.enum(["stt", "coordinator", "tts"]),
+      stage: providerFailureStageSchema,
       timeoutMs: durationSchema,
     }),
     z.object({
       failure: z.literal("unavailable"),
       provider: providerNameSchema,
-      stage: z.enum(["stt", "coordinator", "tts"]),
+      stage: providerFailureStageSchema,
     }),
   ]),
   kind: z.literal("telephone.provider.failure"),
@@ -131,7 +146,7 @@ export const telephoneProviderTimingEventSchema = z
     kind: z.literal("provider-timing"),
     occurredAt: timestampSchema,
     provider: providerNameSchema,
-    stage: z.enum(["stt", "coordinator", "tts"]),
+    stage: providerStageSchema,
     taskId: identifierSchema.optional(),
   })
   .strict();
@@ -142,7 +157,7 @@ export const telephoneProviderTimeoutEventSchema = z
     kind: z.literal("provider-timeout"),
     occurredAt: timestampSchema,
     provider: providerNameSchema,
-    stage: z.enum(["stt", "coordinator", "tts"]),
+    stage: providerFailureStageSchema,
     taskId: identifierSchema.optional(),
     timeoutMs: durationSchema,
   })
@@ -155,7 +170,7 @@ export const telephoneProviderFailureEventSchema = z
     kind: z.literal("provider-failure"),
     occurredAt: timestampSchema,
     provider: providerNameSchema,
-    stage: z.enum(["stt", "coordinator", "tts"]),
+    stage: providerFailureStageSchema,
     taskId: identifierSchema.optional(),
   })
   .strict();

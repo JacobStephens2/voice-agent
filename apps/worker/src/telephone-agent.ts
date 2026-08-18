@@ -38,15 +38,19 @@ import {
 } from "./livekit-callback-adapter.ts";
 import {
   boundedProviderConnectOptions,
-  mapProviderFailureEvent,
   playPrerecordedProviderFailure,
   runLiveKitTelephoneSession,
 } from "./livekit-telephone-session.ts";
 import { normalizeTelnyxSipTelephoneNumber } from "./livekit-sip-attributes.ts";
 import {
+  reportTelephoneSpendingWarning,
   reserveTelephoneUsageSlice,
   telephoneUsageRatesFromEnvironment,
 } from "./telephone-usage-meter.ts";
+import {
+  recordTelephoneSetupProviderFailure,
+  TelephoneSetupProviderError,
+} from "./telephone-setup-provider-failure.ts";
 
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
@@ -180,13 +184,32 @@ type OutboundDispatch =
   | AuthenticationCallbackDispatch
   | CompletionCallbackDispatch;
 
-class TelephoneSetupProviderError extends Error {
-  constructor(
-    readonly stage: "coordinator" | "stt" | "tts",
-    readonly providerError: unknown,
-  ) {
-    super(`Telephone ${stage} setup provider failed`);
+interface WarmSessionLease {
+  release(): Promise<void>;
+}
+
+async function acquireWarmSessionLease(options: {
+  readonly boundaries: BoundaryRuntime;
+  readonly onRejected: (
+    decision: Awaited<ReturnType<BoundaryRuntime["reserveWarmSession"]>>,
+  ) => Promise<void>;
+  readonly telephoneSessionId: string;
+}): Promise<WarmSessionLease | undefined> {
+  const decision = await options.boundaries.reserveWarmSession(
+    options.telephoneSessionId,
+  );
+  if (decision.decision !== "accepted") {
+    await options.onRejected(decision);
+    return undefined;
   }
+  let released = false;
+  return {
+    async release() {
+      if (released) return;
+      released = true;
+      await options.boundaries.releaseWarmSession(options.telephoneSessionId);
+    },
+  };
 }
 
 async function handleInbound(
@@ -201,10 +224,11 @@ async function handleInbound(
   const inboundCallId = providerCallId(participant);
   if (
     (await reserveTelephoneUsageSlice({
+      onSpendingWarning: reportTelephoneSpendingWarning,
       ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
-      recordUsage: boundaries.recordUsage,
+      reserveUsageSlice: boundaries.reserveUsageSlice,
       usageScopeId: `prelive:inbound:${providerDeliveryFingerprint(inboundCallId)}`,
-    })) === "safe-terminal-only"
+    })).disposition === "safe-terminal-only"
   ) {
     await ctx.deleteRoom().catch(() => undefined);
     return;
@@ -230,11 +254,7 @@ async function handleInbound(
   }
   const session = createFixedSpeechSession();
   try {
-    await session.start({
-      agent: fixedSpeechAgent(),
-      record: false,
-      room: ctx.room,
-    });
+    await startFixedSpeechSession(session, ctx.room);
     const notice = inbound.actions.find(
       (action) => action.kind === "play-inbound-notice-and-end",
     );
@@ -290,18 +310,21 @@ async function handleOutbound(
     throw new Error("Callback Handshake Evidence Record is unavailable");
   }
   const telephoneSessionId = pendingRecord.session.id;
-  const warmDecision = await boundaries.reserveWarmSession(telephoneSessionId);
-  if (warmDecision.decision !== "accepted") {
-    await runtime.requestTelephoneSessionFailureNotification(
-      dispatch.handshakeId,
-      {
-        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
-        occurredAt: new Date().toISOString(),
-      },
-    );
-    await ctx.deleteRoom().catch(() => undefined);
-    return;
-  }
+  const warmSession = await acquireWarmSessionLease({
+    boundaries,
+    onRejected: async (decision) => {
+      await runtime.requestTelephoneSessionFailureNotification(
+        dispatch.handshakeId,
+        {
+          failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(decision)}`,
+          occurredAt: new Date().toISOString(),
+        },
+      );
+      await ctx.deleteRoom().catch(() => undefined);
+    },
+    telephoneSessionId,
+  });
+  if (warmSession === undefined) return;
   const session = createFixedSpeechSession();
   let callId = dispatch.effectId;
   let detector: voice.AMD | undefined;
@@ -309,11 +332,7 @@ async function handleOutbound(
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
   try {
-    await session.start({
-      agent: fixedSpeechAgent(),
-      record: false,
-      room: ctx.room,
-    });
+    await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
@@ -416,6 +435,7 @@ async function handleOutbound(
           boundaries,
           disconnected: disconnected.promise,
           endCall: () => ctx.deleteRoom(),
+          initialUsageScopeId: `prelive:${dispatch.effectId}`,
           room: ctx.room,
           requestCompletionCallback: (input) =>
             requestCompletionCallback(runtime, continuity, input),
@@ -470,7 +490,7 @@ async function handleOutbound(
       telephoneSessionId,
     });
   } finally {
-    await boundaries.releaseWarmSession(telephoneSessionId);
+    await warmSession.release();
     disconnected?.cancel();
     await detector?.aclose().catch(() => undefined);
     await session.close().catch(() => undefined);
@@ -486,20 +506,21 @@ async function handleCompletionOutbound(
   boundaries: BoundaryRuntime,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
-  const warmDecision = await boundaries.reserveWarmSession(
-    dispatch.telephoneSessionId,
-  );
-  if (warmDecision.decision !== "accepted") {
-    await continuity
-      .requestSessionFailureNotification({
-        callbackOperationId: dispatch.operationId,
-        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
-        occurredAt: new Date().toISOString(),
-      })
-      .catch(() => undefined);
-    await ctx.deleteRoom().catch(() => undefined);
-    return;
-  }
+  const warmSession = await acquireWarmSessionLease({
+    boundaries,
+    onRejected: async (decision) => {
+      await continuity
+        .requestSessionFailureNotification({
+          callbackOperationId: dispatch.operationId,
+          failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(decision)}`,
+          occurredAt: new Date().toISOString(),
+        })
+        .catch(() => undefined);
+      await ctx.deleteRoom().catch(() => undefined);
+    },
+    telephoneSessionId: dispatch.telephoneSessionId,
+  });
+  if (warmSession === undefined) return;
   const session = createFixedSpeechSession();
   let detector: voice.AMD | undefined;
   let disconnected:
@@ -509,11 +530,7 @@ async function handleCompletionOutbound(
   let authenticated = false;
   let handedOffToRecovery = false;
   try {
-    await session.start({
-      agent: fixedSpeechAgent(),
-      record: false,
-      room: ctx.room,
-    });
+    await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
@@ -627,6 +644,7 @@ async function handleCompletionOutbound(
       boundaries,
       disconnected: disconnected.promise,
       endCall: () => ctx.deleteRoom(),
+      initialUsageScopeId: `prelive:${dispatch.operationId}`,
       openingText: `Your task concluded: ${record.task.conclusion}`,
       onStarted: () =>
         continuity.recordCompletionResumption({
@@ -677,7 +695,7 @@ async function handleCompletionOutbound(
         .catch(() => undefined);
     }
   } finally {
-    await boundaries.releaseWarmSession(dispatch.telephoneSessionId);
+    await warmSession.release();
     disconnected?.cancel();
     await detector?.aclose().catch(() => undefined);
     await session.close().catch(() => undefined);
@@ -695,20 +713,21 @@ async function handleCompletionResumption(
   boundaries: BoundaryRuntime,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
-  const warmDecision = await boundaries.reserveWarmSession(
-    dispatch.telephoneSessionId,
-  );
-  if (warmDecision.decision !== "accepted") {
-    await continuity
-      .requestSessionFailureNotification({
-        callbackOperationId: dispatch.operationId,
-        failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(warmDecision)}`,
-        occurredAt: new Date().toISOString(),
-      })
-      .catch(() => undefined);
-    await ctx.deleteRoom().catch(() => undefined);
-    return;
-  }
+  const warmSession = await acquireWarmSessionLease({
+    boundaries,
+    onRejected: async (decision) => {
+      await continuity
+        .requestSessionFailureNotification({
+          callbackOperationId: dispatch.operationId,
+          failureEventId: `limit:${dispatch.effectId}:${boundaryDenialReason(decision)}`,
+          occurredAt: new Date().toISOString(),
+        })
+        .catch(() => undefined);
+      await ctx.deleteRoom().catch(() => undefined);
+    },
+    telephoneSessionId: dispatch.telephoneSessionId,
+  });
+  if (warmSession === undefined) return;
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
@@ -767,7 +786,7 @@ async function handleCompletionResumption(
       })
       .catch(() => undefined);
   } finally {
-    await boundaries.releaseWarmSession(dispatch.telephoneSessionId);
+    await warmSession.release();
     disconnected?.cancel();
     await ctx.deleteRoom().catch(() => undefined);
   }
@@ -861,42 +880,14 @@ async function recordSetupProviderFailure(input: {
   readonly occurredAt: string;
   readonly telephoneSessionId: string;
 }): Promise<void> {
-  if (!(input.error instanceof TelephoneSetupProviderError)) return;
-  const correlation = createHash("sha256")
-    .update(input.failureEventId)
-    .digest("hex")
-    .slice(0, 32);
-  const failure = mapProviderFailureEvent({
-    deliveryId: correlation,
-    error: input.error.providerError,
+  await recordTelephoneSetupProviderFailure({
+    append: input.append,
+    error: input.error,
+    failureEventId: input.failureEventId,
     occurredAt: input.occurredAt,
-    stage: input.error.stage,
-  });
-  const failureClass =
-    failure.kind === "provider-timeout" ? "timeout" : "unavailable";
-  await input.append({
-    details:
-      failure.kind === "provider-timeout"
-        ? {
-            failure: "timeout",
-            provider: failure.provider,
-            stage: failure.stage,
-            timeoutMs: failure.timeoutMs,
-          }
-        : {
-            failure: "unavailable",
-            provider: failure.provider,
-            stage: failure.stage,
-          },
-    id: `setup-provider-failure:${correlation}`,
-    kind: "telephone.provider.failure",
-    occurredAt: input.occurredAt,
-    summary: "Telephone setup reached a bounded provider failure.",
-  });
-  await input.boundaries.recordProviderFailure({
-    failureClass,
-    sessionId: input.telephoneSessionId,
-    stage: input.error.stage,
+    recordProviderFailure: (failure) =>
+      input.boundaries.recordProviderFailure(failure),
+    telephoneSessionId: input.telephoneSessionId,
   });
 }
 
@@ -952,6 +943,21 @@ function createFixedSpeechSession(): voice.AgentSession {
     }),
     ttsReadIdleTimeout: 10_000,
   });
+}
+
+async function startFixedSpeechSession(
+  session: voice.AgentSession,
+  room: Room,
+): Promise<void> {
+  try {
+    await session.start({
+      agent: fixedSpeechAgent(),
+      record: false,
+      room,
+    });
+  } catch (error) {
+    throw new TelephoneSetupProviderError("setup", error);
+  }
 }
 
 function createBoundedMachineDetector(
@@ -1043,11 +1049,12 @@ async function placeCallbackOrRecordFailure(
   }
   if (
     (await reserveTelephoneUsageSlice({
+      onSpendingWarning: reportTelephoneSpendingWarning,
       ratesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
-      recordUsage: boundaries.recordUsage,
+      reserveUsageSlice: boundaries.reserveUsageSlice,
       sessionId: record.session.id,
       usageScopeId: `prelive:${action.effectId}`,
-    })) === "safe-terminal-only"
+    })).disposition === "safe-terminal-only"
   ) {
     await boundaries.releaseWarmSession(record.session.id);
     await runtime.receiveProviderEvent(handshakeId, {

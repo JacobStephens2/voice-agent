@@ -156,4 +156,22 @@ describe("LiveKit telephone provider failures", () => {
       timeoutMs: 10_000,
     });
   });
+
+  test("does not invent a timeout duration for an unclassified setup failure", () => {
+    expect(
+      mapProviderFailureEvent({
+        deliveryId: "setup-failure",
+        error: new APITimeoutError({ message: "unclassified setup timeout" }),
+        occurredAt: "2026-08-17T19:00:03.000Z",
+        stage: "setup",
+      }),
+    ).toEqual({
+      deliveryId: "setup-failure",
+      failure: "unavailable",
+      kind: "provider-failure",
+      occurredAt: "2026-08-17T19:00:03.000Z",
+      provider: "livekit",
+      stage: "setup",
+    });
+  });
 });

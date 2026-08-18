@@ -1,41 +1,57 @@
-const usageSources = ["api", "telephony", "realtime-media"] as const;
-type TelephoneUsageSource = (typeof usageSources)[number];
+import {
+  telephoneUsageSources,
+  type TelephoneSpendingWarningThreshold,
+  type TelephoneUsageReservationResult,
+  type TelephoneUsageSource,
+} from "@voice-agent/contracts";
 
 export type TelephoneUsageRates = Readonly<
   Record<TelephoneUsageSource, number>
 >;
 
-interface TelephoneUsageRecorder {
+interface TelephoneUsageSliceRecorder {
   (input: {
-    readonly amountMicrousd: number;
+    readonly amountsMicrousd: TelephoneUsageRates;
     readonly sessionId?: string;
-    readonly source: TelephoneUsageSource;
-    readonly usageId: string;
-  }): Promise<{ readonly disposition: "continue" | "safe-terminal-only" }>;
+    readonly usageScopeId: string;
+  }): Promise<TelephoneUsageReservationResult>;
+}
+
+export interface TelephoneSpendingWarning {
+  readonly month: string;
+  readonly thresholdMicrousd: TelephoneSpendingWarningThreshold;
+  readonly totalMicrousd: number;
+}
+
+export function reportTelephoneSpendingWarning(
+  warning: TelephoneSpendingWarning,
+): void {
+  process.stderr.write(
+    `Telephone provider spending crossed ${warning.thresholdMicrousd} microusd for ${warning.month}; monthly total is ${warning.totalMicrousd} microusd.\n`,
+  );
 }
 
 export async function reserveTelephoneUsageSlice(options: {
+  readonly onSpendingWarning: (warning: TelephoneSpendingWarning) => void;
   readonly ratesMicrousdPerMinute: TelephoneUsageRates;
-  readonly recordUsage: TelephoneUsageRecorder;
+  readonly reserveUsageSlice: TelephoneUsageSliceRecorder;
   readonly sessionId?: string;
   readonly usageScopeId: string;
-}): Promise<"continue" | "safe-terminal-only"> {
+}): Promise<TelephoneUsageReservationResult> {
   validateRates(options.ratesMicrousdPerMinute);
-  let disposition: "continue" | "safe-terminal-only" = "continue";
-  for (const source of usageSources) {
-    const result = await options.recordUsage({
-      amountMicrousd: options.ratesMicrousdPerMinute[source],
-      source,
-      usageId: `${options.usageScopeId}:${source}`,
-      ...(options.sessionId === undefined
-        ? {}
-        : { sessionId: options.sessionId }),
+  const result = await options.reserveUsageSlice({
+    amountsMicrousd: options.ratesMicrousdPerMinute,
+    usageScopeId: options.usageScopeId,
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
+  });
+  for (const thresholdMicrousd of result.warnings) {
+    options.onSpendingWarning({
+      month: result.month,
+      thresholdMicrousd,
+      totalMicrousd: result.totalMicrousd,
     });
-    if (result.disposition === "safe-terminal-only") {
-      disposition = "safe-terminal-only";
-    }
   }
-  return disposition;
+  return result;
 }
 
 export function telephoneUsageRatesFromEnvironment(): TelephoneUsageRates {
@@ -61,11 +77,13 @@ export function telephoneUsageRatesFromEnvironment(): TelephoneUsageRates {
  * call from running paid work after the durable monthly ceiling is reached.
  */
 export async function meterTelephoneSessionUsage(options: {
+  readonly initialUsageScopeId?: string;
   readonly intervalMs?: number;
   readonly onFirstSliceComplete?: () => void;
+  readonly onSpendingWarning: (warning: TelephoneSpendingWarning) => void;
   readonly onSpendingCeiling: () => Promise<void>;
   readonly ratesMicrousdPerMinute: TelephoneUsageRates;
-  readonly recordUsage: TelephoneUsageRecorder;
+  readonly reserveUsageSlice: TelephoneUsageSliceRecorder;
   readonly sessionId: string;
   readonly stop: Promise<void>;
   readonly usageScopeId?: string;
@@ -80,13 +98,17 @@ export async function meterTelephoneSessionUsage(options: {
   const usageScopeId = options.usageScopeId ?? options.sessionId;
   while (true) {
     minute += 1;
-    const disposition = await reserveTelephoneUsageSlice({
+    const result = await reserveTelephoneUsageSlice({
+      onSpendingWarning: options.onSpendingWarning,
       ratesMicrousdPerMinute: options.ratesMicrousdPerMinute,
-      recordUsage: options.recordUsage,
+      reserveUsageSlice: options.reserveUsageSlice,
       sessionId: options.sessionId,
-      usageScopeId: `${usageScopeId}:minute:${minute}`,
+      usageScopeId:
+        minute === 1 && options.initialUsageScopeId !== undefined
+          ? options.initialUsageScopeId
+          : `${usageScopeId}:minute:${minute}`,
     });
-    if (disposition === "safe-terminal-only") {
+    if (result.disposition === "safe-terminal-only") {
       await options.onSpendingCeiling();
       if (minute === 1) options.onFirstSliceComplete?.();
       return;
@@ -99,7 +121,7 @@ export async function meterTelephoneSessionUsage(options: {
 }
 
 function validateRates(rates: TelephoneUsageRates): void {
-  for (const source of usageSources) {
+  for (const source of telephoneUsageSources) {
     const rate = rates[source];
     if (!Number.isInteger(rate) || rate < 1) {
       throw new Error(`Telephone ${source} rate must be positive microusd`);

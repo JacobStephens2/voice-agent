@@ -1,15 +1,20 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { formatTelephoneBoundaryPrometheusMetrics } from "@voice-agent/runtime";
+import {
+  createTelephoneBoundaryRuntime,
+  formatTelephoneBoundaryPrometheusMetrics,
+} from "@voice-agent/runtime";
+import { createSqliteTelephoneBoundaryStore } from "@voice-agent/sqlite-store";
 
 import { createTelephoneBoundaryScenario } from "../src/index.ts";
 
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
       rm(directory, { force: true, recursive: true }),
@@ -18,7 +23,7 @@ afterEach(async () => {
 });
 
 describe("Telephone fail-closed boundaries", () => {
-  test("excess sessions, state-changing tasks, and Subagents are explicitly rejected or queued", async () => {
+  test("excess sessions and state-changing tasks are explicitly rejected or queued", async () => {
     const directory = await mkdtemp(join(tmpdir(), "voice-agent-boundaries-"));
     temporaryDirectories.push(directory);
     const scenario = await createTelephoneBoundaryScenario({
@@ -77,52 +82,305 @@ describe("Telephone fail-closed boundaries", () => {
         resource: "state-changing-task",
       });
 
-      await expect(scenario.claimSubagent("delegation-1")).resolves.toEqual({
-        decision: "accepted",
-        resource: "subagent",
-      });
-      await expect(scenario.claimSubagent("delegation-2")).resolves.toEqual({
-        decision: "queued",
-        position: 1,
-        resource: "subagent",
-      });
-      await expect(scenario.claimSubagent("delegation-3")).resolves.toEqual({
-        decision: "queued",
-        position: 2,
-        resource: "subagent",
-      });
-
       await expect(
         scenario.releaseStateChangingTask("session-1", "task-2"),
       ).resolves.toEqual({});
-      await expect(scenario.releaseSubagent("delegation-2")).resolves.toEqual(
-        {},
-      );
 
       await expect(
         scenario.releaseStateChangingTask("session-1", "task-1"),
       ).resolves.toEqual({ promotedOwnerId: "task-3" });
-      await expect(scenario.releaseSubagent("delegation-1")).resolves.toEqual({
-        promotedOwnerId: "delegation-3",
-      });
 
       const metrics = await scenario.readMetrics();
       expect(metrics.limitDecisions).toEqual({
-        accepted: 5,
-        queued: 4,
+        accepted: 4,
+        queued: 2,
         rejected: 3,
       });
       expect(metrics.resources).toEqual({
         activeSessions: 1,
         queuedStateChangingTasks: 0,
         queuedSubagents: 0,
-        runningSubagents: 1,
+        runningSubagents: 0,
         warmSessions: 1,
       });
       expect(JSON.stringify(metrics)).not.toContain("task-1");
-      expect(JSON.stringify(metrics)).not.toContain("delegation-1");
     } finally {
       await scenario.close();
+    }
+  });
+
+  test("Subagent execution admits only one overlapping adapter globally", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-execution-"),
+    );
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "voice-agent.sqlite");
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath,
+      now: "2026-08-17T12:00:00.000Z",
+    });
+    const otherRuntime = await createTelephoneBoundaryScenario({
+      databasePath,
+      now: "2026-08-17T12:00:00.000Z",
+    });
+    let releaseFirst: () => void = () => {};
+    let markFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const executionOrder: string[] = [];
+
+    try {
+      const first = scenario.executeSubagent(
+        "delegation-overlap-1",
+        async () => {
+          executionOrder.push("first-started");
+          markFirstStarted();
+          await holdFirst;
+          executionOrder.push("first-finished");
+          return "first-result";
+        },
+      );
+      await firstStarted;
+      let duplicateAdapterRan = false;
+      await expect(
+        scenario.executeSubagent("delegation-overlap-1", async () => {
+          duplicateAdapterRan = true;
+        }),
+      ).rejects.toThrow("Subagent execution is already pending");
+      expect(duplicateAdapterRan).toBe(false);
+      await expect(
+        otherRuntime.executeSubagent("delegation-overlap-1", async () => {
+          duplicateAdapterRan = true;
+        }),
+      ).resolves.toEqual({
+        decision: "rejected",
+        reason: "duplicate-delegation",
+        resource: "subagent",
+      });
+      expect(duplicateAdapterRan).toBe(false);
+
+      let secondSettled = false;
+      const second = otherRuntime
+        .executeSubagent("delegation-overlap-2", async () => {
+          executionOrder.push("second-started");
+          return "second-result";
+        })
+        .finally(() => {
+          secondSettled = true;
+        });
+      await expect(otherRuntime.readMetrics()).resolves.toMatchObject({
+        resources: {
+          queuedSubagents: 1,
+          runningSubagents: 1,
+        },
+      });
+      expect(executionOrder).toEqual(["first-started"]);
+      expect(secondSettled).toBe(false);
+
+      releaseFirst();
+      await expect(first).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+        result: "first-result",
+      });
+      await expect(second).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+        result: "second-result",
+      });
+      expect(executionOrder).toEqual([
+        "first-started",
+        "first-finished",
+        "second-started",
+      ]);
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: {
+          queuedSubagents: 0,
+          runningSubagents: 0,
+        },
+      });
+    } finally {
+      releaseFirst();
+      await otherRuntime.close();
+      await scenario.close();
+    }
+  });
+
+  test("cancelling a queued Subagent prevents its adapter from running", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-cancellation-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      now: "2026-08-17T12:00:00.000Z",
+    });
+    let releaseFirst: () => void = () => {};
+    let markFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      markFirstStarted = resolve;
+    });
+    const holdFirst = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const cancellation = new AbortController();
+    let cancelledAdapterRan = false;
+
+    try {
+      const first = scenario.executeSubagent("delegation-cancel-1", async () => {
+        markFirstStarted();
+        await holdFirst;
+      });
+      await firstStarted;
+      const cancelled = scenario.executeSubagent(
+        "delegation-cancel-2",
+        async () => {
+          cancelledAdapterRan = true;
+        },
+        cancellation.signal,
+      );
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: { queuedSubagents: 1, runningSubagents: 1 },
+      });
+
+      cancellation.abort();
+      await expect(cancelled).resolves.toEqual({
+        decision: "cancelled",
+        resource: "subagent",
+      });
+      expect(cancelledAdapterRan).toBe(false);
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        resources: { queuedSubagents: 0, runningSubagents: 1 },
+      });
+
+      releaseFirst();
+      await expect(first).resolves.toMatchObject({ decision: "accepted" });
+    } finally {
+      releaseFirst();
+      await scenario.close();
+    }
+  });
+
+  test("an expired Subagent lease cannot strand later execution", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-expiry-"),
+    );
+    temporaryDirectories.push(directory);
+    const store = createSqliteTelephoneBoundaryStore(
+      join(directory, "voice-agent.sqlite"),
+    );
+
+    try {
+      await expect(
+        store.claimSubagent({
+          delegationId: "delegation-abandoned",
+          executionId: "execution-abandoned",
+          leaseExpiresAt: "2026-08-17T12:00:30.000Z",
+          requestedAt: "2026-08-17T12:00:00.000Z",
+        }),
+      ).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+      });
+      await expect(
+        store.claimSubagent({
+          delegationId: "delegation-next",
+          executionId: "execution-next",
+          leaseExpiresAt: "2026-08-17T12:00:30.000Z",
+          requestedAt: "2026-08-17T12:00:00.000Z",
+        }),
+      ).resolves.toEqual({
+        decision: "queued",
+        position: 1,
+        resource: "subagent",
+      });
+
+      await expect(
+        store.claimSubagent({
+          delegationId: "delegation-next",
+          executionId: "execution-next",
+          leaseExpiresAt: "2026-08-17T12:01:01.000Z",
+          requestedAt: "2026-08-17T12:00:31.000Z",
+        }),
+      ).resolves.toEqual({
+        decision: "accepted",
+        resource: "subagent",
+      });
+      await expect(
+        store.renewSubagentLease({
+          delegationId: "delegation-abandoned",
+          executionId: "execution-abandoned",
+          leaseExpiresAt: "2026-08-17T12:01:01.000Z",
+        }),
+      ).resolves.toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+
+  test("a lease-renewal failure aborts active Subagent execution", async () => {
+    vi.useFakeTimers();
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-subagent-renewal-failure-"),
+    );
+    temporaryDirectories.push(directory);
+    const durableStore = createSqliteTelephoneBoundaryStore(
+      join(directory, "voice-agent.sqlite"),
+    );
+    const cancellation = new AbortController();
+    const runtime = createTelephoneBoundaryRuntime({
+      nextId: () => "unused-renewal-failure-id",
+      now: () => "2026-08-17T12:00:00.000Z",
+      store: {
+        ...durableStore,
+        async renewSubagentLease() {
+          throw new Error("injected durable lease renewal failure");
+        },
+      },
+      subagentLeaseDurationMs: 3_000,
+    });
+    let executionSignal: AbortSignal | undefined;
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const execution = runtime
+      .executeSubagent(
+        "delegation-renewal-failure",
+        async (signal) => {
+          executionSignal = signal;
+          markStarted();
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else {
+              signal.addEventListener("abort", () => resolve(), { once: true });
+            }
+          });
+          return "adapter-stopped";
+        },
+        cancellation.signal,
+      )
+      .then(
+        (value) => ({ status: "resolved" as const, value }),
+        (error: unknown) => ({ error, status: "rejected" as const }),
+      );
+
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(executionSignal?.aborted).toBe(true);
+      await expect(execution).resolves.toEqual({
+        status: "resolved",
+        value: { decision: "cancelled", resource: "subagent" },
+      });
+    } finally {
+      cancellation.abort();
+      await execution;
+      await runtime.close();
     }
   });
 
@@ -193,6 +451,7 @@ describe("Telephone fail-closed boundaries", () => {
       });
       expect(metrics.providerFailures).toEqual({
         coordinator: { timeout: 0, unavailable: 0 },
+        setup: { timeout: 0, unavailable: 0 },
         stt: { timeout: 1, unavailable: 0 },
         tts: { timeout: 0, unavailable: 0 },
       });
@@ -353,6 +612,51 @@ describe("Telephone fail-closed boundaries", () => {
         totalMicrousd: 0,
       });
       expect(JSON.stringify(metrics)).not.toContain("usage-api");
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("rejects a complete paid slice atomically when it would exceed the monthly ceiling", async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-spending-slice-"),
+    );
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBoundaryScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      now: "2026-08-17T12:00:00.000Z",
+    });
+
+    try {
+      await scenario.recordUsage({
+        amountMicrousd: 49_900_000,
+        source: "api",
+        usageId: "usage-before-slice",
+      });
+
+      await expect(
+        scenario.reserveUsageSlice({
+          amountsMicrousd: {
+            api: 50_000,
+            "realtime-media": 100_000,
+            telephony: 50_000,
+          },
+          usageScopeId: "prelive:callback-1",
+        }),
+      ).resolves.toMatchObject({
+        disposition: "safe-terminal-only",
+        totalMicrousd: 49_900_000,
+      });
+      await expect(scenario.readMetrics()).resolves.toMatchObject({
+        spending: {
+          bySourceMicrousd: {
+            api: 49_900_000,
+            "realtime-media": 0,
+            telephony: 0,
+          },
+          totalMicrousd: 49_900_000,
+        },
+      });
     } finally {
       await scenario.close();
     }

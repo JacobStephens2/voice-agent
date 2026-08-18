@@ -1,10 +1,17 @@
 import Database from "better-sqlite3";
 
+import {
+  telephoneSpendingWarningThresholds,
+  telephoneUsageSources,
+  type TelephoneSpendingWarningThreshold,
+} from "@voice-agent/contracts";
 import type {
   TelephoneBoundaryDecision,
   TelephoneBoundaryMetrics,
   TelephoneBoundaryStore,
+  TelephoneUsageReservationResult,
   TelephoneUsageResult,
+  TelephoneUsageSource,
 } from "@voice-agent/durable-store";
 
 interface CountRow {
@@ -13,6 +20,12 @@ interface CountRow {
 
 interface OwnerRow {
   readonly owner_id: string;
+}
+
+interface SubagentRow {
+  readonly execution_id: string;
+  readonly lease_expires_at: string;
+  readonly state: "queued" | "running";
 }
 
 interface SessionRow {
@@ -249,19 +262,28 @@ export function createSqliteTelephoneBoundaryStore(
   `);
   const findSubagent = database.prepare<
     [delegationId: string],
-    { readonly state: "queued" | "running" }
-  >(`SELECT state FROM telephone_boundary_subagents WHERE delegation_id = ?`);
+    SubagentRow
+  >(`
+    SELECT execution_id, lease_expires_at, state
+    FROM telephone_boundary_subagents
+    WHERE delegation_id = ?
+  `);
   const countSubagents = database.prepare<
     [state: "queued" | "running"],
     CountRow
   >(`SELECT COUNT(*) AS value FROM telephone_boundary_subagents WHERE state = ?`);
   const insertSubagent = database.prepare(`
     INSERT INTO telephone_boundary_subagents (
-      delegation_id, state, requested_at
-    ) VALUES (?, ?, ?)
+      delegation_id, execution_id, lease_expires_at, state, requested_at
+    ) VALUES (?, ?, ?, ?, ?)
   `);
   const deleteSubagent = database.prepare(`
-    DELETE FROM telephone_boundary_subagents WHERE delegation_id = ?
+    DELETE FROM telephone_boundary_subagents
+    WHERE delegation_id = ? AND execution_id = ?
+  `);
+  const deleteExpiredSubagents = database.prepare(`
+    DELETE FROM telephone_boundary_subagents
+    WHERE lease_expires_at <= ?
   `);
   const findNextSubagent = database.prepare<[], OwnerRow>(`
     SELECT delegation_id AS owner_id
@@ -272,8 +294,18 @@ export function createSqliteTelephoneBoundaryStore(
   `);
   const activateSubagent = database.prepare(`
     UPDATE telephone_boundary_subagents
-    SET state = 'running'
-    WHERE delegation_id = ?
+    SET lease_expires_at = ?, state = 'running'
+    WHERE delegation_id = ? AND execution_id = ? AND state = 'queued'
+  `);
+  const renewSubagent = database.prepare(`
+    UPDATE telephone_boundary_subagents
+    SET lease_expires_at = ?
+    WHERE delegation_id = ? AND execution_id = ? AND state = 'running'
+  `);
+  const renewQueuedSubagent = database.prepare(`
+    UPDATE telephone_boundary_subagents
+    SET lease_expires_at = ?
+    WHERE delegation_id = ? AND execution_id = ? AND state = 'queued'
   `);
   const readCounter = database.prepare<[name: string], CountRow>(`
     SELECT value FROM telephone_boundary_counters WHERE name = ?
@@ -365,22 +397,66 @@ export function createSqliteTelephoneBoundaryStore(
     },
   );
   const claimGlobalSubagent = database.transaction(
-    (input: { readonly delegationId: string; readonly requestedAt: string }) => {
+    (input: {
+      readonly delegationId: string;
+      readonly executionId: string;
+      readonly leaseExpiresAt: string;
+      readonly requestedAt: string;
+    }) => {
+      deleteExpiredSubagents.run(input.requestedAt);
       const existing = findSubagent.get(input.delegationId);
+      if (
+        existing !== undefined &&
+        existing.execution_id !== input.executionId
+      ) {
+        incrementDecision.run("rejected");
+        return rejected("subagent", "duplicate-delegation");
+      }
       if (existing?.state === "running") return accepted("subagent");
       if (existing?.state === "queued") {
+        renewQueuedSubagent.run(
+          input.leaseExpiresAt,
+          input.delegationId,
+          input.executionId,
+        );
+        if (
+          (countSubagents.get("running")?.value ?? 0) === 0 &&
+          findNextSubagent.get()?.owner_id === input.delegationId
+        ) {
+          activateSubagent.run(
+            input.leaseExpiresAt,
+            input.delegationId,
+            input.executionId,
+          );
+          return accepted("subagent");
+        }
         return queued(
           "subagent",
           countSubagents.get("queued")?.value ?? 1,
         );
       }
-      if ((countSubagents.get("running")?.value ?? 0) === 0) {
-        insertSubagent.run(input.delegationId, "running", input.requestedAt);
+      if (
+        (countSubagents.get("running")?.value ?? 0) === 0 &&
+        (countSubagents.get("queued")?.value ?? 0) === 0
+      ) {
+        insertSubagent.run(
+          input.delegationId,
+          input.executionId,
+          input.leaseExpiresAt,
+          "running",
+          input.requestedAt,
+        );
         incrementDecision.run("accepted");
         return accepted("subagent");
       }
       const position = (countSubagents.get("queued")?.value ?? 0) + 1;
-      insertSubagent.run(input.delegationId, "queued", input.requestedAt);
+      insertSubagent.run(
+        input.delegationId,
+        input.executionId,
+        input.leaseExpiresAt,
+        "queued",
+        input.requestedAt,
+      );
       incrementDecision.run("queued");
       return queued("subagent", position);
     },
@@ -396,15 +472,11 @@ export function createSqliteTelephoneBoundaryStore(
       return { promotedOwnerId: next.owner_id };
     },
   );
-  const releaseGlobalSubagent = database.transaction((delegationId: string) => {
-    const released = findSubagent.get(delegationId);
-    deleteSubagent.run(delegationId);
-    if (released?.state !== "running") return {};
-    const next = findNextSubagent.get();
-    if (next === undefined) return {};
-    activateSubagent.run(next.owner_id);
-    return { promotedOwnerId: next.owner_id };
-  });
+  const releaseGlobalSubagent = database.transaction(
+    (input: { readonly delegationId: string; readonly executionId: string }) => {
+      deleteSubagent.run(input.delegationId, input.executionId);
+    },
+  );
   const endActiveSession = database.transaction(
     (input: {
       readonly durationMs: number;
@@ -425,43 +497,90 @@ export function createSqliteTelephoneBoundaryStore(
       return { ended: true };
     },
   );
+  function persistUsageEntries(input: {
+    readonly entries: readonly {
+      readonly amountMicrousd: number;
+      readonly source: TelephoneUsageSource;
+      readonly usageId: string;
+    }[];
+    readonly recordedAt: string;
+    readonly sessionId?: string;
+  }): TelephoneUsageReservationResult {
+    const month = input.recordedAt.slice(0, 7);
+    const before = sumUsage.get(month)?.value ?? 0;
+    const pending = input.entries.filter(
+      (entry) => findUsage.get(entry.usageId) === undefined,
+    );
+    const proposedTotal =
+      before + pending.reduce((total, entry) => total + entry.amountMicrousd, 0);
+    const ceiling = requireSpendingPolicy(
+      readSpendingPolicy.get(),
+    ).ceiling_microusd;
+    if (proposedTotal > ceiling) {
+      markActiveSessionsSafeTerminal.run();
+      return {
+        disposition: "safe-terminal-only",
+        month,
+        reservedSources: [],
+        totalMicrousd: before,
+        warnings: [],
+      };
+    }
+    for (const entry of pending) {
+      insertUsage.run(
+        entry.usageId,
+        input.sessionId ?? null,
+        entry.source,
+        entry.amountMicrousd,
+        input.recordedAt,
+      );
+    }
+    const totalMicrousd = sumUsage.get(month)?.value ?? 0;
+    if (totalMicrousd >= ceiling) markActiveSessionsSafeTerminal.run();
+    return {
+      disposition:
+        totalMicrousd >= ceiling ? "safe-terminal-only" : "continue",
+      month,
+      reservedSources: pending.map((entry) => entry.source),
+      totalMicrousd,
+      warnings: crossedSpendingWarnings(before, totalMicrousd),
+    };
+  }
   const persistUsage = database.transaction(
     (input: {
       readonly amountMicrousd: number;
       readonly recordedAt: string;
       readonly sessionId?: string;
-      readonly source: "api" | "realtime-media" | "telephony";
+      readonly source: TelephoneUsageSource;
       readonly usageId: string;
     }): TelephoneUsageResult => {
-      const month = input.recordedAt.slice(0, 7);
-      const before = sumUsage.get(month)?.value ?? 0;
-      if (findUsage.get(input.usageId) === undefined) {
-        insertUsage.run(
-          input.usageId,
-          input.sessionId ?? null,
-          input.source,
-          input.amountMicrousd,
-          input.recordedAt,
-        );
-      }
-      const totalMicrousd = sumUsage.get(month)?.value ?? 0;
-      const ceiling = requireSpendingPolicy(readSpendingPolicy.get()).ceiling_microusd;
-      if (totalMicrousd >= ceiling) markActiveSessionsSafeTerminal.run();
-      const warnings: Array<25_000_000 | 40_000_000> = [];
-      if (before < 25_000_000 && totalMicrousd >= 25_000_000) {
-        warnings.push(25_000_000);
-      }
-      if (before < 40_000_000 && totalMicrousd >= 40_000_000) {
-        warnings.push(40_000_000);
-      }
-      return {
-        disposition:
-          totalMicrousd >= ceiling ? "safe-terminal-only" : "continue",
-        month,
-        totalMicrousd,
-        warnings,
-      };
+      const { reservedSources: _reservedSources, ...result } =
+        persistUsageEntries({
+          entries: [input],
+          recordedAt: input.recordedAt,
+          ...(input.sessionId === undefined
+            ? {}
+            : { sessionId: input.sessionId }),
+        });
+      return result;
     },
+  );
+  const persistUsageSlice = database.transaction(
+    (input: {
+      readonly amountsMicrousd: Readonly<Record<TelephoneUsageSource, number>>;
+      readonly recordedAt: string;
+      readonly sessionId?: string;
+      readonly usageScopeId: string;
+    }): TelephoneUsageReservationResult =>
+      persistUsageEntries({
+        entries: telephoneUsageSources.map((source) => ({
+          amountMicrousd: input.amountsMicrousd[source],
+          source,
+          usageId: `${input.usageScopeId}:${source}`,
+        })),
+        recordedAt: input.recordedAt,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      }),
   );
   const persistSpendingPolicy = database.transaction(
     (input: { readonly ceilingMicrousd: number; readonly changedAt: string }) => {
@@ -580,6 +699,12 @@ export function createSqliteTelephoneBoundaryStore(
             unavailable:
               readCounter.get("provider-failure:coordinator:unavailable")?.value ?? 0,
           },
+          setup: {
+            timeout:
+              readCounter.get("provider-failure:setup:timeout")?.value ?? 0,
+            unavailable:
+              readCounter.get("provider-failure:setup:unavailable")?.value ?? 0,
+          },
           stt: {
             timeout: readCounter.get("provider-failure:stt:timeout")?.value ?? 0,
             unavailable:
@@ -619,6 +744,7 @@ export function createSqliteTelephoneBoundaryStore(
       };
     },
     recordUsage: async (input) => persistUsage.immediate(input),
+    reserveUsageSlice: async (input) => persistUsageSlice.immediate(input),
     async recordProviderFailure(input) {
       incrementDecision.run(
         `provider-failure:${input.stage}:${input.failureClass}`,
@@ -638,8 +764,16 @@ export function createSqliteTelephoneBoundaryStore(
       clearRawAudioDebug.run(sessionId);
     },
     releaseStateChangingTask: async (input) => releaseTask.immediate(input),
-    releaseSubagent: async (delegationId) =>
-      releaseGlobalSubagent.immediate(delegationId),
+    releaseSubagent: async (input) => {
+      releaseGlobalSubagent.immediate(input);
+    },
+    async renewSubagentLease(input) {
+      return renewSubagent.run(
+        input.leaseExpiresAt,
+        input.delegationId,
+        input.executionId,
+      ).changes === 1;
+    },
     reserveWarmSession: async (input) => reserveWarm.immediate(input),
     async touchSession(input) {
       touchSession.run(input.occurredAt, input.sessionId);
@@ -665,13 +799,23 @@ function queued(
 }
 
 function rejected(
-  resource: "active-session" | "monthly-spend" | "warm-session",
+  resource: "active-session" | "monthly-spend" | "subagent" | "warm-session",
   reason:
     | "active-session-limit"
+    | "duplicate-delegation"
     | "spending-ceiling"
     | "warm-session-limit",
 ): TelephoneBoundaryDecision {
   return { decision: "rejected", reason, resource };
+}
+
+function crossedSpendingWarnings(
+  before: number,
+  after: number,
+): readonly TelephoneSpendingWarningThreshold[] {
+  return telephoneSpendingWarningThresholds.filter(
+    (threshold) => before < threshold && after >= threshold,
+  );
 }
 
 function createSchema(database: Database.Database): void {
@@ -709,6 +853,8 @@ function createSchema(database: Database.Database): void {
 
     CREATE TABLE IF NOT EXISTS telephone_boundary_subagents (
       delegation_id TEXT PRIMARY KEY,
+      execution_id TEXT NOT NULL,
+      lease_expires_at TEXT NOT NULL,
       state TEXT NOT NULL CHECK (state IN ('running', 'queued')),
       requested_at TEXT NOT NULL
     );
@@ -739,6 +885,24 @@ function createSchema(database: Database.Database): void {
       revision, ceiling_microusd, changed_at
     ) VALUES (1, 50000000, '1970-01-01T00:00:00.000Z');
   `);
+  const subagentColumns = database
+    .prepare<[], { readonly name: string }>(
+      "PRAGMA table_info(telephone_boundary_subagents)",
+    )
+    .all();
+  if (!subagentColumns.some((column) => column.name === "execution_id")) {
+    database.exec(
+      "ALTER TABLE telephone_boundary_subagents ADD COLUMN execution_id TEXT",
+    );
+  }
+  if (!subagentColumns.some((column) => column.name === "lease_expires_at")) {
+    database.exec(
+      "ALTER TABLE telephone_boundary_subagents ADD COLUMN lease_expires_at TEXT",
+    );
+  }
+  database.exec(
+    "DELETE FROM telephone_boundary_subagents WHERE execution_id IS NULL",
+  );
 }
 
 function requireSpendingPolicy(

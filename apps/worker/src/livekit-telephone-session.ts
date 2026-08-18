@@ -1,18 +1,19 @@
 import {
   APITimeoutError,
-  AudioByteStream,
   inference,
   llm,
   voice,
 } from "@livekit/agents";
-import type { Room } from "@livekit/rtc-node";
+import { AudioFrame, type Room } from "@livekit/rtc-node";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import type {
+  TelephoneProviderFailureStage,
   TelephoneSessionAction,
   TelephoneSessionProviderEvent,
+  TelephoneSpeechProviderStage,
   TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import {
@@ -26,6 +27,7 @@ import {
 import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
 import {
   meterTelephoneSessionUsage,
+  reportTelephoneSpendingWarning,
   type TelephoneUsageRates,
 } from "./telephone-usage-meter.ts";
 
@@ -57,11 +59,12 @@ export async function runLiveKitTelephoneSession(
       | "endSession"
       | "noteActivity"
       | "recordProviderFailure"
-      | "recordUsage"
       | "releaseStateChangingTask"
+      | "reserveUsageSlice"
     >;
     readonly disconnected: Promise<void>;
     readonly endCall: () => Promise<void>;
+    readonly initialUsageScopeId?: string;
     readonly openingText?: string;
     readonly onStarted?: () => Promise<void>;
     readonly requestCompletionCallback?: (input: {
@@ -167,7 +170,7 @@ export async function runLiveKitTelephoneSession(
   }
 
   async function recordProviderFailureAndEnd(
-    stage: "stt" | "coordinator" | "tts",
+    stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
   ): Promise<void> {
@@ -201,6 +204,25 @@ export async function runLiveKitTelephoneSession(
         await playFailureAndEnd();
       }
     }
+  }
+
+  function enqueueSessionProviderFailure(providerError: {
+    readonly error?: unknown;
+    readonly recoverable: boolean;
+    readonly type: string;
+  }): void {
+    if (callEnding || failureEnded || providerError.recoverable) return;
+    const stage = providerStageForSessionError(providerError);
+    if (stage === undefined) return;
+    processing = processing
+      .then(() =>
+        recordProviderFailureAndEnd(
+          stage,
+          providerError.error ?? providerError,
+          options.activeTaskId,
+        ),
+      )
+      .catch(() => undefined);
   }
 
   function enqueueProviderEvent(
@@ -271,6 +293,20 @@ export async function runLiveKitTelephoneSession(
       )
       .catch(() => undefined);
   });
+  session.on(voice.AgentSessionEventTypes.Error, (event) => {
+    enqueueSessionProviderFailure(event.error);
+  });
+  session.on(voice.AgentSessionEventTypes.Close, (event) => {
+    if (
+      callEnding ||
+      failureEnded ||
+      event.reason !== voice.CloseReason.ERROR ||
+      event.error === null
+    ) {
+      return;
+    }
+    enqueueSessionProviderFailure(event.error);
+  });
 
   try {
     const agent = new CoordinatorOnlyAgent((message) => {
@@ -288,7 +324,7 @@ export async function runLiveKitTelephoneSession(
         room: options.room,
       });
     } catch (error) {
-      await recordProviderFailureAndEnd("tts", error, options.activeTaskId);
+      await recordProviderFailureAndEnd("setup", error, options.activeTaskId);
       return;
     }
     resetProlongedSilenceDeadline();
@@ -301,7 +337,11 @@ export async function runLiveKitTelephoneSession(
       process.stderr.write("Raw-audio debug capture failed without affecting the call.\n");
     });
     usageMeter = meterTelephoneSessionUsage({
+      ...(options.initialUsageScopeId === undefined
+        ? {}
+        : { initialUsageScopeId: options.initialUsageScopeId }),
       onFirstSliceComplete: resolveUsageReady,
+      onSpendingWarning: reportTelephoneSpendingWarning,
       onSpendingCeiling: async () => {
         await options.boundaries.endSession(
           options.telephoneSessionId,
@@ -310,7 +350,7 @@ export async function runLiveKitTelephoneSession(
         await playFailureAndEnd();
       },
       ratesMicrousdPerMinute: options.usageRatesMicrousdPerMinute,
-      recordUsage: options.boundaries.recordUsage,
+      reserveUsageSlice: options.boundaries.reserveUsageSlice,
       sessionId: options.telephoneSessionId,
       stop: usageStop,
       usageScopeId: stableIdentifier(
@@ -504,7 +544,7 @@ async function performConversationAction(
   action: TelephoneSessionAction,
   playFailureAndEnd: () => Promise<void>,
   recordProviderFailureAndEnd: (
-    stage: "stt" | "coordinator" | "tts",
+    stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
   ) => Promise<void>,
@@ -591,9 +631,23 @@ export async function playPrerecordedProviderFailure(
     throw new Error("Telephone audio output is unavailable");
   }
   const bytes = await readFile(providerFailureAudioPath);
-  const audio = new AudioByteStream(providerFailureSampleRate, 1);
-  const frames = [...audio.write(bytes), ...audio.flush()];
-  for (const frame of frames) {
+  const audioBytes = bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  );
+  const samples = new Int16Array(audioBytes);
+  const samplesPerFrame = providerFailureSampleRate / 10;
+  for (let offset = 0; offset < samples.length; offset += samplesPerFrame) {
+    const frameSamples = samples.subarray(
+      offset,
+      Math.min(offset + samplesPerFrame, samples.length),
+    );
+    const frame = new AudioFrame(
+      frameSamples,
+      providerFailureSampleRate,
+      1,
+      frameSamples.length,
+    );
     await output.captureFrame(frame);
   }
   output.flush();
@@ -730,18 +784,30 @@ function stableIdentifier(value: string): string {
 }
 
 function providerForStage(
-  stage: "stt" | "coordinator" | "tts",
-): "assemblyai" | "openai" | "inworld" {
+  stage: TelephoneProviderFailureStage,
+): "assemblyai" | "inworld" | "livekit" | "openai" {
   if (stage === "stt") return "assemblyai";
   if (stage === "coordinator") return "openai";
-  return "inworld";
+  if (stage === "tts") return "inworld";
+  return "livekit";
+}
+
+function providerStageForSessionError(error: {
+  readonly type: string;
+}): TelephoneSpeechProviderStage | undefined {
+  if (error.type === "stt_error") return "stt";
+  if (error.type === "tts_error") return "tts";
+  if (error.type === "llm_error" || error.type === "realtime_model_error") {
+    return "coordinator";
+  }
+  return undefined;
 }
 
 export function mapProviderFailureEvent(input: {
   readonly deliveryId: string;
   readonly error: unknown;
   readonly occurredAt: string;
-  readonly stage: "stt" | "coordinator" | "tts";
+  readonly stage: TelephoneProviderFailureStage;
   readonly taskId?: string;
 }):
   | Extract<TelephoneSessionProviderEvent, { kind: "provider-timeout" }>
@@ -753,7 +819,7 @@ export function mapProviderFailureEvent(input: {
     stage: input.stage,
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
   };
-  return input.error instanceof APITimeoutError
+  return input.stage !== "setup" && input.error instanceof APITimeoutError
     ? {
         ...common,
         kind: "provider-timeout",
@@ -766,16 +832,14 @@ export function mapProviderFailureEvent(input: {
       };
 }
 
-function providerTimeoutMs(
-  stage: "stt" | "coordinator" | "tts",
-): number {
+function providerTimeoutMs(stage: TelephoneSpeechProviderStage): number {
   if (stage === "stt") return transcriptionTimeoutMs;
   if (stage === "coordinator") return coordinatorTimeoutMs;
   return ttsTimeoutMs;
 }
 
 export function boundedProviderConnectOptions(
-  stage: "coordinator" | "stt" | "tts",
+  stage: TelephoneSpeechProviderStage,
 ) {
   return {
     maxRetry: 1,

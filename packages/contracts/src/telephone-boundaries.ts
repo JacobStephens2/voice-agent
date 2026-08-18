@@ -5,7 +5,30 @@ const timestampSchema = z.iso.datetime();
 const durationSchema = z.number().int().nonnegative().max(7_200_000);
 const moneySchema = z.number().int().nonnegative().max(1_000_000_000_000);
 const spendingCeilingSchema = moneySchema.max(1_000_000_000);
-const usageSourceSchema = z.enum(["api", "telephony", "realtime-media"]);
+export const telephoneUsageSources = [
+  "api",
+  "telephony",
+  "realtime-media",
+] as const;
+const usageSourceSchema = z.enum(telephoneUsageSources);
+export type TelephoneUsageSource = z.infer<typeof usageSourceSchema>;
+export const telephoneSpendingWarningThresholds = [
+  25_000_000,
+  40_000_000,
+] as const;
+export type TelephoneSpendingWarningThreshold =
+  (typeof telephoneSpendingWarningThresholds)[number];
+
+export interface TelephoneUsageResult {
+  readonly disposition: "continue" | "safe-terminal-only";
+  readonly month: string;
+  readonly totalMicrousd: number;
+  readonly warnings: readonly TelephoneSpendingWarningThreshold[];
+}
+
+export interface TelephoneUsageReservationResult extends TelephoneUsageResult {
+  readonly reservedSources: readonly TelephoneUsageSource[];
+}
 
 const evidenceFields = {
   id: identifierSchema,
@@ -45,8 +68,8 @@ export const telephoneSpendingWarningEvidenceEventSchema = z.object({
   details: z.object({
     monthTotalMicrousd: moneySchema,
     thresholdMicrousd: z.union([
-      z.literal(25_000_000),
-      z.literal(40_000_000),
+      z.literal(telephoneSpendingWarningThresholds[0]),
+      z.literal(telephoneSpendingWarningThresholds[1]),
     ]),
   }),
   kind: z.literal("telephone.spending.warning"),

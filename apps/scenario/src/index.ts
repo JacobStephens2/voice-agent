@@ -11,6 +11,7 @@ import {
   type EvidenceRecordProjection,
   type TelephoneConversationEvidenceEvent,
   type TelephoneBoundaryEvidenceEvent,
+  type TelephoneProviderFailureStage,
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type InboundTelephoneEvent,
@@ -67,9 +68,6 @@ export interface TelephoneBoundaryScenario {
   }): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["claimRawAudioCapture"]
   >;
-  claimSubagent(delegationId: string): ReturnType<
-    ReturnType<typeof createTelephoneBoundaryRuntime>["claimSubagent"]
-  >;
   changeSpendingCeiling(input: {
     readonly ceilingMicrousd: number;
     readonly freshPasskey: boolean;
@@ -86,6 +84,9 @@ export interface TelephoneBoundaryScenario {
   enforceDeadlines(): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["enforceDeadlines"]
   >;
+  executeSubagent: ReturnType<
+    typeof createTelephoneBoundaryRuntime
+  >["executeSubagent"];
   endSession(
     sessionId: string,
     reason: "completed" | "disconnected" | "provider-failure",
@@ -105,7 +106,7 @@ export interface TelephoneBoundaryScenario {
   recordProviderFailure(input: {
     readonly failureClass: "timeout" | "unavailable";
     readonly sessionId: string;
-    readonly stage: "coordinator" | "stt" | "tts";
+    readonly stage: TelephoneProviderFailureStage;
   }): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["recordProviderFailure"]
   >;
@@ -115,14 +116,20 @@ export interface TelephoneBoundaryScenario {
     readonly source: "api" | "realtime-media" | "telephony";
     readonly usageId: string;
   }): ReturnType<ReturnType<typeof createTelephoneBoundaryRuntime>["recordUsage"]>;
+  reserveUsageSlice(input: {
+    readonly amountsMicrousd: Readonly<
+      Record<"api" | "realtime-media" | "telephony", number>
+    >;
+    readonly sessionId?: string;
+    readonly usageScopeId: string;
+  }): ReturnType<
+    ReturnType<typeof createTelephoneBoundaryRuntime>["reserveUsageSlice"]
+  >;
   releaseWarmSession(sessionId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["releaseWarmSession"]
   >;
   releaseStateChangingTask(sessionId: string, taskId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["releaseStateChangingTask"]
-  >;
-  releaseSubagent(delegationId: string): ReturnType<
-    ReturnType<typeof createTelephoneBoundaryRuntime>["releaseSubagent"]
   >;
   reserveWarmSession(sessionId: string): ReturnType<
     ReturnType<typeof createTelephoneBoundaryRuntime>["reserveWarmSession"]

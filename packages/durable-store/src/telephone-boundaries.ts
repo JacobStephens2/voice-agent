@@ -1,3 +1,16 @@
+import type {
+  TelephoneProviderFailureStage,
+  TelephoneUsageReservationResult,
+  TelephoneUsageResult,
+  TelephoneUsageSource,
+} from "@voice-agent/contracts";
+
+export type {
+  TelephoneUsageReservationResult,
+  TelephoneUsageResult,
+  TelephoneUsageSource,
+} from "@voice-agent/contracts";
+
 export type TelephoneBoundaryResource =
   | "active-session"
   | "monthly-spend"
@@ -19,21 +32,17 @@ export type TelephoneBoundaryDecision =
       readonly decision: "rejected";
       readonly reason:
         | "active-session-limit"
+        | "duplicate-delegation"
         | "spending-ceiling"
         | "warm-session-limit";
-      readonly resource: "active-session" | "monthly-spend" | "warm-session";
+      readonly resource:
+        | "active-session"
+        | "monthly-spend"
+        | "subagent"
+        | "warm-session";
     };
 
-export type TelephoneUsageSource = "api" | "realtime-media" | "telephony";
 export type TelephoneProviderFailureClass = "timeout" | "unavailable";
-export type TelephoneProviderStage = "coordinator" | "stt" | "tts";
-
-export interface TelephoneUsageResult {
-  readonly disposition: "continue" | "safe-terminal-only";
-  readonly month: string;
-  readonly totalMicrousd: number;
-  readonly warnings: readonly (25_000_000 | 40_000_000)[];
-}
 
 export interface TelephoneBoundaryMetrics {
   readonly audioDebug: {
@@ -58,7 +67,7 @@ export interface TelephoneBoundaryMetrics {
     readonly warmSessions: number;
   };
   readonly providerFailures: Record<
-    TelephoneProviderStage,
+    TelephoneProviderFailureStage,
     Record<TelephoneProviderFailureClass, number>
   >;
   readonly sessionEndings: {
@@ -111,8 +120,15 @@ export interface TelephoneBoundaryStore {
   }): Promise<TelephoneBoundaryDecision>;
   claimSubagent(input: {
     readonly delegationId: string;
+    readonly executionId: string;
+    readonly leaseExpiresAt: string;
     readonly requestedAt: string;
   }): Promise<TelephoneBoundaryDecision>;
+  renewSubagentLease(input: {
+    readonly delegationId: string;
+    readonly executionId: string;
+    readonly leaseExpiresAt: string;
+  }): Promise<boolean>;
   close(): Promise<void>;
   endSession(input: {
     readonly durationMs: number;
@@ -146,7 +162,7 @@ export interface TelephoneBoundaryStore {
   readMetrics(now: string): Promise<TelephoneBoundaryMetrics>;
   recordProviderFailure(input: {
     readonly failureClass: TelephoneProviderFailureClass;
-    readonly stage: TelephoneProviderStage;
+    readonly stage: TelephoneProviderFailureStage;
   }): Promise<void>;
   recordRawAudioCleanup(input: {
     readonly outcome: "deleted" | "failed" | "missing";
@@ -160,15 +176,22 @@ export interface TelephoneBoundaryStore {
     readonly source: TelephoneUsageSource;
     readonly usageId: string;
   }): Promise<TelephoneUsageResult>;
+  reserveUsageSlice(input: {
+    readonly amountsMicrousd: Readonly<Record<TelephoneUsageSource, number>>;
+    readonly recordedAt: string;
+    readonly sessionId?: string;
+    readonly usageScopeId: string;
+  }): Promise<TelephoneUsageReservationResult>;
   revokeRawAudioDebug(sessionId: string): Promise<void>;
   releaseWarmSession(sessionId: string): Promise<void>;
   releaseStateChangingTask(input: {
     readonly sessionId: string;
     readonly taskId: string;
   }): Promise<{ readonly promotedOwnerId?: string }>;
-  releaseSubagent(
-    delegationId: string,
-  ): Promise<{ readonly promotedOwnerId?: string }>;
+  releaseSubagent(input: {
+    readonly delegationId: string;
+    readonly executionId: string;
+  }): Promise<void>;
   reserveWarmSession(input: {
     readonly reservedAt: string;
     readonly sessionId: string;

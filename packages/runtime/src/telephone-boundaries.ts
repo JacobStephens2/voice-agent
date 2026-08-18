@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
@@ -6,15 +6,17 @@ import {
   telephoneAudioDebugCleanedEvidenceEventSchema,
   telephoneAudioDebugEnabledEvidenceEventSchema,
   telephoneAudioDebugRevokedEvidenceEventSchema,
+  telephoneProviderFailureStages,
   telephoneSpendingWarningEvidenceEventSchema,
   telephoneSessionEndedEvidenceEventSchema,
   telephoneUsageRecordedEvidenceEventSchema,
+  telephoneUsageSources,
   type TelephoneBoundaryEvidenceEvent,
+  type TelephoneProviderFailureStage,
 } from "@voice-agent/contracts";
 import type {
   TelephoneBoundaryStore,
   TelephoneProviderFailureClass,
-  TelephoneProviderStage,
   TelephoneUsageSource,
 } from "@voice-agent/durable-store";
 
@@ -24,6 +26,8 @@ const rawAudioDebugLifetimeMs = 23 * 60 * 60 * 1_000;
 const maximumProlongedSilenceMs = 15 * 60 * 1_000;
 const minimumProlongedSilenceMs = 30 * 1_000;
 const maximumWarmSessionMs = 5 * 60 * 1_000;
+const defaultSubagentLeaseDurationMs = 30_000;
+const defaultSubagentPollIntervalMs = 25;
 
 export interface TelephoneBoundaryEvidenceSink {
   append(
@@ -65,11 +69,29 @@ export interface TelephoneBoundaryRuntimeOptions {
   readonly rawAudioArtifacts?: RawAudioArtifactRemover;
   readonly rawAudioDebugDirectory?: string;
   readonly store: TelephoneBoundaryStore;
+  readonly subagentLeaseDurationMs?: number;
+  readonly subagentPollIntervalMs?: number;
 }
 
 export function createTelephoneBoundaryRuntime(
   options: TelephoneBoundaryRuntimeOptions,
 ) {
+  const subagentExecutions = new Set<string>();
+  const subagentLeaseDurationMs =
+    options.subagentLeaseDurationMs ?? defaultSubagentLeaseDurationMs;
+  const subagentPollIntervalMs =
+    options.subagentPollIntervalMs ?? defaultSubagentPollIntervalMs;
+  if (
+    !Number.isInteger(subagentLeaseDurationMs) ||
+    subagentLeaseDurationMs < 3_000 ||
+    !Number.isInteger(subagentPollIntervalMs) ||
+    subagentPollIntervalMs < 1 ||
+    subagentPollIntervalMs >= subagentLeaseDurationMs / 3
+  ) {
+    throw new Error(
+      "Subagent polling must be positive and shorter than one third of a lease of at least three seconds",
+    );
+  }
   const prolongedSilenceMs =
     options.prolongedSilenceMs ?? 60 * 1_000;
   if (
@@ -140,6 +162,13 @@ export function createTelephoneBoundaryRuntime(
       );
     }
     return { durationMs, ended: true, reason } as const;
+  }
+
+  async function releaseSubagent(
+    delegationId: string,
+    executionId: string,
+  ): Promise<void> {
+    await options.store.releaseSubagent({ delegationId, executionId });
   }
 
   return {
@@ -275,11 +304,100 @@ export function createTelephoneBoundaryRuntime(
         taskId,
       });
     },
-    claimSubagent(delegationId: string) {
-      return options.store.claimSubagent({
-        delegationId,
-        requestedAt: options.now(),
-      });
+    /**
+     * Runs the Subagent adapter only after its durable global lease is active.
+     * Queued adapters poll the durable lease, so separate runtime processes
+     * observe release and expired owners without a caller-managed retry path.
+     */
+    async executeSubagent<Result>(
+      delegationId: string,
+      execute: (signal: AbortSignal) => Promise<Result>,
+      signal?: AbortSignal,
+    ) {
+      if (subagentExecutions.has(delegationId)) {
+        throw new Error("Subagent execution is already pending");
+      }
+      subagentExecutions.add(delegationId);
+      const executionId = randomUUID();
+      const leaseLost = new AbortController();
+      const executionSignal =
+        signal === undefined
+          ? leaseLost.signal
+          : AbortSignal.any([signal, leaseLost.signal]);
+      let ownsSlot = false;
+      try {
+        while (true) {
+          const requestedAt = options.now();
+          const decision = await options.store.claimSubagent({
+            delegationId,
+            executionId,
+            leaseExpiresAt: addMilliseconds(
+              requestedAt,
+              subagentLeaseDurationMs,
+            ),
+            requestedAt,
+          });
+          if (decision.decision === "accepted") {
+            ownsSlot = true;
+            break;
+          }
+          if (decision.decision === "rejected") return decision;
+          if (
+            (await waitForDelayOrAbort(
+              subagentPollIntervalMs,
+              executionSignal,
+            )) === "aborted"
+          ) {
+            await releaseSubagent(delegationId, executionId);
+            return { decision: "cancelled", resource: "subagent" } as const;
+          }
+        }
+        if (executionSignal.aborted) {
+          await releaseSubagent(delegationId, executionId);
+          ownsSlot = false;
+          return { decision: "cancelled", resource: "subagent" } as const;
+        }
+        let renewal = Promise.resolve();
+        const renewLease = () => {
+          renewal = renewal.then(async () => {
+            try {
+              const renewedAt = options.now();
+              const renewed = await options.store.renewSubagentLease({
+                delegationId,
+                executionId,
+                leaseExpiresAt: addMilliseconds(
+                  renewedAt,
+                  subagentLeaseDurationMs,
+                ),
+              });
+              if (!renewed) leaseLost.abort();
+            } catch {
+              leaseLost.abort();
+            }
+          });
+        };
+        const heartbeat = setInterval(
+          renewLease,
+          Math.floor(subagentLeaseDurationMs / 3),
+        );
+        try {
+          const result = await execute(executionSignal);
+          if (executionSignal.aborted) {
+            return { decision: "cancelled", resource: "subagent" } as const;
+          }
+          return {
+            decision: "accepted",
+            resource: "subagent",
+            result,
+          } as const;
+        } finally {
+          clearInterval(heartbeat);
+          await renewal;
+        }
+      } finally {
+        subagentExecutions.delete(delegationId);
+        if (ownsSlot) await releaseSubagent(delegationId, executionId);
+      }
     },
     async changeSpendingCeiling(input: {
       readonly ceilingMicrousd: number;
@@ -401,7 +519,7 @@ export function createTelephoneBoundaryRuntime(
     async recordProviderFailure(input: {
       readonly failureClass: TelephoneProviderFailureClass;
       readonly sessionId: string;
-      readonly stage: TelephoneProviderStage;
+      readonly stage: TelephoneProviderFailureStage;
     }) {
       await options.store.recordProviderFailure(input);
       return endSession(input.sessionId, "provider-failure");
@@ -467,13 +585,67 @@ export function createTelephoneBoundaryRuntime(
       }
       return result;
     },
+    async reserveUsageSlice(input: {
+      readonly amountsMicrousd: Readonly<Record<TelephoneUsageSource, number>>;
+      readonly sessionId?: string;
+      readonly usageScopeId: string;
+    }) {
+      for (const amountMicrousd of Object.values(input.amountsMicrousd)) {
+        validateUsageAmount(amountMicrousd);
+      }
+      const recordedAt = options.now();
+      const result = await options.store.reserveUsageSlice({
+        ...input,
+        recordedAt,
+      });
+      if (
+        input.sessionId !== undefined &&
+        options.evidence !== undefined &&
+        options.nextId !== undefined
+      ) {
+        for (const source of result.reservedSources) {
+          await options.evidence.append(
+            input.sessionId,
+            telephoneUsageRecordedEvidenceEventSchema
+              .omit({ sequence: true })
+              .parse({
+                details: {
+                  amountMicrousd: input.amountsMicrousd[source],
+                  monthTotalMicrousd: result.totalMicrousd,
+                  source,
+                },
+                id: options.nextId(),
+                kind: "telephone.usage.recorded",
+                occurredAt: recordedAt,
+                summary: "Sanitized metered provider usage was recorded.",
+              }),
+          );
+        }
+        for (const thresholdMicrousd of result.warnings) {
+          await options.evidence.append(
+            input.sessionId,
+            telephoneSpendingWarningEvidenceEventSchema
+              .omit({ sequence: true })
+              .parse({
+                details: {
+                  monthTotalMicrousd: result.totalMicrousd,
+                  thresholdMicrousd,
+                },
+                id: options.nextId(),
+                kind: "telephone.spending.warning",
+                occurredAt: recordedAt,
+                summary: "The monthly provider spending warning was reached.",
+              }),
+          );
+        }
+      }
+      return result;
+    },
     releaseWarmSession: (sessionId: string) =>
       options.store.releaseWarmSession(sessionId),
     releaseStateChangingTask(sessionId: string, taskId: string) {
       return options.store.releaseStateChangingTask({ sessionId, taskId });
     },
-    releaseSubagent: (delegationId: string) =>
-      options.store.releaseSubagent(delegationId),
     reserveWarmSession(sessionId: string) {
       return options.store.reserveWarmSession({
         reservedAt: options.now(),
@@ -481,6 +653,39 @@ export function createTelephoneBoundaryRuntime(
       });
     },
   };
+}
+
+function addMilliseconds(timestamp: string, durationMs: number): string {
+  return new Date(new Date(timestamp).getTime() + durationMs).toISOString();
+}
+
+async function waitForDelayOrAbort(
+  durationMs: number,
+  signal: AbortSignal,
+): Promise<"aborted" | "elapsed"> {
+  if (signal.aborted) return "aborted";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: () => void = () => {};
+  try {
+    return await new Promise<"aborted" | "elapsed">((resolve) => {
+      abort = () => resolve("aborted");
+      signal.addEventListener("abort", abort, { once: true });
+      timer = setTimeout(() => resolve("elapsed"), durationMs);
+    });
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+function validateUsageAmount(amountMicrousd: number): void {
+  if (
+    !Number.isInteger(amountMicrousd) ||
+    amountMicrousd <= 0 ||
+    amountMicrousd > 1_000_000_000
+  ) {
+    throw new Error("Metered usage must be between one microusd and $1,000");
+  }
 }
 
 export function formatTelephoneBoundaryPrometheusMetrics(
@@ -495,7 +700,7 @@ export function formatTelephoneBoundaryPrometheusMetrics(
     ),
     "# HELP voice_agent_telephone_usage_microusd Current UTC-month metered usage.",
     "# TYPE voice_agent_telephone_usage_microusd gauge",
-    ...(["api", "telephony", "realtime-media"] as const).map(
+    ...telephoneUsageSources.map(
       (source) =>
         `voice_agent_telephone_usage_microusd{source="${source}"} ${metrics.spending.bySourceMicrousd[source]}`,
     ),
@@ -514,7 +719,7 @@ export function formatTelephoneBoundaryPrometheusMetrics(
       (outcome) =>
         `voice_agent_raw_audio_cleanup_total{outcome="${outcome}"} ${metrics.audioDebug.cleanup[outcome]}`,
     ),
-    ...(["stt", "coordinator", "tts"] as const).flatMap((stage) =>
+    ...telephoneProviderFailureStages.flatMap((stage) =>
       (["timeout", "unavailable"] as const).map(
         (failureClass) =>
           `voice_agent_telephone_provider_failures_total{stage="${stage}",class="${failureClass}"} ${metrics.providerFailures[stage][failureClass]}`,

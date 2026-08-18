@@ -96,6 +96,13 @@ describe("authentication failure notification outbox", () => {
     ).resolves.toBe(0);
 
     expect(send).toHaveBeenCalledTimes(2);
+    expect(send).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        idempotencyKey: "notification-operation-1",
+        operationId: "notification-operation-1",
+      }),
+    );
     expect(record.evidence.map((event) => event.kind)).toEqual([
       "notification.requested",
       "notification.sent",
