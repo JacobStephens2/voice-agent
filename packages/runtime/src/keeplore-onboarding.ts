@@ -76,7 +76,7 @@ export interface KeeploreOnboardingControls {
   getKeeploreActiveContract(): Promise<KeeploreDeploymentContract | undefined>;
   getKeeploreAssessment(
     kind: KeeploreAssessmentKind,
-  ): Promise<KeeplorePolicyAssessment | undefined>;
+  ): Promise<KeeplorePolicyAssessment>;
   getKeeploreRegistration(): Promise<KeeploreRegistration | undefined>;
   inspectKeeploreLiveCheckout(): Promise<KeeploreLiveInspection>;
 }
@@ -91,13 +91,9 @@ export function createKeeploreOnboardingControls(options: {
   readonly now: () => string;
   readonly store: KeeploreOnboardingStore;
 }): KeeploreOnboardingControls {
-  async function requireRegistration(): Promise<KeeploreRegistration | undefined> {
-    return options.store.findRegistration();
-  }
-
   return {
     async activateKeeploreDeploymentContract(input) {
-      const registration = await requireRegistration();
+      const registration = await options.store.findRegistration();
       const active = await options.store.findActiveContract();
       const decision = authorizeKeeploreContractActivation({
         activeRevision: active?.revision,
@@ -125,14 +121,14 @@ export function createKeeploreOnboardingControls(options: {
       return { contract, decision: "activated" };
     },
     async assessKeeploreBranchProtection(protection) {
-      const registration = await requireRegistration();
+      const registration = await options.store.findRegistration();
       if (registration === undefined) return unassessed;
       const assessment = assessKeeploreBranchProtection(protection, registration);
       await options.store.saveAssessment("branch-protection", assessment);
       return assessment;
     },
     async assessKeeploreGitHubApp(installation) {
-      const registration = await requireRegistration();
+      const registration = await options.store.findRegistration();
       if (registration === undefined) return unassessed;
       const assessment = assessKeeploreGitHubAppInstallation(
         installation,

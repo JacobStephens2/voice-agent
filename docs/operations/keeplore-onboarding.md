@@ -11,9 +11,9 @@ Run the attended procedure with
 [`ops/acceptance/run-keeplore-onboarding.sh`](../../ops/acceptance/run-keeplore-onboarding.sh)
 on the Agent Host.
 
-## Read-only revalidation before anything else
+## Live Checkout Inspection before anything else
 
-`ops/keeplore/inspect-keeplore.sh` revalidates the live checkout through Git
+`ops/keeplore/inspect-keeplore.sh` inspects the live checkout through Git
 plumbing that only reads: `rev-parse HEAD`, `rev-parse --abbrev-ref HEAD`,
 `remote get-url origin`, and `status --porcelain`. It never fetches, checks out,
 stashes, resets, or writes. It reports the repository, production branch, head
@@ -52,7 +52,9 @@ bypass actors — the coding agent and its GitHub App included.
 `assessKeeploreBranchProtection` records each violation in the Evidence Record.
 
 `ops/keeplore/github/keeplore-verification.yml` is the minimal CI that runs the
-declared verification and reports the required check.
+declared verification and reports the required check. Its run step and the
+registration's `KEEPLORE_VERIFICATION_COMMAND` name the same command and are
+changed together.
 
 ## Least-privilege GitHub App
 
@@ -70,29 +72,48 @@ must sit inside the registered Release root and outside the live checkout.
 
 ## Promotion, verification, and rollback
 
+The live enqueue path is the one ADR-0016 already uses for the Agent Host: an
+authenticated GitHub Actions workflow over a restricted identity rather than an
+HMAC webhook receiver. The HMAC-signed, delivery-deduplicated webhook is proven
+in the scenario seam (`apps/scenario/src/human-merge-promotion.ts`), and the host
+independently re-verifies every enqueued commit against the GitHub API before it
+promotes anything, so a forged or replayed enqueue promotes nothing.
+
 `ops/keeplore/github/promote-keeplore.yml` runs on a push to `main`,
 authenticates that the commit is the merge commit of a pull request merged by an
 authenticated human GitHub user, and enqueues that exact commit over a
 restricted SSH identity that may run only
 `/usr/local/libexec/keeplore/promote-keeplore-main.sh` through passwordless
-sudo. A duplicate delivery or workflow re-run promotes nothing twice: the queue
-records verified merges and returns early when the commit already serves.
+sudo. A duplicate delivery or workflow re-run promotes nothing twice: the queue is
+serialized by a lock and returns early when the commit already serves. A merge is
+recorded as processed only after it promotes, so a rolled-back merge stays
+visible instead of looking complete.
 
 `install-keeplore-release.sh` builds `/opt/keeplore/releases/<commit>` from the
 root-owned mirror — never from the live checkout — and makes it read-only.
-`promote-keeplore-release.sh` switches `/opt/keeplore/current` atomically,
-restarts the registered unit, and applies the declared health semantics. When
-verification fails it restores the retained Release and records both the
+`promote-keeplore-release.sh` runs the preflight the registration declares in
+`KEEPLORE_PREFLIGHT_COMMAND` — when it declares none, CI's required
+`keeplore-verification` check is the verification of record — then switches
+`/opt/keeplore/current` atomically, restarts the registered unit, and applies the
+declared health semantics. When verification fails it restores the retained Release and records both the
 attempted and restored states in `/var/lib/keeplore-promotions/attempts.jsonl`.
 `prune-keeplore-releases.sh` keeps the active Release plus the retention the
 contract declares, so a rollback target always exists.
 
+The rollback drill promotes the retained Release as a candidate with
+`KEEPLORE_VERIFICATION_DRILL=1`, which forces only that candidate's verification
+to fail. The restored Release is then verified for real. Nothing edits the
+registration or the health check, so an interrupted drill leaves no altered
+policy behind.
+
 ## Reconciliation
 
-`reconcile-keeplore-merges.sh` compares the GitHub `main` head with the active
-Release. When they match — or the merge was already processed — it enqueues
-nothing. Otherwise it promotes the missed Human Merge through the same verified
-path.
+`reconcile-keeplore-merges.sh` authenticates with the root-owned GitHub App
+installation token and compares the GitHub `main` head with the active Release.
+When they match it enqueues nothing. When the head was already recorded as
+processed, or has a recorded failed Promotion Attempt, it leaves the merge for
+the owner rather than looping. Otherwise it promotes the missed Human Merge
+through the same verified path.
 
 ## Evidence Record
 

@@ -2,6 +2,10 @@
 #
 # The `keeplore-verification` job name is the required GitHub check named by the
 # Keeplore Registered Codebase, so production-branch rules can require it.
+#
+# The run step below must be the verification command declared in the Keeplore
+# registration (KEEPLORE_VERIFICATION_COMMAND in /etc/voice-agent/keeplore.conf).
+# Change both together, never one alone.
 
 name: Keeplore verification
 

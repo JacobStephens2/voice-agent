@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
-# Promote one immutable Keeplore Release: preflight, switch atomically, verify
-# the declared health semantics, and restore the retained Release when unhealthy.
+# Promote one immutable Keeplore Release: run the contract's preflight, switch
+# atomically, verify the declared health semantics, and restore the retained
+# Release when verification fails.
+#
+# KEEPLORE_VERIFICATION_DRILL=1 forces the candidate's verification to fail so
+# the owner can prove rollback. The restored Release is still verified for real,
+# and no registration or health configuration is mutated.
 
 set -euo pipefail
 
@@ -57,21 +62,35 @@ switch_to() {
 }
 
 # Preflight the candidate before anything switches.
-if [[ ! -d "$release" ]]; then
-  record_attempt failed preflight
-  printf 'Candidate Keeplore Release %s is missing.\n' "$commit" >&2
-  exit 1
+if [[ ${KEEPLORE_VERIFICATION_DRILL:-0} == 1 && "$previous" == "$release" ]]; then
+  printf 'A verification drill needs a candidate other than the serving Release.\n' >&2
+  exit 2
+fi
+if [[ -n ${keeplore_preflight_command:-} ]]; then
+  if ! runuser --user keeplore-builder -- env -i \
+    HOME=/var/lib/keeplore-builder \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    /bin/bash -c "cd \"\$1\" && $keeplore_preflight_command" \
+    keeplore-preflight "$release" 9>&-; then
+    record_attempt failed preflight
+    printf 'Candidate Keeplore Release %s failed the declared preflight.\n' "$commit" >&2
+    exit 1
+  fi
 fi
 
 switch_to "$release"
 healthy=false
-for _attempt in {1..20}; do
-  if "$script_directory/keeplore-health.sh" >/dev/null 2>&1; then
-    healthy=true
-    break
-  fi
-  sleep 1
-done
+if [[ ${KEEPLORE_VERIFICATION_DRILL:-0} == 1 ]]; then
+  printf 'Verification drill: treating Release %s as unhealthy.\n' "$commit" >&2
+else
+  for _attempt in {1..20}; do
+    if "$script_directory/keeplore-health.sh" >/dev/null 2>&1; then
+      healthy=true
+      break
+    fi
+    sleep 1
+  done
+fi
 
 if [[ $healthy == true ]]; then
   "$script_directory/keeplore-health.sh"
@@ -81,7 +100,11 @@ if [[ $healthy == true ]]; then
   exit 0
 fi
 
-record_attempt failed verification
+if [[ ${KEEPLORE_VERIFICATION_DRILL:-0} == 1 ]]; then
+  record_attempt failed verification-drill
+else
+  record_attempt failed verification
+fi
 if [[ -n $previous && -d $previous ]]; then
   switch_to "$previous"
   if "$script_directory/keeplore-health.sh"; then

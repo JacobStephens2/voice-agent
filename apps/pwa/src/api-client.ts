@@ -100,7 +100,7 @@ export async function loadKeeploreRegistration(): Promise<
   KeeploreRegistration | undefined
 > {
   const response = await fetch("/api/applications/keeplore");
-  if (response.status === 401) return undefined;
+  if (response.status === 401 || response.status === 404) return undefined;
   if (!response.ok) throw new Error("Keeplore registration is unavailable.");
   const result = keeploreRegistrationStatusSchema.parse(await response.json());
   return result.registration ?? undefined;
@@ -110,7 +110,7 @@ export async function loadKeeploreLiveInspection(): Promise<
   KeeploreLiveInspection | undefined
 > {
   const response = await fetch("/api/applications/keeplore/live-inspection");
-  if (response.status === 401) return undefined;
+  if (response.status === 401 || response.status === 404) return undefined;
   if (!response.ok) {
     throw new Error("The read-only Keeplore inspection is unavailable.");
   }

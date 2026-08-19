@@ -28,6 +28,7 @@ import {
   createDurableTaskRuntime,
   createKeeploreOnboardingControls,
   createNodeKeeploreLiveInspector,
+  readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
@@ -97,24 +98,32 @@ const continuityRuntime = createTaskContinuityRuntime({
   tasks: taskStore,
 });
 const keeploreOnboardingStore = createSqliteKeeploreOnboardingStore(databasePath);
-const keeploreControls = createKeeploreOnboardingControls({
-  inspector: createNodeKeeploreLiveInspector({
-    liveCheckoutPath:
-      process.env.VOICE_AGENT_KEEPLORE_CHECKOUT_PATH ?? "/var/www/keeplore",
+// The Keeplore boundaries come from the root-owned registration this process
+// cannot write, never from its own environment (ADR-0011). Until that
+// registration exists, the Keeplore surface is simply absent.
+const keeploreControls = createKeeploreControls();
+
+function createKeeploreControls() {
+  let registration;
+  try {
+    registration = readKeeploreRegistrationFile(
+      process.env.VOICE_AGENT_KEEPLORE_REGISTRATION_PATH,
+    );
+  } catch {
+    return undefined;
+  }
+  return createKeeploreOnboardingControls({
+    inspector: createNodeKeeploreLiveInspector({
+      liveCheckoutPath: registration.liveCheckoutPath,
+      now: () => new Date().toISOString(),
+      serviceUnit: "keeplore-api.service",
+      servingPath: registration.servingPath,
+      verificationCommands: registration.verificationCommands,
+    }),
     now: () => new Date().toISOString(),
-    serviceUnit: "keeplore-api.service",
-    servingPath:
-      process.env.VOICE_AGENT_KEEPLORE_SERVING_PATH ?? "/var/www/keeplore/public",
-    verificationCommands: (
-      process.env.VOICE_AGENT_KEEPLORE_VERIFICATION_COMMANDS ?? "npm test"
-    )
-      .split(",")
-      .map((command) => command.trim())
-      .filter((command) => command.length > 0),
-  }),
-  now: () => new Date().toISOString(),
-  store: keeploreOnboardingStore,
-});
+    store: keeploreOnboardingStore,
+  });
+}
 const authentication = createAuthenticationLifecycle({
   now: () => new Date().toISOString(),
   ownerUserId: process.env.VOICE_AGENT_OWNER_ID ?? "personal-owner",
@@ -164,7 +173,7 @@ const api = createVoiceApi({
   },
   completionControls: continuityRuntime,
   controls: runtime,
-  keeploreControls,
+  ...(keeploreControls === undefined ? {} : { keeploreControls }),
   origin,
   promotionControl: {
     requestResume: () => requestPromotionResume(

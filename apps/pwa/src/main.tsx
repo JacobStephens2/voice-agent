@@ -291,9 +291,14 @@ function App() {
 
   async function inspectKeeplore() {
     await run(async () => {
-      setKeeploreInspection(await loadKeeploreLiveInspection());
+      const inspection = await loadKeeploreLiveInspection();
+      setKeeploreInspection(inspection);
       setKeeploreRegistration(await loadKeeploreRegistration());
-      setMessage("The live Keeplore checkout was inspected read-only.");
+      setMessage(
+        inspection === undefined
+          ? "This Agent Host holds no root-owned Keeplore registration yet."
+          : "The live Keeplore checkout was inspected read-only.",
+      );
     });
   }
 

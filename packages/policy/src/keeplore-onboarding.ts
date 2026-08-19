@@ -5,7 +5,6 @@ import {
   keeploreRepository,
   keeplorePolicyAssessmentSchema,
   type KeeploreBranchProtection,
-  type KeeploreDeploymentContract,
   type KeeploreEnrollmentSource,
   type KeeploreGitHubAppInstallation,
   type KeeploreLiveInspection,
@@ -248,5 +247,3 @@ export function deriveKeeploreOnboardingConclusion(input: {
     ? "Keeplore is onboarded and its Human Merge was promoted."
     : "Keeplore onboarding could not be confirmed.";
 }
-
-export type { KeeploreDeploymentContract };

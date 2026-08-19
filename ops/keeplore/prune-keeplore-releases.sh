@@ -22,7 +22,7 @@ while IFS= read -r release; do
   [[ $name =~ ^[0-9a-f]{40}$ ]] || continue
   if [[ $name == "$active" ]]; then continue; fi
   kept=$((kept + 1))
-  if (( kept < keeplore_retained_releases )); then continue; fi
+  if (( kept <= keeplore_retained_releases )); then continue; fi
   chmod -R u+w "$release"
   rm -rf -- "$release"
   printf 'Removed superseded Keeplore Release %s.\n' "$name"

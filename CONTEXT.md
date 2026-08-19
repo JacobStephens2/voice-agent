@@ -180,7 +180,7 @@ _Avoid_: Server down
 The attended enrollment of Keeplore that reconciles its live working tree, fixes its Registered Codebase boundaries, establishes CI, production-branch rules, a least-privilege GitHub App, and a versioned Deployment Contract, and proves the real deployment path with one harmless Human Merge before any feature Delegation.
 _Avoid_: Keeplore setup, first deploy
 
-**Live Checkout Revalidation**:
+**Live Checkout Inspection**:
 The read-only re-inspection of a live application checkout — repository, production branch, head commit, uncommitted paths, serving path, and verification seams — performed before automation pulls, branches, builds, or deploys, and never resolving the owner's uncommitted work itself.
 _Avoid_: Git status check, cleanup
 

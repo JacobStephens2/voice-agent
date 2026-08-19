@@ -25,6 +25,9 @@ keeplore_load_configuration() {
   keeplore_retained_releases=
   keeplore_build_command=
   keeplore_current_link=
+  keeplore_preflight_command=
+  keeplore_serving_path=
+  keeplore_verification_command=
   while IFS='=' read -r key value; do
     case "$key" in
       KEEPLORE_REPOSITORY) keeplore_repository=$value ;;
@@ -37,6 +40,9 @@ keeplore_load_configuration() {
       KEEPLORE_RETAINED_RELEASES) keeplore_retained_releases=$value ;;
       KEEPLORE_BUILD_COMMAND) keeplore_build_command=$value ;;
       KEEPLORE_CURRENT_LINK) keeplore_current_link=$value ;;
+      KEEPLORE_PREFLIGHT_COMMAND) keeplore_preflight_command=$value ;;
+      KEEPLORE_SERVING_PATH) keeplore_serving_path=$value ;;
+      KEEPLORE_VERIFICATION_COMMAND) keeplore_verification_command=$value ;;
       *) ;;
     esac
   done < "$keeplore_configuration"
@@ -69,6 +75,17 @@ keeplore_require_root() {
   if [[ ${EUID} -ne 0 ]]; then
     printf 'Run this Keeplore release step as root.\n' >&2
     return 1
+  fi
+}
+
+# A GitHub App installation token, so no host step depends on an interactive login.
+keeplore_github_token() {
+  local script_directory
+  script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  if [[ -x "$script_directory/github-source-token.sh" ]]; then
+    "$script_directory/github-source-token.sh"
+  else
+    "$script_directory/../release/github-source-token.sh"
   fi
 }
 

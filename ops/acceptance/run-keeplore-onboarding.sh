@@ -226,6 +226,11 @@ ask SERVICE_UNIT "Keeplore systemd unit [keeplore-api.service]"
 SERVICE_UNIT=${SERVICE_UNIT:-keeplore-api.service}
 ask BUILD_COMMAND "Keeplore build command [npm ci && npm run build]"
 BUILD_COMMAND=${BUILD_COMMAND:-npm ci && npm run build}
+ask VERIFICATION_COMMAND "Declared Keeplore verification command [npm test]"
+VERIFICATION_COMMAND=${VERIFICATION_COMMAND:-npm test}
+ask PREFLIGHT_COMMAND "Release preflight command on the Agent Host (blank to rely on CI)"
+ask SERVING_PATH "Path Keeplore serves from [$LIVE_CHECKOUT/public]"
+SERVING_PATH=${SERVING_PATH:-$LIVE_CHECKOUT/public}
 sudo install -d -o root -g root -m 0755 /etc/voice-agent "$KEEPLORE_TOOLS"
 sudo tee "$KEEPLORE_CONFIGURATION" >/dev/null <<CONFIGURATION
 KEEPLORE_REPOSITORY=$KEEPLORE_REPOSITORY
@@ -238,6 +243,9 @@ KEEPLORE_HEALTH_URL=$HEALTH_URL
 KEEPLORE_PUBLIC_HEALTH_URL=$PUBLIC_HEALTH_URL
 KEEPLORE_RETAINED_RELEASES=2
 KEEPLORE_BUILD_COMMAND=$BUILD_COMMAND
+KEEPLORE_VERIFICATION_COMMAND=$VERIFICATION_COMMAND
+KEEPLORE_PREFLIGHT_COMMAND=$PREFLIGHT_COMMAND
+KEEPLORE_SERVING_PATH=$SERVING_PATH
 CONFIGURATION
 sudo chown root:root "$KEEPLORE_CONFIGURATION"
 sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
@@ -294,8 +302,9 @@ fi
 stage "Add minimal Keeplore CI as the required check"
 say "The declared verification runs in CI and reports the required keeplore-verification check."
 note "Templates: $REPOSITORY_ROOT/ops/keeplore/github/"
+say "The CI job must run exactly the declared verification: $VERIFICATION_COMMAND"
 step "Open a harmless pull request in $KEEPLORE_REPOSITORY adding:"
-step "  .github/workflows/keeplore-verification.yml  (the required check)"
+step "  .github/workflows/keeplore-verification.yml  (the required check; set its run step to $VERIFICATION_COMMAND)"
 step "  .github/workflows/promote-keeplore.yml       (enqueues verified Human Merges)"
 step "This is the harmless change the Human Merge will promote. It must not change Keeplore behaviour."
 ask PR_NUMBER "Keeplore pull-request number"
@@ -354,23 +363,31 @@ retained=$(sudo find /opt/keeplore/releases -mindepth 1 -maxdepth 1 -type d | wc
 note "Keeplore retains $retained Release(s) for rollback."
 
 stage "Prove rollback with a controlled failed verification"
-say "This forces one verification failure so you can watch the retained Release come back. Live data and your working tree are never touched."
-warn "Keeplore will be briefly unavailable while the failed Release is restored."
-confirm "Run the controlled rollback drill now?" || exit 1
-before_release=$(basename "$(readlink -f /opt/keeplore/current)")
-say "The drill points the declared health check at an unreachable port and re-promotes."
-sudo sed -i "s#^KEEPLORE_HEALTH_URL=.*#KEEPLORE_HEALTH_URL=http://127.0.0.1:1/api/health#" \
-  "$KEEPLORE_CONFIGURATION"
-if sudo "$KEEPLORE_TOOLS/promote-keeplore-release.sh" "$MERGE_COMMIT"; then
-  warn "The Promotion reported success while health was unreachable. Stop and fix keeplore-health.sh."
-  sudo sed -i "s#^KEEPLORE_HEALTH_URL=.*#KEEPLORE_HEALTH_URL=$HEALTH_URL#" "$KEEPLORE_CONFIGURATION"
-  exit 1
+say "The drill promotes the retained Release as a candidate whose verification is forced to fail."
+say "Nothing in the registration or the health check is edited, and live data is never touched."
+warn "Keeplore restarts twice during the drill."
+serving_release=$(basename "$(readlink -f /opt/keeplore/current)")
+retained_release=$(sudo find /opt/keeplore/releases -mindepth 1 -maxdepth 1 -type d \
+  -printf '%T@\t%p\n' | sort -rn | cut -f2- | xargs -r -n1 basename \
+  | grep -vx "$serving_release" | head -n1)
+if [[ ! $retained_release =~ ^[0-9a-f]{40}$ ]]; then
+  warn "No retained Release exists yet, so rollback cannot be proven from this Human Merge alone."
+  SKIPPED+=("Rollback drill — re-run this stage after a second Keeplore Human Merge")
+else
+  confirm "Run the controlled rollback drill against retained Release $retained_release?" || exit 1
+  if sudo env KEEPLORE_VERIFICATION_DRILL=1 \
+    "$KEEPLORE_TOOLS/promote-keeplore-release.sh" "$retained_release"; then
+    warn "The Promotion reported success while its verification was forced to fail. Stop and fix promote-keeplore-release.sh."
+    exit 1
+  fi
+  restored=$(basename "$(readlink -f /opt/keeplore/current)")
+  if [[ $restored != "$serving_release" ]]; then
+    warn "Rollback restored $restored, not the serving Release $serving_release."
+    exit 1
+  fi
+  sudo "$KEEPLORE_TOOLS/keeplore-health.sh"
+  note "The failed candidate rolled back to $serving_release, which verified healthy."
 fi
-note "Verification failed as intended and the retained Release was restored."
-sudo sed -i "s#^KEEPLORE_HEALTH_URL=.*#KEEPLORE_HEALTH_URL=$HEALTH_URL#" "$KEEPLORE_CONFIGURATION"
-sudo "$KEEPLORE_TOOLS/promote-keeplore-release.sh" "$MERGE_COMMIT"
-sudo "$KEEPLORE_TOOLS/keeplore-health.sh"
-note "Rollback left Keeplore healthy; the Release before the drill was $before_release."
 sudo tail -n 3 /var/lib/keeplore-promotions/attempts.jsonl || true
 say "Your live checkout is untouched by the drill:"
 sudo "$KEEPLORE_TOOLS/inspect-keeplore.sh" | grep -E 'headCommit|uncommittedPaths'

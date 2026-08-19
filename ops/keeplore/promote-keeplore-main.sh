@@ -22,17 +22,12 @@ chmod 0640 "$verified_human_merges"
 exec 8>/run/keeplore-main-promotion-queue.lock
 flock -x 8
 
-if ! "$script_directory/../release/verify-human-merge.sh" \
+if ! GH_TOKEN=$(keeplore_github_token) \
+  "$script_directory/../release/verify-human-merge.sh" \
   "$keeplore_repository" "$commit"; then
   printf 'Commit %s is not a verified Human Merge into main of %s.\n' \
     "$commit" "$keeplore_repository" >&2
   exit 1
-fi
-
-if grep -Fxq "$commit" "$verified_human_merges"; then
-  printf 'Human Merge %s was already recorded; Promotion is idempotent.\n' "$commit"
-else
-  printf '%s\n' "$commit" >> "$verified_human_merges"
 fi
 
 active=""
@@ -40,9 +35,15 @@ if [[ -L $keeplore_current_link ]]; then
   active=$(basename "$(readlink -f "$keeplore_current_link")")
 fi
 if [[ $active == "$commit" ]]; then
-  printf 'Keeplore already serves Release %s.\n' "$commit"
+  printf 'Keeplore already serves Release %s; Promotion is idempotent.\n' "$commit"
   exit 0
 fi
 
 "$script_directory/install-keeplore-release.sh" "$commit"
 "$script_directory/promote-keeplore-release.sh" "$commit"
+
+# Only a promoted Human Merge is recorded as processed, so a rolled-back merge
+# stays visible to the owner instead of looking complete.
+if ! grep -Fxq "$commit" "$verified_human_merges"; then
+  printf '%s\n' "$commit" >> "$verified_human_merges"
+fi

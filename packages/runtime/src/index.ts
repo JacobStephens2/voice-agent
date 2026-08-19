@@ -397,3 +397,4 @@ function delay(milliseconds: number): Promise<void> {
 export * from "./keeplore-onboarding.ts";
 
 export * from "./keeplore-live-inspector.ts";
+export * from "./keeplore-registration-file.ts";
