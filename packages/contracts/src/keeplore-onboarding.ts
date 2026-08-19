@@ -16,9 +16,19 @@ const commandSchema = z.string().min(1).max(200);
 const commitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 
 export const keeploreApplicationId = "keeplore-production" as const;
-export const keeploreRepository = "JacobStephens2/keeplore" as const;
+/** Keeplore is the product; `artifact-manager` is the repository that holds it. */
+export const keeploreRepository = "JacobStephens2/artifact-manager" as const;
 export const keeploreProductionBranch = "main" as const;
-export const keeploreServiceUnit = "keeplore-api.service" as const;
+/** Apache serves Keeplore's two document roots; there is no application service unit. */
+export const keeploreServingEdge = "apache" as const;
+
+/** The paths Apache serves. Promotion repoints them at the active Release. */
+export const keeploreDocumentRootsSchema = z
+  .object({
+    api: absolutePathSchema,
+    ui: absolutePathSchema,
+  })
+  .strict();
 
 /** The read-only revalidation performed before any pull, branch, or build. */
 export const keeploreLiveInspectionSchema = z
@@ -26,11 +36,13 @@ export const keeploreLiveInspectionSchema = z
     accessMode: z.literal("read-only"),
     headCommit: commitSchema,
     inspectedAt: timestampSchema,
+    documentRoots: keeploreDocumentRootsSchema,
     liveCheckoutPath: absolutePathSchema,
     productionBranch: z.literal(keeploreProductionBranch),
     repository: z.literal(keeploreRepository),
-    servingPath: absolutePathSchema,
-    serviceUnit: z.literal(keeploreServiceUnit),
+    servingEdge: z.literal(keeploreServingEdge),
+    /** Gitignored runtime state that must survive a Promotion, relative to the checkout. */
+    sharedPaths: z.array(z.string().min(1).max(200)).max(20),
     uncommittedPaths: z.array(z.string().min(1).max(300)).max(200),
     verificationCommands: z.array(commandSchema).min(1).max(5),
   })
@@ -67,6 +79,7 @@ export const keeploreRegistrationSchema = z
         liveCheckoutPath: absolutePathSchema,
         releaseRoot: absolutePathSchema,
         retainedReleases: z.number().int().min(1).max(20),
+        sharedRoot: absolutePathSchema,
         sourceMirrorPath: absolutePathSchema,
       })
       .strict(),
@@ -198,6 +211,9 @@ export const activateKeeploreDeploymentContractRequestSchema = z
   })
   .strict();
 
+export type KeeploreDocumentRoots = z.infer<
+  typeof keeploreDocumentRootsSchema
+>;
 export type KeeploreLiveInspection = z.infer<
   typeof keeploreLiveInspectionSchema
 >;

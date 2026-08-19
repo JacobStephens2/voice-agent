@@ -19,7 +19,11 @@ keeplore_load_configuration() {
   keeplore_live_checkout=
   keeplore_release_root=
   keeplore_source_mirror=
-  keeplore_service_unit=
+  keeplore_document_root_api=
+  keeplore_document_root_ui=
+  keeplore_shared_root=
+  keeplore_shared_paths=
+  keeplore_reload_command=
   keeplore_health_url=
   keeplore_public_health_url=
   keeplore_retained_releases=
@@ -34,7 +38,11 @@ keeplore_load_configuration() {
       KEEPLORE_LIVE_CHECKOUT) keeplore_live_checkout=$value ;;
       KEEPLORE_RELEASE_ROOT) keeplore_release_root=$value ;;
       KEEPLORE_SOURCE_MIRROR) keeplore_source_mirror=$value ;;
-      KEEPLORE_SERVICE_UNIT) keeplore_service_unit=$value ;;
+      KEEPLORE_DOCUMENT_ROOT_API) keeplore_document_root_api=$value ;;
+      KEEPLORE_DOCUMENT_ROOT_UI) keeplore_document_root_ui=$value ;;
+      KEEPLORE_SHARED_ROOT) keeplore_shared_root=$value ;;
+      KEEPLORE_SHARED_PATHS) keeplore_shared_paths=$value ;;
+      KEEPLORE_RELOAD_COMMAND) keeplore_reload_command=$value ;;
       KEEPLORE_HEALTH_URL) keeplore_health_url=$value ;;
       KEEPLORE_PUBLIC_HEALTH_URL) keeplore_public_health_url=$value ;;
       KEEPLORE_RETAINED_RELEASES) keeplore_retained_releases=$value ;;
@@ -49,9 +57,11 @@ keeplore_load_configuration() {
 
   keeplore_release_root=${keeplore_release_root:-/opt/keeplore/releases}
   keeplore_source_mirror=${keeplore_source_mirror:-/var/lib/keeplore-source/repository.git}
-  keeplore_service_unit=${keeplore_service_unit:-keeplore-api.service}
+  keeplore_shared_root=${keeplore_shared_root:-/opt/keeplore/shared}
+  keeplore_shared_paths=${keeplore_shared_paths:-private/environment_variables.php,private/vendor,database/backups,logs}
+  keeplore_reload_command=${keeplore_reload_command:-/usr/sbin/apache2ctl graceful}
   keeplore_retained_releases=${keeplore_retained_releases:-2}
-  keeplore_build_command=${keeplore_build_command:-npm ci && npm run build}
+  keeplore_build_command=${keeplore_build_command:-find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -r -n1 php -l}
   keeplore_current_link=${keeplore_current_link:-${keeplore_release_root%/releases}/current}
 
   if [[ ! $keeplore_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
@@ -59,6 +69,7 @@ keeplore_load_configuration() {
     [[ $keeplore_release_root != /* ]] || \
     [[ $keeplore_health_url != http* ]] || \
     [[ $keeplore_current_link != /* ]] || \
+    [[ $keeplore_shared_root != /* ]] || \
     [[ ! $keeplore_retained_releases =~ ^[1-9][0-9]*$ ]]; then
     printf 'Keeplore registration is incomplete or malformed.\n' >&2
     return 1
@@ -69,6 +80,12 @@ keeplore_load_configuration() {
       return 1
       ;;
   esac
+}
+
+# Apache serves the active Release; Keeplore has no application service unit.
+keeplore_reload_edge() {
+  # shellcheck disable=SC2086
+  $keeplore_reload_command
 }
 
 keeplore_require_root() {

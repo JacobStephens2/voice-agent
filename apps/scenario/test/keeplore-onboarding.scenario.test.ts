@@ -24,7 +24,7 @@ const harmlessCommit = "2222222222222222222222222222222222222222";
 const unhealthyCommit = "3333333333333333333333333333333333333333";
 const recoveryCommit = "4444444444444444444444444444444444444444";
 const releaseRoot = "/opt/keeplore/releases";
-const liveCheckoutPath = "/var/www/keeplore";
+const liveCheckoutPath = "/var/www/keeplore.app";
 
 afterEach(async () => {
   await Promise.all(
@@ -37,7 +37,7 @@ afterEach(async () => {
 test("a read-only inspection revalidates the live checkout and blocks enrollment until the owner reconciles it", async () => {
   const scenario = await createScenario({
     ids: ["task-blocked"],
-    inspection: liveInspection({ uncommittedPaths: ["src/table.tsx"] }),
+    inspection: liveInspection({ uncommittedPaths: ["ui/artifacts/edit.php"] }),
   });
 
   const inspection = await scenario.inspectLiveCheckout();
@@ -45,9 +45,9 @@ test("a read-only inspection revalidates the live checkout and blocks enrollment
     accessMode: "read-only",
     liveCheckoutPath,
     productionBranch: "main",
-    repository: "JacobStephens2/keeplore",
-    serviceUnit: "keeplore-api.service",
-    uncommittedPaths: ["src/table.tsx"],
+    repository: "JacobStephens2/artifact-manager",
+    servingEdge: "apache",
+    uncommittedPaths: ["ui/artifacts/edit.php"],
   });
   expect(inspection.verificationCommands.length).toBeGreaterThan(0);
 
@@ -55,7 +55,7 @@ test("a read-only inspection revalidates the live checkout and blocks enrollment
     reconciliation: reconciliation({
       outcome: "preserved-on-branch",
       preservedRef: "owner/live-work",
-      remainingUncommittedPaths: ["src/table.tsx"],
+      remainingUncommittedPaths: ["ui/artifacts/edit.php"],
     }),
     source: "fresh-passkey-action",
   });
@@ -69,8 +69,30 @@ test("a read-only inspection revalidates the live checkout and blocks enrollment
   expect(await scenario.automationActions()).toEqual([]);
   expect(await scenario.liveCheckoutState()).toEqual({
     headCommit: initialCommit,
-    uncommittedPaths: ["src/table.tsx"],
+    uncommittedPaths: ["ui/artifacts/edit.php"],
   });
+});
+
+test("enrollment is denied while Keeplore's gitignored runtime state is undeclared", async () => {
+  const scenario = await createScenario({
+    ids: [],
+    inspection: {
+      ...liveInspection({}),
+      sharedPaths: ["logs"],
+    },
+  });
+
+  expect(
+    await scenario.enroll({
+      reconciliation: reconciliation({}),
+      source: "fresh-passkey-action",
+    }),
+  ).toEqual({
+    decision: "denied",
+    reason:
+      "Keeplore shared state is undeclared: private/environment_variables.php, private/vendor, database/backups",
+  });
+  expect(await scenario.getRegistration()).toBeUndefined();
 });
 
 test("a Fresh Passkey Action enrolls Keeplore with fixed boundaries that no other source can claim", async () => {
@@ -97,14 +119,18 @@ test("a Fresh Passkey Action enrolls Keeplore with fixed boundaries that no othe
       liveCheckoutPath,
       releaseRoot,
       retainedReleases: 2,
+      sharedRoot: "/opt/keeplore/shared",
       sourceMirrorPath: "/var/lib/keeplore-source/repository.git",
     },
     permittedSubagentProvider: "codex",
     productionBranch: "main",
     registeredBy: "fresh-passkey-action",
-    repository: "JacobStephens2/keeplore",
+    repository: "JacobStephens2/artifact-manager",
     revision: 1,
-    verification: { checkName: "keeplore-verification", command: "npm test" },
+    verification: {
+      checkName: "keeplore-verification",
+      command: "vendor/bin/phpunit",
+    },
     worktreeRoot: "/var/lib/voice-agent-worktrees/keeplore",
   });
 });
@@ -147,7 +173,7 @@ test("the GitHub App holds only the content, pull-request, and check permissions
   expect(
     await scenario.assessGitHubApp({
       permissions: { administration: "write", contents: "write" },
-      repositories: ["JacobStephens2/keeplore"],
+      repositories: ["JacobStephens2/artifact-manager"],
     }),
   ).toEqual({
     satisfied: false,
@@ -238,7 +264,7 @@ test("a harmless Human Merge promotes its exact commit into an immutable Release
       branch: "main",
       commit: harmlessCommit,
       deliveryId: "delivery-harmless",
-      repository: "JacobStephens2/keeplore",
+      repository: "JacobStephens2/artifact-manager",
       source: "webhook",
     },
     promotionAttempt: {
@@ -292,7 +318,7 @@ test("unsigned, duplicated, direct-push, and bot deliveries never enqueue a Prom
     })).outcome,
   ).toBe("denied");
 
-  const foreign = { ...event, repository: "attacker/keeplore" };
+  const foreign = { ...event, repository: "attacker/artifact-manager" };
   expect(
     (await scenario.deliver({
       deliveryId: "delivery-foreign",
@@ -496,15 +522,24 @@ function liveInspection(overrides: {
 }): KeeploreLiveInspection {
   return {
     accessMode: "read-only",
+    documentRoots: {
+      api: `${liveCheckoutPath}/api`,
+      ui: `${liveCheckoutPath}/ui`,
+    },
     headCommit: initialCommit,
     inspectedAt: now,
     liveCheckoutPath,
     productionBranch: "main",
-    repository: "JacobStephens2/keeplore",
-    servingPath: `${liveCheckoutPath}/public`,
-    serviceUnit: "keeplore-api.service",
+    repository: "JacobStephens2/artifact-manager",
+    servingEdge: "apache",
+    sharedPaths: [
+      "private/environment_variables.php",
+      "private/vendor",
+      "database/backups",
+      "logs",
+    ],
     uncommittedPaths: [...(overrides.uncommittedPaths ?? [])],
-    verificationCommands: ["npm test"],
+    verificationCommands: ["vendor/bin/phpunit"],
   };
 }
 
@@ -548,7 +583,7 @@ function leastPrivilegeInstallation(): KeeploreGitHubAppInstallation {
       contents: "write",
       pull_requests: "write",
     },
-    repositories: ["JacobStephens2/keeplore"],
+    repositories: ["JacobStephens2/artifact-manager"],
   };
 }
 
@@ -562,6 +597,6 @@ function humanMerge(commit: string, beforeCommit: string): FixtureGitHubEvent {
     merged: true,
     mergedAt: now,
     mergedBy: { login: "JacobStephens2", type: "User" },
-    repository: "JacobStephens2/keeplore",
+    repository: "JacobStephens2/artifact-manager",
   };
 }

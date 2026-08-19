@@ -5,8 +5,9 @@ import { readFileSync } from "node:fs";
  * The Voice Agent process cannot widen it: it only reads the fixed boundaries.
  */
 export interface KeeploreRegistrationFile {
+  readonly documentRoots: { readonly api: string; readonly ui: string };
   readonly liveCheckoutPath: string;
-  readonly servingPath: string;
+  readonly sharedPaths: readonly string[];
   readonly verificationCommands: readonly string[];
 }
 
@@ -24,12 +25,20 @@ export function readKeeploreRegistrationFile(
     throw new Error("The Keeplore registration has no live checkout path");
   }
   const verificationCommand = values.get("KEEPLORE_VERIFICATION_COMMAND");
+  const sharedPaths = values.get("KEEPLORE_SHARED_PATHS");
   return {
+    documentRoots: {
+      api: values.get("KEEPLORE_DOCUMENT_ROOT_API") ?? `${liveCheckoutPath}/api`,
+      ui: values.get("KEEPLORE_DOCUMENT_ROOT_UI") ?? `${liveCheckoutPath}/ui`,
+    },
     liveCheckoutPath,
-    servingPath: values.get("KEEPLORE_SERVING_PATH") ?? `${liveCheckoutPath}/public`,
+    sharedPaths:
+      sharedPaths === undefined || sharedPaths.length === 0
+        ? []
+        : sharedPaths.split(",").map((path) => path.trim()).filter(Boolean),
     verificationCommands:
       verificationCommand === undefined || verificationCommand.length === 0
-        ? ["npm test"]
+        ? ["vendor/bin/phpunit"]
         : [verificationCommand],
   };
 }

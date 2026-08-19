@@ -114,10 +114,10 @@ function createKeeploreControls() {
   }
   return createKeeploreOnboardingControls({
     inspector: createNodeKeeploreLiveInspector({
+      documentRoots: registration.documentRoots,
       liveCheckoutPath: registration.liveCheckoutPath,
       now: () => new Date().toISOString(),
-      serviceUnit: "keeplore-api.service",
-      servingPath: registration.servingPath,
+      sharedPaths: registration.sharedPaths,
       verificationCommands: registration.verificationCommands,
     }),
     now: () => new Date().toISOString(),

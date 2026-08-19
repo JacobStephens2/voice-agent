@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Promote one immutable Keeplore Release: run the contract's preflight, switch
-# atomically, verify the declared health semantics, and restore the retained
-# Release when verification fails.
+# atomically behind Apache, verify the declared health semantics, and restore
+# the retained Release when verification fails.
 #
 # KEEPLORE_VERIFICATION_DRILL=1 forces the candidate's verification to fail so
 # the owner can prove rollback. The restored Release is still verified for real,
@@ -58,7 +58,7 @@ switch_to() {
   candidate="$(dirname "$keeplore_current_link")/.keeplore-candidate"
   ln -sfn "$target" "$candidate"
   mv -Tf "$candidate" "$keeplore_current_link"
-  systemctl restart "$keeplore_service_unit"
+  keeplore_reload_edge
 }
 
 # Preflight the candidate before anything switches.
@@ -116,7 +116,7 @@ if [[ -n $previous && -d $previous ]]; then
   fi
 else
   rm -f -- "$keeplore_current_link"
-  systemctl stop "$keeplore_service_unit" || true
+  keeplore_reload_edge || true
   printf 'Release %s failed verification; no prior Release existed.\n' "$commit" >&2
 fi
 exit 1

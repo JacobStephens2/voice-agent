@@ -10,9 +10,17 @@ script_directory=$(cd "$(dirname "$0")" && pwd)
 source "$script_directory/keeplore-config.sh"
 keeplore_load_configuration
 
-systemctl is-active --quiet "$keeplore_service_unit"
+systemctl is-active --quiet apache2
 test -L "$keeplore_current_link"
-test -f "$(readlink -f "$keeplore_current_link")/.keeplore-release"
+release_path=$(readlink -f "$keeplore_current_link")
+test -f "$release_path/.keeplore-release"
+# Shared runtime state must be linked in, or the Release serves without its
+# database credentials.
+IFS=',' read -r -a shared_entries <<< "$keeplore_shared_paths"
+for entry in "${shared_entries[@]}"; do
+  [[ -n $entry ]] || continue
+  test -e "$release_path/$entry"
+done
 
 status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
   "$keeplore_health_url" || printf '000')

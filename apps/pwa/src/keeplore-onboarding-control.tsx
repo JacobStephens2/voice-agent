@@ -46,8 +46,16 @@ export function KeeploreOnboardingControl(props: {
             {props.inspection.repository} on{" "}
             {props.inspection.productionBranch} at{" "}
             {props.inspection.liveCheckoutPath}, served by{" "}
-            {props.inspection.serviceUnit} from {props.inspection.servingPath}.
-            Verification: {props.inspection.verificationCommands.join(", ")}.
+            {props.inspection.servingEdge} from{" "}
+            {props.inspection.documentRoots.ui} and{" "}
+            {props.inspection.documentRoots.api}. Verification:{" "}
+            {props.inspection.verificationCommands.join(", ")}.
+          </p>
+          <p>
+            Shared runtime state:{" "}
+            {props.inspection.sharedPaths.length === 0
+              ? "none declared"
+              : props.inspection.sharedPaths.join(", ")}
           </p>
           <p>
             {uncommittedPaths.length === 0

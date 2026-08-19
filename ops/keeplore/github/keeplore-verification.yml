@@ -1,4 +1,5 @@
-# Install as .github/workflows/keeplore-verification.yml in JacobStephens2/keeplore.
+# Install as .github/workflows/keeplore-verification.yml in
+# JacobStephens2/artifact-manager (the repository that holds Keeplore).
 #
 # The `keeplore-verification` job name is the required GitHub check named by the
 # Keeplore Registered Codebase, so production-branch rules can require it.
@@ -27,12 +28,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: shivammathur/setup-php@v2
         with:
-          node-version: 22
+          php-version: "8.3"
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Lint every PHP file the Release will serve
+        run: |
+          set -euo pipefail
+          find . -name '*.php' -not -path './vendor/*' -print0 \
+            | xargs -0 -r -n1 php -l
 
       - name: Run the declared Keeplore verification
-        run: npm test
+        run: vendor/bin/phpunit
