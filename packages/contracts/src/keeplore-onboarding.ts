@@ -16,8 +16,14 @@ const commandSchema = z.string().min(1).max(200);
 const commitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 
 export const keeploreApplicationId = "keeplore-production" as const;
-/** Keeplore is the product; `artifact-manager` is the repository that holds it. */
-export const keeploreRepository = "JacobStephens2/artifact-manager" as const;
+/**
+ * Keeplore's canonical repository. It was renamed from `artifact-manager`, and
+ * GitHub still redirects the old name, so a live checkout can carry a stale
+ * remote that resolves correctly while naming the wrong repository.
+ */
+export const keeploreRepository = "JacobStephens2/keeplore" as const;
+export const keeploreFormerRepository =
+  "JacobStephens2/artifact-manager" as const;
 export const keeploreProductionBranch = "main" as const;
 /** Apache serves Keeplore's two document roots; there is no application service unit. */
 export const keeploreServingEdge = "apache" as const;
@@ -39,6 +45,8 @@ export const keeploreLiveInspectionSchema = z
     documentRoots: keeploreDocumentRootsSchema,
     liveCheckoutPath: absolutePathSchema,
     productionBranch: z.literal(keeploreProductionBranch),
+    /** What the live checkout's origin names today, stale rename included. */
+    remoteRepository: z.string().min(1).max(200),
     repository: z.literal(keeploreRepository),
     servingEdge: z.literal(keeploreServingEdge),
     /** Gitignored runtime state that must survive a Promotion, relative to the checkout. */

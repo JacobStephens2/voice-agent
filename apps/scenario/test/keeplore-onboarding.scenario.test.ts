@@ -45,7 +45,7 @@ test("a read-only inspection revalidates the live checkout and blocks enrollment
     accessMode: "read-only",
     liveCheckoutPath,
     productionBranch: "main",
-    repository: "JacobStephens2/artifact-manager",
+    repository: "JacobStephens2/keeplore",
     servingEdge: "apache",
     uncommittedPaths: ["ui/artifacts/edit.php"],
   });
@@ -70,6 +70,27 @@ test("a read-only inspection revalidates the live checkout and blocks enrollment
   expect(await scenario.liveCheckoutState()).toEqual({
     headCommit: initialCommit,
     uncommittedPaths: ["ui/artifacts/edit.php"],
+  });
+});
+
+test("enrollment is denied while the live checkout still names the repository's former self", async () => {
+  const scenario = await createScenario({
+    ids: [],
+    inspection: {
+      ...liveInspection({}),
+      remoteRepository: "JacobStephens2/artifact-manager",
+    },
+  });
+
+  expect(
+    await scenario.enroll({
+      reconciliation: reconciliation({}),
+      source: "fresh-passkey-action",
+    }),
+  ).toEqual({
+    decision: "denied",
+    reason:
+      "The live checkout still names JacobStephens2/artifact-manager; repoint its origin at JacobStephens2/keeplore",
   });
 });
 
@@ -125,7 +146,7 @@ test("a Fresh Passkey Action enrolls Keeplore with fixed boundaries that no othe
     permittedSubagentProvider: "codex",
     productionBranch: "main",
     registeredBy: "fresh-passkey-action",
-    repository: "JacobStephens2/artifact-manager",
+    repository: "JacobStephens2/keeplore",
     revision: 1,
     verification: {
       checkName: "keeplore-verification",
@@ -173,7 +194,7 @@ test("the GitHub App holds only the content, pull-request, and check permissions
   expect(
     await scenario.assessGitHubApp({
       permissions: { administration: "write", contents: "write" },
-      repositories: ["JacobStephens2/artifact-manager"],
+      repositories: ["JacobStephens2/keeplore"],
     }),
   ).toEqual({
     satisfied: false,
@@ -264,7 +285,7 @@ test("a harmless Human Merge promotes its exact commit into an immutable Release
       branch: "main",
       commit: harmlessCommit,
       deliveryId: "delivery-harmless",
-      repository: "JacobStephens2/artifact-manager",
+      repository: "JacobStephens2/keeplore",
       source: "webhook",
     },
     promotionAttempt: {
@@ -318,7 +339,7 @@ test("unsigned, duplicated, direct-push, and bot deliveries never enqueue a Prom
     })).outcome,
   ).toBe("denied");
 
-  const foreign = { ...event, repository: "attacker/artifact-manager" };
+  const foreign = { ...event, repository: "attacker/keeplore" };
   expect(
     (await scenario.deliver({
       deliveryId: "delivery-foreign",
@@ -530,7 +551,8 @@ function liveInspection(overrides: {
     inspectedAt: now,
     liveCheckoutPath,
     productionBranch: "main",
-    repository: "JacobStephens2/artifact-manager",
+    remoteRepository: "JacobStephens2/keeplore",
+    repository: "JacobStephens2/keeplore",
     servingEdge: "apache",
     sharedPaths: [
       "private/environment_variables.php",
@@ -583,7 +605,7 @@ function leastPrivilegeInstallation(): KeeploreGitHubAppInstallation {
       contents: "write",
       pull_requests: "write",
     },
-    repositories: ["JacobStephens2/artifact-manager"],
+    repositories: ["JacobStephens2/keeplore"],
   };
 }
 
@@ -597,6 +619,6 @@ function humanMerge(commit: string, beforeCommit: string): FixtureGitHubEvent {
     merged: true,
     mergedAt: now,
     mergedBy: { login: "JacobStephens2", type: "User" },
-    repository: "JacobStephens2/artifact-manager",
+    repository: "JacobStephens2/keeplore",
   };
 }
