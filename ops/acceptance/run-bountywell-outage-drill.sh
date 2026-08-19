@@ -188,6 +188,8 @@ TOTAL_STAGES=9
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 POLKIT_RULE_SRC="$REPOSITORY_ROOT/ops/polkit/50-voice-broker-bountywell.rules"
 POLKIT_RULE_DST=/etc/polkit-1/rules.d/50-voice-broker-bountywell.rules
+RECOVERY_SERVICE_SRC="$REPOSITORY_ROOT/ops/systemd/bountywell-api-recovery.service"
+RECOVERY_TIMER_SRC="$REPOSITORY_ROOT/ops/systemd/bountywell-api-recovery.timer"
 PR_URL=https://github.com/JacobStephens2/voice-agent/pull/45
 PWA_URL=https://voice.stephens.page
 RELEASE_FILE=/opt/voice-agent/current/.voice-agent-release
@@ -239,12 +241,22 @@ reload_polkit() {
   fi
 }
 
+as_voice_broker_systemctl() {
+  sudo systemd-run --quiet --wait --pipe --collect \
+    --uid=voice-broker --gid=voice-broker \
+    /bin/systemctl --no-ask-password --no-pager "$@"
+}
+
 if [[ ! -e /opt/voice-agent ]]; then
   warn "Run this wizard on the Agent Host so Promotion, polkit, and deployment-health can be checked."
   exit 1
 fi
 if [[ ! -f $POLKIT_RULE_SRC ]]; then
   warn "Missing polkit rule at $POLKIT_RULE_SRC"
+  exit 1
+fi
+if [[ ! -f $RECOVERY_SERVICE_SRC || ! -f $RECOVERY_TIMER_SRC ]]; then
+  warn "Missing pinned recovery units under ops/systemd/"
   exit 1
 fi
 
@@ -283,24 +295,29 @@ sudo /usr/local/libexec/voice-agent/deployment-health.sh
 note "Deployment health passed for $MERGE_COMMIT"
 
 stage "Narrow the voice-broker systemd allowlist"
-say "voice-broker needs start/stop of bountywell-api.service and the independent recovery timer units."
-say "The current arm/remove path also issues systemctl link, disable, and daemon-reload."
-say "Start/stop are unit-filtered. daemon-reload and manage-unit-files are identity-scoped to voice-broker because systemd cannot unit-filter those actions."
+say "voice-broker may start and stop only bountywell-api.service and the independent recovery timer units."
+say "A blanket manage-unit-files grant also authorizes StartUnit on this host, so link/disable stay with root."
+say "This stage pins the recovery units under /etc/systemd/system/ and installs the unit-filtered polkit rule."
 require_javascript_polkit
-step "This copies $POLKIT_RULE_SRC to $POLKIT_RULE_DST and restarts polkit."
-confirm "Install the voice-broker Bountywell polkit rule on this host?" || exit 1
+step "Install $RECOVERY_SERVICE_SRC and $RECOVERY_TIMER_SRC, then $POLKIT_RULE_SRC."
+confirm "Pin the recovery units and install the voice-broker polkit rule on this host?" || exit 1
+sudo install -m 0644 -o root -g root "$RECOVERY_SERVICE_SRC" \
+  /etc/systemd/system/bountywell-api-recovery.service
+sudo install -m 0644 -o root -g root "$RECOVERY_TIMER_SRC" \
+  /etc/systemd/system/bountywell-api-recovery.timer
+sudo systemctl daemon-reload
 sudo install -m 0644 -o root -g root "$POLKIT_RULE_SRC" "$POLKIT_RULE_DST"
 reload_polkit
 denied_unit=apache2.service
 if ! systemctl cat "$denied_unit" >/dev/null 2>&1; then
   denied_unit=cron.service
 fi
-if sudo --user=voice-broker systemctl --no-ask-password start "$denied_unit"; then
+if as_voice_broker_systemctl start "$denied_unit"; then
   warn "voice-broker was allowed to start $denied_unit. The allowlist is too wide. Stop and fix the polkit rule."
   exit 1
 fi
 note "voice-broker was denied start of $denied_unit."
-if ! sudo --user=voice-broker systemctl --no-ask-password start bountywell-api.service; then
+if ! as_voice_broker_systemctl start bountywell-api.service; then
   warn "voice-broker could not start bountywell-api.service. Check the polkit rule and unit name."
   exit 1
 fi

@@ -1,9 +1,13 @@
 // Narrow voice-broker authority for the Bountywell Outage Drill.
 // Installed by ops/acceptance/run-bountywell-outage-drill.sh onto the Agent Host.
 // Not loaded from a candidate Release.
+//
+// Do not grant org.freedesktop.systemd1.manage-unit-files. On systemd 255 /
+// polkit 124 that action authorizes StartUnit, so a blanket YES lets
+// voice-broker start arbitrary units (including apache2.service).
 
 polkit.addRule(function (action, subject) {
-    if (subject.user !== "voice-broker") {
+    if (subject.user != "voice-broker") {
         return polkit.Result.NOT_HANDLED;
     }
 
@@ -15,22 +19,11 @@ polkit.addRule(function (action, subject) {
         "bountywell-api-recovery.timer": true
     };
 
-    if (action.id === "org.freedesktop.systemd1.manage-units") {
-        if (allowedUnits[unit] === true && (verb === "start" || verb === "stop")) {
+    if (action.id == "org.freedesktop.systemd1.manage-units") {
+        if (allowedUnits[unit] === true && (verb == "start" || verb == "stop")) {
             return polkit.Result.YES;
         }
-        return polkit.Result.NOT_HANDLED;
-    }
-
-    // armRecoveryTimer runs `systemctl link` then `systemctl daemon-reload`.
-    // removeRecoveryTimer runs `systemctl disable`. systemd does not pass a
-    // reliable unit/verb to manage-unit-files (systemd#38992), so these two
-    // actions are identity-scoped to voice-broker rather than unit-scoped.
-    if (action.id === "org.freedesktop.systemd1.reload-daemon") {
-        return polkit.Result.YES;
-    }
-    if (action.id === "org.freedesktop.systemd1.manage-unit-files") {
-        return polkit.Result.YES;
+        return polkit.Result.NO;
     }
 
     return polkit.Result.NOT_HANDLED;

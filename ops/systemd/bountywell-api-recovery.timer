@@ -1,0 +1,8 @@
+[Unit]
+Description=Independent Bountywell API recovery timer
+
+[Timer]
+OnActiveSec=10min
+AccuracySec=1s
+Unit=bountywell-api-recovery.service
+RemainAfterElapse=false

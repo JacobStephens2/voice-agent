@@ -971,7 +971,11 @@ export function createSystemdBountywellServiceController(
   return {
     async armRecoveryTimer() {
       await writeRecoveryUnits(unitDirectory, execute);
-      await execute("systemctl", ["daemon-reload"]);
+      try {
+        await execute("systemctl", ["daemon-reload"]);
+      } catch {
+        // Pinned Agent Host units do not require a broker daemon-reload.
+      }
       await execute("systemctl", ["start", timerUnit]);
       return {
         armed: true,
@@ -1023,9 +1027,13 @@ export function createSystemdBountywellServiceController(
     async removeRecoveryTimer() {
       try {
         await execute("systemctl", ["stop", timerUnit]);
-        await execute("systemctl", ["disable", timerUnit]);
       } catch {
         return { removed: false };
+      }
+      try {
+        await execute("systemctl", ["disable", timerUnit]);
+      } catch {
+        // Stopping a pinned timer disarms it.
       }
       return { removed: true };
     },
@@ -1076,7 +1084,11 @@ export function createSystemdBountywellServiceController(
         "",
       ].join("\n"),
     );
-    await run("systemctl", ["link", servicePath, timerPath]);
+    try {
+      await run("systemctl", ["link", servicePath, timerPath]);
+    } catch {
+      // Recovery units may already be pinned under /etc/systemd/system.
+    }
   }
 }
 
