@@ -10,7 +10,7 @@ script_directory=$(cd "$(dirname "$0")" && pwd)
 source "$script_directory/keeplore-config.sh"
 keeplore_load_configuration
 
-git_checkout=(git -c protocol.allow=never -C "$keeplore_live_checkout")
+git_checkout=(git --no-optional-locks -c protocol.allow=never -C "$keeplore_live_checkout")
 head_commit=$("${git_checkout[@]}" rev-parse HEAD)
 branch=$("${git_checkout[@]}" rev-parse --abbrev-ref HEAD)
 remote=$("${git_checkout[@]}" remote get-url origin)
@@ -18,10 +18,6 @@ uncommitted=$("${git_checkout[@]}" status --porcelain | wc -l | tr -d ' ')
 active_release=none
 if [[ -L $keeplore_current_link ]]; then
   active_release=$(basename "$(readlink -f "$keeplore_current_link")")
-fi
-service_state=unavailable
-if systemctl cat "$keeplore_service_unit" >/dev/null 2>&1; then
-  service_state=$(systemctl is-active "$keeplore_service_unit" || true)
 fi
 health_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
   "$keeplore_health_url" || printf '000')
@@ -32,8 +28,11 @@ printf 'liveCheckout\t%s\n' "$keeplore_live_checkout"
 printf 'productionBranch\t%s\n' "$branch"
 printf 'headCommit\t%s\n' "$head_commit"
 printf 'uncommittedPaths\t%s\n' "$uncommitted"
-printf 'serviceUnit\t%s\n' "$keeplore_service_unit"
-printf 'serviceState\t%s\n' "$service_state"
+printf 'servingEdge\tapache\n'
+printf 'documentRootUi\t%s\n' "${keeplore_document_root_ui:-$keeplore_live_checkout/ui}"
+printf 'documentRootApi\t%s\n' "${keeplore_document_root_api:-$keeplore_live_checkout/api}"
+printf 'sharedRoot\t%s\n' "$keeplore_shared_root"
+printf 'sharedPaths\t%s\n' "$keeplore_shared_paths"
 printf 'healthUrl\t%s\n' "$keeplore_health_url"
 printf 'healthStatus\t%s\n' "$health_status"
 printf 'releaseRoot\t%s\n' "$keeplore_release_root"

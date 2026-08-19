@@ -64,6 +64,10 @@ import "./styles.css";
 
 registerSW({ immediate: true });
 
+// Keeplore is PHP served from files: a Release is linted rather than built.
+const keeploreReleaseLintCommand =
+  "find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -r -n1 php -l";
+
 const pendingBountywellRequestIdKey =
   "voice-agent.pending-bountywell-inquiry-request-id";
 
@@ -327,9 +331,9 @@ function App() {
     }
     await run(async () => {
       const contract = await activateKeeploreDeploymentContract(csrfToken, {
-        buildCommand: "npm ci && npm run build",
+        buildCommand: keeploreReleaseLintCommand,
         health: { expectedStatus: 200, path: "/api/health" },
-        preflightCommand: registration.verification.command,
+        preflightCommand: keeploreReleaseLintCommand,
         releaseRoot: registration.deploymentBoundaries.releaseRoot,
         retainedReleases: registration.deploymentBoundaries.retainedReleases,
         revision: 1,

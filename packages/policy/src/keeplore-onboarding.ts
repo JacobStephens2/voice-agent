@@ -15,17 +15,30 @@ import {
 
 /** Source files the Voice Agent may read directly; secrets and env files are excluded. */
 export const keeploreDefaultReadScope = [
-  "**/*.ts",
-  "**/*.tsx",
+  "**/*.php",
   "**/*.js",
-  "**/*.jsx",
   "**/*.css",
   "**/*.html",
   "**/*.json",
+  "**/*.sql",
   "**/*.md",
+  "!**/environment_variables.php",
 ] as const;
 
 export const keeploreReleaseRoot = "/opt/keeplore/releases" as const;
+export const keeploreSharedRoot = "/opt/keeplore/shared" as const;
+
+/**
+ * Gitignored runtime state that lives inside the live checkout today. Each
+ * Release links these out of the shared root, so a Release carries no secrets
+ * and a Promotion never orphans live state.
+ */
+export const keeploreSharedPaths = [
+  "private/environment_variables.php",
+  "private/vendor",
+  "database/backups",
+  "logs",
+] as const;
 export const keeploreSourceMirrorPath =
   "/var/lib/keeplore-source/repository.git" as const;
 export const keeploreWorktreeRoot =
@@ -71,6 +84,24 @@ export function authorizeKeeploreEnrollment(input: {
       reason: "Keeplore reconciliation evidence contradicts the live inspection",
     };
   }
+  const undeclaredSharedPaths = keeploreSharedPaths.filter(
+    (path) => !input.inspection.sharedPaths.includes(path),
+  );
+  if (undeclaredSharedPaths.length > 0) {
+    return {
+      decision: "deny",
+      reason: `Keeplore shared state is undeclared: ${undeclaredSharedPaths.join(", ")}`,
+    };
+  }
+  if (
+    input.inspection.documentRoots.api === input.inspection.liveCheckoutPath ||
+    input.inspection.documentRoots.ui === input.inspection.liveCheckoutPath
+  ) {
+    return {
+      decision: "deny",
+      reason: "Keeplore document roots must name the served subdirectories",
+    };
+  }
   if (
     input.reconciliation.outcome === "preserved-on-branch" &&
     input.reconciliation.preservedRef === undefined
@@ -109,6 +140,7 @@ export function createKeeploreRegistration(input: {
       liveCheckoutPath: input.inspection.liveCheckoutPath,
       releaseRoot: keeploreReleaseRoot,
       retainedReleases: keeploreRetainedReleases,
+      sharedRoot: keeploreSharedRoot,
       sourceMirrorPath: keeploreSourceMirrorPath,
     },
     permittedSubagentProvider: "codex",

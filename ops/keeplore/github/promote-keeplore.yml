@@ -1,4 +1,5 @@
-# Install as .github/workflows/promote-keeplore.yml in JacobStephens2/keeplore.
+# Install as .github/workflows/promote-keeplore.yml in
+# JacobStephens2/artifact-manager (the repository that holds Keeplore).
 #
 # A Human Merge into main authenticates itself, then enqueues the exact merge
 # commit on the Agent Host. Promotion is serialized and idempotent there, so a

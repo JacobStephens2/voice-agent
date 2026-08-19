@@ -14,11 +14,12 @@ on the Agent Host.
 ## Live Checkout Inspection before anything else
 
 `ops/keeplore/inspect-keeplore.sh` inspects the live checkout through Git
-plumbing that only reads: `rev-parse HEAD`, `rev-parse --abbrev-ref HEAD`,
+plumbing that only reads, under `--no-optional-locks` so it takes no lock and
+writes no index: `rev-parse HEAD`, `rev-parse --abbrev-ref HEAD`,
 `remote get-url origin`, and `status --porcelain`. It never fetches, checks out,
 stashes, resets, or writes. It reports the repository, production branch, head
-commit, uncommitted path count, serving unit, health status, Release root, and
-active Release, and exits non-zero while the working tree is dirty.
+commit, uncommitted path count, document roots, shared state, health status,
+Release root, and active Release, and exits non-zero while the tree is dirty.
 
 The same inspection runs inside the API through
 `createNodeKeeploreLiveInspector`, so the PWA shows the owner exactly what the
@@ -31,14 +32,15 @@ stashing deliberately. Automation never resolves it.
 
 A Fresh Passkey Action enrolls `keeplore-production` with fixed boundaries:
 
-- repository `JacobStephens2/keeplore` and production branch `main`;
+- repository `JacobStephens2/artifact-manager` — Keeplore is the product, that
+  repository holds it — and production branch `main`;
 - a source-file read scope that excludes environment and secret files;
 - worktree root `/var/lib/voice-agent-worktrees/keeplore`;
 - permitted Subagent provider `codex`;
 - verification check `keeplore-verification` running the declared command;
-- deployment boundaries: live checkout, Release root `/opt/keeplore/releases`,
-  source mirror `/var/lib/keeplore-source/repository.git`, and two retained
-  Releases.
+- deployment boundaries: live checkout `/var/www/keeplore.app`, Release root
+  `/opt/keeplore/releases`, shared root `/opt/keeplore/shared`, source mirror
+  `/var/lib/keeplore-source/repository.git`, and two retained Releases.
 
 Voice, repository content, and an ordinary Trusted Browser Session are all
 refused. The browser sends only a CSRF token and the reconciliation record; it
@@ -59,7 +61,8 @@ changed together.
 ## Least-privilege GitHub App
 
 `assessKeeploreGitHubAppInstallation` accepts exactly `contents: write`,
-`pull_requests: write`, and `checks: read` on `JacobStephens2/keeplore` alone.
+`pull_requests: write`, and `checks: read` on `JacobStephens2/artifact-manager`
+alone.
 Any additional permission, any `admin` level, any administration scope, and any
 unregistered repository is a violation. The App holds no ruleset bypass.
 
@@ -90,11 +93,14 @@ recorded as processed only after it promotes, so a rolled-back merge stays
 visible instead of looking complete.
 
 `install-keeplore-release.sh` builds `/opt/keeplore/releases/<commit>` from the
-root-owned mirror — never from the live checkout — and makes it read-only.
+root-owned mirror — never from the live checkout — links the shared runtime
+state into it, and makes the Release read-only. It refuses to build when any
+declared shared path is missing, so a Release can never serve without its
+database credentials.
 `promote-keeplore-release.sh` runs the preflight the registration declares in
 `KEEPLORE_PREFLIGHT_COMMAND` — when it declares none, CI's required
 `keeplore-verification` check is the verification of record — then switches
-`/opt/keeplore/current` atomically, restarts the registered unit, and applies the
+`/opt/keeplore/current` atomically, reloads Apache gracefully, and applies the
 declared health semantics. When verification fails it restores the retained Release and records both the
 attempted and restored states in `/var/lib/keeplore-promotions/attempts.jsonl`.
 `prune-keeplore-releases.sh` keeps the active Release plus the retention the

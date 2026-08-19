@@ -2,6 +2,11 @@
 #
 # Build an immutable Keeplore Release outside the live checkout from the
 # root-owned source mirror. The live working tree is never used as a build root.
+#
+# Keeplore is PHP served from files, so a Release is linted rather than built,
+# and its gitignored runtime state — database credentials, private dependencies,
+# backups, logs — is linked in from the shared root. A Release therefore holds
+# no secrets and a Promotion never orphans live state.
 
 set -euo pipefail
 
@@ -38,6 +43,14 @@ if ! "${git_repository[@]}" merge-base --is-ancestor \
   exit 1
 fi
 
+for shared_entry in ${keeplore_shared_paths//,/ }; do
+  if [[ ! -e "$keeplore_shared_root/$shared_entry" ]]; then
+    printf 'Shared Keeplore state %s is missing from %s.\n' \
+      "$shared_entry" "$keeplore_shared_root" >&2
+    exit 1
+  fi
+done
+
 getent group keeplore-builder >/dev/null || groupadd --system keeplore-builder
 id -u keeplore-builder >/dev/null 2>&1 || useradd \
   --system --gid keeplore-builder --home-dir /var/lib/keeplore-builder \
@@ -63,8 +76,13 @@ runuser --user keeplore-builder -- env -i \
   PATH=/usr/local/bin:/usr/bin:/bin \
   /bin/bash -c "cd \"\$1\" && $keeplore_build_command" \
   keeplore-builder-build "$staging"
+for shared_entry in ${keeplore_shared_paths//,/ }; do
+  rm -rf -- "${staging:?}/$shared_entry"
+  install -d -o root -g root -m 0755 "$(dirname "$staging/$shared_entry")"
+  ln -sfn "$keeplore_shared_root/$shared_entry" "$staging/$shared_entry"
+done
 printf '%s\n' "$commit" > "$staging/.keeplore-release"
-chown -R root:root "$staging"
+chown -R --no-dereference root:root "$staging"
 chmod -R a-w "$staging"
 chmod -R a+rX "$staging"
 mv "$staging" "$release"

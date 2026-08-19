@@ -184,11 +184,11 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=12
+TOTAL_STAGES=14
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 KEEPLORE_TOOLS=/usr/local/libexec/keeplore
 KEEPLORE_CONFIGURATION=/etc/voice-agent/keeplore.conf
-KEEPLORE_REPOSITORY=JacobStephens2/keeplore
+KEEPLORE_REPOSITORY=JacobStephens2/artifact-manager
 PWA_URL=https://voice.stephens.page
 MERGE_COMMIT=""
 
@@ -216,21 +216,21 @@ banner "Keeplore onboarding with a harmless Human Merge"
 
 stage "Register the Keeplore deployment boundaries"
 say "Promotion reads a root-owned registration; nothing in a repository can widen it."
-LIVE_CHECKOUT=$(read_configuration_value KEEPLORE_LIVE_CHECKOUT)
-ask LIVE_CHECKOUT "Absolute path of the live Keeplore checkout [/var/www/keeplore]"
-LIVE_CHECKOUT=${LIVE_CHECKOUT:-/var/www/keeplore}
-ask HEALTH_URL "Local Keeplore health URL [http://127.0.0.1:3001/api/health]"
-HEALTH_URL=${HEALTH_URL:-http://127.0.0.1:3001/api/health}
-ask PUBLIC_HEALTH_URL "Public Keeplore health URL (blank to skip)"
-ask SERVICE_UNIT "Keeplore systemd unit [keeplore-api.service]"
-SERVICE_UNIT=${SERVICE_UNIT:-keeplore-api.service}
-ask BUILD_COMMAND "Keeplore build command [npm ci && npm run build]"
-BUILD_COMMAND=${BUILD_COMMAND:-npm ci && npm run build}
-ask VERIFICATION_COMMAND "Declared Keeplore verification command [npm test]"
-VERIFICATION_COMMAND=${VERIFICATION_COMMAND:-npm test}
-ask PREFLIGHT_COMMAND "Release preflight command on the Agent Host (blank to rely on CI)"
-ask SERVING_PATH "Path Keeplore serves from [$LIVE_CHECKOUT/public]"
-SERVING_PATH=${SERVING_PATH:-$LIVE_CHECKOUT/public}
+say "Keeplore is PHP served from files by Apache, so a Release is linted rather than built."
+ask LIVE_CHECKOUT "Absolute path of the live Keeplore checkout [/var/www/keeplore.app]"
+LIVE_CHECKOUT=${LIVE_CHECKOUT:-/var/www/keeplore.app}
+ask HEALTH_URL "Keeplore health URL [https://api.keeplore.app/api/health]"
+HEALTH_URL=${HEALTH_URL:-https://api.keeplore.app/api/health}
+ask PUBLIC_HEALTH_URL "Second health URL to verify (blank to skip)"
+ask VERIFICATION_COMMAND "Declared Keeplore verification command [vendor/bin/phpunit]"
+VERIFICATION_COMMAND=${VERIFICATION_COMMAND:-vendor/bin/phpunit}
+LINT_COMMAND="find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -r -n1 php -l"
+BUILD_COMMAND=$LINT_COMMAND
+PREFLIGHT_COMMAND=$LINT_COMMAND
+DOCUMENT_ROOT_UI=$LIVE_CHECKOUT/ui
+DOCUMENT_ROOT_API=$LIVE_CHECKOUT/api
+SHARED_ROOT=/opt/keeplore/shared
+SHARED_PATHS=private/environment_variables.php,private/vendor,database/backups,logs
 sudo install -d -o root -g root -m 0755 /etc/voice-agent "$KEEPLORE_TOOLS"
 sudo tee "$KEEPLORE_CONFIGURATION" >/dev/null <<CONFIGURATION
 KEEPLORE_REPOSITORY=$KEEPLORE_REPOSITORY
@@ -238,20 +238,24 @@ KEEPLORE_LIVE_CHECKOUT=$LIVE_CHECKOUT
 KEEPLORE_RELEASE_ROOT=/opt/keeplore/releases
 KEEPLORE_CURRENT_LINK=/opt/keeplore/current
 KEEPLORE_SOURCE_MIRROR=/var/lib/keeplore-source/repository.git
-KEEPLORE_SERVICE_UNIT=$SERVICE_UNIT
+KEEPLORE_DOCUMENT_ROOT_UI=$DOCUMENT_ROOT_UI
+KEEPLORE_DOCUMENT_ROOT_API=$DOCUMENT_ROOT_API
+KEEPLORE_SHARED_ROOT=$SHARED_ROOT
+KEEPLORE_SHARED_PATHS=$SHARED_PATHS
+KEEPLORE_RELOAD_COMMAND=/usr/sbin/apache2ctl graceful
 KEEPLORE_HEALTH_URL=$HEALTH_URL
 KEEPLORE_PUBLIC_HEALTH_URL=$PUBLIC_HEALTH_URL
 KEEPLORE_RETAINED_RELEASES=2
 KEEPLORE_BUILD_COMMAND=$BUILD_COMMAND
 KEEPLORE_VERIFICATION_COMMAND=$VERIFICATION_COMMAND
 KEEPLORE_PREFLIGHT_COMMAND=$PREFLIGHT_COMMAND
-KEEPLORE_SERVING_PATH=$SERVING_PATH
 CONFIGURATION
 sudo chown root:root "$KEEPLORE_CONFIGURATION"
 sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
 for script in keeplore-config.sh inspect-keeplore.sh install-keeplore-release.sh \
   keeplore-health.sh promote-keeplore-main.sh promote-keeplore-release.sh \
-  prune-keeplore-releases.sh reconcile-keeplore-merges.sh; do
+  prune-keeplore-releases.sh reconcile-keeplore-merges.sh \
+  repoint-keeplore-vhosts.sh; do
   sudo install -o root -g root -m 0755 \
     "$REPOSITORY_ROOT/ops/keeplore/$script" "$KEEPLORE_TOOLS/$script"
 done
@@ -275,6 +279,29 @@ while ! sudo "$KEEPLORE_TOOLS/inspect-keeplore.sh" >/dev/null 2>&1; do
   pause "Press Enter to re-inspect after reconciling the live working tree."
 done
 note "The live Keeplore working tree is reconciled and preserved."
+
+stage "Move Keeplore's runtime state into the shared root"
+say "A Release is built from Git, so it carries no database credentials, private dependencies, backups, or logs."
+say "Those live in the shared root and are linked into every Release, which also keeps secrets out of Releases."
+sudo install -d -o root -g root -m 0755 "$SHARED_ROOT"
+for entry in ${SHARED_PATHS//,/ }; do
+  source_path="$LIVE_CHECKOUT/$entry"
+  target_path="$SHARED_ROOT/$entry"
+  if sudo test -e "$target_path"; then
+    note "Shared state already holds $entry"
+    continue
+  fi
+  if ! sudo test -e "$source_path"; then
+    warn "The live checkout has no $entry; create it in $SHARED_ROOT before promoting."
+    SKIPPED+=("Shared Keeplore state $entry")
+    continue
+  fi
+  sudo install -d -o root -g root -m 0755 "$(dirname "$target_path")"
+  sudo cp -a "$source_path" "$target_path"
+  note "Copied $entry into the shared root (the live checkout keeps its copy)."
+done
+sudo ls -la "$SHARED_ROOT" | head -8
+confirm "Does the shared root hold Keeplore's credentials, private dependencies, backups, and logs?" || exit 1
 
 stage "Enroll Keeplore with a Fresh Passkey Action"
 open_url "$PWA_URL"
@@ -350,7 +377,7 @@ while true; do
     active=$(basename "$(readlink -f /opt/keeplore/current)")
   fi
   if [[ $active == "$MERGE_COMMIT" ]]; then
-    note "Keeplore serves immutable Release $active."
+    note "Keeplore holds immutable Release $active."
     break
   fi
   note "Active Keeplore Release is $active. Waiting for $MERGE_COMMIT."
@@ -361,6 +388,15 @@ done
 sudo "$KEEPLORE_TOOLS/keeplore-health.sh"
 retained=$(sudo find /opt/keeplore/releases -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 note "Keeplore retains $retained Release(s) for rollback."
+
+stage "Serve Keeplore from the active Release"
+say "Apache still serves the live checkout, so no Promotion is real yet."
+say "This repoints keeplore.app and api.keeplore.app at $SHARED_ROOT's sibling /opt/keeplore/current."
+step "The previous vhost files are backed up and restored automatically if configtest, the reload, or health fails."
+confirm "Cut Keeplore over to the released document roots now?" || exit 1
+sudo "$KEEPLORE_TOOLS/repoint-keeplore-vhosts.sh"
+sudo "$KEEPLORE_TOOLS/keeplore-health.sh"
+note "Keeplore is served from the active Release."
 
 stage "Prove rollback with a controlled failed verification"
 say "The drill promotes the retained Release as a candidate whose verification is forced to fail."

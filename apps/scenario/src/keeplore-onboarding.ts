@@ -36,6 +36,8 @@ import type {
 
 const contractActivationSessionToken = "keeplore-fresh-passkey-session";
 const trustedSessionToken = "trusted";
+export const keeploreReleaseLintCommand =
+  "find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -r -n1 php -l";
 const onboardingQuestion = "Onboard Keeplore with a harmless Human Merge." as const;
 
 export interface KeeploreOnboardingDeliveryResult {
@@ -117,11 +119,12 @@ export async function createKeeploreOnboardingScenario(
   });
   const codebase: PromotionCodebase = {
     applicationId: keeploreApplicationId,
-    buildCommand: "npm ci && npm run build",
+    // Keeplore is PHP served from files: a Release is linted, not built.
+    buildCommand: keeploreReleaseLintCommand,
     health: { expectedStatus: 200, path: "/api/health" },
     initialProductionCommit: options.inspection.headCommit,
     liveCheckoutPath: options.inspection.liveCheckoutPath,
-    preflightCommand: options.inspection.verificationCommands[0] ?? "npm test",
+    preflightCommand: keeploreReleaseLintCommand,
     productionBranch: options.inspection.productionBranch,
     releaseRoot: keeploreReleaseRoot,
     repository: options.inspection.repository,

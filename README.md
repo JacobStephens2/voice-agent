@@ -103,8 +103,10 @@ Run the attended Keeplore onboarding wizard on the Agent Host:
 ./ops/acceptance/run-keeplore-onboarding.sh
 ```
 
-It revalidates the live Keeplore checkout read-only, waits for you to reconcile
-and preserve any uncommitted work, walks the Fresh Passkey enrollment,
+It inspects the live Keeplore checkout read-only, waits for you to reconcile and
+preserve any uncommitted work, moves Keeplore's credentials and other runtime
+state into a shared root, cuts its Apache document roots over to the active
+Release, walks the Fresh Passkey enrollment,
 production-branch rules, minimal CI, the least-privilege GitHub App, and the
 Deployment Contract, then promotes one harmless Human Merge, proves rollback
 with a controlled failed verification, confirms reconciliation is idempotent,

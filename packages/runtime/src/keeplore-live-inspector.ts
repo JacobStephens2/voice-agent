@@ -16,17 +16,21 @@ const run = promisify(execFile);
  * observed rather than touched.
  */
 export function createNodeKeeploreLiveInspector(options: {
+  readonly documentRoots: { readonly api: string; readonly ui: string };
   readonly liveCheckoutPath: string;
   readonly now: () => string;
-  readonly serviceUnit: "keeplore-api.service";
-  readonly servingPath: string;
+  readonly sharedPaths: readonly string[];
   readonly verificationCommands: readonly string[];
 }): KeeploreLiveInspector {
   async function git(...args: readonly string[]): Promise<string> {
-    const { stdout } = await run("git", ["-C", options.liveCheckoutPath, ...args], {
-      encoding: "utf8",
-      maxBuffer: 1_000_000,
-    });
+    const { stdout } = await run(
+      "git",
+      ["--no-optional-locks", "-C", options.liveCheckoutPath, ...args],
+      {
+        encoding: "utf8",
+        maxBuffer: 1_000_000,
+      },
+    );
     return stdout.trim();
   }
 
@@ -49,13 +53,14 @@ export function createNodeKeeploreLiveInspector(options: {
         .slice(0, 200);
       return keeploreLiveInspectionSchema.parse({
         accessMode: "read-only",
+        documentRoots: options.documentRoots,
         headCommit,
         inspectedAt: options.now(),
         liveCheckoutPath: options.liveCheckoutPath,
         productionBranch: "main",
-        repository: "JacobStephens2/keeplore",
-        servingPath: options.servingPath,
-        serviceUnit: options.serviceUnit,
+        repository: "JacobStephens2/artifact-manager",
+        servingEdge: "apache",
+        sharedPaths: [...options.sharedPaths],
         uncommittedPaths,
         verificationCommands: [...options.verificationCommands],
       });
