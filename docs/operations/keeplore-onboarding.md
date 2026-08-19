@@ -32,8 +32,7 @@ stashing deliberately. Automation never resolves it.
 
 A Fresh Passkey Action enrolls `keeplore-production` with fixed boundaries:
 
-- repository `JacobStephens2/artifact-manager` — Keeplore is the product, that
-  repository holds it — and production branch `main`;
+- repository `JacobStephens2/keeplore` and production branch `main`;
 - a source-file read scope that excludes environment and secret files;
 - worktree root `/var/lib/voice-agent-worktrees/keeplore`;
 - permitted Subagent provider `codex`;
@@ -61,8 +60,7 @@ changed together.
 ## Least-privilege GitHub App
 
 `assessKeeploreGitHubAppInstallation` accepts exactly `contents: write`,
-`pull_requests: write`, and `checks: read` on `JacobStephens2/artifact-manager`
-alone.
+`pull_requests: write`, and `checks: read` on `JacobStephens2/keeplore` alone.
 Any additional permission, any `admin` level, any administration scope, and any
 unregistered repository is a violation. The App holds no ruleset bypass.
 

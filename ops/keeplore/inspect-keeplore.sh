@@ -24,6 +24,7 @@ health_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
 
 printf 'repository\t%s\n' "$keeplore_repository"
 printf 'remote\t%s\n' "$remote"
+printf 'remoteRepository\t%s\n' "$(sed -E 's#(\.git)?$##; s#.*[:/]([^/]+/[^/]+)$#\1#' <<<"$remote")"
 printf 'liveCheckout\t%s\n' "$keeplore_live_checkout"
 printf 'productionBranch\t%s\n' "$branch"
 printf 'headCommit\t%s\n' "$head_commit"
@@ -43,8 +44,16 @@ if [[ $branch != main ]]; then
     "$branch" >&2
   exit 1
 fi
-if [[ $remote != *"$keeplore_repository"* ]]; then
-  printf 'The live checkout does not track the registered repository.\n' >&2
+remote_repository=${remote%.git}
+remote_repository=${remote_repository##*[:/]}
+remote_owner=${remote%.git}
+remote_owner=${remote_owner%/*}
+remote_owner=${remote_owner##*[:/]}
+if [[ "$remote_owner/$remote_repository" != "$keeplore_repository" ]]; then
+  printf 'The live checkout tracks %s, not the registered %s.\n' \
+    "$remote_owner/$remote_repository" "$keeplore_repository" >&2
+  printf 'If the repository was renamed, repoint it: git -C %s remote set-url origin https://github.com/%s.git\n' \
+    "$keeplore_live_checkout" "$keeplore_repository" >&2
   exit 1
 fi
 if [[ $uncommitted -ne 0 ]]; then

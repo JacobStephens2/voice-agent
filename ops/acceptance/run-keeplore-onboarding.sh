@@ -188,7 +188,7 @@ TOTAL_STAGES=14
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 KEEPLORE_TOOLS=/usr/local/libexec/keeplore
 KEEPLORE_CONFIGURATION=/etc/voice-agent/keeplore.conf
-KEEPLORE_REPOSITORY=JacobStephens2/artifact-manager
+KEEPLORE_REPOSITORY=JacobStephens2/keeplore
 PWA_URL=https://voice.stephens.page
 MERGE_COMMIT=""
 

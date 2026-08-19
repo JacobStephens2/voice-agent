@@ -10,6 +10,12 @@ import type { KeeploreLiveInspector } from "./keeplore-onboarding.ts";
 
 const run = promisify(execFile);
 
+/** `https://github.com/owner/name.git` and `git@github.com:owner/name.git` alike. */
+function readRepositoryFromRemote(remoteUrl: string): string {
+  const match = /(?:[/:])([^/:]+\/[^/]+?)(?:\.git)?$/u.exec(remoteUrl.trim());
+  return match?.[1] ?? remoteUrl.trim();
+}
+
 /**
  * Revalidates the live Keeplore checkout with read-only Git plumbing. It never
  * fetches, checks out, stashes, or writes, so the owner's uncommitted work is
@@ -36,9 +42,10 @@ export function createNodeKeeploreLiveInspector(options: {
 
   return {
     async inspect(): Promise<KeeploreLiveInspection> {
-      const [headCommit, branch, status] = await Promise.all([
+      const [headCommit, branch, remoteUrl, status] = await Promise.all([
         git("rev-parse", "HEAD"),
         git("rev-parse", "--abbrev-ref", "HEAD"),
+        git("remote", "get-url", "origin"),
         git("status", "--porcelain"),
       ]);
       if (branch !== "main") {
@@ -58,7 +65,8 @@ export function createNodeKeeploreLiveInspector(options: {
         inspectedAt: options.now(),
         liveCheckoutPath: options.liveCheckoutPath,
         productionBranch: "main",
-        repository: "JacobStephens2/artifact-manager",
+        remoteRepository: readRepositoryFromRemote(remoteUrl),
+        repository: "JacobStephens2/keeplore",
         servingEdge: "apache",
         sharedPaths: [...options.sharedPaths],
         uncommittedPaths,

@@ -1,5 +1,4 @@
-# Install as .github/workflows/keeplore-verification.yml in
-# JacobStephens2/artifact-manager (the repository that holds Keeplore).
+# Install as .github/workflows/keeplore-verification.yml in JacobStephens2/keeplore.
 #
 # The `keeplore-verification` job name is the required GitHub check named by the
 # Keeplore Registered Codebase, so production-branch rules can require it.

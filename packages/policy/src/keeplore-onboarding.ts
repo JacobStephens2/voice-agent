@@ -1,5 +1,6 @@
 import {
   keeploreApplicationId,
+  keeploreFormerRepository,
   keeploreProductionBranch,
   keeploreRegistrationSchema,
   keeploreRepository,
@@ -82,6 +83,15 @@ export function authorizeKeeploreEnrollment(input: {
     return {
       decision: "deny",
       reason: "Keeplore reconciliation evidence contradicts the live inspection",
+    };
+  }
+  if (input.inspection.remoteRepository !== keeploreRepository) {
+    return {
+      decision: "deny",
+      reason:
+        input.inspection.remoteRepository === keeploreFormerRepository
+          ? `The live checkout still names ${keeploreFormerRepository}; repoint its origin at ${keeploreRepository}`
+          : `The live checkout tracks ${input.inspection.remoteRepository}, not ${keeploreRepository}`,
     };
   }
   const undeclaredSharedPaths = keeploreSharedPaths.filter(
