@@ -2,7 +2,7 @@
 
 A personal, voice-first assistant for discussing codebases, operating Linux services, and delegating deeper work to coding agents while away from a keyboard.
 
-> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake and conversational health answer over Telnyx and LiveKit, read-only Operations Broker, and hardened Agent Host release path are implemented. Real PSTN verification remains part of attended deployment acceptance.
+> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake and conversational health answer over Telnyx and LiveKit, read-only Operations Broker, hardened Agent Host release path, and Keeplore onboarding with Human Merge Promotion are implemented. Real PSTN verification and the attended Keeplore onboarding remain part of attended deployment acceptance.
 
 The intended experience begins with a telephone call. The Voice Agent calls back to authenticate the session, carries on a natural conversation, performs narrowly authorized operations, and delegates substantial code investigation or changes to restricted Subagents such as Codex or Claude Code. A PWA provides passkey-protected controls and a visual Evidence Record for every Durable Task.
 
@@ -96,6 +96,20 @@ The wizard waits for Human Merge and Promotion of PR #45, installs the narrow
 the independent recovery timer, starts the guarded drill while the owner is
 available, and prints a close comment for issue #11. It does not close the
 issue.
+
+Run the attended Keeplore onboarding wizard on the Agent Host:
+
+```bash
+./ops/acceptance/run-keeplore-onboarding.sh
+```
+
+It revalidates the live Keeplore checkout read-only, waits for you to reconcile
+and preserve any uncommitted work, walks the Fresh Passkey enrollment,
+production-branch rules, minimal CI, the least-privilege GitHub App, and the
+Deployment Contract, then promotes one harmless Human Merge, proves rollback
+with a controlled failed verification, confirms reconciliation is idempotent,
+and prints a close comment for issue #12. See
+[`docs/operations/keeplore-onboarding.md`](docs/operations/keeplore-onboarding.md).
 
 The CI-ready verification commands are:
 

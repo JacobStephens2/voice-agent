@@ -7,6 +7,7 @@ import {
   createSqliteAuthenticationStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteKeeploreOnboardingStore,
   createSqliteTelephoneBoundaryStore,
   createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
@@ -25,6 +26,9 @@ import { createVoiceApi } from "./index.ts";
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createKeeploreOnboardingControls,
+  createNodeKeeploreLiveInspector,
+  readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
@@ -93,6 +97,33 @@ const continuityRuntime = createTaskContinuityRuntime({
   store: createSqliteTaskContinuityStore(databasePath),
   tasks: taskStore,
 });
+const keeploreOnboardingStore = createSqliteKeeploreOnboardingStore(databasePath);
+// The Keeplore boundaries come from the root-owned registration this process
+// cannot write, never from its own environment (ADR-0011). Until that
+// registration exists, the Keeplore surface is simply absent.
+const keeploreControls = createKeeploreControls();
+
+function createKeeploreControls() {
+  let registration;
+  try {
+    registration = readKeeploreRegistrationFile(
+      process.env.VOICE_AGENT_KEEPLORE_REGISTRATION_PATH,
+    );
+  } catch {
+    return undefined;
+  }
+  return createKeeploreOnboardingControls({
+    inspector: createNodeKeeploreLiveInspector({
+      liveCheckoutPath: registration.liveCheckoutPath,
+      now: () => new Date().toISOString(),
+      serviceUnit: "keeplore-api.service",
+      servingPath: registration.servingPath,
+      verificationCommands: registration.verificationCommands,
+    }),
+    now: () => new Date().toISOString(),
+    store: keeploreOnboardingStore,
+  });
+}
 const authentication = createAuthenticationLifecycle({
   now: () => new Date().toISOString(),
   ownerUserId: process.env.VOICE_AGENT_OWNER_ID ?? "personal-owner",
@@ -142,6 +173,7 @@ const api = createVoiceApi({
   },
   completionControls: continuityRuntime,
   controls: runtime,
+  ...(keeploreControls === undefined ? {} : { keeploreControls }),
   origin,
   promotionControl: {
     requestResume: () => requestPromotionResume(
@@ -196,6 +228,7 @@ const shutdown = async () => {
   await callbackRuntime.close();
   await continuityRuntime.close();
   await runtime.close();
+  keeploreOnboardingStore.close();
 };
 process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());

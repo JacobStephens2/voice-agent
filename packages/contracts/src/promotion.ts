@@ -5,6 +5,13 @@ const promotionTextSchema = z.string().min(1).max(500);
 const promotionPathSchema = z.string().min(1).max(500).startsWith("/");
 const promotionCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 const promotionTimestampSchema = z.iso.datetime();
+const promotionApplicationIdSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]{2,60}$/u);
+const promotionRepositorySchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);
+const promotionBranchSchema = z.string().min(1).max(120);
 
 export const fixtureGitHubEventSchema = z
   .object({
@@ -26,23 +33,25 @@ export const fixtureGitHubEventSchema = z
   })
   .strict();
 
-export const fixtureCodebaseRegistrationSchema = z
+export const registeredCodebaseSchema = z
   .object({
-    applicationId: z.literal("fixture-production"),
+    applicationId: promotionApplicationIdSchema,
     initialProductionCommit: promotionCommitSchema,
     liveCheckoutPath: promotionPathSchema,
-    productionBranch: z.literal("main"),
+    productionBranch: promotionBranchSchema,
     registeredAt: promotionTimestampSchema,
-    repository: z.literal("JacobStephens2/fixture-application"),
+    repository: promotionRepositorySchema,
     sourceCheckoutRoot: promotionPathSchema,
   })
   .strict();
 
-export const fixtureDeploymentContractSchema = z
+export const fixtureCodebaseRegistrationSchema = registeredCodebaseSchema;
+
+export const deploymentContractSchema = z
   .object({
     activatedAt: promotionTimestampSchema,
     activatedBy: z.literal("fresh-passkey-action"),
-    applicationId: z.literal("fixture-production"),
+    applicationId: promotionApplicationIdSchema,
     buildCommand: promotionTextSchema,
     health: z
       .object({
@@ -56,6 +65,8 @@ export const fixtureDeploymentContractSchema = z
     source: z.literal("voice-agent-policy"),
   })
   .strict();
+
+export const fixtureDeploymentContractSchema = deploymentContractSchema;
 
 export const promotionAttemptStatusSchema = z.enum([
   "queued",
@@ -209,12 +220,10 @@ export const promotionOperationProjectionSchema = z
   .strict();
 
 export type FixtureGitHubEvent = z.infer<typeof fixtureGitHubEventSchema>;
-export type FixtureCodebaseRegistration = z.infer<
-  typeof fixtureCodebaseRegistrationSchema
->;
-export type FixtureDeploymentContract = z.infer<
-  typeof fixtureDeploymentContractSchema
->;
+export type RegisteredCodebase = z.infer<typeof registeredCodebaseSchema>;
+export type FixtureCodebaseRegistration = RegisteredCodebase;
+export type DeploymentContract = z.infer<typeof deploymentContractSchema>;
+export type FixtureDeploymentContract = DeploymentContract;
 export type PromotionAttemptStatus = z.infer<
   typeof promotionAttemptStatusSchema
 >;

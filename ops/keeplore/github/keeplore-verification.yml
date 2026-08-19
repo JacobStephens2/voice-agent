@@ -1,0 +1,38 @@
+# Install as .github/workflows/keeplore-verification.yml in JacobStephens2/keeplore.
+#
+# The `keeplore-verification` job name is the required GitHub check named by the
+# Keeplore Registered Codebase, so production-branch rules can require it.
+#
+# The run step below must be the verification command declared in the Keeplore
+# registration (KEEPLORE_VERIFICATION_COMMAND in /etc/voice-agent/keeplore.conf).
+# Change both together, never one alone.
+
+name: Keeplore verification
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  keeplore-verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run the declared Keeplore verification
+        run: npm test

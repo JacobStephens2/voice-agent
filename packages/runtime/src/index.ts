@@ -393,3 +393,8 @@ function requireEventId(ids: readonly string[], index: number): string {
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
+
+export * from "./keeplore-onboarding.ts";
+
+export * from "./keeplore-live-inspector.ts";
+export * from "./keeplore-registration-file.ts";

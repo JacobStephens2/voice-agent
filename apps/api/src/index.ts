@@ -35,6 +35,12 @@ import {
   recoveryRequestSchema,
   recoverySessionResponseSchema,
   registerBountywellRequestSchema,
+  activateKeeploreDeploymentContractRequestSchema,
+  enrollKeeploreRequestSchema,
+  keeploreDeploymentContractSchema,
+  keeploreLiveInspectionSchema,
+  keeploreRegistrationSchema,
+  keeploreRegistrationStatusSchema,
   grantBountywellRestartRequestSchema,
   armBountywellRecoveryTimerRequestSchema,
   injectBountywellOutageRequestSchema,
@@ -52,6 +58,10 @@ import {
   type BountywellRecoveryTimer,
   type BountywellRecoveryTimerProof,
   type BountywellRegistration,
+  type KeeploreDeploymentContract,
+  type KeeploreLiveInspection,
+  type KeeploreRegistration,
+  type KeeploreWorkingTreeReconciliation,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
   type RegisteredTelephone,
@@ -149,6 +159,38 @@ export interface BountywellTaskControls {
   }): Promise<EvidenceRecordProjection>;
 }
 
+/** The Keeplore onboarding surface; every state change requires a Fresh Passkey Action. */
+export interface KeeploreOnboardingApiControls {
+  activateKeeploreDeploymentContract(input: {
+    readonly buildCommand: string;
+    readonly health: KeeploreDeploymentContract["health"];
+    readonly preflightCommand: string;
+    readonly releaseRoot: string;
+    readonly retainedReleases: number;
+    readonly revision: number;
+    readonly source: "fresh-passkey-action";
+  }): Promise<
+    | { readonly decision: "denied"; readonly reason: string }
+    | {
+        readonly contract: KeeploreDeploymentContract;
+        readonly decision: "activated";
+      }
+  >;
+  enrollKeeplore(input: {
+    readonly reconciliation: KeeploreWorkingTreeReconciliation;
+    readonly source: "fresh-passkey-action";
+  }): Promise<
+    | { readonly decision: "denied"; readonly reason: string }
+    | {
+        readonly decision: "enrolled";
+        readonly registration: KeeploreRegistration;
+      }
+  >;
+  getKeeploreActiveContract(): Promise<KeeploreDeploymentContract | undefined>;
+  getKeeploreRegistration(): Promise<KeeploreRegistration | undefined>;
+  inspectKeeploreLiveCheckout(): Promise<KeeploreLiveInspection>;
+}
+
 export interface TelephoneControls {
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
   registerTelephone(input: RegisteredTelephoneInput): Promise<RegisteredTelephone>;
@@ -192,6 +234,7 @@ export interface TaskApiOptions {
   readonly boundaryControls?: TelephoneBoundaryControls | undefined;
   readonly controls?: BountywellTaskControls;
   readonly completionControls?: CompletionControls | undefined;
+  readonly keeploreControls?: KeeploreOnboardingApiControls | undefined;
   readonly origin?: string;
   readonly promotionControl?: {
     requestResume(): Promise<string>;
@@ -206,6 +249,7 @@ export interface VoiceApiOptions {
   readonly boundaryControls?: TelephoneBoundaryControls | undefined;
   readonly controls?: BountywellTaskControls;
   readonly completionControls?: CompletionControls | undefined;
+  readonly keeploreControls?: KeeploreOnboardingApiControls | undefined;
   readonly origin: string;
   readonly promotionControl?: {
     requestResume(): Promise<string>;
@@ -343,6 +387,14 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       records: options.records,
     });
   }
+  if (options.keeploreControls !== undefined && options.origin !== undefined) {
+    registerKeeploreOnboardingRoutes(api, {
+      authentication: options.authentication,
+      controls: options.keeploreControls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
   if (options.promotionControl !== undefined && options.origin !== undefined) {
     registerPromotionControlRoute(api, {
       authentication: options.authentication,
@@ -376,6 +428,86 @@ function createApi(options: TaskApiOptions): FastifyInstance {
     });
   }
   return api;
+}
+
+function registerKeeploreOnboardingRoutes(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: KeeploreOnboardingApiControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.get("/api/applications/keeplore", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return keeploreRegistrationStatusSchema.parse({
+      registration: (await options.controls.getKeeploreRegistration()) ?? null,
+    });
+  });
+
+  api.get("/api/applications/keeplore/live-inspection", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return keeploreLiveInspectionSchema.parse(
+      await options.controls.inspectKeeploreLiveCheckout(),
+    );
+  });
+
+  api.post("/api/applications/keeplore/registration", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = enrollKeeploreRequestSchema.parse(request.body);
+    const sessionToken = await authorizeFreshAction(
+      request,
+      reply,
+      options,
+      body.csrfToken,
+    );
+    if (sessionToken === undefined) return;
+    const enrolled = await options.controls.enrollKeeplore({
+      reconciliation: body.reconciliation,
+      source: "fresh-passkey-action",
+    });
+    if (enrolled.decision !== "enrolled") {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: enrolled.reason });
+    }
+    return keeploreRegistrationSchema.parse(enrolled.registration);
+  });
+
+  api.post(
+    "/api/applications/keeplore/deployment-contract",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = activateKeeploreDeploymentContractRequestSchema.parse(
+        request.body,
+      );
+      const sessionToken = await authorizeFreshAction(
+        request,
+        reply,
+        options,
+        body.csrfToken,
+      );
+      if (sessionToken === undefined) return;
+      const activated = await options.controls.activateKeeploreDeploymentContract({
+        buildCommand: body.buildCommand,
+        health: body.health,
+        preflightCommand: body.preflightCommand,
+        releaseRoot: body.releaseRoot,
+        retainedReleases: body.retainedReleases,
+        revision: body.revision,
+        source: "fresh-passkey-action",
+      });
+      if (activated.decision !== "activated") {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(403).send({ error: activated.reason });
+      }
+      return keeploreDeploymentContractSchema.parse(activated.contract);
+    },
+  );
 }
 
 function registerTelephoneBoundaryRoutes(
@@ -698,7 +830,7 @@ function registerBountywellControlRoutes(
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
       const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
-      const sessionToken = await authorizeFreshDrillAction(
+      const sessionToken = await authorizeFreshAction(
         request,
         reply,
         options,
@@ -719,7 +851,7 @@ function registerBountywellControlRoutes(
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
       const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
-      const sessionToken = await authorizeFreshDrillAction(
+      const sessionToken = await authorizeFreshAction(
         request,
         reply,
         options,
@@ -743,7 +875,7 @@ function registerBountywellControlRoutes(
       if (!parsed.success) {
         return reply.code(400).send({ error: "The live drill occurs only while the owner is available" });
       }
-      const sessionToken = await authorizeFreshDrillAction(
+      const sessionToken = await authorizeFreshAction(
         request,
         reply,
         options,
@@ -1003,7 +1135,7 @@ async function authorizeStateChange(
   return sessionToken;
 }
 
-async function authorizeFreshDrillAction(
+async function authorizeFreshAction(
   request: FastifyRequest,
   reply: FastifyReply,
   options: {

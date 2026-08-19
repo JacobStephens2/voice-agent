@@ -23,6 +23,7 @@ import {
 export * from "./human-merge-promotion.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
+export * from "./keeplore-onboarding.ts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAuthenticationLifecycle,

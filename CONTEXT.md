@@ -176,6 +176,14 @@ _Avoid_: Operations Broker, unrestricted shell
 An Incident Diagnosis concerning apparent unavailability of the Express API that supports login for Chart35.
 _Avoid_: Server down
 
+**Keeplore Onboarding**:
+The attended enrollment of Keeplore that reconciles its live working tree, fixes its Registered Codebase boundaries, establishes CI, production-branch rules, a least-privilege GitHub App, and a versioned Deployment Contract, and proves the real deployment path with one harmless Human Merge before any feature Delegation.
+_Avoid_: Keeplore setup, first deploy
+
+**Live Checkout Inspection**:
+The read-only re-inspection of a live application checkout — repository, production branch, head commit, uncommitted paths, serving path, and verification seams — performed before automation pulls, branches, builds, or deploys, and never resolving the owner's uncommitted work itself.
+_Avoid_: Git status check, cleanup
+
 **Keeplore Button Trial**:
 A feature-work trial in which the Voice Agent delegates resizing the “Get Rid Of” controls on Keeplore's use-by table to match its row-level “Remove” controls.
 _Avoid_: Button test

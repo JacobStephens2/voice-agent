@@ -17,6 +17,10 @@ import {
   evidenceRetentionResultSchema,
   evidenceRecordSummaryListSchema,
   freshPasskeyActionResponseSchema,
+  keeploreDeploymentContractSchema,
+  keeploreLiveInspectionSchema,
+  keeploreRegistrationSchema,
+  keeploreRegistrationStatusSchema,
   changeTelephoneSpendingCeilingResultSchema,
   notificationPreferenceSchema,
   notificationPreferenceStatusSchema,
@@ -36,6 +40,10 @@ import {
   type BountywellRecoveryTimerProof,
   type BountywellRegistration,
   type EvidenceRecordProjection,
+  type KeeploreDeploymentContract,
+  type KeeploreLiveInspection,
+  type KeeploreRegistration,
+  type KeeploreWorkingTreeReconciliation,
   type EvidenceRecordSummary,
   type PasskeyEnrollmentResult,
   type NotificationPreference,
@@ -86,6 +94,98 @@ export async function grantBountywellRestart(
     );
   }
   return bountywellRegistrationSchema.parse(await response.json());
+}
+
+export async function loadKeeploreRegistration(): Promise<
+  KeeploreRegistration | undefined
+> {
+  const response = await fetch("/api/applications/keeplore");
+  if (response.status === 401 || response.status === 404) return undefined;
+  if (!response.ok) throw new Error("Keeplore registration is unavailable.");
+  const result = keeploreRegistrationStatusSchema.parse(await response.json());
+  return result.registration ?? undefined;
+}
+
+export async function loadKeeploreLiveInspection(): Promise<
+  KeeploreLiveInspection | undefined
+> {
+  const response = await fetch("/api/applications/keeplore/live-inspection");
+  if (response.status === 401 || response.status === 404) return undefined;
+  if (!response.ok) {
+    throw new Error("The read-only Keeplore inspection is unavailable.");
+  }
+  return keeploreLiveInspectionSchema.parse(await response.json());
+}
+
+export async function enrollKeeplore(
+  csrfToken: string,
+  reconciliation: KeeploreWorkingTreeReconciliation,
+): Promise<KeeploreRegistration> {
+  const response = await fetch("/api/applications/keeplore/registration", {
+    body: JSON.stringify({ csrfToken, reconciliation }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? await denialReason(
+            response,
+            "Perform a Fresh Passkey Action before enrolling Keeplore.",
+          )
+        : "Keeplore could not be enrolled.",
+    );
+  }
+  return keeploreRegistrationSchema.parse(await response.json());
+}
+
+export async function activateKeeploreDeploymentContract(
+  csrfToken: string,
+  input: {
+    readonly buildCommand: string;
+    readonly health: KeeploreDeploymentContract["health"];
+    readonly preflightCommand: string;
+    readonly releaseRoot: string;
+    readonly retainedReleases: number;
+    readonly revision: number;
+  },
+): Promise<KeeploreDeploymentContract> {
+  const response = await fetch("/api/applications/keeplore/deployment-contract", {
+    body: JSON.stringify({ ...input, csrfToken }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? await denialReason(
+            response,
+            "Perform a Fresh Passkey Action before activating the Deployment Contract.",
+          )
+        : "The Keeplore Deployment Contract could not be activated.",
+    );
+  }
+  return keeploreDeploymentContractSchema.parse(await response.json());
+}
+
+async function denialReason(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (
+      typeof body === "object" &&
+      body !== null &&
+      "error" in body &&
+      typeof (body as { error: unknown }).error === "string"
+    ) {
+      return (body as { error: string }).error;
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
 }
 
 export async function armBountywellRecoveryTimer(

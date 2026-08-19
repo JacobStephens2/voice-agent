@@ -38,6 +38,11 @@ import {
   bountywellRestartCapabilitiesSchema,
   bountywellTimerLifecycleEvidenceEventSchema,
 } from "./bountywell-outage.ts";
+import {
+  keeploreOnboardingEvidenceRecordProjectionSchema,
+  keeploreOnboardingTaskSchema,
+  type KeeploreOnboardingEvidenceRecordProjection,
+} from "./keeplore-onboarding.ts";
 
 export * from "./promotion.ts";
 export * from "./callback-handshake.ts";
@@ -45,6 +50,7 @@ export * from "./telephone-session.ts";
 export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
+export * from "./keeplore-onboarding.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -303,11 +309,13 @@ export type EvidenceRecordProjection = z.infer<
 
 export type VoiceAgentEvidenceRecordProjection =
   | EvidenceRecordProjection
+  | KeeploreOnboardingEvidenceRecordProjection
   | PromotionEvidenceRecordProjection
   | TelephoneSessionEvidenceRecordProjection;
 
 export const voiceAgentEvidenceRecordProjectionSchema = z.union([
   evidenceRecordProjectionSchema,
+  keeploreOnboardingEvidenceRecordProjectionSchema,
   promotionEvidenceRecordProjectionSchema,
   telephoneSessionEvidenceRecordProjectionSchema,
 ]);
@@ -315,6 +323,7 @@ export const voiceAgentEvidenceRecordProjectionSchema = z.union([
 export const evidenceRecordSummarySchema = z.discriminatedUnion("kind", [
   bountywellHealthTaskSchema,
   bountywellOutageTaskSchema,
+  keeploreOnboardingTaskSchema,
   promotionEvidenceRecordProjectionSchema.shape.task,
   telephoneSessionEvidenceRecordProjectionSchema.shape.task,
 ]);
