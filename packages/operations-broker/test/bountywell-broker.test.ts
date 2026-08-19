@@ -10,6 +10,7 @@ import {
   renderApplicationProbeMetrics,
   createDeterministicBountywellHost,
   createSqliteBrokerOperationStore,
+  createSystemdBountywellServiceController,
   createUnixSocketBountywellController,
   createUnixSocketBountywellObserver,
   type BountywellHostProbes,
@@ -337,6 +338,45 @@ test("the broker starts only the registered unit and replays timer arming", asyn
   } finally {
     await server.close();
   }
+});
+
+test("a pinned recovery timer can be armed when systemctl link is denied", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-broker-pinned-timer-"));
+  temporaryDirectories.push(directory);
+  const controller = createSystemdBountywellServiceController({
+    unitDirectory: directory,
+    async execute(_command, args) {
+      if (args[0] === "link" || args[0] === "daemon-reload") {
+        throw new Error("Access denied");
+      }
+      if (args[0] === "start" && args[1] === "bountywell-api-recovery.timer") {
+        return "";
+      }
+      throw new Error(`unexpected systemctl ${args.join(" ")}`);
+    },
+  });
+
+  expect(await controller.armRecoveryTimer()).toEqual({
+    armed: true,
+    delaySeconds: 600,
+    unit: "bountywell-api.service",
+  });
+});
+
+test("stopping a pinned recovery timer removes it when disable is denied", async () => {
+  const controller = createSystemdBountywellServiceController({
+    async execute(_command, args) {
+      if (args[0] === "stop" && args[1] === "bountywell-api-recovery.timer") {
+        return "";
+      }
+      if (args[0] === "disable") {
+        throw new Error("Access denied");
+      }
+      throw new Error(`unexpected systemctl ${args.join(" ")}`);
+    },
+  });
+
+  expect(await controller.removeRecoveryTimer()).toEqual({ removed: true });
 });
 
 function rejectingProbes(): BountywellHostProbes {
