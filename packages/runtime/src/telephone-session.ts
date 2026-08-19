@@ -26,6 +26,7 @@ interface TelephoneBountywellTasks {
     readonly event: Omit<EvidenceEventProjection, "sequence">;
     readonly taskId: string;
   }): Promise<EvidenceRecordProjection>;
+  processNextBountywellOutageRecovery?(): Promise<EvidenceRecordProjection | undefined>;
   submitTelephoneBountywellHealthInquiry(input: {
     readonly interpretation: TelephoneTurnInterpretation;
     readonly sanitizedTranscript: string;
@@ -73,6 +74,7 @@ interface TelephoneSessionCoordinatorOptions {
 interface TelephoneSessionCoordinatorState {
   pendingCompletionOfferTaskId: string | undefined;
   pendingStateChangingDiscussionId: string | undefined;
+  pendingStateChangingKind: "outage" | "other" | undefined;
 }
 
 interface FinalizedTurnResult {
@@ -87,6 +89,7 @@ export function createTelephoneSessionCoordinator(
   const state: TelephoneSessionCoordinatorState = {
     pendingCompletionOfferTaskId: undefined,
     pendingStateChangingDiscussionId: undefined,
+    pendingStateChangingKind: undefined,
   };
   return {
     async receiveProviderEvent(untrustedEvent) {
@@ -233,18 +236,54 @@ async function handleFinalizedTurn(
   });
   if (state.pendingStateChangingDiscussionId !== undefined) {
     const discussionId = state.pendingStateChangingDiscussionId;
+    const discussionKind = state.pendingStateChangingKind;
     state.pendingStateChangingDiscussionId = undefined;
+    state.pendingStateChangingKind = undefined;
     await options.stateChangingTasks?.release(
       turn.telephoneSessionId,
       discussionId,
     );
-    return guidance(
-      options,
-      turn,
-      isAffirmative(sanitizedTranscript)
-        ? "Task confirmation recorded. Use the secure app to authorize execution."
-        : "Okay. I did not confirm that state-changing task.",
-    );
+    if (!isAffirmative(sanitizedTranscript)) {
+      return guidance(
+        options,
+        turn,
+        "Okay. I did not confirm that state-changing task.",
+      );
+    }
+    const recovered =
+      discussionKind === "outage"
+        ? await options.tasks.processNextBountywellOutageRecovery?.()
+        : undefined;
+    if (recovered === undefined) {
+      return guidance(
+        options,
+        turn,
+        "Task confirmation recorded. Use the secure app to authorize execution.",
+      );
+    }
+    const responseId = `${turn.turnId}:outage-response`;
+    const text = semanticOutageAnswer(recovered);
+    await options.tasks.appendTelephoneEvidence({
+      event: {
+        details: { responseId, text },
+        id: responseId,
+        kind: "telephone.semantic.response",
+        occurredAt: recovered.task.updatedAt,
+        summary: "A semantic telephone recovery response was prepared for speech.",
+      },
+      taskId: recovered.task.id,
+    });
+    return telephoneSessionActionResultSchema.parse({
+      actions: [
+        {
+          interruptible: true,
+          kind: "speak-semantic-response",
+          responseId,
+          taskId: recovered.task.id,
+          text,
+        },
+      ],
+    });
   }
   if (state.pendingCompletionOfferTaskId !== undefined) {
     const taskId = state.pendingCompletionOfferTaskId;
@@ -351,6 +390,9 @@ async function handleFinalizedTurn(
     }
     if (boundaryDecision?.decision === "accepted") {
       state.pendingStateChangingDiscussionId = confirmationId;
+      state.pendingStateChangingKind = /\bunavailable\b/iu.test(sanitizedTranscript)
+        ? "outage"
+        : "other";
     }
     const text =
       `Please confirm this state-changing task: ` +
@@ -566,6 +608,37 @@ function sanitizeFinalizedTurn(transcript: string): string {
     .replace(/\s+/gu, " ")
     .trim()
     .slice(0, 500);
+}
+
+function semanticOutageAnswer(record: EvidenceRecordProjection): string {
+  if (record.task.kind !== "bountywell.outage.recovery") {
+    throw new Error("Bountywell outage Evidence Record is unavailable");
+  }
+  const diagnosis = record.evidence.find((event) => event.kind === "diagnosis.recorded");
+  const diagnosed =
+    diagnosis?.kind === "diagnosis.recorded" &&
+    diagnosis.details.inactiveUnit === "bountywell-api.service"
+      ? " Observation identified the inactive registered bountywell-api.service unit."
+      : "";
+  if (record.task.conclusion === "Bountywell API was recovered.") {
+    return (
+      "Bountywell's API was recovered." +
+      diagnosed +
+      " The public /api/health check returned 200 and /api/data returned the expected 401. The recovery timer has been removed."
+    );
+  }
+  if (record.task.conclusion === "Bountywell API was already recovered.") {
+    return (
+      "Bountywell's API was already recovered." +
+      diagnosed +
+      " The public endpoints already matched the required health semantics."
+    );
+  }
+  return (
+    "Bountywell API recovery could not be confirmed." +
+    diagnosed +
+    " The independent recovery timer remains armed."
+  );
 }
 
 function semanticBountywellAnswer(record: EvidenceRecordProjection): string {

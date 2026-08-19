@@ -3,6 +3,7 @@ import {
   createBountywellOperationsBroker,
   createOperationsBrokerServer,
   createSqliteBrokerOperationStore,
+  createSystemdBountywellServiceController,
 } from "@voice-agent/operations-broker";
 
 const databasePath = requireEnvironment("VOICE_AGENT_BROKER_DATABASE_PATH");
@@ -13,7 +14,10 @@ const observer = createBountywellOperationsBroker({
   probes: createBountywellHostProbes(),
   store,
 });
-const server = createOperationsBrokerServer({ observer });
+const server = createOperationsBrokerServer({
+  controller: createSystemdBountywellServiceController(),
+  observer,
+});
 await server.listen(socketPath);
 
 let stopping = false;

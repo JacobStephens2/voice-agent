@@ -6,19 +6,26 @@ import {
   bountywellHealthObservationSchema,
   bountywellRegistrationSchema,
   evidenceRecordProjectionSchema,
+  evidenceRecordSummarySchema,
   type EvidenceEventProjection,
   type EvidenceRecordProjection,
 } from "@voice-agent/contracts";
 import type {
   AcceptedInquiryPersistence,
+  AcceptedOperationPersistence,
   ApplicationRegistry,
   AppendedEvidencePersistence,
   CancellationRequestPersistence,
   ClaimedBountywellOperation,
   CompletedInquiryPersistence,
+  CompletedOperationPersistence,
   DurableTaskStore,
+  StoredOperation,
 } from "@voice-agent/durable-store";
-import { createBountywellReadRegistration } from "@voice-agent/policy";
+import {
+  createBountywellReadRegistration,
+  createBountywellRestartRegistration,
+} from "@voice-agent/policy";
 
 export { createSqliteAuthenticationStore } from "./authentication.ts";
 export { createSqliteCallbackHandshakeStore } from "./callback-handshake.ts";
@@ -35,8 +42,10 @@ interface TaskRow {
   readonly conclusion: string;
   readonly created_at: string;
   readonly id: string;
-  readonly kind: "bountywell.health.inquiry";
-  readonly question: "Is Bountywell healthy?";
+  readonly kind: "bountywell.health.inquiry" | "bountywell.outage.recovery";
+  readonly question:
+    | "Bountywell's API appears unavailable."
+    | "Is Bountywell healthy?";
   readonly status: "cancelled" | "completed" | "pending";
   readonly updated_at: string;
 }
@@ -56,6 +65,7 @@ interface EvidenceEventIdentityRow {
 
 interface OperationRow {
   readonly id: string;
+  readonly kind: StoredOperation["kind"];
   readonly status: "accepted" | "completed" | "running";
   readonly task_id: string;
 }
@@ -173,10 +183,11 @@ export function createSqliteDurableTaskStore(
     [claimedAt: string],
     OperationRow
   >(`
-    SELECT operations.id, operations.task_id, operations.status
+    SELECT operations.id, operations.task_id, operations.status, operations.kind
     FROM operations
     JOIN durable_tasks ON durable_tasks.id = operations.task_id
     WHERE operations.kind = 'bountywell.health.observe'
+      AND durable_tasks.kind = 'bountywell.health.inquiry'
       AND durable_tasks.status = 'pending'
       AND durable_tasks.cancellation_requested_at IS NULL
       AND (
@@ -199,9 +210,23 @@ export function createSqliteDurableTaskStore(
       )
   `);
   const findOperation = database.prepare<[operationId: string], OperationRow>(`
-    SELECT id, task_id, status
+    SELECT id, task_id, status, kind
     FROM operations
     WHERE id = ?
+  `);
+  const listOperationsByTask = database.prepare<[taskId: string], OperationRow>(`
+    SELECT id, task_id, status, kind
+    FROM operations
+    WHERE task_id = ?
+    ORDER BY created_at, id
+  `);
+  const findOperationByIdempotencyKey = database.prepare<
+    [idempotencyKey: string],
+    OperationRow
+  >(`
+    SELECT id, task_id, status, kind
+    FROM operations
+    WHERE idempotency_key = ?
   `);
   const completeOperation = database.prepare(`
     UPDATE operations
@@ -213,6 +238,12 @@ export function createSqliteDurableTaskStore(
     UPDATE durable_tasks
     SET status = 'completed', conclusion = ?, updated_at = ?
     WHERE id = ? AND status = 'pending'
+  `);
+  const completeAcceptedOrRunningOperation = database.prepare(`
+    UPDATE operations
+    SET status = 'completed', result_json = ?, updated_at = ?,
+      lease_expires_at = NULL
+    WHERE id = ? AND task_id = ? AND status IN ('accepted', 'running')
   `);
   const cancelTask = database.prepare(`
     UPDATE durable_tasks
@@ -573,6 +604,101 @@ export function createSqliteDurableTaskStore(
     },
   );
 
+  const persistAcceptedOperationTransaction = database.transaction(
+    (input: AcceptedOperationPersistence): EvidenceRecordProjection => {
+      const existing =
+        findOperation.get(input.operationId) ??
+        findOperationByIdempotencyKey.get(input.idempotencyKey);
+      if (existing !== undefined) {
+        if (existing.task_id !== input.taskId) {
+          throw new Error("Operation identity belongs to another Durable Task");
+        }
+        return loadRecord(requireTask(findTaskById.get(input.taskId)));
+      }
+      insertOperation.run(
+        input.operationId,
+        input.taskId,
+        input.idempotencyKey,
+        input.kind,
+        "accepted",
+        "{}",
+        input.acceptedAt,
+        input.acceptedAt,
+      );
+      insertEvidence(input.taskId, input.evidence);
+      updateTaskTimestamp.run(input.acceptedAt, input.acceptedAt, input.taskId);
+      return loadRecord(requireTask(findTaskById.get(input.taskId)));
+    },
+  );
+
+  const completeOperationTransaction = database.transaction(
+    (input: CompletedOperationPersistence): EvidenceRecordProjection => {
+      const operation = findOperation.get(input.operationId);
+      if (operation === undefined || operation.task_id !== input.taskId) {
+        throw new Error("Bountywell Operation is unavailable");
+      }
+      if (operation.status === "completed") {
+        return loadRecord(requireTask(findTaskById.get(input.taskId)));
+      }
+      const result = completeAcceptedOrRunningOperation.run(
+        JSON.stringify({ completedAt: input.observedAt }),
+        input.observedAt,
+        input.operationId,
+        input.taskId,
+      );
+      if (result.changes !== 1) {
+        throw new Error("Bountywell Operation changed concurrently");
+      }
+      insertEvidence(input.taskId, input.evidence);
+      if (input.task !== undefined) {
+        const taskResult =
+          input.task.status === "cancelled"
+            ? cancelTask.run(
+                input.observedAt,
+                input.observedAt,
+                input.taskId,
+              )
+            : completeTask.run(
+                input.task.conclusion,
+                input.observedAt,
+                input.taskId,
+              );
+        if (taskResult.changes !== 1) {
+          throw new Error("Bountywell Durable Task changed concurrently");
+        }
+      } else {
+        updateTaskTimestamp.run(
+          input.observedAt,
+          input.observedAt,
+          input.taskId,
+        );
+      }
+      return loadRecord(requireTask(findTaskById.get(input.taskId)));
+    },
+  );
+
+  const completeTaskTransaction = database.transaction(
+    (input: {
+      readonly conclusion: EvidenceRecordProjection["task"]["conclusion"];
+      readonly evidence: readonly EvidenceEventProjection[];
+      readonly observedAt: string;
+      readonly taskId: string;
+    }): EvidenceRecordProjection => {
+      const task = requireTask(findTaskById.get(input.taskId));
+      if (task.status !== "pending") return loadRecord(task);
+      const result = completeTask.run(
+        input.conclusion,
+        input.observedAt,
+        input.taskId,
+      );
+      if (result.changes !== 1) {
+        throw new Error("Bountywell Durable Task changed concurrently");
+      }
+      insertEvidence(input.taskId, input.evidence);
+      return loadRecord(requireTask(findTaskById.get(input.taskId)));
+    },
+  );
+
   const expireTransaction = database.transaction((cutoff: string) => {
     tombstoneExpiredRequests.run(cutoff, cutoff);
     deleteExpiredEvents.run(cutoff);
@@ -616,18 +742,17 @@ export function createSqliteDurableTaskStore(
         : bountywellRegistrationSchema.parse(JSON.parse(row.definition_json));
     },
     async listTasks() {
-      return listTasks.all().map((task) => ({
-        conclusion:
-          evidenceRecordProjectionSchema.shape.task.shape.conclusion.parse(
-            task.conclusion,
-          ),
-        createdAt: task.created_at,
-        id: task.id,
-        kind: task.kind,
-        question: task.question,
-        status: task.status,
-        updatedAt: task.updated_at,
-      }));
+      return listTasks.all().map((task) =>
+        evidenceRecordSummarySchema.parse({
+          conclusion: task.conclusion,
+          createdAt: task.created_at,
+          id: task.id,
+          kind: task.kind,
+          question: task.question,
+          status: task.status,
+          updatedAt: task.updated_at,
+        }),
+      );
     },
     async readOperationalMetrics() {
       const taskMetrics = readTaskMetrics.get() ?? { completed: 0, pending: 0 };
@@ -726,6 +851,49 @@ export function createSqliteDurableTaskStore(
         }
         throw error;
       }
+    },
+    async persistAcceptedOperation(input) {
+      return persistAcceptedOperationTransaction.immediate(input);
+    },
+    async completeBountywellOperation(input) {
+      return completeOperationTransaction.immediate(input);
+    },
+    async completeBountywellTask(input) {
+      return completeTaskTransaction.immediate(input);
+    },
+    async listOperations(taskId) {
+      return listOperationsByTask.all(taskId).map((operation) => ({
+        id: operation.id,
+        kind: operation.kind,
+        status: operation.status,
+      }));
+    },
+    async grantBountywellRestart(registeredAt) {
+      const row = findRegistration.get();
+      if (row === undefined) {
+        throw new Error("Bountywell is not registered");
+      }
+      const current = bountywellRegistrationSchema.parse(
+        JSON.parse(row.definition_json),
+      );
+      if (
+        current.capabilities.some(
+          (capability) => capability === "bountywell.service.restart",
+        )
+      ) {
+        return current;
+      }
+      const registration = createBountywellRestartRegistration(
+        registeredAt,
+        current.revision + 1,
+      );
+      insertRegistration.run(
+        registration.applicationId,
+        registration.revision,
+        registration.registeredAt,
+        JSON.stringify(registration),
+      );
+      return registration;
     },
     async registerBountywell(registeredAt) {
       const row = findRegistration.get();

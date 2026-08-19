@@ -8,7 +8,9 @@ import {
   createBountywellOperationsBroker,
   createOperationsBrokerServer,
   renderApplicationProbeMetrics,
+  createDeterministicBountywellHost,
   createSqliteBrokerOperationStore,
+  createUnixSocketBountywellController,
   createUnixSocketBountywellObserver,
   type BountywellHostProbes,
 } from "../src/index.ts";
@@ -289,6 +291,49 @@ test("the worker reaches the bounded broker contract through a Unix socket", asy
     expect(
       await client.observe({ operationId: "operation-socket", taskId: "task-socket" }),
     ).toEqual(expected);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the broker starts only the registered unit and replays timer arming", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-broker-control-"));
+  temporaryDirectories.push(directory);
+  const socketPath = join(directory, "broker.sock");
+  let nowMs = Date.parse("2026-08-18T19:00:00.000Z");
+  const host = createDeterministicBountywellHost({
+    advanceMs(milliseconds) {
+      nowMs += milliseconds;
+    },
+    now: () => new Date(nowMs).toISOString(),
+  });
+  const server = createOperationsBrokerServer({
+    controller: host.controller,
+    observer: { async observe() {
+      throw new Error("observe is not used");
+    } },
+  });
+  await server.listen(socketPath);
+  const client = createUnixSocketBountywellController(socketPath);
+
+  try {
+    expect(await client.armRecoveryTimer()).toEqual({
+      armed: true,
+      delaySeconds: 600,
+      unit: "bountywell-api.service",
+    });
+    expect(await client.stopRegisteredUnit()).toEqual({ stopped: true });
+    expect(await client.startRegisteredUnit()).toEqual({
+      previousActive: false,
+      started: true,
+    });
+    expect(await client.startRegisteredUnit()).toEqual({
+      previousActive: true,
+      started: true,
+    });
+    expect(host.commands.every((command) => command.unit === "bountywell-api.service")).toBe(
+      true,
+    );
   } finally {
     await server.close();
   }

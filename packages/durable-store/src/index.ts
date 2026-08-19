@@ -11,6 +11,9 @@ export * from "./task-continuity.ts";
 
 export interface ApplicationRegistry {
   findBountywellRegistration(): Promise<BountywellRegistration | undefined>;
+  grantBountywellRestart(
+    registeredAt: string,
+  ): Promise<BountywellRegistration>;
   registerBountywell(
     registeredAt: string,
   ): Promise<BountywellRegistration>;
@@ -43,6 +46,39 @@ export interface CompletedInquiryPersistence {
   readonly observedAt: string;
   readonly operationId: string;
   readonly taskId: string;
+}
+
+export interface AcceptedOperationPersistence {
+  readonly acceptedAt: string;
+  readonly evidence: readonly EvidenceEventProjection[];
+  readonly idempotencyKey: string;
+  readonly kind:
+    | "bountywell.health.observe"
+    | "bountywell.recovery-timer.remove"
+    | "bountywell.service.restart";
+  readonly operationId: string;
+  readonly taskId: string;
+}
+
+export interface CompletedOperationPersistence {
+  readonly evidence: readonly EvidenceEventProjection[];
+  readonly observedAt: string;
+  readonly operationId: string;
+  readonly task?: {
+    readonly conclusion: EvidenceRecordProjection["task"]["conclusion"];
+    readonly status: "completed" | "cancelled";
+  };
+  readonly taskId: string;
+}
+
+export interface StoredOperation {
+  readonly id: string;
+  readonly kind:
+    | "bountywell.health.observe"
+    | "bountywell.recovery-timer.remove"
+    | "bountywell.service.restart"
+    | "task.cancel";
+  readonly status: "accepted" | "completed" | "running";
 }
 
 export interface CancellationRequestPersistence {
@@ -126,5 +162,18 @@ export interface DurableTaskStore {
   persistAcceptedInquiry(
     input: AcceptedInquiryPersistence,
   ): Promise<EvidenceRecordProjection>;
+  persistAcceptedOperation(
+    input: AcceptedOperationPersistence,
+  ): Promise<EvidenceRecordProjection>;
+  completeBountywellOperation(
+    input: CompletedOperationPersistence,
+  ): Promise<EvidenceRecordProjection>;
+  completeBountywellTask(input: {
+    readonly conclusion: EvidenceRecordProjection["task"]["conclusion"];
+    readonly evidence: readonly EvidenceEventProjection[];
+    readonly observedAt: string;
+    readonly taskId: string;
+  }): Promise<EvidenceRecordProjection>;
+  listOperations(taskId: string): Promise<readonly StoredOperation[]>;
   close(): Promise<void>;
 }

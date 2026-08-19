@@ -8,6 +8,9 @@ import {
 import {
   authenticationStatusSchema,
   authorizeRawAudioDebugResultSchema,
+  bountywellOutageInjectionSchema,
+  bountywellRecoveryTimerProofSchema,
+  bountywellRecoveryTimerSchema,
   bountywellRegistrationSchema,
   bountywellRegistrationStatusSchema,
   evidenceRecordProjectionSchema,
@@ -28,6 +31,9 @@ import {
   webAuthnOptionsSchema,
   type AuthenticationStatus,
   type TelephoneBoundaryStatus,
+  type BountywellOutageInjection,
+  type BountywellRecoveryTimer,
+  type BountywellRecoveryTimerProof,
   type BountywellRegistration,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
@@ -62,6 +68,81 @@ export async function loadBountywellRegistration(): Promise<
   if (!response.ok) throw new Error("Bountywell registration is unavailable.");
   const result = bountywellRegistrationStatusSchema.parse(await response.json());
   return result.registration ?? undefined;
+}
+
+export async function grantBountywellRestart(
+  csrfToken: string,
+): Promise<BountywellRegistration> {
+  const response = await fetch("/api/applications/bountywell/restart-authority", {
+    body: JSON.stringify({ csrfToken }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before granting Bountywell restart authority."
+        : "Bountywell restart authority could not be granted.",
+    );
+  }
+  return bountywellRegistrationSchema.parse(await response.json());
+}
+
+export async function armBountywellRecoveryTimer(
+  csrfToken: string,
+): Promise<BountywellRecoveryTimer> {
+  const response = await fetch("/api/operations/bountywell-outage-drill/arm-timer", {
+    body: JSON.stringify({ csrfToken }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before arming the recovery timer."
+        : "The recovery timer could not be armed.",
+    );
+  }
+  return bountywellRecoveryTimerSchema.parse(await response.json());
+}
+
+export async function proveBountywellRecoveryTimer(
+  csrfToken: string,
+): Promise<BountywellRecoveryTimerProof> {
+  const response = await fetch(
+    "/api/operations/bountywell-outage-drill/prove-timer",
+    {
+      body: JSON.stringify({ csrfToken }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before proving the recovery timer."
+        : "The recovery timer could not be proven.",
+    );
+  }
+  return bountywellRecoveryTimerProofSchema.parse(await response.json());
+}
+
+export async function injectBountywellOutage(
+  csrfToken: string,
+): Promise<BountywellOutageInjection> {
+  const response = await fetch("/api/operations/bountywell-outage-drill/inject", {
+    body: JSON.stringify({ csrfToken, ownerAvailable: true }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before starting the guarded drill."
+        : "The guarded Bountywell outage drill could not be started.",
+    );
+  }
+  return bountywellOutageInjectionSchema.parse(await response.json());
 }
 
 export async function registerBountywell(

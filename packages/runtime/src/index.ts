@@ -16,11 +16,17 @@ import {
   authorizeBountywellHealthInquiry,
   deriveBountywellHealthConclusion,
 } from "@voice-agent/policy";
+import {
+  createBountywellOutageControls,
+  type BountywellOutageControls,
+  type BountywellServiceController,
+} from "./bountywell-outage.ts";
 
 export * from "./callback-handshake.ts";
 export * from "./telephone-boundaries.ts";
 export * from "./telephone-session.ts";
 export * from "./task-continuity.ts";
+export * from "./bountywell-outage.ts";
 
 export interface TelephoneBountywellHealthInquiry {
   readonly interpretation: TelephoneTurnInterpretation;
@@ -31,7 +37,7 @@ export interface TelephoneBountywellHealthInquiry {
 const OPERATION_LEASE_MS = 30_000;
 const TELEPHONE_OPERATION_WAIT_MS = 12_000;
 
-export interface DurableTaskRuntime {
+export interface DurableTaskRuntime extends BountywellOutageControls {
   acceptBountywellHealthInquiry(
     request: BountywellHealthInquiryRequest,
   ): Promise<EvidenceRecordProjection>;
@@ -67,11 +73,13 @@ export interface DurableTaskRuntime {
 }
 
 export interface DurableTaskRuntimeOptions {
+  readonly advanceMs?: (milliseconds: number) => void;
   readonly applicationRegistry?: ApplicationRegistry;
   readonly deferTelephoneOperations?: boolean;
   readonly healthObserver?: BountywellHealthObserver;
   readonly nextId: () => string;
   readonly now: () => string;
+  readonly serviceController?: BountywellServiceController;
   readonly store: DurableTaskStore;
 }
 
@@ -355,6 +363,22 @@ export function createDurableTaskRuntime(
       return (await processNextBountywellHealthInquiry()) ?? accepted;
     },
     submitTelephoneBountywellHealthInquiry,
+    ...createBountywellOutageControls({
+      ...(options.advanceMs === undefined ? {} : { advanceMs: options.advanceMs }),
+      ...(options.applicationRegistry === undefined
+        ? {}
+        : { applicationRegistry: options.applicationRegistry }),
+      ...(options.healthObserver === undefined
+        ? {}
+        : { healthObserver: options.healthObserver }),
+      nextId: options.nextId,
+      now: options.now,
+      recordPolicyDenial: () => options.store.recordPolicyDenial(),
+      ...(options.serviceController === undefined
+        ? {}
+        : { serviceController: options.serviceController }),
+      store: options.store,
+    }),
   };
 }
 
