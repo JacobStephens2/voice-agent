@@ -1,0 +1,73 @@
+# Install as .github/workflows/promote-keeplore.yml in JacobStephens2/keeplore.
+#
+# A Human Merge into main authenticates itself, then enqueues the exact merge
+# commit on the Agent Host. Promotion is serialized and idempotent there, so a
+# duplicate delivery or a re-run promotes nothing twice.
+
+name: Promote Keeplore
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: promote-keeplore
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  enqueue-human-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact merged commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Authenticate the exact Human Merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          pulls=$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/$GITHUB_REPOSITORY/commits/$MERGED_COMMIT/pulls")
+          jq -e --arg commit "$MERGED_COMMIT" '
+            map(select(
+              .merge_commit_sha == $commit
+              and .merged_at != null
+              and .base.ref == "main"
+              and .merged_by.type == "User"
+            )) | length > 0
+          ' <<<"$pulls" >/dev/null
+
+      - name: Configure restricted SSH identity
+        env:
+          DEPLOY_KEY_B64: ${{ secrets.KEEPLORE_DEPLOY_KEY_B64 }}
+          KNOWN_HOSTS_B64: ${{ secrets.KEEPLORE_KNOWN_HOSTS_B64 }}
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s' "$DEPLOY_KEY_B64" | base64 --decode > "$HOME/.ssh/id_ed25519"
+          printf '%s' "$KNOWN_HOSTS_B64" | base64 --decode > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Enqueue the verified Human Merge
+        env:
+          DEPLOY_HOST: ${{ vars.KEEPLORE_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ vars.KEEPLORE_DEPLOY_USER }}
+          MERGED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          printf '%s\n' "$MERGED_COMMIT" | ssh \
+            -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'IFS= read -r commit; exec sudo -n /usr/local/libexec/keeplore/promote-keeplore-main.sh "$commit"'

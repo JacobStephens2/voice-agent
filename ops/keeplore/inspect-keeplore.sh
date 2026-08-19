@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# A read-only revalidation of the live Keeplore checkout. It never fetches,
+# checks out, stashes, or writes, so the owner's uncommitted work survives.
+
+set -euo pipefail
+
+script_directory=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=keeplore-config.sh
+source "$script_directory/keeplore-config.sh"
+keeplore_load_configuration
+
+git_checkout=(git -c protocol.allow=never -C "$keeplore_live_checkout")
+head_commit=$("${git_checkout[@]}" rev-parse HEAD)
+branch=$("${git_checkout[@]}" rev-parse --abbrev-ref HEAD)
+remote=$("${git_checkout[@]}" remote get-url origin)
+uncommitted=$("${git_checkout[@]}" status --porcelain | wc -l | tr -d ' ')
+active_release=none
+if [[ -L $keeplore_current_link ]]; then
+  active_release=$(basename "$(readlink -f "$keeplore_current_link")")
+fi
+service_state=unavailable
+if systemctl cat "$keeplore_service_unit" >/dev/null 2>&1; then
+  service_state=$(systemctl is-active "$keeplore_service_unit" || true)
+fi
+health_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+  "$keeplore_health_url" || printf '000')
+
+printf 'repository\t%s\n' "$keeplore_repository"
+printf 'remote\t%s\n' "$remote"
+printf 'liveCheckout\t%s\n' "$keeplore_live_checkout"
+printf 'productionBranch\t%s\n' "$branch"
+printf 'headCommit\t%s\n' "$head_commit"
+printf 'uncommittedPaths\t%s\n' "$uncommitted"
+printf 'serviceUnit\t%s\n' "$keeplore_service_unit"
+printf 'serviceState\t%s\n' "$service_state"
+printf 'healthUrl\t%s\n' "$keeplore_health_url"
+printf 'healthStatus\t%s\n' "$health_status"
+printf 'releaseRoot\t%s\n' "$keeplore_release_root"
+printf 'activeRelease\t%s\n' "$active_release"
+
+if [[ $branch != main ]]; then
+  printf 'The live checkout is on %s, not the registered production branch.\n' \
+    "$branch" >&2
+  exit 1
+fi
+if [[ $remote != *"$keeplore_repository"* ]]; then
+  printf 'The live checkout does not track the registered repository.\n' >&2
+  exit 1
+fi
+if [[ $uncommitted -ne 0 ]]; then
+  printf 'The live checkout holds %s uncommitted path(s); the owner must reconcile them first.\n' \
+    "$uncommitted" >&2
+  exit 2
+fi

@@ -194,3 +194,5 @@ export function deriveBountywellOutageConclusion(input: {
   if (input.recovered) return "Bountywell API was recovered.";
   return "Bountywell API recovery could not be confirmed.";
 }
+
+export * from "./keeplore-onboarding.ts";

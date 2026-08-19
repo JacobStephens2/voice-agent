@@ -12,8 +12,8 @@ import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import { renderEvidenceRecordPage } from "@voice-agent/pwa/server";
 import {
   createPromotionStore,
-  fixtureApplicationId,
-  fixtureRepository,
+  fixturePromotionCodebase,
+  type PromotionCodebase,
   type PromotionStoreInspection,
 } from "./human-merge-promotion-store.ts";
 
@@ -23,6 +23,8 @@ const trustedSessionToken = "scenario-trusted-session";
 const commitPattern = /^[0-9a-f]{40}$/u;
 
 export interface HumanMergePromotionScenarioOptions {
+  /** The Registered Codebase this Promotion queue serves. */
+  readonly codebase?: PromotionCodebase | undefined;
   readonly contractActivationAuthority?:
     | {
         hasFreshPasskeyAction(sessionToken: string): Promise<boolean>;
@@ -35,6 +37,8 @@ export interface HumanMergePromotionScenarioOptions {
   readonly processLossAfterOperation?:
     | PromotionOperationProjection["kind"]
     | undefined;
+  /** Seed Deployment Contract revision 1 from the codebase descriptor. */
+  readonly seedDeploymentContract?: boolean | undefined;
   readonly webhookSecret: string;
 }
 
@@ -79,8 +83,11 @@ export async function createHumanMergePromotionScenario(
   options: HumanMergePromotionScenarioOptions,
 ): Promise<HumanMergePromotionScenario> {
   const ids = [...options.ids];
-  const store = createPromotionStore(options.databasePath);
-  store.activateInitialPolicy(options.now);
+  const codebase = options.codebase ?? fixturePromotionCodebase;
+  const store = createPromotionStore(options.databasePath, codebase);
+  store.activateInitialPolicy(options.now, {
+    seedContract: options.seedDeploymentContract !== false,
+  });
   const api = createTaskApi({
     authentication: {
       async canViewEvidence(sessionToken) {
@@ -122,7 +129,7 @@ export async function createHumanMergePromotionScenario(
       const contract: FixtureDeploymentContract = {
         activatedAt: options.now,
         activatedBy: "fresh-passkey-action",
-        applicationId: fixtureApplicationId,
+        applicationId: codebase.applicationId,
         buildCommand: input.buildCommand,
         health: input.health,
         preflightCommand: input.preflightCommand,
@@ -166,7 +173,7 @@ export async function createHumanMergePromotionScenario(
           }),
         };
       }
-      const denialReason = findHumanMergeDenial(input.event);
+      const denialReason = findHumanMergeDenial(codebase, input.event);
       if (denialReason !== undefined) {
         return {
           outcome: "denied",
@@ -216,8 +223,8 @@ export async function createHumanMergePromotionScenario(
       );
       const release = {
         commit: attempt.merge_commit,
-        id: `${fixtureApplicationId}-${attempt.merge_commit}`,
-        path: `${contract.releaseRoot}/${fixtureApplicationId}-${attempt.merge_commit}`,
+        id: `${codebase.applicationId}-${attempt.merge_commit}`,
+        path: `${contract.releaseRoot}/${codebase.applicationId}-${attempt.merge_commit}`,
       };
       const actualHealthStatus =
         options.healthStatusByCommit?.[attempt.merge_commit] ??
@@ -347,7 +354,9 @@ export async function createHumanMergePromotionScenario(
     async reconcile(events) {
       const discovered: PromotionDeliveryResult[] = [];
       const eligibleEvents = orderHumanMerges(
-        events.filter((event) => findHumanMergeDenial(event) === undefined),
+        events.filter(
+          (event) => findHumanMergeDenial(codebase, event) === undefined,
+        ),
       );
       for (const event of eligibleEvents) {
         if (store.hasAttempt(event.commit)) continue;
@@ -429,10 +438,13 @@ function isAuthenticatedDelivery(
   );
 }
 
-function findHumanMergeDenial(event: FixtureGitHubEvent): string | undefined {
+function findHumanMergeDenial(
+  codebase: PromotionCodebase,
+  event: FixtureGitHubEvent,
+): string | undefined {
   if (event.event === "push") return "direct-push";
-  if (event.repository !== fixtureRepository) return "wrong-repository";
-  if (event.branch !== "main") return "wrong-branch";
+  if (event.repository !== codebase.repository) return "wrong-repository";
+  if (event.branch !== codebase.productionBranch) return "wrong-branch";
   if (
     event.action !== "closed" ||
     !event.merged ||

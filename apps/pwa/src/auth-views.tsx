@@ -3,6 +3,9 @@ import { useState, type ReactNode } from "react";
 import type {
   BountywellRegistration,
   EvidenceRecordSummary,
+  KeeploreLiveInspection,
+  KeeploreRegistration,
+  KeeploreWorkingTreeReconciliation,
   NotificationPreference,
   NotificationPreferenceInput,
   RegisteredTelephone,
@@ -10,6 +13,7 @@ import type {
   TelephoneBoundaryStatus,
 } from "@voice-agent/contracts";
 
+import { KeeploreOnboardingControl } from "./keeplore-onboarding-control.tsx";
 import { normalizeOwnerTelephoneInput } from "./owner-telephone-input.ts";
 
 function hasBountywellRestart(registration: BountywellRegistration): boolean {
@@ -186,6 +190,13 @@ export function RecoveryCodesView(props: {
 
 export function TaskList(props: {
   bountywellRegistration?: BountywellRegistration | undefined;
+  keeploreInspection?: KeeploreLiveInspection | undefined;
+  keeploreRegistration?: KeeploreRegistration | undefined;
+  onActivateKeeploreDeploymentContract(): Promise<void>;
+  onEnrollKeeplore(
+    reconciliation: KeeploreWorkingTreeReconciliation,
+  ): Promise<void>;
+  onInspectKeeplore(): Promise<void>;
   registeredTelephone?: RegisteredTelephone | undefined;
   telephoneRegistrationLoaded?: boolean;
   telephoneBoundaries?: TelephoneBoundaryStatus | undefined;
@@ -314,6 +325,14 @@ export function TaskList(props: {
           </>
         )}
       </section>
+      <KeeploreOnboardingControl
+        busy={props.busy}
+        inspection={props.keeploreInspection}
+        onActivateDeploymentContract={props.onActivateKeeploreDeploymentContract}
+        onEnroll={props.onEnrollKeeplore}
+        onInspect={props.onInspectKeeplore}
+        registration={props.keeploreRegistration}
+      />
       <ul className="task-list">
         {props.tasks.length === 0 ? (
           <li>No Evidence Records yet.</li>

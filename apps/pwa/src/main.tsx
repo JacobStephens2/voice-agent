@@ -5,6 +5,9 @@ import { registerSW } from "virtual:pwa-register";
 import {
   type AuthenticationStatus,
   type BountywellRegistration,
+  type KeeploreLiveInspection,
+  type KeeploreRegistration,
+  type KeeploreWorkingTreeReconciliation,
   type RegisteredTelephone,
   type RegisteredTelephoneInput,
   type TelephoneBoundaryStatus,
@@ -29,8 +32,12 @@ import {
   loginWithPasskey,
   performFreshPasskeyAction as requestFreshPasskeyAction,
   readCsrfCookie,
+  activateKeeploreDeploymentContract,
   armBountywellRecoveryTimer,
+  enrollKeeplore,
   grantBountywellRestart,
+  loadKeeploreLiveInspection,
+  loadKeeploreRegistration,
   injectBountywellOutage,
   proveBountywellRecoveryTimer,
   registerBountywell,
@@ -74,6 +81,10 @@ function App() {
     useState<TelephoneBoundaryStatus>();
   const [notificationPreference, setNotificationPreference] =
     useState<NotificationPreference>();
+  const [keeploreRegistration, setKeeploreRegistration] =
+    useState<KeeploreRegistration>();
+  const [keeploreInspection, setKeeploreInspection] =
+    useState<KeeploreLiveInspection>();
   const [csrfToken, setCsrfToken] = useState<string | undefined>(readCsrfCookie);
   const [recoveryConfirmation, setRecoveryConfirmation] = useState<{
     readonly codes: readonly string[];
@@ -278,6 +289,52 @@ function App() {
     });
   }
 
+  async function inspectKeeplore() {
+    await run(async () => {
+      setKeeploreInspection(await loadKeeploreLiveInspection());
+      setKeeploreRegistration(await loadKeeploreRegistration());
+      setMessage("The live Keeplore checkout was inspected read-only.");
+    });
+  }
+
+  async function onboardKeeplore(
+    reconciliation: KeeploreWorkingTreeReconciliation,
+  ) {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before enrolling Keeplore.");
+      return;
+    }
+    await run(async () => {
+      setKeeploreRegistration(await enrollKeeplore(csrfToken, reconciliation));
+      setMessage("Keeplore is enrolled with its fixed repository and boundaries.");
+    });
+  }
+
+  async function activateKeeploreContract() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before activating the Deployment Contract.");
+      return;
+    }
+    const registration = keeploreRegistration;
+    if (registration === undefined) {
+      setMessage("Enroll Keeplore before activating its Deployment Contract.");
+      return;
+    }
+    await run(async () => {
+      const contract = await activateKeeploreDeploymentContract(csrfToken, {
+        buildCommand: "npm ci && npm run build",
+        health: { expectedStatus: 200, path: "/api/health" },
+        preflightCommand: registration.verification.command,
+        releaseRoot: registration.deploymentBoundaries.releaseRoot,
+        retainedReleases: registration.deploymentBoundaries.retainedReleases,
+        revision: 1,
+      });
+      setMessage(
+        `Keeplore Deployment Contract revision ${contract.revision} is active.`,
+      );
+    });
+  }
+
   async function enrollTelephone(input: RegisteredTelephoneInput) {
     if (csrfToken === undefined) {
       setMessage("Sign in again before changing the Registered Telephone.");
@@ -466,6 +523,11 @@ function App() {
       onFresh={freshPasskeyAction}
       onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}
+      keeploreInspection={keeploreInspection}
+      keeploreRegistration={keeploreRegistration}
+      onActivateKeeploreDeploymentContract={activateKeeploreContract}
+      onEnrollKeeplore={onboardKeeplore}
+      onInspectKeeplore={inspectKeeplore}
       onRegisterBountywell={enrollBountywell}
       onGrantBountywellRestart={grantRestart}
       onArmRecoveryTimer={armTimer}
