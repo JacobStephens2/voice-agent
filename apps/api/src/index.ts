@@ -43,6 +43,7 @@ import {
   keeploreRegistrationStatusSchema,
   grantBountywellRestartRequestSchema,
   bountywellDrillControlRequestSchema,
+  bountywellDrillNotRegistered,
   injectBountywellOutageRequestSchema,
   bountywellRecoveryTimerSchema,
   bountywellRecoveryTimerProofSchema,
@@ -889,11 +890,22 @@ function registerBountywellControlRoutes(
         });
         return reply.code(202).send(bountywellOutageInjectionSchema.parse(injected));
       } catch (error) {
+        if (!(error instanceof Error)) throw error;
         if (
-          error instanceof Error &&
           error.message === "The live drill occurs only while the owner is available"
         ) {
           return reply.code(400).send({ error: error.message });
+        }
+        // The guarded drill refuses to stop the registered unit until its
+        // independent backstop is armed and proven.
+        if (
+          error.message === "Recovery timer is not armed" ||
+          error.message === "Recovery timer is not proven"
+        ) {
+          return reply.code(409).send({ error: error.message });
+        }
+        if (error.message === bountywellDrillNotRegistered) {
+          return reply.code(403).send({ error: error.message });
         }
         throw error;
       }

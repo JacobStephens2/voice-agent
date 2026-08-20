@@ -6,6 +6,10 @@ const timestampSchema = z.iso.datetime();
 export const bountywellOutageReport =
   "Bountywell's API appears unavailable." as const;
 
+/** Why a drill Intervention is refused when Bountywell is not registered. */
+export const bountywellDrillNotRegistered =
+  "Bountywell is not registered for the guarded outage drill." as const;
+
 /**
  * The question a Bountywell Outage Drill answers while it is being prepared,
  * before any fault is injected. It becomes the fault report at injection.

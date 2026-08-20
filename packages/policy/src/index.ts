@@ -1,5 +1,6 @@
 import {
   bountywellRegistrationSchema,
+  bountywellDrillNotRegistered,
   bountywellHealthInquirySchema,
   bountywellOutageReport,
   type BountywellHealthInquiry,
@@ -171,7 +172,7 @@ export function authorizeBountywellDrillControl(
   return {
     capability: "bountywell.outage.drill",
     decision: "deny",
-    reason: "Bountywell is not registered for the guarded outage drill.",
+    reason: bountywellDrillNotRegistered,
   };
 }
 

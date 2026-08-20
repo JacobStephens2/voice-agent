@@ -348,8 +348,13 @@ export function createBountywellOutageControls(options: {
       };
       const projection = projectDrill(drill);
       if (!projection.faultReported) {
+        // The independent backstop must be armed and proven before the guarded
+        // drill stops the registered unit behind it.
         if (!projection.armed) {
           throw new Error("Recovery timer is not armed");
+        }
+        if (!projection.proved) {
+          throw new Error("Recovery timer is not proven");
         }
         if (projection.baseline === undefined) {
           drill = await captureBaseline(drill);
