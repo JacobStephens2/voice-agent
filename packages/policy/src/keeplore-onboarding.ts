@@ -4,10 +4,15 @@ import {
   keeploreProductionBranch,
   keeploreRegistrationSchema,
   keeploreRepository,
+  keeploreBranchProtectionSchema,
+  keeploreGitHubAppInstallationSchema,
   keeplorePolicyAssessmentSchema,
+  type KeeploreBranchBypassAttestation,
   type KeeploreBranchProtection,
+  type KeeploreBranchRulesObservation,
   type KeeploreEnrollmentSource,
   type KeeploreGitHubAppInstallation,
+  type KeeploreGitHubAppObservation,
   type KeeploreLiveInspection,
   type KeeplorePolicyAssessment,
   type KeeploreRegistration,
@@ -51,6 +56,15 @@ export const keeploreRequiredGitHubAppPermissions = {
   checks: "read",
   contents: "write",
   pull_requests: "write",
+} as const;
+
+/**
+ * GitHub grants every App `metadata: read` and does not let an installation
+ * drop it, so its presence is not authority the owner chose to grant. Any level
+ * above read still is.
+ */
+export const keeploreImplicitGitHubAppPermissions = {
+  metadata: "read",
 } as const;
 
 export interface KeeploreEnrollmentDecision {
@@ -168,6 +182,39 @@ export function createKeeploreRegistration(input: {
   });
 }
 
+/**
+ * Translates what was observed of the production branch into the protection the
+ * policy assesses. GitHub reports rule types rather than permissions, so an
+ * absent rule is an allowed operation. Bypass actors come only from the owner's
+ * attestation, because no Voice Agent credential can read them (ADR-0047).
+ */
+export function deriveKeeploreBranchProtection(input: {
+  readonly attestation?: KeeploreBranchBypassAttestation | undefined;
+  readonly rules: KeeploreBranchRulesObservation;
+}): KeeploreBranchProtection {
+  return keeploreBranchProtectionSchema.parse({
+    allowsDeletion: !input.rules.activeRules.includes("deletion"),
+    allowsForcePush: !input.rules.activeRules.includes("non_fast_forward"),
+    branch: input.rules.branch,
+    bypassActors: input.attestation?.bypassActors ?? [],
+    bypassActorsAttested: input.attestation !== undefined,
+    requiredChecks: input.rules.activeRules.includes("required_status_checks")
+      ? [...input.rules.requiredChecks]
+      : [],
+    requiresPullRequest: input.rules.activeRules.includes("pull_request"),
+  });
+}
+
+export function deriveKeeploreGitHubAppInstallation(
+  observation: KeeploreGitHubAppObservation,
+): KeeploreGitHubAppInstallation {
+  return keeploreGitHubAppInstallationSchema.parse({
+    permissions: observation.permissions,
+    repositories: observation.repositories,
+    repositorySelection: observation.repositorySelection,
+  });
+}
+
 export function assessKeeploreBranchProtection(
   protection: KeeploreBranchProtection,
   registration: KeeploreRegistration,
@@ -190,6 +237,11 @@ export function assessKeeploreBranchProtection(
   if (!protection.requiredChecks.includes(registration.verification.checkName)) {
     violations.push(
       `Production branch does not require the ${registration.verification.checkName} check`,
+    );
+  }
+  if (protection.bypassActorsAttested !== true) {
+    violations.push(
+      "Production-branch bypass actors are beyond the Voice Agent's authority and unattested",
     );
   }
   for (const actor of protection.bypassActors) {
@@ -219,15 +271,30 @@ export function assessKeeploreGitHubAppInstallation(
     }
   }
   for (const [permission, level] of Object.entries(installation.permissions)) {
+    const implicit =
+      keeploreImplicitGitHubAppPermissions[
+        permission as keyof typeof keeploreImplicitGitHubAppPermissions
+      ];
+    if (implicit !== undefined && level === implicit) continue;
     if (!(permission in keeploreRequiredGitHubAppPermissions)) {
       violations.push(`GitHub App holds the unrequired ${permission} permission`);
     } else if (level === "admin") {
       violations.push(`GitHub App holds administrative ${permission} authority`);
     }
   }
-  for (const repository of installation.repositories) {
-    if (repository !== registration.repository) {
-      violations.push(`GitHub App is installed on unregistered ${repository}`);
+  if (installation.repositories.length === 0) {
+    violations.push("GitHub App reports no installed repository");
+  }
+  if (installation.repositorySelection === "all") {
+    // Every repository is one finding; naming each is noise, not evidence.
+    violations.push(
+      `GitHub App is installed on every repository, not only ${registration.repository}`,
+    );
+  } else {
+    for (const repository of installation.repositories) {
+      if (repository !== registration.repository) {
+        violations.push(`GitHub App is installed on unregistered ${repository}`);
+      }
     }
   }
   return keeplorePolicyAssessmentSchema.parse({

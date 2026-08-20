@@ -184,6 +184,10 @@ _Avoid_: Keeplore setup, first deploy
 The read-only re-inspection of a live application checkout — repository, production branch, head commit, uncommitted paths, serving path, and verification seams — performed before automation pulls, branches, builds, or deploys, and never resolving the owner's uncommitted work itself.
 _Avoid_: Git status check, cleanup
 
+**Repository Policy Observation**:
+An append-only record of what a Registered Codebase's production-branch rules and least-privilege GitHub App installation were seen to be, carrying whether the Voice Agent's own credentials or the owner's authenticated account established it; an unobserved or expired boundary is reported as unassessed rather than satisfied.
+_Avoid_: Branch protection check, policy scan, compliance status
+
 **Keeplore Button Trial**:
 A feature-work trial in which the Voice Agent delegates resizing the “Get Rid Of” controls on Keeplore's use-by table to match its row-level “Remove” controls.
 _Avoid_: Button test

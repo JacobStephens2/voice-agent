@@ -185,6 +185,19 @@ test("production-branch rules must require pull requests, block force pushes and
     satisfied: true,
     violations: [],
   });
+
+  // No Voice Agent credential can read a ruleset's bypass actors, so a branch
+  // nobody attested is not a clean one however good its rules look.
+  expect(
+    await scenario.assessBranchProtection(
+      branchProtection({ bypassActorsAttested: false }),
+    ),
+  ).toEqual({
+    satisfied: false,
+    violations: [
+      "Production-branch bypass actors are beyond the Voice Agent's authority and unattested",
+    ],
+  });
 });
 
 test("the GitHub App holds only the content, pull-request, and check permissions the design requires", async () => {
@@ -585,6 +598,7 @@ function branchProtection(overrides: {
   readonly allowsDeletion?: boolean;
   readonly allowsForcePush?: boolean;
   readonly bypassActors?: readonly string[];
+  readonly bypassActorsAttested?: boolean;
   readonly requiredChecks?: readonly string[];
   readonly requiresPullRequest?: boolean;
 }): KeeploreBranchProtection {
@@ -593,6 +607,9 @@ function branchProtection(overrides: {
     allowsForcePush: overrides.allowsForcePush ?? false,
     branch: "main",
     bypassActors: [...(overrides.bypassActors ?? [])],
+    // Only the owner can read a ruleset's bypass actors (ADR-0047); the
+    // scenario's branch is one they have read.
+    bypassActorsAttested: overrides.bypassActorsAttested ?? true,
     requiredChecks: [...(overrides.requiredChecks ?? ["keeplore-verification"])],
     requiresPullRequest: overrides.requiresPullRequest ?? true,
   };
