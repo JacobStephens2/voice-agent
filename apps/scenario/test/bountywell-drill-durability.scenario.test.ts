@@ -310,6 +310,45 @@ describe("Bountywell drill Interventions are durable Operations", () => {
     }
   });
 
+  test("a drill being prepared never advertises a fault it has not injected", async () => {
+    const scenario = await openScenario("drill-summary", "2026-08-19T18:00:00.000Z");
+    try {
+      await scenario.registerBountywell();
+      await scenario.grantRestart({ source: "fresh-passkey" });
+      await scenario.armRecoveryTimer();
+      expect((await scenario.readOpenDrill())?.task).toMatchObject({
+        conclusion: "Bountywell Outage Drill preparation is pending.",
+        question: "Is the guarded Bountywell Outage Drill ready?",
+        status: "pending",
+      });
+
+      await scenario.proveRecoveryTimer();
+      await scenario.restart({ ids: nextIds("drill-summary-resumed", 60) });
+
+      expect((await scenario.readOpenDrill())?.task).toMatchObject({
+        conclusion: "Bountywell Outage Drill is armed and ready.",
+        question: "Is the guarded Bountywell Outage Drill ready?",
+        status: "pending",
+      });
+
+      const injected = await scenario.injectFault({ ownerAvailable: true });
+      expect((await scenario.readOpenDrill())?.task).toMatchObject({
+        conclusion: "Bountywell outage recovery is pending.",
+        question: "Bountywell's API appears unavailable.",
+        status: "pending",
+      });
+
+      const record = await scenario.recover(injected.requestId);
+      expect(record.task).toMatchObject({
+        conclusion: "Bountywell API was recovered.",
+        question: "Bountywell's API appears unavailable.",
+        status: "completed",
+      });
+    } finally {
+      await scenario.close();
+    }
+  });
+
   test("proving is refused before the recovery timer is armed", async () => {
     const scenario = await openScenario("drill-unarmed", "2026-08-19T13:00:00.000Z");
     try {

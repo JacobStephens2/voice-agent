@@ -6,6 +6,13 @@ const timestampSchema = z.iso.datetime();
 export const bountywellOutageReport =
   "Bountywell's API appears unavailable." as const;
 
+/**
+ * The question a Bountywell Outage Drill answers while it is being prepared,
+ * before any fault is injected. It becomes the fault report at injection.
+ */
+export const bountywellOutageDrillQuestion =
+  "Is the guarded Bountywell Outage Drill ready?" as const;
+
 export const bountywellServiceRestartCapabilitySchema = z.literal(
   "bountywell.service.restart",
 );
@@ -20,6 +27,8 @@ export const bountywellRestartCapabilitiesSchema = z.tuple([
 ]);
 
 export const bountywellOutageTaskConclusionSchema = z.enum([
+  "Bountywell Outage Drill preparation is pending.",
+  "Bountywell Outage Drill is armed and ready.",
   "Bountywell outage recovery is pending.",
   "Bountywell API was recovered.",
   "Bountywell API was already recovered.",
@@ -32,7 +41,10 @@ export const bountywellOutageTaskSchema = z.object({
   createdAt: timestampSchema,
   id: identifierSchema,
   kind: z.literal("bountywell.outage.recovery"),
-  question: z.literal(bountywellOutageReport),
+  question: z.union([
+    z.literal(bountywellOutageDrillQuestion),
+    z.literal(bountywellOutageReport),
+  ]),
   status: z.enum(["pending", "completed", "cancelled"]),
   updatedAt: timestampSchema,
 });

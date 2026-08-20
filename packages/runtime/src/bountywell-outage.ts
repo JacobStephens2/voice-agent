@@ -1,5 +1,6 @@
 import {
   bountywellHealthObservationSchema,
+  bountywellOutageDrillQuestion,
   bountywellOutageReport,
   type BountywellBaselineEvidence,
   type BountywellHealthObservation,
@@ -132,11 +133,11 @@ export function createBountywellOutageControls(options: {
       record: {
         evidence: [],
         task: {
-          conclusion: "Bountywell outage recovery is pending.",
+          conclusion: "Bountywell Outage Drill preparation is pending.",
           createdAt: openedAt,
           id: taskId,
           kind: "bountywell.outage.recovery",
-          question: bountywellOutageReport,
+          question: bountywellOutageDrillQuestion,
           status: "pending",
           updatedAt: openedAt,
         },
@@ -158,6 +159,10 @@ export function createBountywellOutageControls(options: {
     readonly completedSummary: string;
     readonly kind: BountywellOperationKind;
     readonly record: EvidenceRecordProjection;
+    readonly task?: {
+      readonly conclusion: EvidenceRecordProjection["task"]["conclusion"];
+      readonly question?: EvidenceRecordProjection["task"]["question"];
+    };
     execute(): Promise<readonly UnsequencedEvidenceEvent[]>;
   }): Promise<EvidenceRecordProjection> {
     const taskId = input.record.task.id;
@@ -206,6 +211,9 @@ export function createBountywellOutageControls(options: {
       ],
       observedAt: completedAt,
       operationId,
+      ...(input.task === undefined
+        ? {}
+        : { task: { ...input.task, status: "pending" as const } }),
       taskId,
     });
   }
@@ -308,6 +316,7 @@ export function createBountywellOutageControls(options: {
         },
         kind: "bountywell.recovery-timer.prove",
         record: drill,
+        task: { conclusion: "Bountywell Outage Drill is armed and ready." },
       });
       return proof ?? provenTimer;
     },
@@ -364,6 +373,10 @@ export function createBountywellOutageControls(options: {
         },
         kind: "bountywell.service.stop",
         record: drill,
+        task: {
+          conclusion: "Bountywell outage recovery is pending.",
+          question: bountywellOutageReport,
+        },
       });
       const acceptedAt = options.now();
       if (!projectDrill(drill).taskAccepted) {

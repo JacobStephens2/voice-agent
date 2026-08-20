@@ -72,9 +72,15 @@ export interface CompletedOperationPersistence {
   readonly evidence: readonly EvidenceEventProjection[];
   readonly observedAt: string;
   readonly operationId: string;
+  /**
+   * The Durable Task summary this Operation settles. A `pending` status
+   * re-states the question and conclusion of a task that stays open, so a drill
+   * being prepared never advertises a fault it has not injected.
+   */
   readonly task?: {
     readonly conclusion: EvidenceRecordProjection["task"]["conclusion"];
-    readonly status: "completed" | "cancelled";
+    readonly question?: EvidenceRecordProjection["task"]["question"];
+    readonly status: "cancelled" | "completed" | "pending";
   };
   readonly taskId: string;
 }
