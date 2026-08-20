@@ -10,7 +10,12 @@ script_directory=$(cd "$(dirname "$0")" && pwd)
 source "$script_directory/keeplore-config.sh"
 keeplore_load_configuration
 
-git_checkout=(git --no-optional-locks -c protocol.allow=never -C "$keeplore_live_checkout")
+# The live checkout belongs to the account that serves it, so Git calls it
+# dubiously owned and refuses to read it. The path comes from the root-owned
+# registration, so trusting exactly it widens nothing — and it beats asking every
+# account that inspects Keeplore to carry a global safe.directory.
+git_checkout=(git --no-optional-locks -c protocol.allow=never \
+  -c "safe.directory=$keeplore_live_checkout" -C "$keeplore_live_checkout")
 head_commit=$("${git_checkout[@]}" rev-parse HEAD)
 branch=$("${git_checkout[@]}" rev-parse --abbrev-ref HEAD)
 remote=$("${git_checkout[@]}" remote get-url origin)

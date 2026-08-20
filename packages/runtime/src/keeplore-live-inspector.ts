@@ -31,21 +31,42 @@ export function createNodeKeeploreLiveInspector(options: {
   async function git(...args: readonly string[]): Promise<string> {
     const { stdout } = await run(
       "git",
-      ["--no-optional-locks", "-C", options.liveCheckoutPath, ...args],
+      [
+        "--no-optional-locks",
+        // The live checkout belongs to the account that serves it, not to the
+        // Voice Agent, so Git calls it dubiously owned and refuses to read it.
+        // The path comes from the root-owned registration this process cannot
+        // write, so trusting exactly it widens nothing.
+        "-c",
+        `safe.directory=${options.liveCheckoutPath}`,
+        "-c",
+        "protocol.allow=never",
+        "-C",
+        options.liveCheckoutPath,
+        ...args,
+      ],
       {
         encoding: "utf8",
         maxBuffer: 1_000_000,
       },
     );
-    return stdout.trim();
+    return stdout;
+  }
+
+  /** For the single-value reads; porcelain output must keep its own layout. */
+  async function gitValue(...args: readonly string[]): Promise<string> {
+    return (await git(...args)).trim();
   }
 
   return {
     async inspect(): Promise<KeeploreLiveInspection> {
       const [headCommit, branch, remoteUrl, status] = await Promise.all([
-        git("rev-parse", "HEAD"),
-        git("rev-parse", "--abbrev-ref", "HEAD"),
-        git("remote", "get-url", "origin"),
+        gitValue("rev-parse", "HEAD"),
+        gitValue("rev-parse", "--abbrev-ref", "HEAD"),
+        gitValue("remote", "get-url", "origin"),
+        // Not trimmed: porcelain encodes the index and worktree states in the
+        // first two columns, and an unstaged change leads with a space that
+        // trimming would eat -- taking the first character of the path with it.
         git("status", "--porcelain"),
       ]);
       if (branch !== "main") {
