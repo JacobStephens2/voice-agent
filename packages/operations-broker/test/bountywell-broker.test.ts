@@ -363,6 +363,109 @@ test("a pinned recovery timer can be armed when systemctl link is denied", async
   });
 });
 
+test("the broker proves the recovery timer over its socket and leaves it armed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-broker-prove-"));
+  temporaryDirectories.push(directory);
+  const socketPath = join(directory, "broker.sock");
+  let nowMs = Date.parse("2026-08-19T19:00:00.000Z");
+  const host = createDeterministicBountywellHost({
+    advanceMs(milliseconds) {
+      nowMs += milliseconds;
+    },
+    now: () => new Date(nowMs).toISOString(),
+  });
+  const server = createOperationsBrokerServer({
+    controller: host.controller,
+    observer: {
+      async observe() {
+        throw new Error("observe is not used");
+      },
+    },
+  });
+  await server.listen(socketPath);
+  const client = createUnixSocketBountywellController(socketPath);
+
+  try {
+    await client.armRecoveryTimer();
+    expect(await client.proveRecoveryTimer()).toEqual({
+      capable: true,
+      delaySeconds: 600,
+      unit: "bountywell-api.service",
+    });
+    expect(await client.readRecoveryTimer()).toEqual({
+      armed: true,
+      delaySeconds: 600,
+      unit: "bountywell-api.service",
+    });
+    expect(
+      host.commands.every((command) => command.unit === "bountywell-api.service"),
+    ).toBe(true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("proving a recovery timer that starts an unrelated unit is refused", async () => {
+  const controller = createSystemdBountywellServiceController({
+    async execute(_command, args) {
+      if (args[0] === "cat") {
+        return [
+          "[Timer]",
+          "OnActiveSec=10min",
+          "[Service]",
+          "ExecStart=/usr/bin/systemctl start unrelated.service",
+        ].join("\n");
+      }
+      throw new Error(`unexpected systemctl ${args.join(" ")}`);
+    },
+  });
+
+  await expect(controller.proveRecoveryTimer()).rejects.toThrow(
+    "Recovery timer is not proven for bountywell-api.service",
+  );
+});
+
+test("the service controller addresses only the registered unit and its recovery units", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-broker-units-"));
+  temporaryDirectories.push(directory);
+  const invoked: string[][] = [];
+  const controller = createSystemdBountywellServiceController({
+    unitDirectory: directory,
+    async execute(_command, args) {
+      invoked.push([...args]);
+      if (args[0] === "cat") {
+        return [
+          "OnActiveSec=10min",
+          "ExecStart=/usr/bin/systemctl start bountywell-api.service",
+        ].join("\n");
+      }
+      return "ActiveState=active";
+    },
+  });
+
+  await controller.armRecoveryTimer();
+  await controller.proveRecoveryTimer();
+  await controller.readRecoveryTimer();
+  await controller.removeRecoveryTimer();
+  await controller.stopRegisteredUnit();
+
+  const units = invoked
+    .flat()
+    .filter((argument) => argument.endsWith(".service") || argument.endsWith(".timer"));
+  expect(units.length).toBeGreaterThan(0);
+  expect(
+    units.every((unit) =>
+      [
+        "bountywell-api.service",
+        "bountywell-api-recovery.service",
+        "bountywell-api-recovery.timer",
+        `${directory}/bountywell-api-recovery.service`,
+        `${directory}/bountywell-api-recovery.timer`,
+      ].includes(unit),
+    ),
+  ).toBe(true);
+});
+
 test("stopping a pinned recovery timer removes it when disable is denied", async () => {
   const controller = createSystemdBountywellServiceController({
     async execute(_command, args) {

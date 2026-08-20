@@ -42,9 +42,6 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
     join(directory, "broker.sqlite"),
   );
   const runtime = createDurableTaskRuntime({
-    advanceMs(milliseconds) {
-      nowMs += milliseconds;
-    },
     applicationRegistry: store,
     healthObserver: createBountywellOperationsBroker({
       now,
@@ -134,12 +131,19 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
       unit: "bountywell-api.service",
     });
 
-    await api.inject({
+    const installsBeforeReplay = host.commands.filter(
+      (command) => command.action === "install-timer",
+    ).length;
+    const rearmed = await api.inject({
       headers,
       method: "POST",
       payload: { csrfToken: "csrf-token-value" },
       url: "/api/operations/bountywell-outage-drill/arm-timer",
     });
+    expect(rearmed.json()).toEqual(armed.json());
+    expect(
+      host.commands.filter((command) => command.action === "install-timer"),
+    ).toHaveLength(installsBeforeReplay);
     await runtime.captureBountywellBaseline();
 
     const blockedInject = await api.inject({
@@ -160,6 +164,20 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
     expect(injected.json()).toMatchObject({
       report: "Bountywell's API appears unavailable.",
     });
+
+    const duplicateInject = await api.inject({
+      headers,
+      method: "POST",
+      payload: { csrfToken: "csrf-token-value", ownerAvailable: true },
+      url: "/api/operations/bountywell-outage-drill/inject",
+    });
+    expect(duplicateInject.json()).toEqual(injected.json());
+    expect(host.commands.filter((command) => command.action === "stop")).toEqual([
+      { action: "stop", unit: "bountywell-api.service" },
+    ]);
+    expect(
+      host.commands.every((command) => command.unit === "bountywell-api.service"),
+    ).toBe(true);
   } finally {
     await api.close();
     await runtime.close();

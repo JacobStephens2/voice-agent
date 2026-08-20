@@ -147,6 +147,34 @@ export function diagnoseBountywellOutage(
   return { alreadyRecovered: false, basis: "inference" };
 }
 
+/**
+ * Authorize one owner-initiated Bountywell Outage Drill Intervention. The drill
+ * may address only the registered `bountywell-api.service` unit of a registered
+ * Bountywell; it does not require the separate restart capability, which
+ * authorizes the Voice Agent's own recovery.
+ */
+export function authorizeBountywellDrillControl(
+  registration: BountywellRegistration | undefined,
+): {
+  readonly capability: "bountywell.outage.drill";
+  readonly decision: "allow" | "deny";
+  readonly reason: string;
+} {
+  if (registration?.serviceUnit === "bountywell-api.service") {
+    return {
+      capability: "bountywell.outage.drill",
+      decision: "allow",
+      reason:
+        "The guarded drill addresses the registered bountywell-api.service unit.",
+    };
+  }
+  return {
+    capability: "bountywell.outage.drill",
+    decision: "deny",
+    reason: "Bountywell is not registered for the guarded outage drill.",
+  };
+}
+
 export function authorizeBountywellRestart(registration: BountywellRegistration | undefined): {
   readonly capability: "bountywell.service.restart";
   readonly decision: "allow" | "deny";

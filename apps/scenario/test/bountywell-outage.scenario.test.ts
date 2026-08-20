@@ -76,7 +76,7 @@ describe("Bountywell outage recovery scenario", () => {
         delaySeconds: 600,
         unit: "bountywell-api.service",
       });
-      await scenario.armRecoveryTimer();
+      expect(scenario.timer.armed).toBe(true);
 
       expect(await scenario.captureBaseline()).toEqual({
         authenticationBoundary: 401,
@@ -125,11 +125,22 @@ describe("Bountywell outage recovery scenario", () => {
       expect(diagnosis?.summary).toContain("observation");
       expect(diagnosis?.summary).not.toContain("inference");
 
-      const policy = record.evidence.find((event) => event.kind === "policy.decided");
+      const policy = record.evidence.find(
+        (event) =>
+          event.kind === "policy.decided" &&
+          event.details.capability === "bountywell.service.restart",
+      );
       expect(policy?.details).toMatchObject({
         capability: "bountywell.service.restart",
         decision: "allow",
       });
+      expect(
+        record.evidence.filter(
+          (event) =>
+            event.kind === "policy.decided" &&
+            event.details.capability === "bountywell.outage.drill",
+        ),
+      ).not.toHaveLength(0);
 
       const timerEvents = record.evidence.filter(
         (event) => event.kind === "timer.lifecycle",
@@ -174,7 +185,6 @@ describe("Bountywell outage recovery scenario", () => {
       await scenario.registerBountywell();
       await scenario.armRecoveryTimer();
       expect(await scenario.proveRecoveryTimer()).toMatchObject({ capable: true });
-      await scenario.armRecoveryTimer();
       await scenario.captureBaseline();
       const injected = await scenario.injectFault({ ownerAvailable: true });
       const startsBefore = scenario.hostCommands.filter(
@@ -193,7 +203,11 @@ describe("Bountywell outage recovery scenario", () => {
         inactiveUnit: "bountywell-api.service",
       });
       expect(
-        record.evidence.find((event) => event.kind === "policy.decided")?.details,
+        record.evidence.find(
+          (event) =>
+            event.kind === "policy.decided" &&
+            event.details.capability === "bountywell.service.restart",
+        )?.details,
       ).toMatchObject({
         capability: "bountywell.service.restart",
         decision: "deny",
@@ -337,6 +351,5 @@ async function prepareAuthorizedDrill(
   await scenario.grantRestart({ source: "fresh-passkey" });
   await scenario.armRecoveryTimer();
   await scenario.proveRecoveryTimer();
-  await scenario.armRecoveryTimer();
   await scenario.captureBaseline();
 }

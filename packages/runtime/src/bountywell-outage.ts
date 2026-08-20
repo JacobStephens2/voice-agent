@@ -7,14 +7,19 @@ import {
   type BountywellRegistration,
   type BountywellRecoveryTimer,
   type BountywellRecoveryTimerProof,
+  type BountywellServiceController,
+  type BountywellTimerLifecycleEvidenceEvent,
   type EvidenceEventProjection,
   type EvidenceRecordProjection,
 } from "@voice-agent/contracts";
 import type {
   ApplicationRegistry,
+  BountywellOperationKind,
   DurableTaskStore,
+  StoredOperation,
 } from "@voice-agent/durable-store";
 import {
+  authorizeBountywellDrillControl,
   authorizeBountywellOutageReport,
   authorizeBountywellRestart,
   denyBountywellAuthorityExpansion,
@@ -23,18 +28,13 @@ import {
   publicEndpointsRecovered,
 } from "@voice-agent/policy";
 
-export interface BountywellServiceController {
-  armRecoveryTimer(): Promise<BountywellRecoveryTimer>;
-  fireDueTimers(): Promise<readonly { readonly unit: "bountywell-api.service" }[]>;
-  inspectRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
-  readRecoveryTimer(): Promise<BountywellRecoveryTimer>;
-  removeRecoveryTimer(): Promise<{ readonly removed: boolean }>;
-  startRegisteredUnit(): Promise<{
-    readonly previousActive: boolean;
-    readonly started: boolean;
-  }>;
-  stopRegisteredUnit(): Promise<{ readonly stopped: boolean }>;
-}
+/** One Evidence Event before the append-only history assigns its sequence. */
+type UnsequencedEvidenceEvent<E = EvidenceEventProjection> = E extends unknown
+  ? Omit<E, "sequence">
+  : never;
+
+const BOUNTYWELL_UNIT = "bountywell-api.service" as const;
+const RECOVERY_DELAY_SECONDS = 600 as const;
 
 export type BountywellAuthoritySource =
   | "fresh-passkey"
@@ -73,7 +73,6 @@ export interface BountywellOutageControls {
 }
 
 export function createBountywellOutageControls(options: {
-  readonly advanceMs?: (milliseconds: number) => void;
   readonly applicationRegistry?: ApplicationRegistry;
   readonly healthObserver?: BountywellHealthObserver;
   readonly nextId: () => string;
@@ -82,9 +81,6 @@ export function createBountywellOutageControls(options: {
   readonly serviceController?: BountywellServiceController;
   readonly store: DurableTaskStore;
 }): BountywellOutageControls {
-  let baseline: BountywellBaselineEvidence | undefined;
-  let timerProven = false;
-
   async function requireController(): Promise<BountywellServiceController> {
     if (options.serviceController === undefined) {
       throw new Error("Bountywell service controller is unavailable");
@@ -106,6 +102,134 @@ export function createBountywellOutageControls(options: {
     return options.applicationRegistry;
   }
 
+  /**
+   * Authorize one drill Intervention against the Bountywell registration and
+   * return the decision to record beside the Operation's own result.
+   */
+  async function authorizeDrillControl(): Promise<
+    ReturnType<typeof authorizeBountywellDrillControl>
+  > {
+    const decision = authorizeBountywellDrillControl(
+      await (await requireRegistry()).findBountywellRegistration(),
+    );
+    if (decision.decision === "deny") {
+      await options.recordPolicyDenial();
+      throw new Error(decision.reason);
+    }
+    return decision;
+  }
+
+  /**
+   * The open drill Durable Task, opened by the first Intervention rather than by
+   * the injected fault, so that arming, proof, and baseline survive restart.
+   */
+  async function openDrill(): Promise<EvidenceRecordProjection> {
+    const existing = await findOpenDrill(options.store);
+    if (existing !== undefined) return existing;
+    const openedAt = options.now();
+    const taskId = options.nextId();
+    return options.store.persistAcceptedInquiry({
+      record: {
+        evidence: [],
+        task: {
+          conclusion: "Bountywell outage recovery is pending.",
+          createdAt: openedAt,
+          id: taskId,
+          kind: "bountywell.outage.recovery",
+          question: bountywellOutageReport,
+          status: "pending",
+          updatedAt: openedAt,
+        },
+      },
+      requestId: drillRequestId(taskId),
+    });
+  }
+
+  /**
+   * Accept one durably identified drill Operation and record its result as
+   * Evidence Events. A completed Operation replays its recorded result without
+   * touching the Agent Host. An acceptance interrupted before completion is
+   * resumed by re-running `execute`, so every effect must either reconcile
+   * against the Agent Host first, as arming does, or be safe to re-apply to the
+   * registered unit, as stopping it is.
+   */
+  async function runDrillOperation(input: {
+    readonly acceptedSummary: string;
+    readonly completedSummary: string;
+    readonly kind: BountywellOperationKind;
+    readonly record: EvidenceRecordProjection;
+    execute(): Promise<readonly UnsequencedEvidenceEvent[]>;
+  }): Promise<EvidenceRecordProjection> {
+    const taskId = input.record.task.id;
+    const operations = await options.store.listOperations(taskId);
+    const existing = operations.find((operation) => operation.kind === input.kind);
+    // A completed Operation replays its recorded result; its effect is not repeated.
+    if (existing?.status === "completed") return input.record;
+    const operationId = existing?.id ?? options.nextId();
+    const acceptedAt = options.now();
+    let record = input.record;
+    if (existing === undefined) {
+      record = await options.store.persistAcceptedOperation({
+        acceptedAt,
+        evidence: [
+          {
+            details: { operationId },
+            id: options.nextId(),
+            kind: "operation.accepted",
+            occurredAt: acceptedAt,
+            sequence: lastSequence(record) + 1,
+            summary: input.acceptedSummary,
+          },
+        ],
+        idempotencyKey: `${taskId}:${input.kind}`,
+        kind: input.kind,
+        operationId,
+        taskId,
+      });
+    }
+    const results = await input.execute();
+    const completedAt = options.now();
+    let sequence = lastSequence(record);
+    return options.store.completeBountywellOperation({
+      evidence: [
+        ...results.map(
+          (event): EvidenceEventProjection => ({ ...event, sequence: ++sequence }),
+        ),
+        {
+          details: { operationId },
+          id: options.nextId(),
+          kind: "operation.completed",
+          occurredAt: completedAt,
+          sequence: ++sequence,
+          summary: input.completedSummary,
+        } satisfies EvidenceEventProjection,
+      ],
+      observedAt: completedAt,
+      operationId,
+      taskId,
+    });
+  }
+
+  async function captureBaseline(
+    drill: EvidenceRecordProjection,
+  ): Promise<EvidenceRecordProjection> {
+    const observer = await requireObserver();
+    const observation = bountywellHealthObservationSchema.parse(
+      await observer.observe({
+        operationId: options.nextId(),
+        taskId: drill.task.id,
+      }),
+    );
+    if (!publicEndpointsRecovered(observation)) {
+      throw new Error("Bountywell baseline health could not be confirmed");
+    }
+    return options.store.appendEvidence({
+      event: baselineEvidence(options.nextId(), options.now()),
+      taskId: drill.task.id,
+      updatedAt: options.now(),
+    });
+  }
+
   return {
     async grantBountywellRestart(source) {
       if (source !== "fresh-passkey") {
@@ -121,50 +245,81 @@ export function createBountywellOutageControls(options: {
     },
 
     async armBountywellRecoveryTimer() {
-      return (await requireController()).armRecoveryTimer();
+      const controller = await requireController();
+      const policy = await authorizeDrillControl();
+      const drill = await openDrill();
+      // The recorded result of a completed arming is its lifecycle Evidence Event.
+      if (projectDrill(drill).recordedArming) return armedTimer();
+      let armed: BountywellRecoveryTimer | undefined;
+      await runDrillOperation({
+        acceptedSummary: "Arming the independent recovery timer was accepted.",
+        completedSummary: "The independent recovery timer was armed.",
+        execute: async () => {
+          // An interrupted acceptance may already have armed the timer; the
+          // Agent Host's own state decides whether to apply the effect again.
+          const current = await controller.readRecoveryTimer();
+          armed = current.armed ? current : await controller.armRecoveryTimer();
+          return [
+            policyDecided(options.nextId(), options.now(), policy),
+            timerLifecycle(
+              options.nextId(),
+              options.now(),
+              "armed",
+              "The independent recovery timer is armed for bountywell-api.service.",
+            ),
+          ];
+        },
+        kind: "bountywell.recovery-timer.arm",
+        record: drill,
+      });
+      return armed ?? armedTimer();
     },
 
     async proveBountywellRecoveryTimer() {
       const controller = await requireController();
-      const timer = await controller.readRecoveryTimer();
-      if (!timer.armed) {
+      const policy = await authorizeDrillControl();
+      const drill = await openDrill();
+      const provenTimer = {
+        capable: true as const,
+        delaySeconds: RECOVERY_DELAY_SECONDS,
+        unit: BOUNTYWELL_UNIT,
+      };
+      const projection = projectDrill(drill);
+      if (projection.proved) return provenTimer;
+      if (!projection.armed) {
         throw new Error("Recovery timer is not armed");
       }
-      if (options.advanceMs !== undefined) {
-        options.advanceMs(600_000);
-        const fired = await controller.fireDueTimers();
-        if (fired[0]?.unit !== "bountywell-api.service") {
-          throw new Error("Recovery timer did not start bountywell-api.service");
-        }
-        timerProven = true;
-        return {
-          capable: true,
-          delaySeconds: 600,
-          unit: "bountywell-api.service",
-        };
-      }
-      const proof = await controller.inspectRecoveryTimer();
-      timerProven = true;
-      return proof;
+      let proof: BountywellRecoveryTimerProof | undefined;
+      await runDrillOperation({
+        acceptedSummary: "Proving the independent recovery timer was accepted.",
+        completedSummary:
+          "The independent recovery timer was proven and left armed.",
+        execute: async () => {
+          proof = await controller.proveRecoveryTimer();
+          return [
+            policyDecided(options.nextId(), options.now(), policy),
+            timerLifecycle(
+              options.nextId(),
+              options.now(),
+              "proven",
+              "The recovery timer was proven capable of starting bountywell-api.service after ten minutes.",
+            ),
+          ];
+        },
+        kind: "bountywell.recovery-timer.prove",
+        record: drill,
+      });
+      return proof ?? provenTimer;
     },
 
     async captureBountywellBaseline() {
-      const observer = await requireObserver();
-      const observation = bountywellHealthObservationSchema.parse(
-        await observer.observe({
-          operationId: `baseline:${options.nextId()}`,
-          taskId: `baseline:${options.nextId()}`,
-        }),
-      );
-      const captured = {
-        authenticationBoundary: 401 as const,
-        publicHealth: 200 as const,
-        serviceActive: true as const,
-      };
-      if (!publicEndpointsRecovered(observation)) {
-        throw new Error("Bountywell baseline health could not be confirmed");
+      const drill = await openDrill();
+      const recorded = projectDrill(drill).baseline;
+      if (recorded !== undefined) return recorded;
+      const captured = projectDrill(await captureBaseline(drill)).baseline;
+      if (captured === undefined) {
+        throw new Error("Bountywell baseline evidence was not captured");
       }
-      baseline = captured;
       return captured;
     },
 
@@ -175,50 +330,74 @@ export function createBountywellOutageControls(options: {
         );
       }
       const controller = await requireController();
-      const timer = await controller.readRecoveryTimer();
-      if (!timer.armed) {
-        throw new Error("Recovery timer is not armed");
-      }
-      if (baseline === undefined) {
-        await this.captureBountywellBaseline();
-      }
-      if (baseline === undefined) {
-        throw new Error("Bountywell baseline evidence was not captured");
-      }
-      await controller.stopRegisteredUnit();
-      const acceptedAt = options.now();
-      const requestId = options.nextId();
-      const taskId = options.nextId();
-      const operationId = options.nextId();
-      const evidence = createInjectionEvidence({
-        acceptedAt,
-        baseline,
-        nextId: options.nextId,
-        operationId,
-        requestId,
-        timerProven,
-      });
-      await options.store.persistAcceptedInquiry({
-        operationId,
-        record: {
-          evidence,
-          task: {
-            conclusion: "Bountywell outage recovery is pending.",
-            createdAt: acceptedAt,
-            id: taskId,
-            kind: "bountywell.outage.recovery",
-            question: bountywellOutageReport,
-            status: "pending",
-            updatedAt: acceptedAt,
-          },
-        },
-        requestId,
-      });
-      return {
+      const policy = await authorizeDrillControl();
+      let drill = await openDrill();
+      const injection = {
         report: authorizeBountywellOutageReport(bountywellOutageReport),
-        requestId,
-        taskId,
+        requestId: drillRequestId(drill.task.id),
+        taskId: drill.task.id,
       };
+      const projection = projectDrill(drill);
+      if (!projection.faultReported) {
+        if (!projection.armed) {
+          throw new Error("Recovery timer is not armed");
+        }
+        if (projection.baseline === undefined) {
+          drill = await captureBaseline(drill);
+        }
+      }
+      drill = await runDrillOperation({
+        acceptedSummary: "Stopping the registered unit for the drill was accepted.",
+        completedSummary: "The registered bountywell-api.service unit was stopped.",
+        execute: async () => {
+          await controller.stopRegisteredUnit();
+          return [
+            policyDecided(options.nextId(), options.now(), policy),
+            {
+              details: { report: bountywellOutageReport },
+              id: options.nextId(),
+              kind: "fault.reported",
+              occurredAt: options.now(),
+              summary: bountywellOutageReport,
+            },
+          ];
+        },
+        kind: "bountywell.service.stop",
+        record: drill,
+      });
+      const acceptedAt = options.now();
+      if (!projectDrill(drill).taskAccepted) {
+        drill = await options.store.appendEvidence({
+          event: {
+            details: { requestId: injection.requestId },
+            id: options.nextId(),
+            kind: "task.accepted",
+            occurredAt: acceptedAt,
+            summary: "Bountywell outage recovery accepted.",
+          },
+          taskId: drill.task.id,
+          updatedAt: acceptedAt,
+        });
+      }
+      const diagnosisOperationId = options.nextId();
+      await options.store.persistAcceptedOperation({
+        acceptedAt,
+        evidence: [
+          {
+            details: { operationId: diagnosisOperationId },
+            id: options.nextId(),
+            kind: "operation.accepted",
+            occurredAt: acceptedAt,
+            sequence: lastSequence(drill) + 1,
+            summary: "Bounded Bountywell diagnosis observation accepted.",
+          },
+        ],
+        idempotencyKey: `${drill.task.id}:bountywell.outage.diagnose`,
+        kind: "bountywell.outage.diagnose",
+        operationId: diagnosisOperationId,
+        taskId: drill.task.id,
+      });
+      return injection;
     },
 
     async submitBountywellOutageRecovery(requestId) {
@@ -242,20 +421,16 @@ export function createBountywellOutageControls(options: {
     },
 
     async processNextBountywellOutageRecovery() {
-      const pending = (await options.store.listTasks()).find(
-        (task) =>
-          task.kind === "bountywell.outage.recovery" && task.status === "pending",
-      );
-      if (pending === undefined) return undefined;
-      const record = await options.store.findByTaskId(pending.id);
-      if (record === undefined || record.task.status !== "pending") {
-        return record;
-      }
+      const drill = await findOpenDrill(options.store);
+      if (drill === undefined) return undefined;
+      const operations = await options.store.listOperations(drill.task.id);
+      // A drill that is armed but not yet injected has no fault to recover from.
+      if (!operations.some(isDiagnosisOperation)) return undefined;
       return completeOutageRecovery({
         nextId: options.nextId,
         now: options.now,
         observer: await requireObserver(),
-        record,
+        record: drill,
         registration: await (await requireRegistry()).findBountywellRegistration(),
         serviceController: await requireController(),
         store: options.store,
@@ -264,100 +439,172 @@ export function createBountywellOutageControls(options: {
   };
 }
 
-function createInjectionEvidence(input: {
-  readonly acceptedAt: string;
-  readonly baseline: BountywellBaselineEvidence;
-  readonly nextId: () => string;
-  readonly operationId: string;
-  readonly requestId: string;
-  readonly timerProven: boolean;
-}): EvidenceEventProjection[] {
-  const events: EvidenceEventProjection[] = [
-    {
-      details: {
-        delaySeconds: 600,
-        phase: "armed",
-        unit: "bountywell-api.service",
-      },
-      id: input.nextId(),
-      kind: "timer.lifecycle",
-      occurredAt: input.acceptedAt,
-      sequence: 1,
-      summary: "The independent recovery timer is armed for bountywell-api.service.",
-    },
-  ];
-  if (input.timerProven) {
-    events.push({
-      details: {
-        delaySeconds: 600,
-        phase: "proven",
-        unit: "bountywell-api.service",
-      },
-      id: input.nextId(),
-      kind: "timer.lifecycle",
-      occurredAt: input.acceptedAt,
-      sequence: events.length + 1,
-      summary:
-        "The recovery timer was proven capable of starting bountywell-api.service after ten minutes.",
-    });
-  }
-  events.push(
-    {
-      details: {
-        checks: [
-          {
-            facts: { statusCode: input.baseline.publicHealth },
-            outcome: "pass",
-            source: "public-health",
-            summary: "Baseline public /api/health returned 200.",
-          },
-          {
-            facts: { statusCode: input.baseline.authenticationBoundary },
-            outcome: "pass",
-            source: "authentication-boundary",
-            summary: "Baseline public /api/data returned 401.",
-          },
-          {
-            facts: { active: input.baseline.serviceActive },
-            outcome: "pass",
-            source: "service-state",
-            summary: "Baseline registered unit was active.",
-          },
-        ],
-        rejectedEvidenceCount: 0,
-      },
-      id: input.nextId(),
-      kind: "evidence.observed",
-      occurredAt: input.acceptedAt,
-      sequence: events.length + 1,
-      summary: "Baseline Bountywell public endpoint and service evidence was recorded.",
-    },
-    {
-      details: { report: bountywellOutageReport },
-      id: input.nextId(),
-      kind: "fault.reported",
-      occurredAt: input.acceptedAt,
-      sequence: events.length + 2,
-      summary: bountywellOutageReport,
-    },
-    {
-      details: { requestId: input.requestId },
-      id: input.nextId(),
-      kind: "task.accepted",
-      occurredAt: input.acceptedAt,
-      sequence: events.length + 3,
-      summary: "Bountywell outage recovery accepted.",
-    },
-    {
-      details: { operationId: input.operationId },
-      id: input.nextId(),
-      kind: "operation.accepted",
-      occurredAt: input.acceptedAt,
-      sequence: events.length + 4,
-      summary: "Bounded Bountywell diagnosis observation accepted.",
-    },
+function drillRequestId(taskId: string): string {
+  return `drill:${taskId}`;
+}
+
+async function findOpenDrill(
+  store: DurableTaskStore,
+): Promise<EvidenceRecordProjection | undefined> {
+  const pending = (await store.listTasks()).find(
+    (task) =>
+      task.kind === "bountywell.outage.recovery" && task.status === "pending",
   );
-  return events;
+  return pending === undefined ? undefined : store.findByTaskId(pending.id);
+}
+
+function isDiagnosisOperation(operation: StoredOperation): boolean {
+  return operation.kind === "bountywell.outage.diagnose";
+}
+
+/**
+ * The drill state projected from one walk of the append-only Evidence Events:
+ * whether arming and proof recorded their results, whether the timer is armed
+ * now, and the baseline the drill captured before the fault.
+ */
+interface DrillProjection {
+  readonly armed: boolean;
+  readonly baseline: BountywellBaselineEvidence | undefined;
+  readonly faultReported: boolean;
+  readonly proved: boolean;
+  readonly recordedArming: boolean;
+  readonly taskAccepted: boolean;
+}
+
+function projectDrill(record: EvidenceRecordProjection): DrillProjection {
+  let armed = false;
+  let baseline: BountywellBaselineEvidence | undefined;
+  let faultReported = false;
+  let proved = false;
+  let recordedArming = false;
+  let taskAccepted = false;
+  for (const event of record.evidence) {
+    switch (event.kind) {
+      case "evidence.observed":
+        baseline ??= projectBaseline(event.details.checks);
+        break;
+      case "fault.reported":
+        faultReported = true;
+        break;
+      case "task.accepted":
+        taskAccepted = true;
+        break;
+      case "timer.lifecycle":
+        if (event.details.phase === "removed") armed = false;
+        else if (event.details.phase !== "retained") armed = true;
+        if (event.details.phase === "armed") recordedArming = true;
+        if (event.details.phase === "proven") proved = true;
+        break;
+      default:
+        break;
+    }
+  }
+  return { armed, baseline, faultReported, proved, recordedArming, taskAccepted };
+}
+
+/**
+ * The captured baseline read from the first observed Evidence Event, which is
+ * recorded only once the public endpoints and registered unit are confirmed.
+ */
+function projectBaseline(
+  checks: Extract<
+    EvidenceEventProjection,
+    { kind: "evidence.observed" }
+  >["details"]["checks"],
+): BountywellBaselineEvidence | undefined {
+  const publicHealth = checks.find((check) => check.source === "public-health");
+  const authentication = checks.find(
+    (check) => check.source === "authentication-boundary",
+  );
+  const service = checks.find((check) => check.source === "service-state");
+  return publicHealth?.facts.statusCode === 200 &&
+    authentication?.facts.statusCode === 401 &&
+    service?.facts.active === true
+    ? { authenticationBoundary: 401, publicHealth: 200, serviceActive: true }
+    : undefined;
+}
+
+function policyDecided(
+  id: string,
+  occurredAt: string,
+  policy: ReturnType<typeof authorizeBountywellDrillControl>,
+): UnsequencedEvidenceEvent<
+  Extract<EvidenceEventProjection, { kind: "policy.decided" }>
+> {
+  return {
+    details: policy,
+    id,
+    kind: "policy.decided",
+    occurredAt,
+    summary: policy.reason,
+  };
+}
+
+function armedTimer(): BountywellRecoveryTimer {
+  return {
+    armed: true,
+    delaySeconds: RECOVERY_DELAY_SECONDS,
+    unit: BOUNTYWELL_UNIT,
+  };
+}
+
+type BountywellTimerPhase =
+  BountywellTimerLifecycleEvidenceEvent["details"]["phase"];
+
+function timerLifecycle(
+  id: string,
+  occurredAt: string,
+  phase: BountywellTimerPhase,
+  summary: string,
+): UnsequencedEvidenceEvent<BountywellTimerLifecycleEvidenceEvent> {
+  return {
+    details: {
+      delaySeconds: RECOVERY_DELAY_SECONDS,
+      phase,
+      unit: BOUNTYWELL_UNIT,
+    },
+    id,
+    kind: "timer.lifecycle",
+    occurredAt,
+    summary,
+  };
+}
+
+function baselineEvidence(
+  id: string,
+  occurredAt: string,
+): UnsequencedEvidenceEvent<
+  Extract<EvidenceEventProjection, { kind: "evidence.observed" }>
+> {
+  return {
+    details: {
+      checks: [
+        {
+          facts: { statusCode: 200 },
+          outcome: "pass",
+          source: "public-health",
+          summary: "Baseline public /api/health returned 200.",
+        },
+        {
+          facts: { statusCode: 401 },
+          outcome: "pass",
+          source: "authentication-boundary",
+          summary: "Baseline public /api/data returned 401.",
+        },
+        {
+          facts: { active: true },
+          outcome: "pass",
+          source: "service-state",
+          summary: "Baseline registered unit was active.",
+        },
+      ],
+      rejectedEvidenceCount: 0,
+    },
+    id,
+    kind: "evidence.observed",
+    occurredAt,
+    summary: "Baseline Bountywell public endpoint and service evidence was recorded.",
+  };
 }
 
 async function completeOutageRecovery(options: {
@@ -373,9 +620,7 @@ async function completeOutageRecovery(options: {
     throw new Error("Durable Task is not a Bountywell outage recovery");
   }
   const operations = await options.store.listOperations(options.record.task.id);
-  const observe = operations.find(
-    (operation) => operation.kind === "bountywell.health.observe",
-  );
+  const observe = operations.find(isDiagnosisOperation);
   if (observe === undefined) {
     throw new Error("Bountywell diagnosis Operation is unavailable");
   }
@@ -573,16 +818,13 @@ async function finishRecovered(
         summary: "The independent recovery timer was removed.",
       },
       {
-        details: {
-          delaySeconds: 600,
-          phase: "removed",
-          unit: "bountywell-api.service",
-        },
-        id: options.nextId(),
-        kind: "timer.lifecycle",
-        occurredAt,
+        ...timerLifecycle(
+          options.nextId(),
+          occurredAt,
+          "removed",
+          "The recovery timer is no longer armed.",
+        ),
         sequence: nextSequence + 2,
-        summary: "The recovery timer is no longer armed.",
       },
       {
         details: {},
@@ -621,16 +863,13 @@ async function retainTimerAndFail(
     conclusion: "Bountywell API recovery could not be confirmed.",
     evidence: [
       {
-        details: {
-          delaySeconds: 600,
-          phase: "retained",
-          unit: "bountywell-api.service",
-        },
-        id: options.nextId(),
-        kind: "timer.lifecycle",
-        occurredAt,
+        ...timerLifecycle(
+          options.nextId(),
+          occurredAt,
+          "retained",
+          "The recovery timer remains armed after unsuccessful recovery.",
+        ),
         sequence: sequence + 1,
-        summary: "The recovery timer remains armed after unsuccessful recovery.",
       },
       {
         details: {},

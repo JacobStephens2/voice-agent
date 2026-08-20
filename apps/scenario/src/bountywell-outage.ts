@@ -30,11 +30,18 @@ export interface BountywellOutageScenario {
     ReturnType<typeof createDurableTaskRuntime>["injectBountywellOutage"]
   >;
   proveRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
+  /** The open drill's Evidence Record, for asserting a partially applied drill. */
+  readOpenDrill(): Promise<EvidenceRecordProjection | undefined>;
   recover(requestId: string): Promise<EvidenceRecordProjection>;
   registerBountywell(): ReturnType<
     ReturnType<typeof createDurableTaskRuntime>["registerBountywell"]
   >;
   advanceMs(milliseconds: number): Promise<void>;
+  /**
+   * Restart the Voice Agent process against the same durable store and the same
+   * Agent Host, so a Durable Task resumes from its Evidence Events alone.
+   */
+  restart(input?: { readonly ids?: readonly string[] }): Promise<void>;
   restoreService(): Promise<void>;
   setAfterStart(
     next:
@@ -44,6 +51,7 @@ export interface BountywellOutageScenario {
         }
       | undefined,
   ): void;
+  setCrashAfter(action: BountywellHostCommand["action"] | undefined): void;
   setStartFailure(fails: boolean): void;
 }
 
@@ -52,41 +60,47 @@ export async function createBountywellOutageScenario(options: {
   readonly ids: readonly string[];
   readonly now: string;
 }): Promise<BountywellOutageScenario> {
-  const ids = [...options.ids];
+  let ids = [...options.ids];
   let nowMs = Date.parse(options.now);
   const now = () => new Date(nowMs).toISOString();
+  const nextId = () => {
+    const id = ids.shift();
+    if (id === undefined) {
+      throw new Error("The scenario exhausted its deterministic identifiers");
+    }
+    return id;
+  };
   const host = createDeterministicBountywellHost({
     advanceMs(milliseconds) {
       nowMs += milliseconds;
     },
     now,
   });
-  const brokerStore = createSqliteBrokerOperationStore(
-    `${options.databasePath}.broker`,
-  );
-  const broker = createBountywellOperationsBroker({
-    now,
-    probes: host.probes,
-    store: brokerStore,
-  });
-  const store = createSqliteDurableTaskStore(options.databasePath);
-  const runtime = createDurableTaskRuntime({
-    advanceMs(milliseconds) {
-      nowMs += milliseconds;
-    },
-    applicationRegistry: store,
-    healthObserver: broker,
-    nextId() {
-      const id = ids.shift();
-      if (id === undefined) {
-        throw new Error("The scenario exhausted its deterministic identifiers");
-      }
-      return id;
-    },
-    now,
-    serviceController: host.controller,
-    store,
-  });
+
+  function startProcess() {
+    const brokerStore = createSqliteBrokerOperationStore(
+      `${options.databasePath}.broker`,
+    );
+    const store = createSqliteDurableTaskStore(options.databasePath);
+    return {
+      brokerStore,
+      store,
+      runtime: createDurableTaskRuntime({
+        applicationRegistry: store,
+        healthObserver: createBountywellOperationsBroker({
+          now,
+          probes: host.probes,
+          store: brokerStore,
+        }),
+        nextId,
+        now,
+        serviceController: host.controller,
+        store,
+      }),
+    };
+  }
+
+  let agentProcess = startProcess();
 
   return {
     get hostCommands() {
@@ -95,25 +109,42 @@ export async function createBountywellOutageScenario(options: {
     get timer() {
       return host.timer;
     },
-    armRecoveryTimer: () => runtime.armBountywellRecoveryTimer(),
-    captureBaseline: () => runtime.captureBountywellBaseline(),
+    armRecoveryTimer: () => agentProcess.runtime.armBountywellRecoveryTimer(),
+    captureBaseline: () => agentProcess.runtime.captureBountywellBaseline(),
     async close() {
-      await runtime.close();
-      await brokerStore.close();
+      await agentProcess.runtime.close();
+      await agentProcess.brokerStore.close();
     },
-    grantRestart: ({ source }) => runtime.grantBountywellRestart(source),
-    injectFault: (input) => runtime.injectBountywellOutage(input),
-    proveRecoveryTimer: () => runtime.proveBountywellRecoveryTimer(),
-    recover: (requestId) => runtime.submitBountywellOutageRecovery(requestId),
-    registerBountywell: () => runtime.registerBountywell(),
+    grantRestart: ({ source }) => agentProcess.runtime.grantBountywellRestart(source),
+    injectFault: (input) => agentProcess.runtime.injectBountywellOutage(input),
+    proveRecoveryTimer: () => agentProcess.runtime.proveBountywellRecoveryTimer(),
+    async readOpenDrill() {
+      const open = (await agentProcess.store.listTasks()).find(
+        (task) =>
+          task.kind === "bountywell.outage.recovery" && task.status === "pending",
+      );
+      return open === undefined
+        ? undefined
+        : agentProcess.store.findByTaskId(open.id);
+    },
+    recover: (requestId) =>
+      agentProcess.runtime.submitBountywellOutageRecovery(requestId),
+    registerBountywell: () => agentProcess.runtime.registerBountywell(),
     async advanceMs(milliseconds) {
       nowMs += milliseconds;
       await host.controller.fireDueTimers();
+    },
+    async restart(input = {}) {
+      await agentProcess.runtime.close();
+      await agentProcess.brokerStore.close();
+      if (input.ids !== undefined) ids = [...input.ids];
+      agentProcess = startProcess();
     },
     async restoreService() {
       await host.controller.startRegisteredUnit();
     },
     setAfterStart: (next) => host.setAfterStart(next),
+    setCrashAfter: (action) => host.setCrashAfter(action),
     setStartFailure: (fails) => host.setStartFailure(fails),
   };
 }

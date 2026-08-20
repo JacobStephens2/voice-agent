@@ -21,7 +21,8 @@ export interface ApplicationRegistry {
 }
 
 export interface AcceptedInquiryPersistence {
-  readonly operationId: string;
+  /** Omitted when the Durable Task is opened before its first Operation. */
+  readonly operationId?: string;
   readonly record: EvidenceRecordProjection;
   readonly requestId: string;
 }
@@ -49,14 +50,20 @@ export interface CompletedInquiryPersistence {
   readonly taskId: string;
 }
 
+export type BountywellOperationKind =
+  | "bountywell.health.observe"
+  | "bountywell.outage.diagnose"
+  | "bountywell.recovery-timer.arm"
+  | "bountywell.recovery-timer.prove"
+  | "bountywell.recovery-timer.remove"
+  | "bountywell.service.restart"
+  | "bountywell.service.stop";
+
 export interface AcceptedOperationPersistence {
   readonly acceptedAt: string;
   readonly evidence: readonly EvidenceEventProjection[];
   readonly idempotencyKey: string;
-  readonly kind:
-    | "bountywell.health.observe"
-    | "bountywell.recovery-timer.remove"
-    | "bountywell.service.restart";
+  readonly kind: BountywellOperationKind;
   readonly operationId: string;
   readonly taskId: string;
 }
@@ -74,11 +81,7 @@ export interface CompletedOperationPersistence {
 
 export interface StoredOperation {
   readonly id: string;
-  readonly kind:
-    | "bountywell.health.observe"
-    | "bountywell.recovery-timer.remove"
-    | "bountywell.service.restart"
-    | "task.cancel";
+  readonly kind: BountywellOperationKind | "task.cancel";
   readonly status: "accepted" | "completed" | "running";
 }
 

@@ -11,7 +11,7 @@ import {
   type BountywellHealthObservationRequest,
   type BountywellHealthObserver,
   type BountywellRecoveryTimer,
-  type BountywellRecoveryTimerProof,
+  type BountywellServiceController,
 } from "@voice-agent/contracts";
 
 const SAME_HOST_UNCERTAINTY =
@@ -702,8 +702,8 @@ async function dispatchServiceControl(
       return controller.removeRecoveryTimer();
     case "/v1/bountywell/timer/fire":
       return controller.fireDueTimers();
-    case "/v1/bountywell/timer/inspect":
-      return controller.inspectRecoveryTimer();
+    case "/v1/bountywell/timer/prove":
+      return controller.proveRecoveryTimer();
     default:
       return undefined;
   }
@@ -716,8 +716,8 @@ export function createUnixSocketBountywellController(
     armRecoveryTimer: () =>
       postBrokerJson(socketPath, "/v1/bountywell/timer/arm"),
     fireDueTimers: () => postBrokerJson(socketPath, "/v1/bountywell/timer/fire"),
-    inspectRecoveryTimer: () =>
-      postBrokerJson(socketPath, "/v1/bountywell/timer/inspect"),
+    proveRecoveryTimer: () =>
+      postBrokerJson(socketPath, "/v1/bountywell/timer/prove"),
     readRecoveryTimer: () =>
       postBrokerJson(socketPath, "/v1/bountywell/timer/read"),
     removeRecoveryTimer: () =>
@@ -779,19 +779,6 @@ export interface BountywellHostCommand {
   readonly unit: "bountywell-api.service";
 }
 
-export interface BountywellServiceController {
-  armRecoveryTimer(): Promise<BountywellRecoveryTimer>;
-  fireDueTimers(): Promise<readonly { readonly unit: "bountywell-api.service" }[]>;
-  inspectRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
-  readRecoveryTimer(): Promise<BountywellRecoveryTimer>;
-  removeRecoveryTimer(): Promise<{ readonly removed: boolean }>;
-  startRegisteredUnit(): Promise<{
-    readonly previousActive: boolean;
-    readonly started: boolean;
-  }>;
-  stopRegisteredUnit(): Promise<{ readonly stopped: boolean }>;
-}
-
 export interface DeterministicBountywellHost {
   readonly commands: readonly BountywellHostCommand[];
   readonly controller: BountywellServiceController;
@@ -805,6 +792,11 @@ export interface DeterministicBountywellHost {
         }
       | undefined,
   ): void;
+  /**
+   * Fail the next command of this action after the Agent Host has already
+   * applied it, standing in for a caller that dies before it records the result.
+   */
+  setCrashAfter(action: BountywellHostCommand["action"] | undefined): void;
   setStartFailure(fails: boolean): void;
 }
 
@@ -825,6 +817,14 @@ export function createDeterministicBountywellHost(options: {
       }
     | undefined;
   let timer: { armed: boolean; firesAtMs: number } | undefined;
+  let crashAfter: BountywellHostCommand["action"] | undefined;
+
+  function pushCommand(action: BountywellHostCommand["action"]): void {
+    commands.push({ action, unit: BOUNTYWELL_UNIT });
+    if (crashAfter !== action) return;
+    crashAfter = undefined;
+    throw new Error(`The Agent Host connection was lost after ${action}`);
+  }
 
   function applyHealthyEndpoints(): void {
     if (afterStart !== undefined) {
@@ -845,13 +845,14 @@ export function createDeterministicBountywellHost(options: {
   }
 
   function startUnit(): { previousActive: boolean; started: boolean } {
-    commands.push({ action: "start", unit: BOUNTYWELL_UNIT });
     const previousActive = active;
     if (startFails) {
+      pushCommand("start");
       return { previousActive, started: false };
     }
     active = true;
     applyHealthyEndpoints();
+    pushCommand("start");
     return { previousActive, started: true };
   }
 
@@ -886,7 +887,7 @@ export function createDeterministicBountywellHost(options: {
         armed: true,
         firesAtMs: Date.parse(options.now()) + 600_000,
       };
-      commands.push({ action: "install-timer", unit: BOUNTYWELL_UNIT });
+      pushCommand("install-timer");
       return {
         armed: true,
         delaySeconds: 600,
@@ -900,10 +901,16 @@ export function createDeterministicBountywellHost(options: {
       startUnit();
       return [{ unit: BOUNTYWELL_UNIT }];
     },
-    async inspectRecoveryTimer() {
+    async proveRecoveryTimer() {
       if (timer?.armed !== true) {
         throw new Error("Recovery timer is not armed");
       }
+      options.advanceMs(600_000);
+      const fired = await controller.fireDueTimers();
+      if (fired.length !== 1 || fired[0]?.unit !== BOUNTYWELL_UNIT) {
+        throw new Error("Recovery timer did not start only bountywell-api.service");
+      }
+      await controller.armRecoveryTimer();
       return {
         capable: true as const,
         delaySeconds: 600 as const,
@@ -920,16 +927,16 @@ export function createDeterministicBountywellHost(options: {
     async removeRecoveryTimer() {
       if (timer?.armed !== true) return { removed: false };
       timer = { armed: false, firesAtMs: timer.firesAtMs };
-      commands.push({ action: "remove-timer", unit: BOUNTYWELL_UNIT });
+      pushCommand("remove-timer");
       return { removed: true };
     },
     async startRegisteredUnit() {
       return startUnit();
     },
     async stopRegisteredUnit() {
-      commands.push({ action: "stop", unit: BOUNTYWELL_UNIT });
       active = false;
       applyUnavailableEndpoints();
+      pushCommand("stop");
       return { stopped: true };
     },
   };
@@ -947,6 +954,9 @@ export function createDeterministicBountywellHost(options: {
     },
     setAfterStart(next) {
       afterStart = next;
+    },
+    setCrashAfter(action) {
+      crashAfter = action;
     },
     setStartFailure(fails) {
       startFails = fails;
@@ -986,7 +996,7 @@ export function createSystemdBountywellServiceController(
     async fireDueTimers() {
       return [];
     },
-    async inspectRecoveryTimer() {
+    async proveRecoveryTimer() {
       const shown = await execute("systemctl", [
         "cat",
         timerUnit,
@@ -1127,24 +1137,4 @@ async function executeSystemctl(
   }
   const { stdout } = await executeFile(command, [...args], { timeout: 10_000 });
   return stdout;
-}
-
-export async function proveBountywellRecoveryTimer(options: {
-  readonly advanceMs: (milliseconds: number) => void;
-  readonly controller: BountywellServiceController;
-}): Promise<BountywellRecoveryTimerProof> {
-  const timer = await options.controller.readRecoveryTimer();
-  if (!timer.armed) {
-    throw new Error("Recovery timer is not armed");
-  }
-  options.advanceMs(600_000);
-  const fired = await options.controller.fireDueTimers();
-  if (fired[0]?.unit !== BOUNTYWELL_UNIT) {
-    throw new Error("Recovery timer did not start bountywell-api.service");
-  }
-  return {
-    capable: true,
-    delaySeconds: 600,
-    unit: BOUNTYWELL_UNIT,
-  };
 }

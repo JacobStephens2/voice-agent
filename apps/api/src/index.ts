@@ -42,7 +42,7 @@ import {
   keeploreRegistrationSchema,
   keeploreRegistrationStatusSchema,
   grantBountywellRestartRequestSchema,
-  armBountywellRecoveryTimerRequestSchema,
+  bountywellDrillControlRequestSchema,
   injectBountywellOutageRequestSchema,
   bountywellRecoveryTimerSchema,
   bountywellRecoveryTimerProofSchema,
@@ -53,7 +53,6 @@ import {
   trustedBrowserSessionResponseSchema,
   updateNotificationPreferenceRequestSchema,
   voiceAgentEvidenceRecordProjectionSchema,
-  type BountywellBaselineEvidence,
   type BountywellOutageInjection,
   type BountywellRecoveryTimer,
   type BountywellRecoveryTimerProof,
@@ -139,7 +138,6 @@ export interface BountywellTaskControls {
     readonly requestId: string;
   }): Promise<EvidenceRecordProjection>;
   armBountywellRecoveryTimer?(): Promise<BountywellRecoveryTimer>;
-  captureBountywellBaseline?(): Promise<BountywellBaselineEvidence>;
   getBountywellRegistration(): Promise<BountywellRegistration | undefined>;
   grantBountywellRestart?(source: "fresh-passkey"): Promise<
     | { readonly decision: "denied"; readonly reason: string }
@@ -829,7 +827,7 @@ function registerBountywellControlRoutes(
     "/api/operations/bountywell-outage-drill/arm-timer",
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
-      const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
+      const body = bountywellDrillControlRequestSchema.parse(request.body);
       const sessionToken = await authorizeFreshAction(
         request,
         reply,
@@ -850,7 +848,7 @@ function registerBountywellControlRoutes(
     "/api/operations/bountywell-outage-drill/prove-timer",
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
-      const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
+      const body = bountywellDrillControlRequestSchema.parse(request.body);
       const sessionToken = await authorizeFreshAction(
         request,
         reply,

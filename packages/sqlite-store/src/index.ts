@@ -428,16 +428,18 @@ export function createSqliteDurableTaskStore(
         record.task.createdAt,
         record.task.updatedAt,
       );
-      insertOperation.run(
-        operationId,
-        record.task.id,
-        `${requestId}:bountywell.health.observe`,
-        "bountywell.health.observe",
-        "accepted",
-        "{}",
-        record.task.createdAt,
-        record.task.updatedAt,
-      );
+      if (operationId !== undefined) {
+        insertOperation.run(
+          operationId,
+          record.task.id,
+          `${requestId}:bountywell.health.observe`,
+          "bountywell.health.observe",
+          "accepted",
+          "{}",
+          record.task.createdAt,
+          record.task.updatedAt,
+        );
+      }
       insertEvidence(record.task.id, record.evidence);
       return loadRecord(requireTask(findTaskById.get(record.task.id)));
     },
