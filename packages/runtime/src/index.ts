@@ -2,6 +2,7 @@ import {
   bountywellHealthObservationSchema,
   type BountywellHealthInquiryRequest,
   type BountywellHealthObserver,
+  type BountywellServiceController,
   type EvidenceEventProjection,
   type EvidenceRecordProjection,
   type EvidenceRecordSummary,
@@ -19,7 +20,6 @@ import {
 import {
   createBountywellOutageControls,
   type BountywellOutageControls,
-  type BountywellServiceController,
 } from "./bountywell-outage.ts";
 
 export * from "./callback-handshake.ts";
@@ -73,7 +73,6 @@ export interface DurableTaskRuntime extends BountywellOutageControls {
 }
 
 export interface DurableTaskRuntimeOptions {
-  readonly advanceMs?: (milliseconds: number) => void;
   readonly applicationRegistry?: ApplicationRegistry;
   readonly deferTelephoneOperations?: boolean;
   readonly healthObserver?: BountywellHealthObserver;
@@ -364,7 +363,6 @@ export function createDurableTaskRuntime(
     },
     submitTelephoneBountywellHealthInquiry,
     ...createBountywellOutageControls({
-      ...(options.advanceMs === undefined ? {} : { advanceMs: options.advanceMs }),
       ...(options.applicationRegistry === undefined
         ? {}
         : { applicationRegistry: options.applicationRegistry }),

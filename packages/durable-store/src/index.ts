@@ -21,7 +21,8 @@ export interface ApplicationRegistry {
 }
 
 export interface AcceptedInquiryPersistence {
-  readonly operationId: string;
+  /** Omitted when the Durable Task is opened before its first Operation. */
+  readonly operationId?: string;
   readonly record: EvidenceRecordProjection;
   readonly requestId: string;
 }
@@ -49,14 +50,20 @@ export interface CompletedInquiryPersistence {
   readonly taskId: string;
 }
 
+export type BountywellOperationKind =
+  | "bountywell.health.observe"
+  | "bountywell.outage.diagnose"
+  | "bountywell.recovery-timer.arm"
+  | "bountywell.recovery-timer.prove"
+  | "bountywell.recovery-timer.remove"
+  | "bountywell.service.restart"
+  | "bountywell.service.stop";
+
 export interface AcceptedOperationPersistence {
   readonly acceptedAt: string;
   readonly evidence: readonly EvidenceEventProjection[];
   readonly idempotencyKey: string;
-  readonly kind:
-    | "bountywell.health.observe"
-    | "bountywell.recovery-timer.remove"
-    | "bountywell.service.restart";
+  readonly kind: BountywellOperationKind;
   readonly operationId: string;
   readonly taskId: string;
 }
@@ -65,20 +72,22 @@ export interface CompletedOperationPersistence {
   readonly evidence: readonly EvidenceEventProjection[];
   readonly observedAt: string;
   readonly operationId: string;
+  /**
+   * The Durable Task summary this Operation settles. A `pending` status
+   * re-states the question and conclusion of a task that stays open, so a drill
+   * being prepared never advertises a fault it has not injected.
+   */
   readonly task?: {
     readonly conclusion: EvidenceRecordProjection["task"]["conclusion"];
-    readonly status: "completed" | "cancelled";
+    readonly question?: EvidenceRecordProjection["task"]["question"];
+    readonly status: "cancelled" | "completed" | "pending";
   };
   readonly taskId: string;
 }
 
 export interface StoredOperation {
   readonly id: string;
-  readonly kind:
-    | "bountywell.health.observe"
-    | "bountywell.recovery-timer.remove"
-    | "bountywell.service.restart"
-    | "task.cancel";
+  readonly kind: BountywellOperationKind | "task.cancel";
   readonly status: "accepted" | "completed" | "running";
 }
 

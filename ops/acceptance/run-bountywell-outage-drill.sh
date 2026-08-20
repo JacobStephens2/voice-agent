@@ -348,6 +348,7 @@ say "Production proof inspects the recovery unit files for OnActiveSec=10min and
 open_url "$PWA_URL"
 step "Choose “Prove recovery timer”."
 step "Confirm the PWA says the recovery timer was proven capable of starting bountywell-api.service."
+step "Confirm the drill Evidence Record reads “Is the guarded Bountywell Outage Drill ready?” with the conclusion “Bountywell Outage Drill is armed and ready.” It must not report a fault yet."
 pause "Press Enter after the timer is proven."
 
 stage "Start the guarded outage drill"

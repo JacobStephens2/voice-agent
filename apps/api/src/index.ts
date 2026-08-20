@@ -42,7 +42,8 @@ import {
   keeploreRegistrationSchema,
   keeploreRegistrationStatusSchema,
   grantBountywellRestartRequestSchema,
-  armBountywellRecoveryTimerRequestSchema,
+  bountywellDrillControlRequestSchema,
+  bountywellDrillNotRegistered,
   injectBountywellOutageRequestSchema,
   bountywellRecoveryTimerSchema,
   bountywellRecoveryTimerProofSchema,
@@ -53,7 +54,6 @@ import {
   trustedBrowserSessionResponseSchema,
   updateNotificationPreferenceRequestSchema,
   voiceAgentEvidenceRecordProjectionSchema,
-  type BountywellBaselineEvidence,
   type BountywellOutageInjection,
   type BountywellRecoveryTimer,
   type BountywellRecoveryTimerProof,
@@ -139,7 +139,6 @@ export interface BountywellTaskControls {
     readonly requestId: string;
   }): Promise<EvidenceRecordProjection>;
   armBountywellRecoveryTimer?(): Promise<BountywellRecoveryTimer>;
-  captureBountywellBaseline?(): Promise<BountywellBaselineEvidence>;
   getBountywellRegistration(): Promise<BountywellRegistration | undefined>;
   grantBountywellRestart?(source: "fresh-passkey"): Promise<
     | { readonly decision: "denied"; readonly reason: string }
@@ -829,7 +828,7 @@ function registerBountywellControlRoutes(
     "/api/operations/bountywell-outage-drill/arm-timer",
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
-      const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
+      const body = bountywellDrillControlRequestSchema.parse(request.body);
       const sessionToken = await authorizeFreshAction(
         request,
         reply,
@@ -850,7 +849,7 @@ function registerBountywellControlRoutes(
     "/api/operations/bountywell-outage-drill/prove-timer",
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
-      const body = armBountywellRecoveryTimerRequestSchema.parse(request.body);
+      const body = bountywellDrillControlRequestSchema.parse(request.body);
       const sessionToken = await authorizeFreshAction(
         request,
         reply,
@@ -891,11 +890,19 @@ function registerBountywellControlRoutes(
         });
         return reply.code(202).send(bountywellOutageInjectionSchema.parse(injected));
       } catch (error) {
+        if (!(error instanceof Error)) throw error;
         if (
-          error instanceof Error &&
           error.message === "The live drill occurs only while the owner is available"
         ) {
           return reply.code(400).send({ error: error.message });
+        }
+        // The guarded drill refuses to stop the registered unit until its
+        // independent backstop is armed.
+        if (error.message === "Recovery timer is not armed") {
+          return reply.code(409).send({ error: error.message });
+        }
+        if (error.message === bountywellDrillNotRegistered) {
+          return reply.code(403).send({ error: error.message });
         }
         throw error;
       }

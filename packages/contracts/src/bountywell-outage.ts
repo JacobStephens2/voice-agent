@@ -6,6 +6,17 @@ const timestampSchema = z.iso.datetime();
 export const bountywellOutageReport =
   "Bountywell's API appears unavailable." as const;
 
+/** Why a drill Intervention is refused when Bountywell is not registered. */
+export const bountywellDrillNotRegistered =
+  "Bountywell is not registered for the guarded outage drill." as const;
+
+/**
+ * The question a Bountywell Outage Drill answers while it is being prepared,
+ * before any fault is injected. It becomes the fault report at injection.
+ */
+export const bountywellOutageDrillQuestion =
+  "Is the guarded Bountywell Outage Drill ready?" as const;
+
 export const bountywellServiceRestartCapabilitySchema = z.literal(
   "bountywell.service.restart",
 );
@@ -20,6 +31,8 @@ export const bountywellRestartCapabilitiesSchema = z.tuple([
 ]);
 
 export const bountywellOutageTaskConclusionSchema = z.enum([
+  "Bountywell Outage Drill preparation is pending.",
+  "Bountywell Outage Drill is armed and ready.",
   "Bountywell outage recovery is pending.",
   "Bountywell API was recovered.",
   "Bountywell API was already recovered.",
@@ -32,17 +45,13 @@ export const bountywellOutageTaskSchema = z.object({
   createdAt: timestampSchema,
   id: identifierSchema,
   kind: z.literal("bountywell.outage.recovery"),
-  question: z.literal(bountywellOutageReport),
+  question: z.union([
+    z.literal(bountywellOutageDrillQuestion),
+    z.literal(bountywellOutageReport),
+  ]),
   status: z.enum(["pending", "completed", "cancelled"]),
   updatedAt: timestampSchema,
 });
-
-export const bountywellOutageRecoveryRequestSchema = z
-  .object({
-    report: z.literal(bountywellOutageReport),
-    requestId: identifierSchema,
-  })
-  .strict();
 
 export const bountywellOutageInjectionSchema = z.object({
   report: z.literal(bountywellOutageReport),
@@ -56,7 +65,8 @@ export const grantBountywellRestartRequestSchema = z
   })
   .strict();
 
-export const armBountywellRecoveryTimerRequestSchema = z
+/** The shared body of every owner-initiated drill-controller Intervention. */
+export const bountywellDrillControlRequestSchema = z
   .object({
     csrfToken: z.string().min(16).max(200),
   })
@@ -87,19 +97,6 @@ export const bountywellBaselineEvidenceSchema = z.object({
   serviceActive: z.literal(true),
 });
 
-export const bountywellServiceControlResultSchema = z.object({
-  previousActive: z.boolean(),
-  started: z.boolean(),
-  unit: z.literal("bountywell-api.service"),
-  verified: z
-    .object({
-      authenticationBoundary: z.number().int().min(100).max(599),
-      publicHealth: z.number().int().min(100).max(599),
-      serviceActive: z.boolean(),
-    })
-    .optional(),
-});
-
 const outageEventFields = {
   id: identifierSchema,
   occurredAt: timestampSchema,
@@ -126,10 +123,17 @@ export const bountywellDiagnosisRecordedEvidenceEventSchema = z.object({
   kind: z.literal("diagnosis.recorded"),
 });
 
+export const bountywellDrillCapabilitySchema = z.literal(
+  "bountywell.outage.drill",
+);
+
 export const bountywellPolicyDecidedEvidenceEventSchema = z.object({
   ...outageEventFields,
   details: z.object({
-    capability: bountywellServiceRestartCapabilitySchema,
+    capability: z.union([
+      bountywellServiceRestartCapabilitySchema,
+      bountywellDrillCapabilitySchema,
+    ]),
     decision: z.enum(["allow", "deny"]),
     reason: z.string().min(1).max(240),
   }),
@@ -154,9 +158,6 @@ export const bountywellOutageEvidenceEventSchema = z.discriminatedUnion("kind", 
 ]);
 
 export type BountywellOutageTask = z.infer<typeof bountywellOutageTaskSchema>;
-export type BountywellOutageRecoveryRequest = z.infer<
-  typeof bountywellOutageRecoveryRequestSchema
->;
 export type BountywellOutageInjection = z.infer<
   typeof bountywellOutageInjectionSchema
 >;
@@ -169,6 +170,33 @@ export type BountywellRecoveryTimerProof = z.infer<
 export type BountywellBaselineEvidence = z.infer<
   typeof bountywellBaselineEvidenceSchema
 >;
-export type BountywellServiceControlResult = z.infer<
-  typeof bountywellServiceControlResultSchema
+export type BountywellTimerLifecycleEvidenceEvent = z.infer<
+  typeof bountywellTimerLifecycleEvidenceEventSchema
 >;
+
+/**
+ * The one typed Operations Broker port for Bountywell service control and
+ * recovery-timer proof. Every method addresses the registered
+ * `bountywell-api.service` unit and the independent recovery timer that starts
+ * it; no other unit is reachable through this port.
+ */
+export interface BountywellServiceController {
+  armRecoveryTimer(): Promise<BountywellRecoveryTimer>;
+  fireDueTimers(): Promise<
+    readonly { readonly unit: "bountywell-api.service" }[]
+  >;
+  /**
+   * Prove the armed timer starts only `bountywell-api.service` after ten
+   * minutes and leave it armed. A deterministic Agent Host proves this by
+   * letting the timer fire; the real Agent Host proves it by reading the
+   * pinned recovery units, without waiting ten minutes.
+   */
+  proveRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
+  readRecoveryTimer(): Promise<BountywellRecoveryTimer>;
+  removeRecoveryTimer(): Promise<{ readonly removed: boolean }>;
+  startRegisteredUnit(): Promise<{
+    readonly previousActive: boolean;
+    readonly started: boolean;
+  }>;
+  stopRegisteredUnit(): Promise<{ readonly stopped: boolean }>;
+}

@@ -49,7 +49,8 @@ interface TaskRow {
   readonly kind: "bountywell.health.inquiry" | "bountywell.outage.recovery";
   readonly question:
     | "Bountywell's API appears unavailable."
-    | "Is Bountywell healthy?";
+    | "Is Bountywell healthy?"
+    | "Is the guarded Bountywell Outage Drill ready?";
   readonly status: "cancelled" | "completed" | "pending";
   readonly updated_at: string;
 }
@@ -237,6 +238,11 @@ export function createSqliteDurableTaskStore(
     SET status = 'completed', result_json = ?, updated_at = ?,
       lease_expires_at = NULL
     WHERE id = ? AND task_id = ? AND status = 'running'
+  `);
+  const updatePendingTaskSummary = database.prepare(`
+    UPDATE durable_tasks
+    SET conclusion = ?, question = COALESCE(?, question), updated_at = ?
+    WHERE id = ? AND status = 'pending'
   `);
   const completeTask = database.prepare(`
     UPDATE durable_tasks
@@ -428,16 +434,18 @@ export function createSqliteDurableTaskStore(
         record.task.createdAt,
         record.task.updatedAt,
       );
-      insertOperation.run(
-        operationId,
-        record.task.id,
-        `${requestId}:bountywell.health.observe`,
-        "bountywell.health.observe",
-        "accepted",
-        "{}",
-        record.task.createdAt,
-        record.task.updatedAt,
-      );
+      if (operationId !== undefined) {
+        insertOperation.run(
+          operationId,
+          record.task.id,
+          `${requestId}:bountywell.health.observe`,
+          "bountywell.health.observe",
+          "accepted",
+          "{}",
+          record.task.createdAt,
+          record.task.updatedAt,
+        );
+      }
       insertEvidence(record.task.id, record.evidence);
       return loadRecord(requireTask(findTaskById.get(record.task.id)));
     },
@@ -656,17 +664,24 @@ export function createSqliteDurableTaskStore(
       insertEvidence(input.taskId, input.evidence);
       if (input.task !== undefined) {
         const taskResult =
-          input.task.status === "cancelled"
-            ? cancelTask.run(
-                input.observedAt,
+          input.task.status === "pending"
+            ? updatePendingTaskSummary.run(
+                input.task.conclusion,
+                input.task.question ?? null,
                 input.observedAt,
                 input.taskId,
               )
-            : completeTask.run(
-                input.task.conclusion,
-                input.observedAt,
-                input.taskId,
-              );
+            : input.task.status === "cancelled"
+              ? cancelTask.run(
+                  input.observedAt,
+                  input.observedAt,
+                  input.taskId,
+                )
+              : completeTask.run(
+                  input.task.conclusion,
+                  input.observedAt,
+                  input.taskId,
+                );
         if (taskResult.changes !== 1) {
           throw new Error("Bountywell Durable Task changed concurrently");
         }
