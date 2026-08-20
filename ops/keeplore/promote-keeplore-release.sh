@@ -28,7 +28,7 @@ fi
 exec 9>/run/keeplore-promotion.lock
 flock -x 9
 state_directory=/var/lib/keeplore-promotions
-install -d -o root -g root -m 0750 "$state_directory"
+install -d -o root -g voice-agent -m 0750 "$state_directory"
 attempts="$state_directory/attempts.jsonl"
 
 previous=""
@@ -44,12 +44,32 @@ elif [[ -e $keeplore_current_link ]]; then
   exit 1
 fi
 
+# One append-only line per Promotion Attempt. The Voice Agent projects these
+# into the onboarding Evidence Record, so the line carries the Release identity,
+# the verification statuses, the restored Release, and any merge provenance.
 record_attempt() {
-  local result=$1 stage=$2
-  printf '{"attemptedAt":"%s","application":"keeplore-production","commit":"%s","previous":"%s","result":"%s","stage":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$commit" "${previous:--}" "$result" "$stage" \
-    >> "$attempts"
+  local result=$1 stage=$2 restored=${3:-} previous_commit
+  previous_commit=$(basename "${previous:--}")
+  {
+    printf '{"attemptedAt":"%s","application":"keeplore-production"' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf ',"commit":"%s","previous":"%s"' "$commit" "$previous_commit"
+    printf ',"release":{"id":"keeplore-production-%s","path":"%s"}' \
+      "$commit" "$release"
+    if [[ -n ${KEEPLORE_MERGE_ACTOR:-} && -n ${KEEPLORE_MERGED_AT:-} ]]; then
+      printf ',"merge":{"actor":"%s","mergedAt":"%s","source":"%s"}' \
+        "$KEEPLORE_MERGE_ACTOR" "$KEEPLORE_MERGED_AT" \
+        "${KEEPLORE_MERGE_SOURCE:-webhook}"
+    fi
+    if [[ -n ${health_actual_status:-} ]]; then
+      printf ',"verification":{"actualStatus":%s,"expectedStatus":200}' \
+        "$health_actual_status"
+    fi
+    printf ',"restored":"%s","result":"%s","stage":"%s"}\n' \
+      "$restored" "$result" "$stage"
+  } >> "$attempts"
   chmod 0640 "$attempts"
+  chown root:voice-agent "$attempts" 2>/dev/null || true
 }
 
 switch_to() {
@@ -94,16 +114,22 @@ fi
 
 if [[ $healthy == true ]]; then
   "$script_directory/keeplore-health.sh"
+  health_actual_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+    "$keeplore_health_url" || printf '0')
   record_attempt succeeded promotion
   "$script_directory/prune-keeplore-releases.sh" || true
   printf 'Promoted Keeplore Release %s.\n' "$commit"
   exit 0
 fi
 
+restored_commit=""
+if [[ -n $previous && -d $previous ]]; then
+  restored_commit=$(basename "$previous")
+fi
 if [[ ${KEEPLORE_VERIFICATION_DRILL:-0} == 1 ]]; then
-  record_attempt failed verification-drill
+  record_attempt failed verification-drill "$restored_commit"
 else
-  record_attempt failed verification
+  record_attempt failed verification "$restored_commit"
 fi
 if [[ -n $previous && -d $previous ]]; then
   switch_to "$previous"

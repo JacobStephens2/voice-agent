@@ -1,0 +1,184 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test } from "vitest";
+
+import { createSqliteKeeploreOnboardingStore } from "@voice-agent/sqlite-store";
+import {
+  projectKeeplorePromotionEvidence,
+  readPromotionAttempts,
+} from "@voice-agent/runtime";
+import type {
+  KeeploreDeploymentContract,
+  KeeploreRegistration,
+} from "@voice-agent/contracts";
+
+const temporaryDirectories: string[] = [];
+const promotedCommit = "82fccd682db9f3ed40f91c56b7577bc6cbcff8ff";
+const retainedCommit = "52173a8efacf7bc9c94be75664ef8cb091143516";
+
+/** The shape the Agent Host actually appends, drill line included. */
+const hostJournal = [
+  JSON.stringify({
+    application: "keeplore-production",
+    attemptedAt: "2026-08-20T08:22:07Z",
+    commit: promotedCommit,
+    merge: {
+      actor: "JacobStephens2",
+      mergedAt: "2026-08-20T08:21:40Z",
+      source: "webhook",
+    },
+    previous: retainedCommit,
+    release: {
+      id: `keeplore-production-${promotedCommit}`,
+      path: `/opt/keeplore/releases/${promotedCommit}`,
+    },
+    result: "succeeded",
+    stage: "promotion",
+    verification: { actualStatus: 200, expectedStatus: 200 },
+  }),
+  JSON.stringify({
+    application: "keeplore-production",
+    attemptedAt: "2026-08-20T09:10:29Z",
+    commit: retainedCommit,
+    previous: promotedCommit,
+    restored: promotedCommit,
+    result: "failed",
+    stage: "verification-drill",
+  }),
+  "{ truncated line the host is still appending",
+  JSON.stringify({ application: "other-application", commit: promotedCommit }),
+].join("\n");
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) =>
+      rm(directory, { force: true, recursive: true }),
+    ),
+  );
+});
+
+test("a truncated or foreign journal line never becomes evidence", () => {
+  const attempts = readPromotionAttempts(hostJournal);
+  expect(attempts).toHaveLength(2);
+  expect(attempts.map((attempt) => attempt.stage)).toEqual([
+    "promotion",
+    "verification-drill",
+  ]);
+});
+
+test("an unenrolled Keeplore has no Evidence Record, however full the journal", async () => {
+  const store = await createStore();
+  expect(
+    await projectKeeplorePromotionEvidence({
+      journal: { async read() { return hostJournal; } },
+      store,
+    }),
+  ).toEqual([]);
+});
+
+test("the host's journal becomes an Evidence Record for each merge commit", async () => {
+  const store = await createStore();
+  await store.saveRegistration(registration());
+  await store.saveContract(contract());
+  await store.saveAssessment("branch-protection", {
+    satisfied: true,
+    violations: [],
+  });
+  await store.saveAssessment("github-app", { satisfied: true, violations: [] });
+
+  const records = await projectKeeplorePromotionEvidence({
+    journal: { async read() { return hostJournal; } },
+    store,
+  });
+
+  expect(records).toHaveLength(2);
+  const promoted = records.find(
+    (record) => record.task.id === `keeplore-promotion:${promotedCommit}`,
+  );
+  expect(promoted?.onboarding).toMatchObject({
+    branchProtection: { satisfied: true },
+    contractRevision: 1,
+    health: { actualStatus: 200, expectedStatus: 200, outcome: "healthy" },
+    merge: {
+      actor: "JacobStephens2",
+      branch: "main",
+      commit: promotedCommit,
+      repository: "JacobStephens2/keeplore",
+      source: "webhook",
+    },
+    promotionAttempt: { mergeCommit: promotedCommit, status: "succeeded" },
+    registrationRevision: 1,
+    release: { path: `/opt/keeplore/releases/${promotedCommit}` },
+    rollback: { performed: false },
+  });
+  expect(promoted?.task).toMatchObject({
+    conclusion: "Keeplore is onboarded and its Human Merge was promoted.",
+    kind: "keeplore.onboarding",
+    status: "completed",
+  });
+  expect(promoted?.evidence.map((event) => event.kind)).toEqual([
+    "merge.accepted",
+    "release.verified",
+  ]);
+
+  const drill = records.find(
+    (record) => record.task.id === `keeplore-promotion:${retainedCommit}`,
+  );
+  expect(drill?.onboarding.rollback).toEqual({
+    attemptedReleaseId: retainedCommit,
+    performed: true,
+    restoredReleaseId: promotedCommit,
+  });
+  expect(drill?.evidence[0]?.kind).toBe("release.rolled-back");
+  expect(drill?.evidence[0]?.details.drill).toBe(true);
+  expect(drill?.task.conclusion).toBe(
+    "Keeplore onboarding could not be confirmed.",
+  );
+});
+
+async function createStore() {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-evidence-"));
+  temporaryDirectories.push(directory);
+  return createSqliteKeeploreOnboardingStore(join(directory, "voice-agent.sqlite"));
+}
+
+function registration(): KeeploreRegistration {
+  return {
+    applicationId: "keeplore-production",
+    deploymentBoundaries: {
+      liveCheckoutPath: "/var/www/keeplore.app",
+      releaseRoot: "/opt/keeplore/releases",
+      retainedReleases: 2,
+      sharedRoot: "/opt/keeplore/shared",
+      sourceMirrorPath: "/var/lib/keeplore-source/repository.git",
+    },
+    permittedSubagentProvider: "codex",
+    productionBranch: "main",
+    readScope: ["**/*.php"],
+    registeredAt: "2026-08-20T08:00:00.000Z",
+    registeredBy: "fresh-passkey-action",
+    repository: "JacobStephens2/keeplore",
+    revision: 1,
+    verification: {
+      checkName: "keeplore-verification",
+      command: "vendor/bin/phpunit",
+    },
+    worktreeRoot: "/var/lib/voice-agent-worktrees/keeplore",
+  };
+}
+
+function contract(): KeeploreDeploymentContract {
+  return {
+    activatedAt: "2026-08-20T08:05:00.000Z",
+    activatedBy: "fresh-passkey-action",
+    applicationId: "keeplore-production",
+    buildCommand: "php -l",
+    health: { expectedStatus: 200, path: "/api/health" },
+    preflightCommand: "php -l",
+    releaseRoot: "/opt/keeplore/releases",
+    retainedReleases: 2,
+    revision: 1,
+    source: "voice-agent-policy",
+  };
+}

@@ -14,7 +14,7 @@ keeplore_load_configuration
 
 commit=$1
 state_directory=/var/lib/keeplore-promotions
-install -d -o root -g root -m 0750 "$state_directory"
+install -d -o root -g voice-agent -m 0750 "$state_directory"
 verified_human_merges="$state_directory/verified-human-merges.tsv"
 touch "$verified_human_merges"
 chmod 0640 "$verified_human_merges"
@@ -39,8 +39,33 @@ if [[ $active == "$commit" ]]; then
   exit 0
 fi
 
+# Provenance is the merger, not the pull request's author, and merged_by is
+# populated only on GET /pulls/{number}.
+merge_token=$(keeplore_github_token)
+merge_pull=$(curl --fail --silent --show-error --max-time 15 \
+  -H 'Accept: application/vnd.github+json' \
+  -H "Authorization: Bearer $merge_token" \
+  "https://api.github.com/repos/$keeplore_repository/commits/$commit/pulls" \
+  | jq -r --arg commit "$commit" '
+      [ .[] | select(.merge_commit_sha == $commit and .merged_at != null) ][0]
+      | select(. != null) | .number
+    ' || true)
+merge_projection=""
+if [[ $merge_pull =~ ^[1-9][0-9]*$ ]]; then
+  merge_projection=$(curl --fail --silent --show-error --max-time 15 \
+    -H 'Accept: application/vnd.github+json' \
+    -H "Authorization: Bearer $merge_token" \
+    "https://api.github.com/repos/$keeplore_repository/pulls/$merge_pull" \
+    | jq -r 'select(.merged_by != null) | "\(.merged_by.login)\t\(.merged_at)"' \
+    || true)
+fi
+unset merge_token
+
 "$script_directory/install-keeplore-release.sh" "$commit"
-"$script_directory/promote-keeplore-release.sh" "$commit"
+KEEPLORE_MERGE_ACTOR=$(cut -f1 <<<"$merge_projection") \
+KEEPLORE_MERGED_AT=$(cut -f2 <<<"$merge_projection") \
+KEEPLORE_MERGE_SOURCE="${KEEPLORE_MERGE_SOURCE:-webhook}" \
+  "$script_directory/promote-keeplore-release.sh" "$commit"
 
 # Only a promoted Human Merge is recorded as processed, so a rolled-back merge
 # stays visible to the owner instead of looking complete.
