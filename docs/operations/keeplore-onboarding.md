@@ -80,9 +80,11 @@ in the scenario seam (`apps/scenario/src/human-merge-promotion.ts`), and the hos
 independently re-verifies every enqueued commit against the GitHub API before it
 promotes anything, so a forged or replayed enqueue promotes nothing.
 
-`ops/keeplore/github/promote-keeplore.yml` runs on a push to `main`,
+`ops/keeplore/github/promote-keeplore.yml` runs on a push to `main` and
 authenticates that the commit is the merge commit of a pull request merged by an
-authenticated human GitHub user, and enqueues that exact commit over a
+authenticated human GitHub user. That takes two API calls, not one:
+`commits/{sha}/pulls` omits `merged_by` even after a Human Merge, so the
+merger's type comes from `GET /pulls/{number}`. It then and enqueues that exact commit over a
 restricted SSH identity that may run only
 `/usr/local/libexec/keeplore/promote-keeplore-main.sh` through passwordless
 sudo. A duplicate delivery or workflow re-run promotes nothing twice: the queue is
@@ -118,6 +120,15 @@ When they match it enqueues nothing. When the head was already recorded as
 processed, or has a recorded failed Promotion Attempt, it leaves the merge for
 the owner rather than looping. Otherwise it promotes the missed Human Merge
 through the same verified path.
+
+## What the live path does not record
+
+The live promotion path is Bash on the Agent Host, and it writes promotion
+evidence to `/var/lib/keeplore-promotions/attempts.jsonl`, not to the Voice
+Agent's Durable Task store. A real Keeplore Human Merge therefore produces no
+onboarding Evidence Record in the PWA today; the Evidence Record below is
+produced by the scenario seam. Closing that gap means having the host report each
+Promotion Attempt back to the API, which is separate work.
 
 ## Evidence Record
 
