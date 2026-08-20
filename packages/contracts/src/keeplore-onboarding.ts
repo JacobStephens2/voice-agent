@@ -120,6 +120,11 @@ export const keeploreBranchProtectionSchema = z
     bypassActors: z.array(z.string().min(1).max(120)).max(20),
     requiredChecks: z.array(z.string().min(1).max(120)).max(20),
     requiresPullRequest: z.boolean(),
+    /**
+     * Whether the bypass actors were read at all. No credential the Voice Agent
+     * holds can enumerate them, so an unattested branch is not a clean one.
+     */
+    bypassActorsAttested: z.boolean().optional(),
   })
   .strict();
 
@@ -133,7 +138,9 @@ export const keeploreGitHubAppInstallationSchema = z
       .refine((permissions) => Object.keys(permissions).length <= 20, {
         message: "GitHub App permissions are bounded",
       }),
-    repositories: z.array(z.string().min(1).max(200)).min(1).max(20),
+    repositories: z.array(z.string().min(1).max(200)).max(20),
+    /** `all` means the App is installed beyond the Registered Codebase. */
+    repositorySelection: z.enum(["all", "selected"]).optional(),
   })
   .strict();
 

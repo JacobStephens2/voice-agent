@@ -1,0 +1,8 @@
+[Unit]
+Description=Re-observe Keeplore's production-branch rules and GitHub App installation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/keeplore/collect-keeplore-repository-policy.sh

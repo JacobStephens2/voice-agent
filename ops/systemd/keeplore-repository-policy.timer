@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep Keeplore's repository-policy observations fresher than their lifetime
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1d
+AccuracySec=1h
+Persistent=true
+Unit=keeplore-repository-policy.service
+
+[Install]
+WantedBy=timers.target

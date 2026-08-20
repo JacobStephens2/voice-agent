@@ -106,6 +106,30 @@ keeplore_github_token() {
   fi
 }
 
+# The Agent Host's append-only repository-policy journal. The Voice Agent may
+# read it and never write it, exactly like the Promotion Attempt journal.
+keeplore_repository_policy_journal() {
+  local state_directory=/var/lib/keeplore-promotions
+  install -d -o root -g voice-agent -m 0750 "$state_directory"
+  local journal="$state_directory/repository-policy.jsonl"
+  touch "$journal"
+  chown root:voice-agent "$journal"
+  chmod 0640 "$journal"
+  printf '%s' "$journal"
+}
+
+# A GitHub read. The credential goes in on standard input, never on the command
+# line, so it never appears in another account's process list.
+keeplore_github_api() {
+  local path=$1 credential=$2
+  curl --fail --silent --show-error --max-time 15 --config - <<CONFIG
+url = "https://api.github.com/$path"
+header = "Accept: application/vnd.github+json"
+header = "Authorization: Bearer $credential"
+header = "X-GitHub-Api-Version: 2022-11-28"
+CONFIG
+}
+
 keeplore_require_commit() {
   if [[ ! ${1:-} =~ ^[0-9a-f]{40}$ ]]; then
     printf 'A 40-character merge commit is required.\n' >&2

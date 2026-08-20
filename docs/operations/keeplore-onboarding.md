@@ -61,8 +61,60 @@ changed together.
 
 `assessKeeploreGitHubAppInstallation` accepts exactly `contents: write`,
 `pull_requests: write`, and `checks: read` on `JacobStephens2/keeplore` alone.
-Any additional permission, any `admin` level, any administration scope, and any
-unregistered repository is a violation. The App holds no ruleset bypass.
+Any additional permission, any `admin` level, any administration scope, an
+installation on every repository, and any unregistered repository is a
+violation. GitHub grants every App `metadata: read` and does not let an
+installation drop it, so that one permission is tolerated at read level and
+nothing above it. The App holds no ruleset bypass.
+
+## Observing the repository policy from the host
+
+`collect-keeplore-repository-policy.sh` records both assessments from what the
+Voice Agent's own GitHub credentials can see, and nothing more (ADR-0047):
+
+- an App JWT from `github-app-jwt.sh` reads `GET /app/installations/{id}` — the
+  App's granted permissions and repository selection, read as the App itself,
+  needing no repository permission at all;
+- the installation token reads `GET /repos/{repository}/rules/branches/main`,
+  the rule types active on the production branch, and
+  `GET /installation/repositories`, the repositories the App is installed on.
+  Both need only the implicit metadata read.
+
+An absent rule is an allowed operation: no `non_fast_forward` rule means force
+pushes are allowed, and the assessment says so.
+
+`keeplore-repository-policy.timer` re-runs the collector daily. Observations
+expire after a week (`keeploreObservationLifetimeMs`), so a policy nobody has
+looked at recently falls back to unassessed instead of projecting a stale
+"satisfied".
+
+## Attesting the bypass actors nobody else can read
+
+GitHub returns a ruleset's `bypass_actors` only to an actor with **write access
+to the ruleset**. The Voice Agent's App must never hold that, and being listed
+as a bypass actor does not grant it — so an App added to `bypass_actors` would
+still see the field omitted. The absence of a disclosure therefore proves
+nothing, and the collector does not pretend otherwise: without an attestation
+`assessKeeploreBranchProtection` reports
+
+> Production-branch bypass actors are beyond the Voice Agent's authority and unattested
+
+`record-keeplore-bypass-attestation.sh` closes it. The owner runs it with their
+own authenticated `gh`, it reads every ruleset that applies to `main` —
+organization-level rulesets included, because bypass granted above the
+repository counts just as much — and it refuses to record anything if GitHub
+withholds `bypass_actors`, which would mean the attesting account cannot write
+the ruleset either. The result is appended to the same journal as an
+owner-attested observation, and every actor it names becomes a violation in the
+Evidence Record.
+
+## One journal, read the way the Promotion journal is read
+
+Both scripts append to `/var/lib/keeplore-promotions/repository-policy.jsonl`
+(`root:voice-agent 0640`), so the Voice Agent may read it and never write it.
+The API reads it exactly as it reads the Promotion journal: untrusted
+append-only events (ADR-0042), malformed lines skipped, the newest fresh
+observation of each kind assessed.
 
 ## Deployment Contract
 

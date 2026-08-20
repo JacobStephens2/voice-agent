@@ -28,6 +28,7 @@ import {
   createDurableTaskRuntime,
   createKeeploreOnboardingControls,
   createNodeKeeploreLiveInspector,
+  assessKeeploreRepositoryPolicy,
   keeplorePromotionTaskPrefix,
   projectKeeplorePromotionEvidence,
   readKeeploreRegistrationFile,
@@ -134,24 +135,45 @@ function createKeeploreControls() {
     store: keeploreOnboardingStore,
   });
 }
-// The Agent Host's root-owned Promotion Attempt journal, read as untrusted
-// append-only events (ADR-0042) and projected into Evidence Records.
-const keeplorePromotionJournal = {
-  async read() {
-    try {
-      return await readFile(
-        process.env.VOICE_AGENT_KEEPLORE_ATTEMPTS_PATH ??
-          "/var/lib/keeplore-promotions/attempts.jsonl",
-        "utf8",
-      );
-    } catch {
-      return "";
-    }
-  },
-};
+/**
+ * One of the Agent Host's root-owned journals, read as untrusted append-only
+ * events (ADR-0042). An unreadable journal is no evidence, never an error.
+ */
+function agentHostJournal(environmentVariable: string, defaultPath: string) {
+  return {
+    async read() {
+      try {
+        return await readFile(
+          process.env[environmentVariable] ?? defaultPath,
+          "utf8",
+        );
+      } catch {
+        return "";
+      }
+    },
+  };
+}
+
+const keeplorePromotionJournal = agentHostJournal(
+  "VOICE_AGENT_KEEPLORE_ATTEMPTS_PATH",
+  "/var/lib/keeplore-promotions/attempts.jsonl",
+);
+// What the Voice Agent's own GitHub authority could see of the production
+// branch's rules and its App installation (ADR-0047).
+const keeploreRepositoryPolicyJournal = agentHostJournal(
+  "VOICE_AGENT_KEEPLORE_REPOSITORY_POLICY_PATH",
+  "/var/lib/keeplore-promotions/repository-policy.jsonl",
+);
 
 async function readKeeploreEvidenceRecords() {
   if (keeploreControls === undefined) return [];
+  // Record the observations first: the projection reads both assessments back
+  // out of the durable store, so a stale collection would age the record.
+  await assessKeeploreRepositoryPolicy({
+    controls: keeploreControls,
+    journal: keeploreRepositoryPolicyJournal,
+    now: () => Date.now(),
+  });
   return projectKeeplorePromotionEvidence({
     journal: keeplorePromotionJournal,
     store: keeploreOnboardingStore,

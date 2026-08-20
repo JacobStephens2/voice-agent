@@ -184,7 +184,7 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=14
+TOTAL_STAGES=17
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 KEEPLORE_TOOLS=/usr/local/libexec/keeplore
 KEEPLORE_CONFIGURATION=/etc/voice-agent/keeplore.conf
@@ -255,9 +255,17 @@ sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
 for script in keeplore-config.sh inspect-keeplore.sh install-keeplore-release.sh \
   keeplore-health.sh promote-keeplore-main.sh promote-keeplore-release.sh \
   prune-keeplore-releases.sh reconcile-keeplore-merges.sh \
+  collect-keeplore-repository-policy.sh record-keeplore-bypass-attestation.sh \
   repoint-keeplore-vhosts.sh; do
   sudo install -o root -g root -m 0755 \
     "$REPOSITORY_ROOT/ops/keeplore/$script" "$KEEPLORE_TOOLS/$script"
+done
+# The Keeplore tools authenticate as the GitHub App themselves, so the App
+# credentials helpers sit beside them rather than being resolved out of the
+# release orchestrator's directory.
+for script in github-app-jwt.sh github-source-token.sh; do
+  sudo install -o root -g root -m 0755 \
+    "$REPOSITORY_ROOT/ops/release/$script" "$KEEPLORE_TOOLS/$script"
 done
 note "Root-owned Keeplore registration and release tools are installed."
 step "Ensure the restricted deploy account may run only $KEEPLORE_TOOLS/promote-keeplore-main.sh through passwordless sudo."
@@ -432,6 +440,32 @@ stage "Confirm reconciliation is idempotent"
 say "Reconciliation must recognize the Human Merge already promoted and enqueue nothing."
 sudo "$KEEPLORE_TOOLS/reconcile-keeplore-merges.sh"
 note "Reconciliation reported no missed Human Merge."
+
+stage "Record the repository policy the Voice Agent can see"
+say "The Voice Agent assesses only what its own GitHub credentials can observe: it holds no repository administration."
+sudo "$KEEPLORE_TOOLS/collect-keeplore-repository-policy.sh"
+sudo tail -n 2 /var/lib/keeplore-promotions/repository-policy.jsonl
+confirm "Do the observations name the pull-request, status-check, force-push, and deletion rules, and contents, pull requests, checks, and metadata only?" || exit 1
+
+stage "Attest the production branch's bypass actors"
+require_gh
+say "GitHub discloses a ruleset's bypass actors only to an actor that may write the ruleset."
+say "The Voice Agent's App must never hold that, so this one boundary is yours to establish."
+step "This reads the rulesets on main with your own authenticated gh and records what it finds."
+sudo -E "$KEEPLORE_TOOLS/record-keeplore-bypass-attestation.sh"
+say "An empty bypass-actor list is the finding you want. Any actor named there is a violation the Evidence Record will carry."
+confirm "Did the attestation report zero bypass actors?" || exit 1
+
+stage "Keep the repository-policy observations fresh"
+say "An observation older than a week no longer describes the repository, so the Voice Agent stops claiming it."
+for unit in keeplore-repository-policy.service keeplore-repository-policy.timer; do
+  sudo install -o root -g root -m 0644 \
+    "$REPOSITORY_ROOT/ops/systemd/$unit" "/etc/systemd/system/$unit"
+done
+sudo systemctl daemon-reload
+sudo systemctl enable --now keeplore-repository-policy.timer
+sudo systemctl list-timers keeplore-repository-policy.timer --no-pager || true
+note "The collector re-observes the repository policy daily."
 
 stage "Inspect the Evidence Record"
 open_url "$PWA_URL"
