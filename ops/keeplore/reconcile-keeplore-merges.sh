@@ -12,7 +12,7 @@ keeplore_require_root
 keeplore_load_configuration
 
 state_directory=/var/lib/keeplore-promotions
-install -d -o root -g root -m 0750 "$state_directory"
+install -d -o root -g voice-agent -m 0750 "$state_directory"
 verified_human_merges="$state_directory/verified-human-merges.tsv"
 touch "$verified_human_merges"
 chmod 0640 "$verified_human_merges"
@@ -51,4 +51,5 @@ if [[ -f $attempts ]] && \
 fi
 
 printf 'Reconciling missed Keeplore Human Merge %s.\n' "$head_commit"
-"$script_directory/promote-keeplore-main.sh" "$head_commit"
+KEEPLORE_MERGE_SOURCE=reconciliation \
+  "$script_directory/promote-keeplore-main.sh" "$head_commit"

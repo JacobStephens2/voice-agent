@@ -398,3 +398,5 @@ export * from "./keeplore-onboarding.ts";
 
 export * from "./keeplore-live-inspector.ts";
 export * from "./keeplore-registration-file.ts";
+
+export * from "./keeplore-promotion-evidence.ts";

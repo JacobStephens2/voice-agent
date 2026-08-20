@@ -121,14 +121,24 @@ processed, or has a recorded failed Promotion Attempt, it leaves the merge for
 the owner rather than looping. Otherwise it promotes the missed Human Merge
 through the same verified path.
 
-## What the live path does not record
+## From the host's journal to the Evidence Record
 
-The live promotion path is Bash on the Agent Host, and it writes promotion
-evidence to `/var/lib/keeplore-promotions/attempts.jsonl`, not to the Voice
-Agent's Durable Task store. A real Keeplore Human Merge therefore produces no
-onboarding Evidence Record in the PWA today; the Evidence Record below is
-produced by the scenario seam. Closing that gap means having the host report each
-Promotion Attempt back to the API, which is separate work.
+The live promotion path is root-owned Bash, so it reports by appending one line
+per Promotion Attempt to `/var/lib/keeplore-promotions/attempts.jsonl` —
+carrying the Release identity, the verification statuses, the restored Release,
+and the merge provenance. The directory is `root:voice-agent 0750`, so the Voice
+Agent may read the journal and never write it.
+
+The API treats those lines as untrusted append-only events (ADR-0042): each is
+validated against `keeplorePromotionAttemptRecordSchema`, and a malformed or
+truncated line — the host may be appending while the API reads — is skipped
+rather than trusted. Valid lines are grouped by merge commit and projected into
+one onboarding Evidence Record each, at task id `keeplore-promotion:<commit>`.
+
+Registration and Deployment Contract revisions come from the durable store, so
+an unenrolled Keeplore produces no Evidence Record however full the journal is.
+The Voice Agent never learns of a Promotion it did not have the policy to
+govern.
 
 ## Evidence Record
 

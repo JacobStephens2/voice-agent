@@ -51,6 +51,7 @@ export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";
+export * from "./keeplore-promotion-journal.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":

@@ -28,6 +28,8 @@ import {
   createDurableTaskRuntime,
   createKeeploreOnboardingControls,
   createNodeKeeploreLiveInspector,
+  keeplorePromotionTaskPrefix,
+  projectKeeplorePromotionEvidence,
   readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
   createTelephoneBoundaryRuntime,
@@ -124,6 +126,30 @@ function createKeeploreControls() {
     store: keeploreOnboardingStore,
   });
 }
+// The Agent Host's root-owned Promotion Attempt journal, read as untrusted
+// append-only events (ADR-0042) and projected into Evidence Records.
+const keeplorePromotionJournal = {
+  async read() {
+    try {
+      return await readFile(
+        process.env.VOICE_AGENT_KEEPLORE_ATTEMPTS_PATH ??
+          "/var/lib/keeplore-promotions/attempts.jsonl",
+        "utf8",
+      );
+    } catch {
+      return "";
+    }
+  },
+};
+
+async function readKeeploreEvidenceRecords() {
+  if (keeploreControls === undefined) return [];
+  return projectKeeplorePromotionEvidence({
+    journal: keeplorePromotionJournal,
+    store: keeploreOnboardingStore,
+  });
+}
+
 const authentication = createAuthenticationLifecycle({
   now: () => new Date().toISOString(),
   ownerUserId: process.env.VOICE_AGENT_OWNER_ID ?? "personal-owner",
@@ -184,13 +210,21 @@ const api = createVoiceApi({
     ),
   },
   records: {
-    getEvidenceRecord: async (taskId) =>
-      (await callbackRuntime.readEvidenceRecord(taskId)) ??
-      (await runtime.getEvidenceRecord(taskId)),
+    getEvidenceRecord: async (taskId) => {
+      if (taskId.startsWith(keeplorePromotionTaskPrefix)) {
+        const records = await readKeeploreEvidenceRecords();
+        return records.find((record) => record.task.id === taskId);
+      }
+      return (
+        (await callbackRuntime.readEvidenceRecord(taskId)) ??
+        (await runtime.getEvidenceRecord(taskId))
+      );
+    },
     listEvidenceRecords: async () => {
       const records = [
         ...(await runtime.listEvidenceRecords()),
         ...(await callbackRuntime.listEvidenceRecords()),
+        ...(await readKeeploreEvidenceRecords()).map((record) => record.task),
       ];
       return records
         .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
