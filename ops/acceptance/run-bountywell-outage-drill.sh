@@ -354,7 +354,6 @@ pause "Press Enter after the timer is proven."
 stage "Start the guarded outage drill"
 say "This stops only bountywell-api.service and presents “Bountywell's API appears unavailable.” Stay available: the ten-minute timer is the backstop if recovery fails."
 open_url "$PWA_URL"
-say "The drill refuses to start until the recovery timer is both armed and proven."
 confirm "Are you available for the next ten minutes, with the recovery timer armed and proven?" || exit 1
 step "Choose “Start guarded outage drill”."
 step "Remain at the Evidence Record. The worker recovers the pending Durable Task without being told the injected fault."

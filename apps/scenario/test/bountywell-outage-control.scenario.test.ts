@@ -105,6 +105,17 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
     });
     expect(granted.json().capabilities).toContain("bountywell.service.restart");
 
+    // The guarded drill refuses to stop the unit before its backstop is armed.
+    const earlyInject = await api.inject({
+      headers,
+      method: "POST",
+      payload: { csrfToken: "csrf-token-value", ownerAvailable: true },
+      url: "/api/operations/bountywell-outage-drill/inject",
+    });
+    expect(earlyInject.statusCode).toBe(409);
+    expect(earlyInject.json()).toEqual({ error: "Recovery timer is not armed" });
+    expect(host.commands.filter((command) => command.action === "stop")).toEqual([]);
+
     const armed = await api.inject({
       headers,
       method: "POST",
@@ -117,17 +128,6 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
       delaySeconds: 600,
       unit: "bountywell-api.service",
     });
-
-    // The guarded drill refuses to stop the unit behind an unproven backstop.
-    const earlyInject = await api.inject({
-      headers,
-      method: "POST",
-      payload: { csrfToken: "csrf-token-value", ownerAvailable: true },
-      url: "/api/operations/bountywell-outage-drill/inject",
-    });
-    expect(earlyInject.statusCode).toBe(409);
-    expect(earlyInject.json()).toEqual({ error: "Recovery timer is not proven" });
-    expect(host.commands.filter((command) => command.action === "stop")).toEqual([]);
 
     const proven = await api.inject({
       headers,

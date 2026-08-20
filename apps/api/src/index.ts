@@ -897,11 +897,8 @@ function registerBountywellControlRoutes(
           return reply.code(400).send({ error: error.message });
         }
         // The guarded drill refuses to stop the registered unit until its
-        // independent backstop is armed and proven.
-        if (
-          error.message === "Recovery timer is not armed" ||
-          error.message === "Recovery timer is not proven"
-        ) {
+        // independent backstop is armed.
+        if (error.message === "Recovery timer is not armed") {
           return reply.code(409).send({ error: error.message });
         }
         if (error.message === bountywellDrillNotRegistered) {

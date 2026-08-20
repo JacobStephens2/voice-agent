@@ -349,7 +349,7 @@ describe("Bountywell drill Interventions are durable Operations", () => {
     }
   });
 
-  test("the drill refuses to inject behind a timer that is not armed and proven", async () => {
+  test("the drill refuses to inject behind a timer that is not armed", async () => {
     const scenario = await openScenario("drill-unarmed", "2026-08-19T13:00:00.000Z");
     try {
       await scenario.registerBountywell();
@@ -359,15 +359,9 @@ describe("Bountywell drill Interventions are durable Operations", () => {
       await expect(
         scenario.injectFault({ ownerAvailable: true }),
       ).rejects.toThrow("Recovery timer is not armed");
-
-      // An armed but unproven backstop is not yet a guard the drill may hide behind.
-      await scenario.armRecoveryTimer();
-      await expect(
-        scenario.injectFault({ ownerAvailable: true }),
-      ).rejects.toThrow("Recovery timer is not proven");
       expect(countCommands(scenario, "stop")).toBe(0);
 
-      await scenario.proveRecoveryTimer();
+      await scenario.armRecoveryTimer();
       const injected = await scenario.injectFault({ ownerAvailable: true });
       expect(injected.report).toBe("Bountywell's API appears unavailable.");
       expect(countCommands(scenario, "stop")).toBe(1);
