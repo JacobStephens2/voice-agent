@@ -17,7 +17,12 @@ import type {
   CallbackProviderEvent,
   TelephoneEvidenceEvent,
 } from "@voice-agent/contracts";
-import { createUnixSocketBountywellObserver } from "@voice-agent/operations-broker";
+import {
+  createUnixSocketBountywellController,
+  createUnixSocketBountywellObserver,
+} from "@voice-agent/operations-broker";
+
+import { createBountywellCompletionReports } from "./bountywell-completion-report.ts";
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
@@ -84,21 +89,30 @@ export default defineAgent({
       store: createSqliteTelephoneBoundaryStore(databasePath),
     });
     const taskStore = createSqliteDurableTaskStore(databasePath);
+    const continuity = createTaskContinuityRuntime({
+      nextId: randomUUID,
+      now: () => new Date().toISOString(),
+      store: createSqliteTaskContinuityStore(databasePath),
+      tasks: taskStore,
+    });
     const tasks = createDurableTaskRuntime({
       applicationRegistry: taskStore,
+      completionReports: createBountywellCompletionReports({
+        callbacks: runtime,
+        continuity,
+      }),
       deferTelephoneOperations: true,
       healthObserver: createUnixSocketBountywellObserver(
         requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH"),
       ),
       nextId: randomUUID,
       now: () => new Date().toISOString(),
+      // A confirmed drill recovery restarts the registered unit from inside the
+      // Telephone Session, so this process needs the same service control.
+      serviceController: createUnixSocketBountywellController(
+        requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH"),
+      ),
       store: taskStore,
-    });
-    const continuity = createTaskContinuityRuntime({
-      nextId: randomUUID,
-      now: () => new Date().toISOString(),
-      store: createSqliteTaskContinuityStore(databasePath),
-      tasks: taskStore,
     });
     const callbackAdapter = createProductionLiveKitCallbackAdapter({
       agentName,

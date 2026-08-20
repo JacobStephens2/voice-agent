@@ -19,7 +19,9 @@ import {
 } from "@voice-agent/policy";
 import {
   createBountywellOutageControls,
+  type BountywellCompletionReports,
   type BountywellOutageControls,
+  type BountywellOwnerAvailability,
 } from "./bountywell-outage.ts";
 
 export * from "./callback-handshake.ts";
@@ -74,10 +76,14 @@ export interface DurableTaskRuntime extends BountywellOutageControls {
 
 export interface DurableTaskRuntimeOptions {
   readonly applicationRegistry?: ApplicationRegistry;
+  /** Where a finished Bountywell Outage Drill sends the owner's completion report. */
+  readonly completionReports?: BountywellCompletionReports;
   readonly deferTelephoneOperations?: boolean;
   readonly healthObserver?: BountywellHealthObserver;
   readonly nextId: () => string;
   readonly now: () => string;
+  /** Live evidence that the owner is available for the guarded drill. */
+  readonly ownerAvailability?: BountywellOwnerAvailability;
   readonly serviceController?: BountywellServiceController;
   readonly store: DurableTaskStore;
 }
@@ -366,6 +372,12 @@ export function createDurableTaskRuntime(
       ...(options.applicationRegistry === undefined
         ? {}
         : { applicationRegistry: options.applicationRegistry }),
+      ...(options.completionReports === undefined
+        ? {}
+        : { completionReports: options.completionReports }),
+      ...(options.ownerAvailability === undefined
+        ? {}
+        : { ownerAvailability: options.ownerAvailability }),
       ...(options.healthObserver === undefined
         ? {}
         : { healthObserver: options.healthObserver }),

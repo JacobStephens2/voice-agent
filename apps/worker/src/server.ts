@@ -23,6 +23,7 @@ import {
 import {
   deliverPendingAuthenticationFailureNotifications,
 } from "./authentication-failure-notifications.ts";
+import { createBountywellCompletionReports } from "./bountywell-completion-report.ts";
 import {
   createProductionLiveKitCallbackAdapter,
   type LiveKitCallbackAdapter,
@@ -39,20 +40,13 @@ import {
 const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
 const socketPath = requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH");
 const store = createSqliteDurableTaskStore(databasePath);
-const runtime = createDurableTaskRuntime({
-  applicationRegistry: store,
-  healthObserver: createUnixSocketBountywellObserver(socketPath),
-  nextId: randomUUID,
-  now: () => new Date().toISOString(),
-  serviceController: createUnixSocketBountywellController(socketPath),
-  store,
-});
 const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
 const callbackRuntime = createCallbackHandshakeRuntime({
   nextId: randomUUID,
   now: () => new Date().toISOString(),
   store: callbackStore,
 });
+const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const telephoneBoundaries = createTelephoneBoundaryRuntime({
   evidence: {
     async append(telephoneSessionId, event) {
@@ -68,7 +62,7 @@ const telephoneBoundaries = createTelephoneBoundaryRuntime({
   rawAudioDebugDirectory:
     process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
     "/var/lib/voice-agent/raw-audio-debug",
-  store: createSqliteTelephoneBoundaryStore(databasePath),
+  store: telephoneBoundaryStore,
 });
 const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
@@ -78,6 +72,25 @@ const continuityRuntime = createTaskContinuityRuntime({
   now: () => new Date().toISOString(),
   store: continuityStore,
   tasks: store,
+});
+const runtime = createDurableTaskRuntime({
+  applicationRegistry: store,
+  completionReports: createBountywellCompletionReports({
+    callbacks: callbackRuntime,
+    continuity: continuityRuntime,
+  }),
+  healthObserver: createUnixSocketBountywellObserver(socketPath),
+  nextId: randomUUID,
+  now: () => new Date().toISOString(),
+  // This Personal Prototype serves one owner, so a live Telephone Session is
+  // the owner's; the drill runs only while one is carrying them.
+  ownerAvailability: {
+    async countLiveTelephoneSessions() {
+      return (await telephoneBoundaryStore.findActiveSessionIds()).length;
+    },
+  },
+  serviceController: createUnixSocketBountywellController(socketPath),
+  store,
 });
 const agentName = "voice-agent-telephone";
 const liveKitConnection = {

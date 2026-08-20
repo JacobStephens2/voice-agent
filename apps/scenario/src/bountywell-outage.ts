@@ -2,6 +2,7 @@ import {
   type BountywellBaselineEvidence,
   type BountywellRecoveryTimer,
   type BountywellRecoveryTimerProof,
+  type CompletionReportOperation,
   type EvidenceRecordProjection,
 } from "@voice-agent/contracts";
 import {
@@ -10,8 +11,14 @@ import {
   createSqliteBrokerOperationStore,
   type BountywellHostCommand,
 } from "@voice-agent/operations-broker";
-import { createDurableTaskRuntime } from "@voice-agent/runtime";
-import { createSqliteDurableTaskStore } from "@voice-agent/sqlite-store";
+import {
+  createDurableTaskRuntime,
+  createTaskContinuityRuntime,
+} from "@voice-agent/runtime";
+import {
+  createSqliteDurableTaskStore,
+  createSqliteTaskContinuityStore,
+} from "@voice-agent/sqlite-store";
 
 export interface BountywellOutageScenario {
   readonly hostCommands: readonly BountywellHostCommand[];
@@ -29,6 +36,14 @@ export interface BountywellOutageScenario {
   injectFault(input: { readonly ownerAvailable: boolean }): ReturnType<
     ReturnType<typeof createDurableTaskRuntime>["injectBountywellOutage"]
   >;
+  /** The drill controller handing the Voice Agent its one sentence. */
+  present(): ReturnType<
+    ReturnType<typeof createDurableTaskRuntime>["presentBountywellOutage"]
+  >;
+  /** The worker poll that recovers a presented drill without a request id. */
+  pollRecovery(): Promise<EvidenceRecordProjection | undefined>;
+  /** The next completion report the owner would receive. */
+  processNextCompletionReport(): Promise<CompletionReportOperation | undefined>;
   proveRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
   /** The open drill's Evidence Record, for asserting a partially applied drill. */
   readOpenDrill(): Promise<EvidenceRecordProjection | undefined>;
@@ -52,6 +67,8 @@ export interface BountywellOutageScenario {
       | undefined,
   ): void;
   setCrashAfter(action: BountywellHostCommand["action"] | undefined): void;
+  /** Whether a live Telephone Session is carrying the owner right now. */
+  setOwnerAvailable(available: boolean): void;
   setStartFailure(fails: boolean): void;
 }
 
@@ -70,6 +87,7 @@ export async function createBountywellOutageScenario(options: {
     }
     return id;
   };
+  let liveTelephoneSessionIds: readonly string[] = ["telephone-session-drill"];
   const host = createDeterministicBountywellHost({
     advanceMs(milliseconds) {
       nowMs += milliseconds;
@@ -82,11 +100,27 @@ export async function createBountywellOutageScenario(options: {
       `${options.databasePath}.broker`,
     );
     const store = createSqliteDurableTaskStore(options.databasePath);
+    const continuity = createTaskContinuityRuntime({
+      nextId,
+      now,
+      store: createSqliteTaskContinuityStore(options.databasePath),
+      tasks: store,
+    });
     return {
       brokerStore,
+      continuity,
       store,
       runtime: createDurableTaskRuntime({
         applicationRegistry: store,
+        completionReports: {
+          async requestBountywellCompletionReport(input) {
+            await continuity.requestCompletionCallback({
+              ...input,
+              telephone: registeredTelephone,
+              telephoneSessionId: `completion:${input.taskId}`,
+            });
+          },
+        },
         healthObserver: createBountywellOperationsBroker({
           now,
           probes: host.probes,
@@ -94,6 +128,11 @@ export async function createBountywellOutageScenario(options: {
         }),
         nextId,
         now,
+        ownerAvailability: {
+          async countLiveTelephoneSessions() {
+            return liveTelephoneSessionIds.length;
+          },
+        },
         serviceController: host.controller,
         store,
       }),
@@ -101,6 +140,11 @@ export async function createBountywellOutageScenario(options: {
   }
 
   let agentProcess = startProcess();
+  await agentProcess.continuity.configureNotification({
+    email: "owner@example.com",
+    from: "Voice Agent <tasks@notify.stephens.page>",
+    notificationSubdomain: "notify.stephens.page",
+  });
 
   return {
     get hostCommands() {
@@ -113,10 +157,15 @@ export async function createBountywellOutageScenario(options: {
     captureBaseline: () => agentProcess.runtime.captureBountywellBaseline(),
     async close() {
       await agentProcess.runtime.close();
+      await agentProcess.continuity.close();
       await agentProcess.brokerStore.close();
     },
     grantRestart: ({ source }) => agentProcess.runtime.grantBountywellRestart(source),
     injectFault: (input) => agentProcess.runtime.injectBountywellOutage(input),
+    present: () => agentProcess.runtime.presentBountywellOutage(),
+    pollRecovery: () =>
+      agentProcess.runtime.processNextBountywellOutageRecovery(),
+    processNextCompletionReport: () => agentProcess.continuity.processNextReport(),
     proveRecoveryTimer: () => agentProcess.runtime.proveBountywellRecoveryTimer(),
     async readOpenDrill() {
       const open = (await agentProcess.store.listTasks()).find(
@@ -136,6 +185,7 @@ export async function createBountywellOutageScenario(options: {
     },
     async restart(input = {}) {
       await agentProcess.runtime.close();
+      await agentProcess.continuity.close();
       await agentProcess.brokerStore.close();
       if (input.ids !== undefined) ids = [...input.ids];
       agentProcess = startProcess();
@@ -145,6 +195,18 @@ export async function createBountywellOutageScenario(options: {
     },
     setAfterStart: (next) => host.setAfterStart(next),
     setCrashAfter: (action) => host.setCrashAfter(action),
+    setOwnerAvailable(available) {
+      liveTelephoneSessionIds = available ? ["telephone-session-drill"] : [];
+    },
     setStartFailure: (fails) => host.setStartFailure(fails),
   };
 }
+
+const registeredTelephone = {
+  livekitInboundTrunkId: "livekit-inbound",
+  livekitOutboundTrunkId: "livekit-outbound",
+  registeredAt: "2026-08-18T00:00:00.000Z",
+  revision: 1,
+  telephoneNumber: "+12025550123",
+  telnyxNumber: "+12025550124",
+} as const;

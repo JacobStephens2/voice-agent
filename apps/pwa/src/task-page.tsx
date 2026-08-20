@@ -19,6 +19,7 @@ const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
   "operation.completed": "Health check completed",
   "task.completed": "Inquiry completed",
   "fault.reported": "Fault reported",
+  "fault.presented": "Fault report presented",
   "diagnosis.recorded": "Diagnosis recorded",
   "policy.decided": "Policy decision",
   "timer.lifecycle": "Recovery timer",

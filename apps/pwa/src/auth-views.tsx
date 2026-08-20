@@ -211,6 +211,7 @@ export function TaskList(props: {
   onGrantBountywellRestart(): Promise<void>;
   onArmRecoveryTimer(): Promise<void>;
   onProveRecoveryTimer(): Promise<void>;
+  onPresentOutageReport(): Promise<void>;
   onStartOutageDrill(): Promise<void>;
   onRegisterTelephone(input: RegisteredTelephoneInput): Promise<void>;
   onChangeSpendingCeiling(ceilingMicrousd: number): Promise<void>;
@@ -312,6 +313,12 @@ export function TaskList(props: {
                   onClick={() => void props.onStartOutageDrill()}
                 >
                   Start guarded outage drill
+                </button>
+                <button
+                  disabled={props.busy}
+                  onClick={() => void props.onPresentOutageReport()}
+                >
+                  Present fault report again
                 </button>
               </>
             ) : (

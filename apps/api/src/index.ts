@@ -44,6 +44,8 @@ import {
   grantBountywellRestartRequestSchema,
   bountywellDrillControlRequestSchema,
   bountywellDrillNotRegistered,
+  bountywellOutageNotPresented,
+  bountywellOwnerUnavailable,
   injectBountywellOutageRequestSchema,
   bountywellRecoveryTimerSchema,
   bountywellRecoveryTimerProofSchema,
@@ -150,6 +152,7 @@ export interface BountywellTaskControls {
   injectBountywellOutage?(input: {
     readonly ownerAvailable: boolean;
   }): Promise<BountywellOutageInjection>;
+  presentBountywellOutage?(): Promise<BountywellOutageInjection | undefined>;
   proveBountywellRecoveryTimer?(): Promise<BountywellRecoveryTimerProof>;
   registerBountywell(): Promise<BountywellRegistration>;
   requestStop?(input: {
@@ -829,11 +832,14 @@ function registerBountywellControlRoutes(
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
       const body = bountywellDrillControlRequestSchema.parse(request.body);
-      const sessionToken = await authorizeFreshAction(
+      // Arming uses the already-enrolled Standing Autonomy Policy; only
+      // enrolling the restart capability expands authority.
+      const sessionToken = await authorizeStateChange(
         request,
         reply,
-        options,
+        options.authentication,
         body.csrfToken,
+        options.records,
       );
       if (sessionToken === undefined) return;
       if (options.controls.armBountywellRecoveryTimer === undefined) {
@@ -850,11 +856,12 @@ function registerBountywellControlRoutes(
     async (request, reply) => {
       if (!requireOrigin(request, reply, options.origin)) return;
       const body = bountywellDrillControlRequestSchema.parse(request.body);
-      const sessionToken = await authorizeFreshAction(
+      const sessionToken = await authorizeStateChange(
         request,
         reply,
-        options,
+        options.authentication,
         body.csrfToken,
+        options.records,
       );
       if (sessionToken === undefined) return;
       if (options.controls.proveBountywellRecoveryTimer === undefined) {
@@ -872,13 +879,14 @@ function registerBountywellControlRoutes(
       if (!requireOrigin(request, reply, options.origin)) return;
       const parsed = injectBountywellOutageRequestSchema.safeParse(request.body);
       if (!parsed.success) {
-        return reply.code(400).send({ error: "The live drill occurs only while the owner is available" });
+        return reply.code(400).send({ error: bountywellOwnerUnavailable });
       }
-      const sessionToken = await authorizeFreshAction(
+      const sessionToken = await authorizeStateChange(
         request,
         reply,
-        options,
+        options.authentication,
         parsed.data.csrfToken,
+        options.records,
       );
       if (sessionToken === undefined) return;
       if (options.controls.injectBountywellOutage === undefined) {
@@ -891,9 +899,8 @@ function registerBountywellControlRoutes(
         return reply.code(202).send(bountywellOutageInjectionSchema.parse(injected));
       } catch (error) {
         if (!(error instanceof Error)) throw error;
-        if (
-          error.message === "The live drill occurs only while the owner is available"
-        ) {
+        if (error.message === bountywellOwnerUnavailable) {
+          await options.records.recordPolicyDenial?.();
           return reply.code(400).send({ error: error.message });
         }
         // The guarded drill refuses to stop the registered unit until its
@@ -906,6 +913,44 @@ function registerBountywellControlRoutes(
         }
         throw error;
       }
+    },
+  );
+
+  api.post(
+    "/api/operations/bountywell-outage-drill/present",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = bountywellDrillControlRequestSchema.parse(request.body);
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      if (options.controls.presentBountywellOutage === undefined) {
+        return reply.code(409).send({ error: "Outage drill control is unavailable" });
+      }
+      let presented;
+      try {
+        presented = await options.controls.presentBountywellOutage();
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === bountywellDrillNotRegistered
+        ) {
+          return reply.code(403).send({ error: error.message });
+        }
+        throw error;
+      }
+      if (presented === undefined) {
+        return reply.code(409).send({ error: bountywellOutageNotPresented });
+      }
+      // The Voice Agent is handed this sentence and nothing else about the drill.
+      return reply
+        .code(202)
+        .send(bountywellOutageInjectionSchema.parse(presented));
     },
   );
 

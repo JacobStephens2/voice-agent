@@ -926,7 +926,8 @@ export function createDeterministicBountywellHost(options: {
     },
     async removeRecoveryTimer() {
       if (timer?.armed !== true) return { removed: false };
-      timer = { armed: false, firesAtMs: timer.firesAtMs };
+      // The timer is gone, not merely disarmed: nothing is left to fire.
+      timer = undefined;
       pushCommand("remove-timer");
       return { removed: true };
     },
@@ -978,7 +979,7 @@ export function createSystemdBountywellServiceController(
   const timerUnit = "bountywell-api-recovery.timer";
   const serviceUnit = "bountywell-api-recovery.service";
 
-  return {
+  const controller: BountywellServiceController = {
     async armRecoveryTimer() {
       await writeRecoveryUnits(unitDirectory, execute);
       try {
@@ -1045,7 +1046,15 @@ export function createSystemdBountywellServiceController(
       } catch {
         // Stopping a pinned timer disarms it.
       }
-      return { removed: true };
+      // A stopped one-shot timer must also stop existing: its transient units
+      // are removed so nothing can start bountywell-api.service later.
+      await removeTransientRecoveryUnits(unitDirectory);
+      try {
+        await execute("systemctl", ["daemon-reload"]);
+      } catch {
+        // Pinned Agent Host units do not require a broker daemon-reload.
+      }
+      return { removed: !(await controller.readRecoveryTimer()).armed };
     },
     async startRegisteredUnit() {
       const previous = await readSystemdUnitProperties(BOUNTYWELL_UNIT);
@@ -1061,6 +1070,14 @@ export function createSystemdBountywellServiceController(
       return { stopped: true };
     },
   };
+
+  return controller;
+
+  async function removeTransientRecoveryUnits(directory: string): Promise<void> {
+    const { rm } = await import("node:fs/promises");
+    await rm(`${directory}/${timerUnit}`, { force: true });
+    await rm(`${directory}/${serviceUnit}`, { force: true });
+  }
 
   async function writeRecoveryUnits(
     directory: string,

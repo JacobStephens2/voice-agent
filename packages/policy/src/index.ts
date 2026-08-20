@@ -1,12 +1,14 @@
 import {
   bountywellRegistrationSchema,
   bountywellDrillNotRegistered,
+  bountywellOwnerUnavailable,
   bountywellHealthInquirySchema,
   bountywellOutageReport,
   type BountywellHealthInquiry,
   type BountywellHealthInquiryRequest,
   type BountywellHealthObservation,
   type BountywellHealthTaskConclusion,
+  type BountywellHypothesis,
   type BountywellOutageTask,
   type BountywellRegistration,
 } from "@voice-agent/contracts";
@@ -120,9 +122,22 @@ export function authorizeBountywellOutageReport(
 export interface BountywellOutageDiagnosis {
   readonly alreadyRecovered: boolean;
   readonly basis: "inference" | "observation";
+  /** Every candidate explanation considered, with what the observation did to it. */
+  readonly hypotheses: readonly BountywellHypothesis[];
   readonly inactiveUnit?: "bountywell-api.service";
 }
 
+const inactiveUnitHypothesis =
+  "The registered bountywell-api.service unit is inactive and explains the unavailable API.";
+const recoveredHypothesis =
+  "Bountywell already matches the recovered public and service checks.";
+const upstreamHypothesis =
+  "The registered unit is running and something in front of it makes the API unavailable.";
+
+/**
+ * Diagnose the reported unavailability from bounded observation alone, keeping
+ * every candidate explanation and the verdict the evidence supports for it.
+ */
 export function diagnoseBountywellOutage(
   observation: BountywellHealthObservation,
 ): BountywellOutageDiagnosis {
@@ -136,17 +151,89 @@ export function diagnoseBountywellOutage(
     publicHealth?.facts.statusCode === 200 &&
     authentication?.facts.statusCode === 401;
   if (recovered) {
-    return { alreadyRecovered: true, basis: "observation" };
+    return {
+      alreadyRecovered: true,
+      basis: "observation",
+      hypotheses: [
+        { statement: recoveredHypothesis, status: "supported" },
+        { statement: inactiveUnitHypothesis, status: "ruled-out" },
+        { statement: upstreamHypothesis, status: "ruled-out" },
+      ],
+    };
   }
   if (service?.facts.active === false) {
     return {
       alreadyRecovered: false,
       basis: "observation",
+      hypotheses: [
+        { statement: inactiveUnitHypothesis, status: "supported" },
+        { statement: recoveredHypothesis, status: "ruled-out" },
+        { statement: upstreamHypothesis, status: "ruled-out" },
+      ],
       inactiveUnit: "bountywell-api.service",
     };
   }
-  return { alreadyRecovered: false, basis: "inference" };
+  return {
+    alreadyRecovered: false,
+    basis: "inference",
+    hypotheses: [
+      { statement: recoveredHypothesis, status: "ruled-out" },
+      {
+        statement: inactiveUnitHypothesis,
+        status: service?.facts.active === true ? "ruled-out" : "unresolved",
+      },
+      {
+        statement: upstreamHypothesis,
+        status: service?.facts.active === true ? "supported" : "unresolved",
+      },
+    ],
+  };
 }
+
+/**
+ * Whether one sanitized telephone transcript reports that Bountywell's API is
+ * unavailable, in the owner's own words. It classifies the discussion only;
+ * what may be recovered is decided by the presented drill itself, so loose
+ * phrasing here cannot recover anything that was never presented.
+ */
+export function transcriptReportsBountywellOutage(text: string): boolean {
+  return (
+    /\bbountywell\b/iu.test(text) &&
+    /\b(unavailable|unreachable|down|offline|not responding)\b/iu.test(text)
+  );
+}
+
+/**
+ * Authorize injecting the drill fault. The owner's asserted availability is not
+ * evidence by itself: the live drill runs only while a Telephone Session is
+ * carrying the owner, so the fault is never injected into an unattended host.
+ */
+export function authorizeBountywellFaultInjection(input: {
+  readonly assertedAvailable: boolean;
+  readonly liveTelephoneSessions: number;
+  readonly registration: BountywellRegistration | undefined;
+}): {
+  readonly capability: "bountywell.outage.drill";
+  readonly decision: "allow" | "deny";
+  readonly reason: string;
+} {
+  const registered = authorizeBountywellDrillControl(input.registration);
+  if (registered.decision === "deny") return registered;
+  if (!input.assertedAvailable || input.liveTelephoneSessions < 1) {
+    return {
+      capability: "bountywell.outage.drill",
+      decision: "deny",
+      reason: bountywellOwnerUnavailable,
+    };
+  }
+  return {
+    capability: "bountywell.outage.drill",
+    decision: "allow",
+    reason:
+      "The owner is available on a live Telephone Session for the guarded drill.",
+  };
+}
+
 
 /**
  * Authorize one owner-initiated Bountywell Outage Drill Intervention. The drill

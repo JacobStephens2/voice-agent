@@ -199,7 +199,7 @@ export async function armBountywellRecoveryTimer(
   if (!response.ok) {
     throw new Error(
       response.status === 403
-        ? "Perform a Fresh Passkey Action before arming the recovery timer."
+        ? "Sign in again to restore your Trusted Browser Session before arming the recovery timer."
         : "The recovery timer could not be armed.",
     );
   }
@@ -220,7 +220,7 @@ export async function proveBountywellRecoveryTimer(
   if (!response.ok) {
     throw new Error(
       response.status === 403
-        ? "Perform a Fresh Passkey Action before proving the recovery timer."
+        ? "Sign in again to restore your Trusted Browser Session before proving the recovery timer."
         : "The recovery timer could not be proven.",
     );
   }
@@ -237,9 +237,30 @@ export async function injectBountywellOutage(
   });
   if (!response.ok) {
     throw new Error(
-      response.status === 403
-        ? "Perform a Fresh Passkey Action before starting the guarded drill."
+      response.status === 400
+        ? "The live drill occurs only while the owner is available on a Telephone Session."
         : "The guarded Bountywell outage drill could not be started.",
+    );
+  }
+  return bountywellOutageInjectionSchema.parse(await response.json());
+}
+
+export async function presentBountywellOutage(
+  csrfToken: string,
+): Promise<BountywellOutageInjection> {
+  const response = await fetch(
+    "/api/operations/bountywell-outage-drill/present",
+    {
+      body: JSON.stringify({ csrfToken }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      response.status === 409
+        ? "Start the guarded drill before presenting its fault report."
+        : "The fault report could not be presented to the Voice Agent.",
     );
   }
   return bountywellOutageInjectionSchema.parse(await response.json());
