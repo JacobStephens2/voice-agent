@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -480,6 +480,50 @@ test("stopping a pinned recovery timer removes it when disable is denied", async
   });
 
   expect(await controller.removeRecoveryTimer()).toEqual({ removed: true });
+});
+
+test("removing the recovery timer deletes its transient units and confirms it is gone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-broker-remove-"));
+  temporaryDirectories.push(directory);
+  let timerActive = false;
+  const controller = createSystemdBountywellServiceController({
+    unitDirectory: directory,
+    async execute(_command, args) {
+      if (args[0] === "start") timerActive = true;
+      if (args[0] === "stop") timerActive = false;
+      if (args[0] === "show") {
+        return timerActive ? "ActiveState=active" : "ActiveState=inactive";
+      }
+      return "";
+    },
+  });
+
+  await controller.armRecoveryTimer();
+  expect(await readdir(directory)).toEqual(
+    expect.arrayContaining([
+      "bountywell-api-recovery.service",
+      "bountywell-api-recovery.timer",
+    ]),
+  );
+
+  expect(await controller.removeRecoveryTimer()).toEqual({ removed: true });
+  expect(await readdir(directory)).toEqual([]);
+  expect(await controller.readRecoveryTimer()).toEqual({
+    armed: false,
+    delaySeconds: 600,
+    unit: "bountywell-api.service",
+  });
+});
+
+test("a recovery timer that survives removal is not reported as removed", async () => {
+  const controller = createSystemdBountywellServiceController({
+    async execute(_command, args) {
+      if (args[0] === "show") return "ActiveState=active";
+      return "";
+    },
+  });
+
+  expect(await controller.removeRecoveryTimer()).toEqual({ removed: false });
 });
 
 function rejectingProbes(): BountywellHostProbes {

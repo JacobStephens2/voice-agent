@@ -39,6 +39,7 @@ import {
   loadKeeploreLiveInspection,
   loadKeeploreRegistration,
   injectBountywellOutage,
+  presentBountywellOutage,
   proveBountywellRecoveryTimer,
   registerBountywell,
   registerTelephone,
@@ -288,9 +289,20 @@ function App() {
       return;
     }
     await run(async () => {
-      const injected = await injectBountywellOutage(csrfToken);
-      window.location.assign(`/?task=${encodeURIComponent(injected.taskId)}`);
+      // The drill controller stops the registered unit, then hands the Voice
+      // Agent the one sentence it is told about the fault.
+      await injectBountywellOutage(csrfToken);
+      await presentOutageReport();
     });
+  }
+
+  async function presentOutageReport() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before presenting the fault report.");
+      return;
+    }
+    const presented = await presentBountywellOutage(csrfToken);
+    window.location.assign(`/?task=${encodeURIComponent(presented.taskId)}`);
   }
 
   async function inspectKeeplore() {
@@ -541,6 +553,7 @@ function App() {
       onGrantBountywellRestart={grantRestart}
       onArmRecoveryTimer={armTimer}
       onProveRecoveryTimer={proveTimer}
+      onPresentOutageReport={() => run(presentOutageReport)}
       onStartOutageDrill={startOutageDrill}
       onRegisterTelephone={enrollTelephone}
       onChangeSpendingCeiling={saveSpendingCeiling}

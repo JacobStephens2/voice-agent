@@ -131,6 +131,7 @@ describe("Bountywell drill Interventions are durable Operations", () => {
         serviceActive: true,
       });
       const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       const phases = record.evidence
         .filter((event) => event.kind === "timer.lifecycle")
@@ -187,6 +188,7 @@ describe("Bountywell drill Interventions are durable Operations", () => {
       await scenario.proveRecoveryTimer();
       await scenario.captureBaseline();
       const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       const phases = record.evidence
         .filter((event) => event.kind === "timer.lifecycle")
@@ -214,6 +216,7 @@ describe("Bountywell drill Interventions are durable Operations", () => {
       await scenario.restart({ ids: nextIds("drill-stop-crash-retry", 60) });
 
       const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       expect(record.task.conclusion).toBe("Bountywell API was recovered.");
       expect(
@@ -267,6 +270,7 @@ describe("Bountywell drill Interventions are durable Operations", () => {
 
       const injected = await scenario.injectFault({ ownerAvailable: true });
       expect(countCommands(scenario, "stop")).toBe(stopsBeforeResume);
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       expect(record.task.conclusion).toBe("Bountywell API was recovered.");
       expect(
@@ -338,6 +342,7 @@ describe("Bountywell drill Interventions are durable Operations", () => {
         status: "pending",
       });
 
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       expect(record.task).toMatchObject({
         conclusion: "Bountywell API was recovered.",

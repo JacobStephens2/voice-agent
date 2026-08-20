@@ -12,6 +12,7 @@ import {
   type TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import type { TelephoneBoundaryDecision } from "@voice-agent/durable-store";
+import { transcriptReportsBountywellOutage } from "@voice-agent/policy";
 
 export interface TelephoneTurnInterpreter {
   interpret(input: {
@@ -26,6 +27,9 @@ interface TelephoneBountywellTasks {
     readonly event: Omit<EvidenceEventProjection, "sequence">;
     readonly taskId: string;
   }): Promise<EvidenceRecordProjection>;
+  presentBountywellOutage?(): Promise<
+    { readonly taskId: string } | undefined
+  >;
   processNextBountywellOutageRecovery?(): Promise<EvidenceRecordProjection | undefined>;
   submitTelephoneBountywellHealthInquiry(input: {
     readonly interpretation: TelephoneTurnInterpretation;
@@ -250,10 +254,17 @@ async function handleFinalizedTurn(
         "Okay. I did not confirm that state-changing task.",
       );
     }
-    const recovered =
+    // Only the presented unavailable-API drill recovers from an affirmative
+    // Task Confirmation. Presenting here, after the confirmation, keeps the
+    // fault report and the owner's consent on the same Durable Task.
+    const presented =
       discussionKind === "outage"
-        ? await options.tasks.processNextBountywellOutageRecovery?.()
+        ? await options.tasks.presentBountywellOutage?.()
         : undefined;
+    const recovered =
+      presented === undefined
+        ? undefined
+        : await options.tasks.processNextBountywellOutageRecovery?.();
     if (recovered === undefined) {
       return guidance(
         options,
@@ -390,7 +401,9 @@ async function handleFinalizedTurn(
     }
     if (boundaryDecision?.decision === "accepted") {
       state.pendingStateChangingDiscussionId = confirmationId;
-      state.pendingStateChangingKind = /\bunavailable\b/iu.test(sanitizedTranscript)
+      state.pendingStateChangingKind = transcriptReportsBountywellOutage(
+        sanitizedTranscript,
+      )
         ? "outage"
         : "other";
     }

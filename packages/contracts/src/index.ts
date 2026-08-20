@@ -32,6 +32,7 @@ import {
 } from "./task-continuity.ts";
 import {
   bountywellDiagnosisRecordedEvidenceEventSchema,
+  bountywellFaultPresentedEvidenceEventSchema,
   bountywellFaultReportedEvidenceEventSchema,
   bountywellOutageTaskSchema,
   bountywellPolicyDecidedEvidenceEventSchema,
@@ -264,6 +265,7 @@ export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("task.completed"),
   }),
   bountywellFaultReportedEvidenceEventSchema,
+  bountywellFaultPresentedEvidenceEventSchema,
   bountywellDiagnosisRecordedEvidenceEventSchema,
   bountywellPolicyDecidedEvidenceEventSchema,
   bountywellTimerLifecycleEvidenceEventSchema,

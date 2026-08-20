@@ -10,6 +10,18 @@ export const bountywellOutageReport =
 export const bountywellDrillNotRegistered =
   "Bountywell is not registered for the guarded outage drill." as const;
 
+/** Why fault injection is refused without evidence that the owner is available. */
+export const bountywellOwnerUnavailable =
+  "The live drill occurs only while the owner is available" as const;
+
+/**
+ * Why recovery is refused for a drill whose fault report has not been presented
+ * to the Voice Agent. A drill that only stopped the unit has told the Voice
+ * Agent nothing, so nothing may recover from it.
+ */
+export const bountywellOutageNotPresented =
+  "Bountywell outage recovery was not presented" as const;
+
 /**
  * The question a Bountywell Outage Drill answers while it is being prepared,
  * before any fault is injected. It becomes the fault report at injection.
@@ -112,15 +124,37 @@ export const bountywellFaultReportedEvidenceEventSchema = z.object({
   kind: z.literal("fault.reported"),
 });
 
+/**
+ * One candidate explanation the diagnosis considered, with what the bounded
+ * observation did to it. Recording every candidate keeps the Evidence Record
+ * honest about what was ruled out rather than only what was concluded.
+ */
+export const bountywellHypothesisSchema = z.object({
+  statement: z.string().min(1).max(240),
+  status: z.enum(["ruled-out", "supported", "unresolved"]),
+});
+
 export const bountywellDiagnosisRecordedEvidenceEventSchema = z.object({
   ...outageEventFields,
   details: z.object({
     alreadyRecovered: z.boolean(),
     basis: z.enum(["inference", "observation"]),
-    hypothesis: z.string().min(1).max(240),
+    hypotheses: z.array(bountywellHypothesisSchema).min(1).max(6),
     inactiveUnit: z.literal("bountywell-api.service").optional(),
   }),
   kind: z.literal("diagnosis.recorded"),
+});
+
+/**
+ * The drill controller handing the Voice Agent the one sentence it is told.
+ * Recovery may only proceed from a drill that recorded this presentation.
+ */
+export const bountywellFaultPresentedEvidenceEventSchema = z.object({
+  ...outageEventFields,
+  details: z.object({
+    report: z.literal(bountywellOutageReport),
+  }),
+  kind: z.literal("fault.presented"),
 });
 
 export const bountywellDrillCapabilitySchema = z.literal(
@@ -152,6 +186,7 @@ export const bountywellTimerLifecycleEvidenceEventSchema = z.object({
 
 export const bountywellOutageEvidenceEventSchema = z.discriminatedUnion("kind", [
   bountywellFaultReportedEvidenceEventSchema,
+  bountywellFaultPresentedEvidenceEventSchema,
   bountywellDiagnosisRecordedEvidenceEventSchema,
   bountywellPolicyDecidedEvidenceEventSchema,
   bountywellTimerLifecycleEvidenceEventSchema,
@@ -173,6 +208,7 @@ export type BountywellBaselineEvidence = z.infer<
 export type BountywellTimerLifecycleEvidenceEvent = z.infer<
   typeof bountywellTimerLifecycleEvidenceEventSchema
 >;
+export type BountywellHypothesis = z.infer<typeof bountywellHypothesisSchema>;
 
 /**
  * The one typed Operations Broker port for Bountywell service control and

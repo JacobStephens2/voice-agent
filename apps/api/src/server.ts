@@ -54,11 +54,19 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
+const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({
   applicationRegistry: taskStore,
   nextId: randomUUID,
   now: () => new Date().toISOString(),
+  // This Personal Prototype serves one owner, so a live Telephone Session is
+  // the owner's; the drill runs only while one is carrying them.
+  ownerAvailability: {
+    async countLiveTelephoneSessions() {
+      return (await telephoneBoundaryStore.findActiveSessionIds()).length;
+    },
+  },
   ...(brokerSocketPath === undefined
     ? {}
     : {
@@ -88,7 +96,7 @@ const boundaries = createTelephoneBoundaryRuntime({
   rawAudioDebugDirectory:
     process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
     "/var/lib/voice-agent/raw-audio-debug",
-  store: createSqliteTelephoneBoundaryStore(databasePath),
+  store: telephoneBoundaryStore,
 });
 await boundaries.cleanupExpiredRawAudio();
 const continuityRuntime = createTaskContinuityRuntime({

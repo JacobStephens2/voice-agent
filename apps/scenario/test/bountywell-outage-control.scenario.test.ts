@@ -25,7 +25,7 @@ afterEach(async () => {
   );
 });
 
-test("Fresh Passkey Action is required to grant Bountywell restart and start the drill", async () => {
+test("a Fresh Passkey Action enrolls restart authority; the drill itself runs on Standing Autonomy Policy", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-outage-control-"));
   temporaryDirectories.push(directory);
   const ids = Array.from({ length: 40 }, (_, index) => `control-${index + 1}`);
@@ -41,8 +41,14 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
   const brokerStore = createSqliteBrokerOperationStore(
     join(directory, "broker.sqlite"),
   );
+  let ownerLive = true;
   const runtime = createDurableTaskRuntime({
     applicationRegistry: store,
+    ownerAvailability: {
+      async countLiveTelephoneSessions() {
+        return ownerLive ? 1 : 0;
+      },
+    },
     healthObserver: createBountywellOperationsBroker({
       now,
       probes: host.probes,
@@ -105,6 +111,10 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
     });
     expect(granted.json().capabilities).toContain("bountywell.service.restart");
 
+    // Arming, proving, and injecting run on the enrolled Standing Autonomy
+    // Policy; only the authority expansion above needed a Fresh Passkey Action.
+    fresh = false;
+
     // The guarded drill refuses to stop the unit before its backstop is armed.
     const earlyInject = await api.inject({
       headers,
@@ -165,6 +175,31 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
     });
     expect(blockedInject.statusCode).toBe(400);
 
+    // An asserted flag is not availability: the owner must be on a live
+    // Telephone Session for the fault to be injected.
+    ownerLive = false;
+    const unattendedInject = await api.inject({
+      headers,
+      method: "POST",
+      payload: { csrfToken: "csrf-token-value", ownerAvailable: true },
+      url: "/api/operations/bountywell-outage-drill/inject",
+    });
+    expect(unattendedInject.statusCode).toBe(400);
+    expect(unattendedInject.json()).toEqual({
+      error: "The live drill occurs only while the owner is available",
+    });
+    expect(host.commands.filter((command) => command.action === "stop")).toEqual([]);
+    ownerLive = true;
+
+    // Nothing has been presented to the Voice Agent before the fault exists.
+    const earlyPresentation = await api.inject({
+      headers,
+      method: "POST",
+      payload: { csrfToken: "csrf-token-value" },
+      url: "/api/operations/bountywell-outage-drill/present",
+    });
+    expect(earlyPresentation.statusCode).toBe(409);
+
     const injected = await api.inject({
       headers,
       method: "POST",
@@ -189,6 +224,20 @@ test("Fresh Passkey Action is required to grant Bountywell restart and start the
     expect(
       host.commands.every((command) => command.unit === "bountywell-api.service"),
     ).toBe(true);
+
+    // The drill controller presents the Voice Agent with that one sentence.
+    const presented = await api.inject({
+      headers,
+      method: "POST",
+      payload: { csrfToken: "csrf-token-value" },
+      url: "/api/operations/bountywell-outage-drill/present",
+    });
+    expect(presented.statusCode).toBe(202);
+    expect(presented.json()).toEqual({
+      report: "Bountywell's API appears unavailable.",
+      requestId: injected.json().requestId,
+      taskId: injected.json().taskId,
+    });
   } finally {
     await api.close();
     await runtime.close();

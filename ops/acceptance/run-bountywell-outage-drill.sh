@@ -324,7 +324,7 @@ fi
 note "voice-broker may start bountywell-api.service."
 
 stage "Perform a Fresh Passkey Action"
-say "Restart authority, arm, prove, and inject all require a Fresh Passkey Action. Use the passkey device, not this SSH session."
+say "Only enrolling restart authority expands authority, so only it requires a Fresh Passkey Action. Arming, proving, injecting, and presenting run on the enrolled Standing Autonomy Policy. Use the passkey device, not this SSH session."
 open_url "$PWA_URL"
 step "Sign in with a passkey if the task list is not already open."
 step "Choose “Perform Fresh Passkey Action” and complete the passkey ceremony."
@@ -352,18 +352,20 @@ step "Confirm the drill Evidence Record reads “Is the guarded Bountywell Outag
 pause "Press Enter after the timer is proven."
 
 stage "Start the guarded outage drill"
-say "This stops only bountywell-api.service and presents “Bountywell's API appears unavailable.” Stay available: the ten-minute timer is the backstop if recovery fails."
+say "This stops only bountywell-api.service and then presents one sentence — “Bountywell's API appears unavailable.” — to the Voice Agent. Injection is refused unless a live Telephone Session is carrying you, and the ten-minute timer is the backstop if recovery fails."
 open_url "$PWA_URL"
-confirm "Are you available for the next ten minutes, with the recovery timer armed and proven?" || exit 1
+confirm "Are you on a live Telephone Session for the next ten minutes, with the recovery timer armed and proven?" || exit 1
 step "Choose “Start guarded outage drill”."
-step "Remain at the Evidence Record. The worker recovers the pending Durable Task without being told the injected fault."
+step "If the PWA reports the fault report was not presented, choose “Present fault report again”: a stopped unit recovers nothing until the Voice Agent is told."
+step "Remain at the Evidence Record. The worker diagnoses and recovers the presented Durable Task without being told the injected fault."
 ask TASK_URL "Authenticated Evidence Record task link:"
 
 stage "Inspect the Evidence Record"
 open_url "$TASK_URL"
 step "Confirm the question is “Bountywell's API appears unavailable.”"
 step "Confirm the conclusion is “Bountywell API was recovered.”"
-step "Confirm the timeline includes fault report, inspected evidence, diagnosis, policy decision, restart Operation, verification, timer lifecycle, and final conclusion."
+step "Confirm the timeline includes fault report, its presentation, inspected evidence, recorded hypotheses, policy decision, restart Operation, verification, timer lifecycle, and final conclusion."
+step "Confirm you received the completion report — a Completion Callback or its Silent Notification — and not only this page."
 step "Confirm it does not show raw logs, journal output, or secrets."
 confirm "Does the Evidence Record show a successful guarded recovery?" || exit 1
 health_status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 https://bountywell.com/api/health || true)
@@ -376,7 +378,7 @@ fi
 say "Issue #11 stays open until you close it. Draft comment:"
 printf '\n  Slice two (Bountywell Outage Drill) is accepted for immutable Release `%s`.\n' "$MERGE_COMMIT"
 printf '\n  The Evidence Record is %s. Conclusion: Bountywell API was recovered.\n' "$TASK_URL"
-printf '\n  The independent recovery timer was removed after verified service health.\n\n'
+printf '\n  The independent recovery timer was removed after verified service health and can no longer start the unit.\n\n'
 note "Close https://github.com/JacobStephens2/voice-agent/issues/11 with that comment after you are satisfied. Then /clear before implementing #43 or #44."
 
 finish

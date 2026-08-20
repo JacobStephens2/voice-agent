@@ -94,6 +94,19 @@ describe("Bountywell outage recovery scenario", () => {
         { action: "stop", unit: "bountywell-api.service" },
       ]);
 
+      // Until the drill controller presents the report, nothing recovers.
+      await expect(scenario.recover(injected.requestId)).rejects.toThrow(
+        "Bountywell outage recovery was not presented",
+      );
+      expect(await scenario.pollRecovery()).toBeUndefined();
+
+      const presented = await scenario.present();
+      expect(presented).toEqual({
+        report: "Bountywell's API appears unavailable.",
+        requestId: injected.requestId,
+        taskId: injected.taskId,
+      });
+
       const record = await scenario.recover(injected.requestId);
       expect(record.task).toMatchObject({
         conclusion: "Bountywell API was recovered.",
@@ -105,6 +118,7 @@ describe("Bountywell outage recovery scenario", () => {
       const kinds = record.evidence.map((event) => event.kind);
       expect(kinds).toEqual(expect.arrayContaining([
         "fault.reported",
+        "fault.presented",
         "evidence.observed",
         "diagnosis.recorded",
         "policy.decided",
@@ -122,6 +136,17 @@ describe("Bountywell outage recovery scenario", () => {
         basis: "observation",
         inactiveUnit: "bountywell-api.service",
       });
+      const hypotheses =
+        diagnosis?.kind === "diagnosis.recorded" ? diagnosis.details.hypotheses : [];
+      expect(hypotheses.length).toBeGreaterThan(1);
+      expect(hypotheses).toContainEqual({
+        statement:
+          "The registered bountywell-api.service unit is inactive and explains the unavailable API.",
+        status: "supported",
+      });
+      expect(hypotheses.some((candidate) => candidate.status === "ruled-out")).toBe(
+        true,
+      );
       expect(diagnosis?.summary).toContain("observation");
       expect(diagnosis?.summary).not.toContain("inference");
 
@@ -191,6 +216,7 @@ describe("Bountywell outage recovery scenario", () => {
         (command) => command.action === "start",
       ).length;
 
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       expect(record.task.conclusion).toBe(
         "Bountywell API recovery could not be confirmed.",
@@ -242,6 +268,7 @@ describe("Bountywell outage recovery scenario", () => {
     try {
       await prepareAuthorizedDrill(scenario);
       const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
       await scenario.restoreService();
       const startsBefore = scenario.hostCommands.filter(
         (command) => command.action === "start",
@@ -275,6 +302,7 @@ describe("Bountywell outage recovery scenario", () => {
       await prepareAuthorizedDrill(scenario);
       scenario.setStartFailure(true);
       const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       expect(record.task.conclusion).toBe(
         "Bountywell API recovery could not be confirmed.",
@@ -307,6 +335,7 @@ describe("Bountywell outage recovery scenario", () => {
         publicHealth: 500,
       });
       const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
       const record = await scenario.recover(injected.requestId);
       expect(record.task.conclusion).toBe(
         "Bountywell API recovery could not be confirmed.",
@@ -338,6 +367,77 @@ describe("Bountywell outage recovery scenario", () => {
         action: "start",
         unit: "bountywell-api.service",
       });
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("fault injection is refused while no live Telephone Session carries the owner", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-outage-away-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createBountywellOutageScenario({
+      databasePath: join(directory, "tasks.sqlite"),
+      ids: nextIds("away", 40),
+      now: "2026-08-18T18:00:00.000Z",
+    });
+
+    try {
+      await prepareAuthorizedDrill(scenario);
+      scenario.setOwnerAvailable(false);
+
+      // The request body asserts availability; the drill wants evidence of it.
+      await expect(
+        scenario.injectFault({ ownerAvailable: true }),
+      ).rejects.toThrow("The live drill occurs only while the owner is available");
+      expect(
+        scenario.hostCommands.filter((command) => command.action === "stop"),
+      ).toEqual([]);
+      expect(await scenario.present()).toBeUndefined();
+
+      scenario.setOwnerAvailable(true);
+      const injected = await scenario.injectFault({ ownerAvailable: true });
+      expect(injected.report).toBe("Bountywell's API appears unavailable.");
+    } finally {
+      await scenario.close();
+    }
+  });
+
+  test("the owner receives a completion report and the removed timer cannot fire", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-outage-report-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createBountywellOutageScenario({
+      databasePath: join(directory, "tasks.sqlite"),
+      ids: nextIds("report", 60),
+      now: "2026-08-18T19:00:00.000Z",
+    });
+
+    try {
+      await prepareAuthorizedDrill(scenario);
+      const injected = await scenario.injectFault({ ownerAvailable: true });
+      await scenario.present();
+      const record = await scenario.recover(injected.requestId);
+      expect(record.task.conclusion).toBe("Bountywell API was recovered.");
+
+      expect(await scenario.processNextCompletionReport()).toMatchObject({
+        kind: "place-completion-callback",
+        taskId: injected.taskId,
+      });
+      expect(
+        record.evidence.some(
+          (event) => event.kind === "completion.callback.requested",
+        ),
+      ).toBe(true);
+
+      // The independent timer is gone, not merely disarmed.
+      expect(scenario.timer.armed).toBe(false);
+      const startsAfterRecovery = scenario.hostCommands.filter(
+        (command) => command.action === "start",
+      ).length;
+      await scenario.advanceMs(1_200_000);
+      expect(
+        scenario.hostCommands.filter((command) => command.action === "start"),
+      ).toHaveLength(startsAfterRecovery);
+      expect(scenario.timer.armed).toBe(false);
     } finally {
       await scenario.close();
     }

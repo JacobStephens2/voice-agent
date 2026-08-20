@@ -1,6 +1,7 @@
 import {
   bountywellHealthObservationSchema,
   bountywellOutageDrillQuestion,
+  bountywellOutageNotPresented,
   bountywellOutageReport,
   type BountywellBaselineEvidence,
   type BountywellHealthObservation,
@@ -21,6 +22,7 @@ import type {
 } from "@voice-agent/durable-store";
 import {
   authorizeBountywellDrillControl,
+  authorizeBountywellFaultInjection,
   authorizeBountywellOutageReport,
   authorizeBountywellRestart,
   denyBountywellAuthorityExpansion,
@@ -53,6 +55,19 @@ export type BountywellRestartGrant =
       readonly registration: BountywellRegistration;
     };
 
+/** Where a finished drill sends the owner's agreed completion report. */
+export interface BountywellCompletionReports {
+  requestBountywellCompletionReport(input: {
+    readonly requestId: string;
+    readonly taskId: string;
+  }): Promise<void>;
+}
+
+/** Live evidence that the owner is available for the guarded drill. */
+export interface BountywellOwnerAvailability {
+  countLiveTelephoneSessions(): Promise<number>;
+}
+
 export interface BountywellOutageInjection {
   readonly report: typeof bountywellOutageReport;
   readonly requestId: string;
@@ -68,6 +83,11 @@ export interface BountywellOutageControls {
   injectBountywellOutage(input: {
     readonly ownerAvailable: boolean;
   }): Promise<BountywellOutageInjection>;
+  /**
+   * Hand the Voice Agent the drill's one sentence and open its diagnosis
+   * Operation. Until this records a presentation, nothing recovers the drill.
+   */
+  presentBountywellOutage(): Promise<BountywellOutageInjection | undefined>;
   processNextBountywellOutageRecovery(): Promise<EvidenceRecordProjection | undefined>;
   proveBountywellRecoveryTimer(): Promise<BountywellRecoveryTimerProof>;
   submitBountywellOutageRecovery(requestId: string): Promise<EvidenceRecordProjection>;
@@ -75,9 +95,16 @@ export interface BountywellOutageControls {
 
 export function createBountywellOutageControls(options: {
   readonly applicationRegistry?: ApplicationRegistry;
+  /**
+   * The agreed completion report for a finished drill. Without it the owner
+   * would learn of recovery only by opening the Durable Task page.
+   */
+  readonly completionReports?: BountywellCompletionReports;
   readonly healthObserver?: BountywellHealthObserver;
   readonly nextId: () => string;
   readonly now: () => string;
+  /** Evidence that the owner is live for the drill, not merely asserted to be. */
+  readonly ownerAvailability?: BountywellOwnerAvailability;
   readonly recordPolicyDenial: () => Promise<void>;
   readonly serviceController?: BountywellServiceController;
   readonly store: DurableTaskStore;
@@ -113,6 +140,26 @@ export function createBountywellOutageControls(options: {
     const decision = authorizeBountywellDrillControl(
       await (await requireRegistry()).findBountywellRegistration(),
     );
+    if (decision.decision === "deny") {
+      await options.recordPolicyDenial();
+      throw new Error(decision.reason);
+    }
+    return decision;
+  }
+
+  /**
+   * Authorize injecting the drill fault against the Bountywell registration and
+   * live evidence that the owner is available, not merely asserted to be.
+   */
+  async function authorizeFaultInjection(assertedAvailable: boolean): Promise<
+    ReturnType<typeof authorizeBountywellFaultInjection>
+  > {
+    const decision = authorizeBountywellFaultInjection({
+      assertedAvailable,
+      liveTelephoneSessions:
+        (await options.ownerAvailability?.countLiveTelephoneSessions()) ?? 0,
+      registration: await (await requireRegistry()).findBountywellRegistration(),
+    });
     if (decision.decision === "deny") {
       await options.recordPolicyDenial();
       throw new Error(decision.reason);
@@ -333,13 +380,8 @@ export function createBountywellOutageControls(options: {
     },
 
     async injectBountywellOutage(input) {
-      if (!input.ownerAvailable) {
-        throw new Error(
-          "The live drill occurs only while the owner is available",
-        );
-      }
       const controller = await requireController();
-      const policy = await authorizeDrillControl();
+      const policy = await authorizeFaultInjection(input.ownerAvailable);
       let drill = await openDrill();
       const injection = {
         report: authorizeBountywellOutageReport(bountywellOutageReport),
@@ -380,7 +422,7 @@ export function createBountywellOutageControls(options: {
       });
       const acceptedAt = options.now();
       if (!projectDrill(drill).taskAccepted) {
-        drill = await options.store.appendEvidence({
+        await options.store.appendEvidence({
           event: {
             details: { requestId: injection.requestId },
             id: options.nextId(),
@@ -392,16 +434,50 @@ export function createBountywellOutageControls(options: {
           updatedAt: acceptedAt,
         });
       }
+      return injection;
+    },
+
+    async presentBountywellOutage() {
+      const drill = await findOpenDrill(options.store);
+      if (drill === undefined) return undefined;
+      const projection = projectDrill(drill);
+      // A drill that has not stopped the unit has no fault to present.
+      if (!projection.faultReported) return undefined;
+      const injection = {
+        report: authorizeBountywellOutageReport(bountywellOutageReport),
+        requestId: drillRequestId(drill.task.id),
+        taskId: drill.task.id,
+      };
+      if (projection.faultPresented) return injection;
+      const policy = await authorizeDrillControl();
+      const presentedAt = options.now();
+      await options.store.appendEvidence({
+        event: policyDecided(options.nextId(), presentedAt, policy),
+        taskId: drill.task.id,
+        updatedAt: presentedAt,
+      });
+      const presented = await options.store.appendEvidence({
+        event: {
+          details: { report: bountywellOutageReport },
+          id: options.nextId(),
+          kind: "fault.presented",
+          occurredAt: presentedAt,
+          summary:
+            "The Voice Agent was presented only that Bountywell's API appears unavailable.",
+        },
+        taskId: drill.task.id,
+        updatedAt: presentedAt,
+      });
       const diagnosisOperationId = options.nextId();
       await options.store.persistAcceptedOperation({
-        acceptedAt,
+        acceptedAt: presentedAt,
         evidence: [
           {
             details: { operationId: diagnosisOperationId },
             id: options.nextId(),
             kind: "operation.accepted",
-            occurredAt: acceptedAt,
-            sequence: lastSequence(drill) + 1,
+            occurredAt: presentedAt,
+            sequence: lastSequence(presented) + 1,
             summary: "Bounded Bountywell diagnosis observation accepted.",
           },
         ],
@@ -416,13 +492,19 @@ export function createBountywellOutageControls(options: {
     async submitBountywellOutageRecovery(requestId) {
       const existing = await options.store.findByRequestId(requestId);
       if (existing === undefined) {
-        throw new Error("Bountywell outage recovery was not presented");
+        throw new Error(bountywellOutageNotPresented);
       }
       if ("expired" in existing) {
         throw new Error("Evidence Record retention expired");
       }
       if (existing.task.status !== "pending") return existing;
+      if (!projectDrill(existing).faultPresented) {
+        throw new Error(bountywellOutageNotPresented);
+      }
       return completeOutageRecovery({
+        ...(options.completionReports === undefined
+          ? {}
+          : { completionReports: options.completionReports }),
         nextId: options.nextId,
         now: options.now,
         observer: await requireObserver(),
@@ -437,9 +519,13 @@ export function createBountywellOutageControls(options: {
       const drill = await findOpenDrill(options.store);
       if (drill === undefined) return undefined;
       const operations = await options.store.listOperations(drill.task.id);
-      // A drill that is armed but not yet injected has no fault to recover from.
+      // The diagnosis Operation exists only once the fault report was presented
+      // to the Voice Agent, so an unpresented drill never auto-completes here.
       if (!operations.some(isDiagnosisOperation)) return undefined;
       return completeOutageRecovery({
+        ...(options.completionReports === undefined
+          ? {}
+          : { completionReports: options.completionReports }),
         nextId: options.nextId,
         now: options.now,
         observer: await requireObserver(),
@@ -454,6 +540,11 @@ export function createBountywellOutageControls(options: {
 
 function drillRequestId(taskId: string): string {
   return `drill:${taskId}`;
+}
+
+/** The one request identity under which a drill's completion report is asked for. */
+function drillCompletionRequestId(taskId: string): string {
+  return `drill-completion:${taskId}`;
 }
 
 async function findOpenDrill(
@@ -478,6 +569,7 @@ function isDiagnosisOperation(operation: StoredOperation): boolean {
 interface DrillProjection {
   readonly armed: boolean;
   readonly baseline: BountywellBaselineEvidence | undefined;
+  readonly faultPresented: boolean;
   readonly faultReported: boolean;
   readonly proved: boolean;
   readonly recordedArming: boolean;
@@ -487,6 +579,7 @@ interface DrillProjection {
 function projectDrill(record: EvidenceRecordProjection): DrillProjection {
   let armed = false;
   let baseline: BountywellBaselineEvidence | undefined;
+  let faultPresented = false;
   let faultReported = false;
   let proved = false;
   let recordedArming = false;
@@ -495,6 +588,9 @@ function projectDrill(record: EvidenceRecordProjection): DrillProjection {
     switch (event.kind) {
       case "evidence.observed":
         baseline ??= projectBaseline(event.details.checks);
+        break;
+      case "fault.presented":
+        faultPresented = true;
         break;
       case "fault.reported":
         faultReported = true;
@@ -512,7 +608,15 @@ function projectDrill(record: EvidenceRecordProjection): DrillProjection {
         break;
     }
   }
-  return { armed, baseline, faultReported, proved, recordedArming, taskAccepted };
+  return {
+    armed,
+    baseline,
+    faultPresented,
+    faultReported,
+    proved,
+    recordedArming,
+    taskAccepted,
+  };
 }
 
 /**
@@ -621,6 +725,7 @@ function baselineEvidence(
 }
 
 async function completeOutageRecovery(options: {
+  readonly completionReports?: BountywellCompletionReports;
   readonly nextId: () => string;
   readonly now: () => string;
   readonly observer: BountywellHealthObserver;
@@ -654,11 +759,7 @@ async function completeOutageRecovery(options: {
       details: {
         alreadyRecovered: diagnosis.alreadyRecovered,
         basis: diagnosis.basis,
-        hypothesis: diagnosis.alreadyRecovered
-          ? "The API already matches recovered public and service checks."
-          : diagnosis.inactiveUnit === undefined
-            ? "Public unavailability does not by itself identify the registered unit."
-            : "The registered bountywell-api.service unit is inactive and may explain the unavailable API.",
+        hypotheses: [...diagnosis.hypotheses],
         ...(diagnosis.inactiveUnit === undefined
           ? {}
           : { inactiveUnit: diagnosis.inactiveUnit }),
@@ -782,6 +883,7 @@ async function completeOutageRecovery(options: {
 
 async function finishRecovered(
   options: {
+    readonly completionReports?: BountywellCompletionReports;
     readonly nextId: () => string;
     readonly now: () => string;
     readonly serviceController: BountywellServiceController;
@@ -818,8 +920,22 @@ async function finishRecovered(
       : record;
   if (existingTimer?.status !== "completed") {
     await options.serviceController.removeRecoveryTimer();
+    // Removal is claimed only once the Agent Host itself reports the timer gone,
+    // so a drill never concludes while a backstop could still start the unit.
+    if ((await options.serviceController.readRecoveryTimer()).armed) {
+      throw new Error("The independent recovery timer could not be removed");
+    }
   }
-  const nextSequence = lastSequence(accepted);
+  // The owner's completion report is requested before the drill concludes, so a
+  // report that cannot be requested leaves the recovery to be retried rather
+  // than concluding a drill the owner is never told about. Reports are claimed
+  // only once their Durable Task is terminal, so nothing is delivered early.
+  await options.completionReports?.requestBountywellCompletionReport({
+    requestId: drillCompletionRequestId(record.task.id),
+    taskId: record.task.id,
+  });
+  const reported = (await options.store.findByTaskId(record.task.id)) ?? accepted;
+  const nextSequence = lastSequence(reported);
   return options.store.completeBountywellOperation({
     evidence: [
       {
