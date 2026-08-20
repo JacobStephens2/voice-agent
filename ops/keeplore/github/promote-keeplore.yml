@@ -34,18 +34,59 @@ jobs:
           MERGED_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          pulls=$(gh api -H 'Accept: application/vnd.github+json' \
-            "repos/$GITHUB_REPOSITORY/commits/$MERGED_COMMIT/pulls")
-          jq -e --arg commit "$MERGED_COMMIT" '
-            map(select(
-              .merge_commit_sha == $commit
-              and .merged_at != null
-              and .base.ref == "main"
-              and .merged_by.type == "User"
-            )) | length > 0
-          ' <<<"$pulls" >/dev/null
+          # commits/{sha}/pulls omits merged_by even after a Human Merge. The
+          # host-side verifier lists candidate PRs here, then GET /pulls/{n}
+          # for merged_by.type. Match that, and retry while GitHub associates
+          # the merge commit.
+          authenticated=false
+          for _attempt in 1 2 3 4 5 6; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/$GITHUB_REPOSITORY/commits/$MERGED_COMMIT/pulls" \
+              > "$RUNNER_TEMP/associated-pulls.json"
+            numbers=$(jq -r --arg commit "$MERGED_COMMIT" '
+              .[]
+              | select(
+                  .merge_commit_sha == $commit
+                  and .merged_at != null
+                  and .base.ref == "main"
+                )
+              | .number
+            ' "$RUNNER_TEMP/associated-pulls.json")
+            while IFS= read -r number; do
+              [[ $number =~ ^[1-9][0-9]*$ ]] || continue
+              if gh api -H 'Accept: application/vnd.github+json' \
+                "repos/$GITHUB_REPOSITORY/pulls/$number" \
+                | jq -e --arg commit "$MERGED_COMMIT" '
+                    .merge_commit_sha == $commit
+                    and .merged_at != null
+                    and .base.ref == "main"
+                    and .merged_by.type == "User"
+                  ' >/dev/null; then
+                authenticated=true
+                break
+              fi
+            done <<<"$numbers"
+            [[ $authenticated == true ]] && break
+            sleep 5
+          done
+          [[ $authenticated == true ]]
+
+      - name: Check whether the Agent Host deploy identity is configured
+        id: deploy
+        env:
+          DEPLOY_HOST: ${{ vars.KEEPLORE_DEPLOY_HOST }}
+          DEPLOY_KEY_B64: ${{ secrets.KEEPLORE_DEPLOY_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$DEPLOY_HOST" && -n "$DEPLOY_KEY_B64" ]]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "No Agent Host deploy identity yet; the host reconciles this merge instead."
+          fi
 
       - name: Configure restricted SSH identity
+        if: steps.deploy.outputs.configured == 'true'
         env:
           DEPLOY_KEY_B64: ${{ secrets.KEEPLORE_DEPLOY_KEY_B64 }}
           KNOWN_HOSTS_B64: ${{ secrets.KEEPLORE_KNOWN_HOSTS_B64 }}
@@ -57,6 +98,7 @@ jobs:
           chmod 0600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
 
       - name: Enqueue the verified Human Merge
+        if: steps.deploy.outputs.configured == 'true'
         env:
           DEPLOY_HOST: ${{ vars.KEEPLORE_DEPLOY_HOST }}
           DEPLOY_USER: ${{ vars.KEEPLORE_DEPLOY_USER }}
