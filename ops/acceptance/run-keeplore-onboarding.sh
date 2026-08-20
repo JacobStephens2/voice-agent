@@ -184,7 +184,7 @@ finish() {
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=14
+TOTAL_STAGES=17
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 KEEPLORE_TOOLS=/usr/local/libexec/keeplore
 KEEPLORE_CONFIGURATION=/etc/voice-agent/keeplore.conf
