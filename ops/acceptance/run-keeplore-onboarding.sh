@@ -249,6 +249,8 @@ KEEPLORE_RETAINED_RELEASES=2
 KEEPLORE_BUILD_COMMAND=$BUILD_COMMAND
 KEEPLORE_VERIFICATION_COMMAND=$VERIFICATION_COMMAND
 KEEPLORE_PREFLIGHT_COMMAND=$PREFLIGHT_COMMAND
+KEEPLORE_GITHUB_APP_CONFIGURATION=/etc/voice-agent/keeplore-github-app.conf
+KEEPLORE_GITHUB_APP_KEY_PATH=/etc/voice-agent/keeplore-github-app-private-key.pem
 CONFIGURATION
 sudo chown root:root "$KEEPLORE_CONFIGURATION"
 sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
@@ -348,11 +350,60 @@ open_url "https://github.com/$KEEPLORE_REPOSITORY/pull/$PR_NUMBER"
 pause "Press Enter once keeplore-verification passes on the pull request."
 
 stage "Install the least-privilege GitHub App"
-say "The App needs contents, pull requests, and checks only: no administration and no ruleset bypass."
-open_url "https://github.com/settings/installations"
-step "Install the Voice Agent App on $KEEPLORE_REPOSITORY alone."
+say "Keeplore needs a separate App identity from the read-only App that updates the Voice Agent itself."
+say "The Keeplore App needs contents, pull requests, and checks only: no administration and no ruleset bypass."
+open_url "https://github.com/settings/apps/new"
+step "Create a dedicated Keeplore App and download one private-key PEM onto this host."
 step "Grant contents: read and write, pull requests: read and write, checks: read. Grant nothing else."
-pause "Press Enter after the installation is limited to that repository and those permissions."
+step "Install it on $KEEPLORE_REPOSITORY alone, then open the installation URL and note its numeric ID."
+ask KEEPLORE_GITHUB_APP_ID "Keeplore GitHub App ID"
+ask KEEPLORE_GITHUB_APP_INSTALLATION_ID "Keeplore GitHub App installation ID"
+ask DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH "Absolute path to the downloaded Keeplore GitHub App PEM"
+if [[ ! $KEEPLORE_GITHUB_APP_ID =~ ^[0-9]+$ || \
+  ! $KEEPLORE_GITHUB_APP_INSTALLATION_ID =~ ^[0-9]+$ || \
+  $DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH != /* || \
+  ! -f $DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH ]]; then
+  warn "Provide numeric App/installation IDs and an existing absolute PEM path."
+  exit 1
+fi
+DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH=$(realpath \
+  "$DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH")
+case "$DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH" in
+  "$REPOSITORY_ROOT"|"$REPOSITORY_ROOT"/*)
+    warn "Provider credentials cannot be read from inside the repository."
+    exit 1
+    ;;
+esac
+keeplore_github_app_config=$(mktemp)
+printf '%s\t%s\n' "$KEEPLORE_GITHUB_APP_ID" \
+  "$KEEPLORE_GITHUB_APP_INSTALLATION_ID" > "$keeplore_github_app_config"
+if sudo test -e /etc/voice-agent/keeplore-github-app.conf && \
+  ! sudo cmp -s "$keeplore_github_app_config" \
+    /etc/voice-agent/keeplore-github-app.conf; then
+  rm -f -- "$keeplore_github_app_config"
+  warn "Pinned Keeplore GitHub App identity differs; this wizard will not replace it."
+  exit 1
+fi
+if sudo test -e /etc/voice-agent/keeplore-github-app-private-key.pem && \
+  ! sudo cmp -s "$DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH" \
+    /etc/voice-agent/keeplore-github-app-private-key.pem; then
+  rm -f -- "$keeplore_github_app_config"
+  warn "Pinned Keeplore GitHub App key differs; rotate it through a separately reviewed procedure."
+  exit 1
+fi
+if ! sudo test -e /etc/voice-agent/keeplore-github-app.conf; then
+  sudo install -o root -g root -m 0600 "$keeplore_github_app_config" \
+    /etc/voice-agent/keeplore-github-app.conf
+fi
+if ! sudo test -e /etc/voice-agent/keeplore-github-app-private-key.pem; then
+  sudo install -o root -g root -m 0600 \
+    "$DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH" \
+    /etc/voice-agent/keeplore-github-app-private-key.pem
+fi
+rm -f -- "$keeplore_github_app_config"
+unset KEEPLORE_GITHUB_APP_ID KEEPLORE_GITHUB_APP_INSTALLATION_ID \
+  DOWNLOADED_KEEPLORE_GITHUB_APP_KEY_PATH
+note "The Keeplore App identity is pinned separately from Voice Agent source access."
 step "Set the repository deploy variables and secrets used by promote-keeplore.yml:"
 step "  gh variable set KEEPLORE_DEPLOY_HOST --repo $KEEPLORE_REPOSITORY --body stephens.page"
 step "  gh variable set KEEPLORE_DEPLOY_USER --repo $KEEPLORE_REPOSITORY --body <restricted user>"

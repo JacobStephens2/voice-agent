@@ -32,6 +32,8 @@ keeplore_load_configuration() {
   keeplore_preflight_command=
   keeplore_serving_path=
   keeplore_verification_command=
+  keeplore_github_app_configuration=
+  keeplore_github_app_key_path=
   while IFS='=' read -r key value; do
     case "$key" in
       KEEPLORE_REPOSITORY) keeplore_repository=$value ;;
@@ -51,6 +53,8 @@ keeplore_load_configuration() {
       KEEPLORE_PREFLIGHT_COMMAND) keeplore_preflight_command=$value ;;
       KEEPLORE_SERVING_PATH) keeplore_serving_path=$value ;;
       KEEPLORE_VERIFICATION_COMMAND) keeplore_verification_command=$value ;;
+      KEEPLORE_GITHUB_APP_CONFIGURATION) keeplore_github_app_configuration=$value ;;
+      KEEPLORE_GITHUB_APP_KEY_PATH) keeplore_github_app_key_path=$value ;;
       *) ;;
     esac
   done < "$keeplore_configuration"
@@ -63,12 +67,16 @@ keeplore_load_configuration() {
   keeplore_retained_releases=${keeplore_retained_releases:-2}
   keeplore_build_command=${keeplore_build_command:-find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -r -n1 php -l}
   keeplore_current_link=${keeplore_current_link:-${keeplore_release_root%/releases}/current}
+  keeplore_github_app_configuration=${keeplore_github_app_configuration:-/etc/voice-agent/keeplore-github-app.conf}
+  keeplore_github_app_key_path=${keeplore_github_app_key_path:-/etc/voice-agent/keeplore-github-app-private-key.pem}
 
   if [[ ! $keeplore_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
     [[ $keeplore_live_checkout != /* ]] || \
     [[ $keeplore_release_root != /* ]] || \
     [[ $keeplore_health_url != http* ]] || \
     [[ $keeplore_current_link != /* ]] || \
+    [[ $keeplore_github_app_configuration != /* ]] || \
+    [[ $keeplore_github_app_key_path != /* ]] || \
     [[ $keeplore_shared_root != /* ]] || \
     [[ ! $keeplore_retained_releases =~ ^[1-9][0-9]*$ ]]; then
     printf 'Keeplore registration is incomplete or malformed.\n' >&2
@@ -95,15 +103,28 @@ keeplore_require_root() {
   fi
 }
 
+# Run a credential helper under only Keeplore's pinned App identity.
+keeplore_run_github_app_helper() {
+  local helper=$1 script_directory
+  script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  if [[ -x "$script_directory/$helper" ]]; then
+    helper="$script_directory/$helper"
+  else
+    helper="$script_directory/../release/$helper"
+  fi
+  VOICE_AGENT_GITHUB_APP_CONFIGURATION="$keeplore_github_app_configuration" \
+    VOICE_AGENT_GITHUB_APP_KEY_PATH="$keeplore_github_app_key_path" \
+    "$helper"
+}
+
 # A GitHub App installation token, so no host step depends on an interactive login.
 keeplore_github_token() {
-  local script_directory
-  script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  if [[ -x "$script_directory/github-source-token.sh" ]]; then
-    "$script_directory/github-source-token.sh"
-  else
-    "$script_directory/../release/github-source-token.sh"
-  fi
+  keeplore_run_github_app_helper github-source-token.sh
+}
+
+# A GitHub App JWT for observing only the App identity configured for Keeplore.
+keeplore_github_app_jwt() {
+  keeplore_run_github_app_helper github-app-jwt.sh
 }
 
 # The Agent Host's append-only repository-policy journal. The Voice Agent may

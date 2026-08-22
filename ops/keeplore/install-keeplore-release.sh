@@ -26,7 +26,7 @@ fi
 git_repository=(git -c protocol.allow=never -c protocol.https.allow=always \
   --git-dir="$keeplore_source_mirror")
 source_remote="https://github.com/$keeplore_repository.git"
-release_token=$("$script_directory/../release/github-source-token.sh")
+release_token=$(keeplore_github_token)
 GIT_TERMINAL_PROMPT=0 GITHUB_APP_INSTALLATION_TOKEN="$release_token" \
   "${git_repository[@]}" \
   -c credential.helper= \
