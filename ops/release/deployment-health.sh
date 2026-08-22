@@ -3,7 +3,8 @@ set -euo pipefail
 exec 8>&-
 exec 9>&-
 
-for unit in voice-agent-api.service voice-agent-worker.service voice-agent-broker.service; do
+for unit in voice-agent-api.service voice-agent-worker.service \
+  voice-agent-subagent.service voice-agent-broker.service; do
   systemctl is-active --quiet "$unit"
 done
 systemctl is-active --quiet voice-agent-promotion-resume.path
@@ -11,6 +12,7 @@ systemctl is-active --quiet voice-agent-probes.timer
 
 test -f /opt/voice-agent/current/apps/pwa/dist/index.html
 test -S /run/voice-agent-broker/broker.sock
+test -S /run/voice-agent-subagent/runner.sock
 curl --fail --silent --show-error --max-time 5 \
   http://127.0.0.1:3472/healthz >/dev/null
 worker_environment=$(systemctl show voice-agent-worker.service \
@@ -44,4 +46,4 @@ if (( current_time - probe_modified > 120 )); then
   exit 1
 fi
 
-printf 'Voice Agent API, worker, broker, explicit probes, static PWA, and SQLite health checks passed.\n'
+printf 'Voice Agent API, worker, restricted Subagent, broker, explicit probes, static PWA, and SQLite health checks passed.\n'

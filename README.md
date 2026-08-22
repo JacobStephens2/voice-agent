@@ -2,7 +2,7 @@
 
 A personal, voice-first assistant for discussing codebases, operating Linux services, and delegating deeper work to coding agents while away from a keyboard.
 
-> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake and conversational health answer over Telnyx and LiveKit, read-only Operations Broker, hardened Agent Host release path, and Keeplore onboarding with Human Merge Promotion are implemented. Real PSTN verification and the attended Keeplore onboarding remain part of attended deployment acceptance.
+> **Status:** The passkey-protected PWA, durable Bountywell inquiry, Callback Handshake and conversational health answer over Telnyx and LiveKit, read-only Operations Broker, hardened Agent Host release path, Keeplore onboarding with Human Merge Promotion, and the restricted Codex Keeplore Button Trial are implemented. Real PSTN and Keeplore flows remain part of attended deployment acceptance.
 
 The intended experience begins with a telephone call. The Voice Agent calls back to authenticate the session, carries on a natural conversation, performs narrowly authorized operations, and delegates substantial code investigation or changes to restricted Subagents such as Codex or Claude Code. A PWA provides passkey-protected controls and a visual Evidence Record for every Durable Task.
 
@@ -112,6 +112,18 @@ Deployment Contract, then promotes one harmless Human Merge, proves rollback
 with a controlled failed verification, confirms reconciliation is idempotent,
 and prints a close comment for issue #12. See
 [`docs/operations/keeplore-onboarding.md`](docs/operations/keeplore-onboarding.md).
+
+After onboarding, enroll and run the restricted Codex Keeplore Button Trial on
+the Agent Host:
+
+```bash
+./ops/acceptance/run-keeplore-button-trial.sh
+```
+
+It verifies the `voice-codex` service boundary, walks the separate Codex,
+GitHub, and authenticated Keeplore browser logins, pins an exact source commit,
+then guides the exact telephone confirmation and structured-result review. See
+[`docs/operations/keeplore-button-trial.md`](docs/operations/keeplore-button-trial.md).
 
 The CI-ready verification commands are:
 

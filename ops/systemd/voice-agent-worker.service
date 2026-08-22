@@ -1,18 +1,19 @@
 [Unit]
 Description=Voice Agent telephone and durable background runtime
-After=network-online.target voice-agent-broker.service
-Requires=voice-agent-broker.service
+After=network-online.target voice-agent-broker.service voice-agent-subagent.service
+Requires=voice-agent-broker.service voice-agent-subagent.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=voice-agent
 Group=voice-agent
-SupplementaryGroups=voice-broker-client
+SupplementaryGroups=voice-broker-client voice-subagent-client
 WorkingDirectory=/opt/voice-agent/current
 Environment=NODE_ENV=production
 Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
 Environment=VOICE_AGENT_BROKER_SOCKET_PATH=/run/voice-agent-broker/broker.sock
+Environment=VOICE_AGENT_SUBAGENT_SOCKET_PATH=/run/voice-agent-subagent/runner.sock
 Environment=VOICE_AGENT_WORKER_PORT=3474
 Environment=VOICE_AGENT_TTS_VOICE=Sarah
 Environment=VOICE_AGENT_PROLONGED_SILENCE_SECONDS=60
@@ -23,6 +24,7 @@ Environment=VOICE_AGENT_TELEPHONY_MICROUSD_PER_MINUTE=50000
 Environment=VOICE_AGENT_REALTIME_MEDIA_MICROUSD_PER_MINUTE=100000
 EnvironmentFile=/etc/voice-agent/livekit.env
 EnvironmentFile=/etc/voice-agent/resend.env
+EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env
 ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/worker/src/server.ts
 Restart=on-failure
 RestartSec=3s

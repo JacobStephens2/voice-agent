@@ -383,7 +383,8 @@ if ! sudo test -e "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"; then
     "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"
 fi
 for unit in \
-  voice-agent-api.service voice-agent-worker.service voice-agent-broker.service \
+  voice-agent-api.service voice-agent-worker.service voice-agent-subagent.service \
+  voice-agent-broker.service \
   voice-agent-probes.service voice-agent-probes.timer \
   voice-agent-promotion-resume.path voice-agent-promotion-resume.service; do
   if sudo test -e "$ROOT_ORCHESTRATOR/systemd/$unit" && \
@@ -439,7 +440,8 @@ sudo "$ROOT_ORCHESTRATOR/promote-release.sh" "$MERGED_COMMIT"
 sudo "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"
 sudo "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh" "$REPOSITORY_ROOT"
 sudo systemd-analyze security \
-  voice-agent-api.service voice-agent-worker.service voice-agent-broker.service \
+  voice-agent-api.service voice-agent-worker.service voice-agent-subagent.service \
+  voice-agent-broker.service \
   voice-agent-probes.service \
   voice-agent-promotion-resume.service \
   --no-pager || true

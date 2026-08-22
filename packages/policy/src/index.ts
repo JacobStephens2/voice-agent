@@ -13,6 +13,8 @@ import {
   type BountywellRegistration,
 } from "@voice-agent/contracts";
 
+export * from "./keeplore-delegation.ts";
+
 export function createBountywellReadRegistration(
   registeredAt: string,
   revision = 1,

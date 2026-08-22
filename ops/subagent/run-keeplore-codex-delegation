@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+exec /usr/bin/node --experimental-strip-types \
+  /opt/voice-agent/current/apps/worker/src/keeplore-codex-executor.ts

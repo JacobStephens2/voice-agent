@@ -29,6 +29,7 @@ export * from "./telephone-boundaries.ts";
 export * from "./telephone-session.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
+export * from "./keeplore-delegation.ts";
 
 export interface TelephoneBountywellHealthInquiry {
   readonly interpretation: TelephoneTurnInterpretation;
