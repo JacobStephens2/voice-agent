@@ -407,6 +407,14 @@ export const promotionResumeResponseSchema = z.object({
   commit: z.string().regex(/^[0-9a-f]{40}$/u),
   status: z.literal("queued"),
 });
+export const deploymentAuthorityUpgradeResponseSchema = z.object({
+  commit: z.string().regex(/^[0-9a-f]{40}$/u),
+  status: z.literal("submitted"),
+});
 export const webAuthnOptionsSchema = z.looseObject({
   challenge: z.string().min(1),
+});
+export const deploymentAuthorityUpgradeOptionsSchema = z.object({
+  kind: z.enum(["authentication", "enrollment"]),
+  options: webAuthnOptionsSchema,
 });

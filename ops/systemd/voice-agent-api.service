@@ -12,6 +12,8 @@ Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
 Environment=VOICE_AGENT_PROMOTION_METRICS_PATH=/var/lib/voice-agent-promotions/promotions.prom
 Environment=VOICE_AGENT_APPLICATION_PROBE_METRICS_PATH=/var/lib/voice-agent-probes/probes.prom
 Environment=VOICE_AGENT_PROMOTION_RESUME_PATH=/var/lib/voice-agent-promotion-resume/resume.request
+Environment=VOICE_AGENT_DEPLOYMENT_AUTHORITY_UPGRADE_REQUEST_PATH=/var/lib/voice-agent-promotion-resume/deployment-authority-upgrade.request
+Environment=VOICE_AGENT_DEPLOYMENT_AUTHORITY_UPGRADE_CHALLENGE_PATH=/var/lib/voice-agent-promotion-resume/deployment-authority-upgrade.challenge
 Environment=VOICE_AGENT_PROMOTION_STATE_PATH=/var/lib/voice-agent-promotions/state.tsv
 Environment=VOICE_AGENT_PORT=3472
 ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/api/src/server.ts

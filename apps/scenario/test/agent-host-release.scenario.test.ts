@@ -150,6 +150,10 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(health).toContain('"http://127.0.0.1:$worker_port/"');
   expect(health).not.toContain("http://127.0.0.1:3474/");
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
+  expect(apiUnit).toContain("deployment-authority-upgrade.request");
+  expect(apiUnit).toContain("deployment-authority-upgrade.challenge");
+  expect(apiServer).toContain("deployment-authority-upgrade.request");
+  expect(apiServer).toContain("deployment-authority-upgrade.challenge");
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
   expect(workerUnit).toContain("voice-subagent-client");
   expect(workerUnit).toContain("EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env");
@@ -250,6 +254,7 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
     preflight,
     promotion,
     setup,
+    authorityManifest,
     dashboardSource,
     dashboardInstaller,
   ] = await Promise.all(
@@ -263,6 +268,7 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
       "ops/release/candidate-preflight.sh",
       "ops/release/promote-release.sh",
       "ops/setup-agent-host.sh",
+      "ops/release/deployment-authority-manifest.sh",
       "ops/grafana/voice-agent-slice-one.json",
       "ops/grafana/install-dashboard.sh",
     ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
@@ -286,7 +292,11 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
   expect(preflight).toContain("voice-agent-probes.service");
   expect(promotion).toContain("voice-agent-probes.timer");
   expect(setup).toContain("install-grafana-dashboard.sh");
-  expect(setup).toContain("voice-agent-probes.timer");
+  expect(setup).toContain("voice_agent_authority_units");
+  expect(authorityManifest).toContain("voice-agent-probes.timer");
+  expect(authorityManifest).toContain(
+    "deployment-authority-authorization-verifier.mjs",
+  );
   expect(dashboardInstaller).toContain("voice-agent-slice-one.json");
   expect(dashboardInstaller).toContain(
     "/var/lib/grafana/dashboards/voice-agent",

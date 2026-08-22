@@ -11,6 +11,25 @@ The wizard deliberately does not run during an ordinary release. A human must
 complete the separate provider, repository, and Keeplore browser logins before
 the worker admits this Delegation.
 
+The first stage requires `voice-agent-subagent.service`. If the active reviewed
+Release contains that unit but systemd reports it absent, do not copy the unit
+manually. The root-pinned deployment authority predates the Release; upgrade it
+through the attended boundary, then restart this trial:
+
+```bash
+cd /opt/voice-agent/current
+./ops/upgrade-agent-host-deployment-authority.sh
+./ops/acceptance/run-keeplore-button-trial.sh
+```
+
+The upgrade wizard prepares a root-owned five-minute challenge before opening
+the PWA. Use **Create deployment-authority Fresh Passkey proof** during that
+window; an ordinary signed-in browser session or terminal confirmation is not
+authorization. On the first run, approve the displayed existing owner-passkey
+candidates at the root terminal, assert one approved key to enroll it in the
+root-only registry, and then make a second assertion to authorize the upgrade.
+Later runs require the authorization assertion directly.
+
 ## Confirmation and Durable Task
 
 Only an authenticated Telephone Session can reach the coordinator. A request

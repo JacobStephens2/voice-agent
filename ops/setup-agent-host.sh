@@ -341,14 +341,11 @@ if [[ $REPOSITORY_ROOT == *$'\n'* || $REPOSITORY_ROOT == *'"'* ]]; then
   exit 1
 fi
 ROOT_ORCHESTRATOR=/usr/local/libexec/voice-agent
+# shellcheck source=release/deployment-authority-manifest.sh
+source "$REPOSITORY_ROOT/ops/release/deployment-authority-manifest.sh"
 sudo install -d -o root -g root -m 0755 \
   "$ROOT_ORCHESTRATOR" "$ROOT_ORCHESTRATOR/systemd"
-for script in \
-  candidate-preflight.sh deployment-health.sh install-release.sh \
-  git-credential-github-app.sh github-source-token.sh \
-  promote-main.sh promote-release.sh promotion-state.sh \
-  record-promotion-failure.sh resume-promotion.sh rollback-release.sh \
-  verify-human-merge.sh; do
+for script in "${voice_agent_authority_scripts[@]}"; do
   if sudo test -e "$ROOT_ORCHESTRATOR/$script" && \
     ! sudo cmp -s "$REPOSITORY_ROOT/ops/release/$script" \
       "$ROOT_ORCHESTRATOR/$script"; then
@@ -360,33 +357,35 @@ for script in \
       "$REPOSITORY_ROOT/ops/release/$script" "$ROOT_ORCHESTRATOR/$script"
   fi
 done
-if sudo test -e "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh" && \
-  ! sudo cmp -s "$REPOSITORY_ROOT/ops/prometheus/install-scrape.sh" \
-    "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"; then
-  warn "Pinned Prometheus authority differs; this wizard will not overwrite it."
-  exit 1
-fi
-if ! sudo test -e "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"; then
-  sudo install -o root -g root -m 0755 \
-    "$REPOSITORY_ROOT/ops/prometheus/install-scrape.sh" \
-    "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"
-fi
-if sudo test -e "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh" && \
-  ! sudo cmp -s "$REPOSITORY_ROOT/ops/grafana/install-dashboard.sh" \
-    "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"; then
-  warn "Pinned Grafana dashboard installer differs; this wizard will not overwrite it."
-  exit 1
-fi
-if ! sudo test -e "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"; then
-  sudo install -o root -g root -m 0755 \
-    "$REPOSITORY_ROOT/ops/grafana/install-dashboard.sh" \
-    "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh"
-fi
-for unit in \
-  voice-agent-api.service voice-agent-worker.service voice-agent-subagent.service \
-  voice-agent-broker.service \
-  voice-agent-probes.service voice-agent-probes.timer \
-  voice-agent-promotion-resume.path voice-agent-promotion-resume.service; do
+for mapping in "${voice_agent_authority_programs[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  if sudo test -e "$ROOT_ORCHESTRATOR/$target_path" && \
+    ! sudo cmp -s "$REPOSITORY_ROOT/$source_path" \
+      "$ROOT_ORCHESTRATOR/$target_path"; then
+    warn "Pinned deployment authority differs at $target_path; this wizard will not overwrite it."
+    exit 1
+  fi
+  if ! sudo test -e "$ROOT_ORCHESTRATOR/$target_path"; then
+    sudo install -o root -g root -m 0644 \
+      "$REPOSITORY_ROOT/$source_path" "$ROOT_ORCHESTRATOR/$target_path"
+  fi
+done
+for mapping in "${voice_agent_authority_extras[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  if sudo test -e "$ROOT_ORCHESTRATOR/$target_path" && \
+    ! sudo cmp -s "$REPOSITORY_ROOT/$source_path" \
+      "$ROOT_ORCHESTRATOR/$target_path"; then
+    warn "Pinned deployment authority differs at $target_path; this wizard will not overwrite it."
+    exit 1
+  fi
+  if ! sudo test -e "$ROOT_ORCHESTRATOR/$target_path"; then
+    sudo install -o root -g root -m 0755 \
+      "$REPOSITORY_ROOT/$source_path" "$ROOT_ORCHESTRATOR/$target_path"
+  fi
+done
+for unit in "${voice_agent_authority_units[@]}"; do
   if sudo test -e "$ROOT_ORCHESTRATOR/systemd/$unit" && \
     ! sudo cmp -s "$REPOSITORY_ROOT/ops/systemd/$unit" \
       "$ROOT_ORCHESTRATOR/systemd/$unit"; then

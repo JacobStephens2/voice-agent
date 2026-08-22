@@ -18,6 +18,7 @@ import {
 } from "@voice-agent/contracts";
 import {
   applyEvidenceLifecyclePolicy,
+  authorizeDeploymentAuthorityUpgrade,
   authorizeRawAudioDebug,
   changeTelephoneSpendingCeiling,
   confirmRecoveryCodes,
@@ -431,6 +432,19 @@ function App() {
     });
   }
 
+  async function authorizeAuthorityUpgrade() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before authorizing a deployment-authority upgrade.");
+      return;
+    }
+    await run(async () => {
+      const result = await authorizeDeploymentAuthorityUpgrade(csrfToken);
+      setMessage(
+        `Fresh Passkey proof submitted for reviewed deployment-authority commit ${result.commit.slice(0, 12)}; return to the attended terminal verifier.`,
+      );
+    });
+  }
+
   async function runBountywellInquiry() {
     if (csrfToken === undefined) {
       setMessage("Sign in again before running an inquiry.");
@@ -526,6 +540,7 @@ function App() {
         )}
         <ActionFooter
           busy={busy}
+          onAuthorizeDeploymentAuthorityUpgrade={authorizeAuthorityUpgrade}
           onFresh={freshPasskeyAction}
           onResumePromotions={resumePromotions}
         />
@@ -542,6 +557,7 @@ function App() {
       tasks={tasks ?? []}
       message={message}
       busy={busy}
+      onAuthorizeDeploymentAuthorityUpgrade={authorizeAuthorityUpgrade}
       onFresh={freshPasskeyAction}
       onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}

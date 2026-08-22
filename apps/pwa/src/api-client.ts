@@ -22,6 +22,8 @@ import {
   keeploreRegistrationSchema,
   keeploreRegistrationStatusSchema,
   changeTelephoneSpendingCeilingResultSchema,
+  deploymentAuthorityUpgradeOptionsSchema,
+  deploymentAuthorityUpgradeResponseSchema,
   notificationPreferenceSchema,
   notificationPreferenceStatusSchema,
   passkeyEnrollmentResultSchema,
@@ -525,6 +527,24 @@ export function resumePromotionQueue(
     "/api/operations/promotions/resume",
     { csrfToken },
     promotionResumeResponseSchema,
+  );
+}
+
+export async function authorizeDeploymentAuthorityUpgrade(
+  csrfToken: string,
+): Promise<{ readonly commit: string; readonly status: "submitted" }> {
+  const authorization = await postJson(
+    "/api/operations/deployment-authority/upgrade-authorization/options",
+    { csrfToken },
+    deploymentAuthorityUpgradeOptionsSchema,
+  );
+  const response = await startAuthentication({
+    optionsJSON: authorization.options as unknown as PublicKeyCredentialRequestOptionsJSON,
+  });
+  return postJson(
+    "/api/operations/deployment-authority/upgrade-authorization/verify",
+    { ceremonyId: authorization.options.challenge, response },
+    deploymentAuthorityUpgradeResponseSchema,
   );
 }
 
