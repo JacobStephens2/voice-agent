@@ -96,6 +96,43 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   }
 });
 
+test("the Agent Host narrowly enables Bubblewrap user namespaces for Codex", async () => {
+  const [profile, manifest, upgrader, preflight, promotion, health, trial] =
+    await Promise.all(
+      [
+        "ops/apparmor/bwrap-userns-restrict",
+        "ops/release/deployment-authority-manifest.sh",
+        "ops/release/upgrade-deployment-authority.sh",
+        "ops/release/candidate-preflight.sh",
+        "ops/release/promote-release.sh",
+        "ops/release/deployment-health.sh",
+        "ops/acceptance/run-keeplore-button-trial.sh",
+      ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
+    );
+
+  expect(profile).toContain("profile bwrap /usr/bin/bwrap");
+  expect(profile).toContain("profile unpriv_bwrap");
+  expect(profile).toContain("audit deny capability");
+  expect(manifest).toContain("voice_agent_authority_apparmor_profiles");
+  expect(manifest).toContain("bwrap-userns-restrict");
+  expect(upgrader).toContain('"$stage/apparmor"');
+  expect(upgrader).toContain("restore_apparmor_profiles");
+  expect(upgrader).toContain('/usr/sbin/apparmor_parser -r "$target_path"');
+  expect(upgrader).toContain('/usr/sbin/apparmor_parser -R "$target_path"');
+  expect(preflight).toContain('cmp -s "$script_directory/apparmor/$profile"');
+  expect(promotion).not.toContain("apparmor_parser -r");
+  expect(health).toContain("/sys/kernel/security/apparmor/profiles");
+  expect(health).toContain("permissions.voice-agent-health.network.enabled=false");
+  expect(trial).toContain("The Bubblewrap AppArmor profile is unavailable");
+  expect(trial).toContain("$GITHUB_LOGIN == JacobStephens2");
+  expect(trial).toContain('"repos/$KEEPLORE_REPOSITORY" --jq .permissions.push');
+  for (const hostPolicy of [promotion, health, trial]) {
+    expect(hostPolicy).not.toContain(
+      "kernel.apparmor_restrict_unprivileged_userns=0",
+    );
+  }
+});
+
 test("the Agent Host release preserves its private ports and service boundaries", async () => {
   const [
     apiServer,

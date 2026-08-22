@@ -30,6 +30,14 @@ candidates at the root terminal, assert one approved key to enroll it in the
 root-only registry, and then make a second assertion to authorize the upgrade.
 Later runs require the authorization assertion directly.
 
+Stage 2 also requires the reviewed `bwrap-userns-restrict` AppArmor profile.
+If Bubblewrap reports `RTM_NEWADDR` or `uid_map` permission errors, do not set
+`kernel.apparmor_restrict_unprivileged_userns=0` and do not make Bubblewrap
+setuid. Promote the reviewed fix, run the attended deployment-authority upgrade
+above, and rerun the trial. The upgrade activates Ubuntu Noble's narrow profile
+and the health contract proves that the offline Codex sandbox works before the
+trial resumes.
+
 ## Confirmation and Durable Task
 
 Only an authenticated Telephone Session can reach the coordinator. A request
@@ -76,6 +84,10 @@ The dedicated GitHub account enrolled by the wizard must have write access to
 `JacobStephens2/keeplore` only and no production-branch bypass. It may push the
 assigned `codex/keeplore-button-<delegation>` branch and open or update a pull
 request against `main`; only a later Human Merge can authorize Promotion.
+The wizard rejects the `JacobStephens2` owner account and verifies that the
+enrolled identity reports push access to Keeplore. If the wrong identity was
+enrolled, remove it only from the `voice-codex` GitHub configuration, rerun the
+wizard, and complete device authentication with the dedicated user.
 
 ## Verification and result
 

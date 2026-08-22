@@ -112,10 +112,11 @@ cannot substitute for primary health.
 
 ## Attended deployment-authority upgrades
 
-Automatic Promotion never replaces root-pinned orchestration or systemd
-definitions. When a reviewed Human Merge changes that authority, first let the
-existing pinned promoter install and activate its immutable Release. Then run
-the separate attended upgrade from that exact active Release:
+Automatic Promotion never replaces root-pinned orchestration, systemd
+definitions, or AppArmor profiles. When a reviewed Human Merge changes that
+authority, first let the existing pinned promoter install and activate its
+immutable Release. Then run the separate attended upgrade from that exact
+active Release:
 
 ```bash
 cd /opt/voice-agent/current
@@ -166,16 +167,30 @@ The privileged helper accepts only `--prepare`, the first-use `--enroll`, or
 authorization are separate recorded ceremonies, and activation consumes only
 the matching assertion. It stages
 the complete deployment-authority manifest as one sibling directory, switches
-the pin, reruns the reviewed installer to provision any new identities and
-private state roots, and re-promotes the same Release through the newly pinned
-promoter so new systemd definitions are installed and health-verified together. The prior
-authority is restored and used to reactivate the Release if the new authority
-fails. After success, the prior pin is retained under
+the pin, activates any reviewed AppArmor profile while retaining the prior
+system definition, reruns the reviewed installer to provision any new
+identities and private state roots, and re-promotes the same Release through
+the newly pinned promoter so new systemd definitions are installed and
+health-verified together. The prior
+authority and AppArmor definition are restored before the prior promoter
+reactivates the Release if the new authority fails. After success, the prior
+pin and system-profile evidence are retained under
 `/var/lib/voice-agent-deployment-authority/backups/` and the activated commit is
 recorded in `current` there. Credential enrollment, authorization, rejection,
-activation, failure, and rollback outcomes are appended to `events.jsonl` in the same root-owned
-directory before the mutable `current` projection changes. Do not repair a missing unit with a one-off copy;
-the attended upgrade preserves the reviewed authority and rollback boundary.
+activation, failure, and rollback outcomes are appended to `events.jsonl` in
+the same root-owned directory before the mutable `current` projection changes.
+Do not repair a
+missing unit or profile with a one-off copy; the attended upgrade preserves the
+reviewed authority and rollback boundary.
+
+The restricted Codex runner depends on Bubblewrap user namespaces. Ubuntu
+24.04 keeps the host-wide `kernel.apparmor_restrict_unprivileged_userns=1`
+protection enabled, so the reviewed authority pins and activates Ubuntu
+Noble's `bwrap-userns-restrict` profile instead of weakening that sysctl. The
+profile permits Bubblewrap to construct its namespace and strips capabilities
+from sandbox children. Candidate preflight requires the active system profile
+to match the root pin, and deployment health executes an offline Codex sandbox
+probe as `voice-codex`.
 
 ## Health and rollback
 

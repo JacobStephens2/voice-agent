@@ -344,7 +344,8 @@ ROOT_ORCHESTRATOR=/usr/local/libexec/voice-agent
 # shellcheck source=release/deployment-authority-manifest.sh
 source "$REPOSITORY_ROOT/ops/release/deployment-authority-manifest.sh"
 sudo install -d -o root -g root -m 0755 \
-  "$ROOT_ORCHESTRATOR" "$ROOT_ORCHESTRATOR/systemd"
+  "$ROOT_ORCHESTRATOR" "$ROOT_ORCHESTRATOR/systemd" \
+  "$ROOT_ORCHESTRATOR/apparmor"
 for script in "${voice_agent_authority_scripts[@]}"; do
   if sudo test -e "$ROOT_ORCHESTRATOR/$script" && \
     ! sudo cmp -s "$REPOSITORY_ROOT/ops/release/$script" \
@@ -355,6 +356,21 @@ for script in "${voice_agent_authority_scripts[@]}"; do
   if ! sudo test -e "$ROOT_ORCHESTRATOR/$script"; then
     sudo install -o root -g root -m 0755 \
       "$REPOSITORY_ROOT/ops/release/$script" "$ROOT_ORCHESTRATOR/$script"
+  fi
+done
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  if sudo test -e "$ROOT_ORCHESTRATOR/apparmor/$target_path" && \
+    ! sudo cmp -s "$REPOSITORY_ROOT/$source_path" \
+      "$ROOT_ORCHESTRATOR/apparmor/$target_path"; then
+    warn "Pinned AppArmor authority differs at $target_path; this wizard will not overwrite it."
+    exit 1
+  fi
+  if ! sudo test -e "$ROOT_ORCHESTRATOR/apparmor/$target_path"; then
+    sudo install -o root -g root -m 0644 \
+      "$REPOSITORY_ROOT/$source_path" \
+      "$ROOT_ORCHESTRATOR/apparmor/$target_path"
   fi
 done
 for mapping in "${voice_agent_authority_programs[@]}"; do
@@ -384,6 +400,21 @@ for mapping in "${voice_agent_authority_extras[@]}"; do
     sudo install -o root -g root -m 0755 \
       "$REPOSITORY_ROOT/$source_path" "$ROOT_ORCHESTRATOR/$target_path"
   fi
+done
+sudo install -d -o root -g root -m 0755 /etc/apparmor.d
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  profile=${mapping#*:}
+  if sudo test -e "/etc/apparmor.d/$profile" && \
+    ! sudo cmp -s "$ROOT_ORCHESTRATOR/apparmor/$profile" \
+      "/etc/apparmor.d/$profile"; then
+    warn "Active AppArmor profile differs at $profile; this wizard will not overwrite it."
+    exit 1
+  fi
+  sudo /usr/sbin/apparmor_parser -Q \
+    "$ROOT_ORCHESTRATOR/apparmor/$profile"
+  sudo install -o root -g root -m 0644 \
+    "$ROOT_ORCHESTRATOR/apparmor/$profile" "/etc/apparmor.d/$profile"
+  sudo /usr/sbin/apparmor_parser -r "/etc/apparmor.d/$profile"
 done
 for unit in "${voice_agent_authority_units[@]}"; do
   if sudo test -e "$ROOT_ORCHESTRATOR/systemd/$unit" && \

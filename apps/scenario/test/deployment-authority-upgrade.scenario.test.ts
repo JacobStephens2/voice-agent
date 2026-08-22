@@ -118,6 +118,24 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
   await expect(
     readFile(
       join(
+        fixture.authority,
+        "apparmor/bwrap-userns-restrict",
+      ),
+      "utf8",
+    ),
+  ).resolves.toBe(fixture.reviewedBwrapProfile);
+  await expect(
+    readFile(
+      join(
+        fixture.root,
+        "etc/apparmor.d/bwrap-userns-restrict",
+      ),
+      "utf8",
+    ),
+  ).resolves.toBe(fixture.reviewedBwrapProfile);
+  await expect(
+    readFile(
+      join(
         fixture.root,
         "var/lib/voice-agent-deployment-authority/activated",
       ),
@@ -164,6 +182,12 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
 
 test("rollback restores the event-derived current projection after publication", async () => {
   const fixture = await deploymentAuthorityFixture({ oldPromoterSucceeds: true });
+  const activeProfile = join(
+    fixture.root,
+    "etc/apparmor.d/bwrap-userns-restrict",
+  );
+  const previousProfile = "profile previous_bwrap /usr/bin/bwrap {}\n";
+  await writeFile(activeProfile, previousProfile);
 
   await expect(
     execFileAsync(fixture.upgrader, ["--activate", fixture.commit], {
@@ -178,6 +202,7 @@ test("rollback restores the event-derived current projection after publication",
   await expect(
     readFile(join(fixture.authorityState, "current"), "utf8"),
   ).resolves.toBe(`${fixture.previousCommit}\n`);
+  await expect(readFile(activeProfile, "utf8")).resolves.toBe(previousProfile);
   const events = (await readFile(join(fixture.authorityState, "events.jsonl"), "utf8"))
     .trim()
     .split("\n")
@@ -502,6 +527,7 @@ async function deploymentAuthorityFixture(options?: {
   readonly commit: string;
   readonly oldPromoter: string;
   readonly previousCommit: string;
+  readonly reviewedBwrapProfile: string;
   readonly reviewedPromoter: string;
   readonly reviewedSubagentUnit: string;
   readonly root: string;
@@ -515,6 +541,7 @@ async function deploymentAuthorityFixture(options?: {
   const authority = join(root, "usr/local/libexec/voice-agent");
   const releaseScripts = join(release, "ops/release");
   const releaseUnits = join(release, "ops/systemd");
+  const releaseAppArmor = join(release, "ops/apparmor");
   const promotionState = join(root, "var/lib/voice-agent-promotions");
   const authorityState = join(
     root,
@@ -524,10 +551,12 @@ async function deploymentAuthorityFixture(options?: {
     [
       releaseScripts,
       releaseUnits,
+      releaseAppArmor,
       join(release, "ops/prometheus"),
       join(release, "ops/grafana"),
       join(root, "opt/voice-agent"),
       join(root, "etc/voice-agent"),
+      join(root, "etc/apparmor.d"),
       join(authority, "systemd"),
       promotionState,
       join(authorityState, "backups"),
@@ -638,6 +667,8 @@ process.stdout.write("{}\\n");
 set -euo pipefail
 test -f "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-deployment-authority/provisioned"
 test -f "$VOICE_AGENT_AUTHORITY_TEST_ROOT/usr/local/libexec/voice-agent/systemd/voice-agent-subagent.service"
+test -f "$VOICE_AGENT_AUTHORITY_TEST_ROOT/usr/local/libexec/voice-agent/apparmor/bwrap-userns-restrict"
+test -f "$VOICE_AGENT_AUTHORITY_TEST_ROOT/etc/apparmor.d/bwrap-userns-restrict"
 printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-deployment-authority/activated"
 `;
   await writeExecutable(
@@ -676,6 +707,7 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     "voice-agent-worker.service",
   ];
   const reviewedSubagentUnit = "[Service]\nUser=voice-codex\n";
+  const reviewedBwrapProfile = "profile bwrap /usr/bin/bwrap { userns, }\n";
   for (const unit of units) {
     await writeFile(
       join(releaseUnits, unit),
@@ -684,6 +716,10 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
         : `[Unit]\nDescription=reviewed ${unit}\n`,
     );
   }
+  await writeFile(
+    join(releaseAppArmor, "bwrap-userns-restrict"),
+    reviewedBwrapProfile,
+  );
   await writeFile(
     join(authority, "systemd/voice-agent-api.service"),
     "[Unit]\nDescription=pre-Subagent API\n",
@@ -704,6 +740,7 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     commit,
     oldPromoter,
     previousCommit,
+    reviewedBwrapProfile,
     reviewedPromoter,
     reviewedSubagentUnit,
     root,

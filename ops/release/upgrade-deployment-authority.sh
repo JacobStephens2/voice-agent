@@ -39,6 +39,7 @@ release=$(host_path "/opt/voice-agent/releases/$commit")
 current=$(host_path /opt/voice-agent/current)
 authority=$(host_path /usr/local/libexec/voice-agent)
 authority_parent=$(dirname "$authority")
+apparmor_directory=$(host_path /etc/apparmor.d)
 repository_registration=$(host_path /etc/voice-agent/promotion-repository)
 promotion_state=$(host_path /var/lib/voice-agent-promotions/state.tsv)
 verified_merges=$(host_path \
@@ -147,6 +148,16 @@ for unit in "${voice_agent_authority_units[@]}"; do
   if [[ ! -f $release/ops/systemd/$unit ]]; then
     printf 'Reviewed deployment authority is missing %s.\n' "$unit" >&2
     exit 1
+  fi
+done
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  source_path=${mapping%%:*}
+  if [[ ! -f $release/$source_path ]]; then
+    printf 'Reviewed deployment authority is missing %s.\n' "$source_path" >&2
+    exit 1
+  fi
+  if [[ $test_mode == false ]]; then
+    /usr/sbin/apparmor_parser -Q "$release/$source_path"
   fi
 done
 for mapping in "${voice_agent_authority_programs[@]}"; do
@@ -279,6 +290,30 @@ current_existed=false
 current_backup=
 current_tmp=
 authorization_registry_stage=
+apparmor_previous=
+apparmor_changed=false
+
+restore_apparmor_profiles() {
+  local mapping profile target_path backup_path
+  if [[ $apparmor_changed != true ]]; then return 0; fi
+  for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+    profile=${mapping#*:}
+    target_path="$apparmor_directory/$profile"
+    backup_path="$apparmor_previous/$profile"
+    if [[ $test_mode == false && -f $target_path ]]; then
+      /usr/sbin/apparmor_parser -R "$target_path" || true
+    fi
+    if [[ -f $backup_path ]]; then
+      install_reviewed_file 0644 "$backup_path" "$target_path"
+      if [[ $test_mode == false ]]; then
+        /usr/sbin/apparmor_parser -r "$target_path"
+      fi
+    else
+      rm -f -- "$target_path"
+    fi
+  done
+  apparmor_changed=false
+}
 
 restore_current_projection() {
   if [[ $projection_published == true ]]; then
@@ -295,6 +330,7 @@ restore_current_projection() {
 restore_previous_authority() {
   local failed="$authority_parent/.voice-agent.failed.$$"
   if [[ $switched == true && -d $previous ]]; then
+    restore_apparmor_profiles
     if [[ -d $authority ]]; then
       mv "$authority" "$failed"
     fi
@@ -350,6 +386,9 @@ cleanup() {
   if [[ -n $authorization_registry_stage && \
     -f $authorization_registry_stage ]]; then
     rm -f -- "$authorization_registry_stage"
+  fi
+  if [[ -n $apparmor_previous && -d $apparmor_previous ]]; then
+    rm -rf -- "$apparmor_previous"
   fi
   if [[ -n $processing_request ]]; then rm -f -- "$processing_request"; fi
   rm -f -- "$authorization_challenge" "$authorization_candidates"
@@ -411,7 +450,7 @@ else
   current_backup=
 fi
 
-mkdir -p "$stage/systemd"
+mkdir -p "$stage/systemd" "$stage/apparmor"
 
 install_reviewed_file() {
   local mode=$1 source_path=$2 target_path=$3
@@ -428,6 +467,12 @@ done
 for unit in "${voice_agent_authority_units[@]}"; do
   install_reviewed_file 0644 "$release/ops/systemd/$unit" \
     "$stage/systemd/$unit"
+done
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  install_reviewed_file 0644 "$release/$source_path" \
+    "$stage/apparmor/$target_path"
 done
 for mapping in "${voice_agent_authority_programs[@]}"; do
   source_path=${mapping%%:*}
@@ -451,6 +496,29 @@ backup=$(mktemp -d \
   "$authority_state/backups/before-$commit-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
 rmdir "$backup"
 cp -a "$previous" "$backup"
+
+apparmor_previous=$(mktemp -d \
+  "$authority_parent/.voice-agent.apparmor.previous.XXXXXX")
+mkdir -p "$apparmor_directory" "$backup/system-apparmor"
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  profile=${mapping#*:}
+  target_path="$apparmor_directory/$profile"
+  if [[ -f $target_path ]]; then
+    cp -p "$target_path" "$apparmor_previous/$profile"
+    cp -p "$target_path" "$backup/system-apparmor/$profile"
+  else
+    touch "$backup/system-apparmor/.absent-$profile"
+  fi
+done
+apparmor_changed=true
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  profile=${mapping#*:}
+  target_path="$apparmor_directory/$profile"
+  install_reviewed_file 0644 "$authority/apparmor/$profile" "$target_path"
+  if [[ $test_mode == false ]]; then
+    /usr/sbin/apparmor_parser -r "$target_path"
+  fi
+done
 
 if [[ ! -f $repository_registration ]]; then
   printf 'The root-owned Promotion repository registration is unavailable.\n' >&2
@@ -480,7 +548,10 @@ if [[ $test_mode == true && \
 fi
 committed=true
 switched=false
+apparmor_changed=false
 rm -rf -- "$previous"
+rm -rf -- "$apparmor_previous"
+apparmor_previous=
 rm -f -- "$processing_request"
 rm -f -- "$authorization_challenge"
 if [[ -n $current_backup ]]; then rm -f -- "$current_backup"; fi

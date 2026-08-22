@@ -29,6 +29,10 @@ voice_agent_authority_units=(
   voice-agent-promotion-resume.service
 )
 
+voice_agent_authority_apparmor_profiles=(
+  "ops/apparmor/bwrap-userns-restrict:bwrap-userns-restrict"
+)
+
 voice_agent_authority_programs=(
   "ops/release/deployment-authority-authorization-verifier.mjs:deployment-authority-authorization-verifier.mjs"
 )

@@ -19,6 +19,15 @@ test -f "$release/packages/sqlite-store/src/database-maintenance-cli.ts"
 test -f "$release/apps/broker/src/probe-metrics-cli.ts"
 test -f "$release/ops/grafana/voice-agent-slice-one.json"
 script_directory=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=deployment-authority-manifest.sh
+source "$script_directory/deployment-authority-manifest.sh"
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  profile=${mapping#*:}
+  target_path="/etc/apparmor.d/$profile"
+  test -f "$target_path"
+  cmp -s "$script_directory/apparmor/$profile" "$target_path"
+  /usr/sbin/apparmor_parser -Q "$script_directory/apparmor/$profile"
+done
 systemd-analyze verify \
   "$script_directory/systemd/voice-agent-api.service" \
   "$script_directory/systemd/voice-agent-worker.service" \
