@@ -17,6 +17,7 @@ import {
   changeTelephoneSpendingCeilingRequestSchema,
   changeTelephoneSpendingCeilingResultSchema,
   csrfRequestSchema,
+  deploymentAuthorityUpgradeResponseSchema,
   evidenceRecordProjectionSchema,
   evidenceRetentionResultSchema,
   evidenceRecordSummaryListSchema,
@@ -135,6 +136,15 @@ export interface EvidenceRecordAuthentication {
   hasFreshPasskeyAction?(sessionToken: string): Promise<boolean>;
 }
 
+export interface DeploymentAuthorityUpgradeChallenge {
+  readonly challenge: string;
+  readonly commit: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly kind: "authentication" | "enrollment";
+  readonly options: unknown;
+}
+
 export interface BountywellTaskControls {
   acceptBountywellHealthInquiry(input: {
     readonly question: "Is Bountywell healthy?";
@@ -239,6 +249,10 @@ export interface TaskApiOptions {
   readonly keeploreControls?: KeeploreOnboardingApiControls | undefined;
   readonly origin?: string;
   readonly promotionControl?: {
+    readDeploymentAuthorityUpgradeChallenge(): Promise<DeploymentAuthorityUpgradeChallenge>;
+    requestDeploymentAuthorityUpgrade(input: DeploymentAuthorityUpgradeChallenge & {
+      readonly response: unknown;
+    }): Promise<string>;
     requestResume(): Promise<string>;
   } | undefined;
   readonly records: EvidenceRecordReader;
@@ -254,6 +268,10 @@ export interface VoiceApiOptions {
   readonly keeploreControls?: KeeploreOnboardingApiControls | undefined;
   readonly origin: string;
   readonly promotionControl?: {
+    readDeploymentAuthorityUpgradeChallenge(): Promise<DeploymentAuthorityUpgradeChallenge>;
+    requestDeploymentAuthorityUpgrade(input: DeploymentAuthorityUpgradeChallenge & {
+      readonly response: unknown;
+    }): Promise<string>;
     requestResume(): Promise<string>;
   } | undefined;
   readonly records: EvidenceRecordReader;
@@ -715,6 +733,53 @@ function registerPromotionControlRoute(
     readonly records: EvidenceRecordReader;
   },
 ): void {
+  api.post(
+    "/api/operations/deployment-authority/upgrade-authorization/options",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = csrfRequestSchema.parse(request.body);
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      const authorization =
+        await options.promotionControl.readDeploymentAuthorityUpgradeChallenge();
+      return { kind: authorization.kind, options: authorization.options };
+    },
+  );
+
+  api.post(
+    "/api/operations/deployment-authority/upgrade-authorization/verify",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = passkeyAuthenticationResponseRequestSchema.parse(request.body);
+      if (!(await authorizeEvidence(request, options.authentication))) {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(401).send({ error: "Authentication required" });
+      }
+      const authorization =
+        await options.promotionControl.readDeploymentAuthorityUpgradeChallenge();
+      if (body.ceremonyId !== authorization.challenge) {
+        await options.records.recordPolicyDenial?.();
+        return reply.code(403).send({ error: "Fresh Passkey Action required" });
+      }
+      const commit = await options.promotionControl.requestDeploymentAuthorityUpgrade({
+        ...authorization,
+        response: body.response,
+      });
+      return reply.code(202).send(
+        deploymentAuthorityUpgradeResponseSchema.parse({
+          commit,
+          status: "submitted",
+        }),
+      );
+    },
+  );
+
   api.post("/api/operations/promotions/resume", async (request, reply) => {
     if (!requireOrigin(request, reply, options.origin)) return;
     const body = csrfRequestSchema.parse(request.body);

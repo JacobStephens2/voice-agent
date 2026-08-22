@@ -110,6 +110,8 @@ cleanup() {
     attempt_stage=promotion
     if [[ ${VOICE_AGENT_FRESH_PASSKEY_RESUME:-0} == 1 ]]; then
       attempt_stage=fresh-passkey-resume
+    elif [[ ${VOICE_AGENT_DEPLOYMENT_AUTHORITY_UPGRADE:-0} == 1 ]]; then
+      attempt_stage=deployment-authority-upgrade
     fi
     if [[ $status -eq 0 ]]; then
       promotion_state_record "$commit" "${previous:--}" succeeded \

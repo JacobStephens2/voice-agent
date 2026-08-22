@@ -204,6 +204,7 @@ export function TaskList(props: {
   tasks: readonly EvidenceRecordSummary[];
   message?: string | undefined;
   busy: boolean;
+  onAuthorizeDeploymentAuthorityUpgrade(): Promise<void>;
   onFresh(): Promise<void>;
   onApplyEvidenceRetention(): Promise<void>;
   onResumePromotions(): Promise<void>;
@@ -357,6 +358,9 @@ export function TaskList(props: {
       </ul>
       <ActionFooter
         busy={props.busy}
+        onAuthorizeDeploymentAuthorityUpgrade={
+          props.onAuthorizeDeploymentAuthorityUpgrade
+        }
         onFresh={props.onFresh}
         onResumePromotions={props.onResumePromotions}
       />
@@ -600,10 +604,12 @@ function TelephoneRegistrationControl(props: {
 
 export function ActionFooter({
   busy,
+  onAuthorizeDeploymentAuthorityUpgrade,
   onFresh,
   onResumePromotions,
 }: {
   busy: boolean;
+  onAuthorizeDeploymentAuthorityUpgrade(): Promise<void>;
   onFresh(): Promise<void>;
   onResumePromotions(): Promise<void>;
 }) {
@@ -615,6 +621,13 @@ export function ActionFooter({
         onClick={() => void onFresh()}
       >
         Perform Fresh Passkey Action
+      </button>
+      <button
+        className="quiet"
+        disabled={busy}
+        onClick={() => void onAuthorizeDeploymentAuthorityUpgrade()}
+      >
+        Create deployment-authority Fresh Passkey proof
       </button>
       <button
         className="quiet"

@@ -28,10 +28,11 @@ labels, a timestamp, and the same-host uncertainty statement.
 ## Service and network boundary
 
 `voice-agent-api.service` and `voice-agent-worker.service` run as the dedicated
-unprivileged `voice-agent` identity. `voice-agent-broker.service` runs as the
-separate `voice-broker` identity. All three use `ProtectSystem=strict`, empty
-capability sets, private devices/tmp, restricted namespaces, and narrow writable
-state directories.
+unprivileged `voice-agent` identity. `voice-agent-subagent.service` runs as
+`voice-codex`, and `voice-agent-broker.service` runs as the separate
+`voice-broker` identity. All four use `ProtectSystem=strict`, empty capability
+sets, private devices/tmp, restricted namespaces, and narrow writable state
+directories.
 
 Apache serves `/opt/voice-agent/current/apps/pwa/dist` and proxies only `/api/`
 to `127.0.0.1:3472`. The telephone worker connects to LiveKit Cloud and binds
@@ -109,6 +110,73 @@ registered sources and concludes that Bountywell is healthy. Public health must
 be `200`; the public data route's expected `401` remains separate evidence and
 cannot substitute for primary health.
 
+## Attended deployment-authority upgrades
+
+Automatic Promotion never replaces root-pinned orchestration or systemd
+definitions. When a reviewed Human Merge changes that authority, first let the
+existing pinned promoter install and activate its immutable Release. Then run
+the separate attended upgrade from that exact active Release:
+
+```bash
+cd /opt/voice-agent/current
+./ops/upgrade-agent-host-deployment-authority.sh
+```
+
+The five-stage wizard verifies that the active root-owned, immutable Release is
+the latest successful Promotion and has a recorded Human Merge transition. It
+then displays every difference between the reviewed Release and
+`/usr/local/libexec/voice-agent`, including the independently executed WebAuthn
+verifier and without reading credential values. The owner
+must then authorize this exact active commit with the PWA's dedicated Fresh
+Passkey Action; terminal confirmation cannot expand deployment authority.
+
+Immediately before the ceremony, the privileged helper creates a random,
+root-owned five-minute challenge bound to the commit. On the first attended
+upgrade, root reads the existing, completed owner-passkey registration only as
+untrusted candidate data and displays every label, credential ID, and public-key
+fingerprint. The signed-in operator must approve those exact candidates at the
+root terminal as a one-time authenticated out-of-band enrollment step. Root
+then stages the candidates in an unpublished mode-`0600` file, and a WebAuthn
+assertion proves possession of one approved existing owner credential before
+root enrolls it. A self-asserted WebAuthn registration or `attestation: none`
+response is never accepted as a deployment trust anchor.
+
+Enrollment does not authorize an upgrade: its evidence event is appended
+before the selected key is atomically published in the root-only registry. The
+event preserves the approved candidates' labels, credential IDs, and public-key
+fingerprints, the selected registry snapshot, and digests of both candidate set
+and registry so the mutable file remains reconstructible and auditable. The
+wizard immediately creates a second root challenge and requires a distinct
+WebAuthn assertion from the newly root-enrolled existing credential. Later
+upgrades require that assertion directly. Abort the bootstrap if a displayed
+candidate is unexpected or the browser does not show an authenticator prompt.
+
+The verifier is one dependency-free program in the exact authority manifest;
+it uses only Node.js built-ins, is displayed during review, and is pinned as a
+whole. A later Release must match the pin and cannot replace its verifier or
+credential registry. The PWA returns assertion material as untrusted data, and
+the privileged helper independently checks the root
+challenge, origin, relying-party ID, user presence and verification,
+credential public key, signature, counter, and expiry before recording any
+authorization. A request file created by the running Release is therefore not
+authority by itself.
+
+The privileged helper accepts only `--prepare`, the first-use `--enroll`, or
+`--activate` plus that active 40-character commit. Enrollment and authority
+authorization are separate recorded ceremonies, and activation consumes only
+the matching assertion. It stages
+the complete deployment-authority manifest as one sibling directory, switches
+the pin, reruns the reviewed installer to provision any new identities and
+private state roots, and re-promotes the same Release through the newly pinned
+promoter so new systemd definitions are installed and health-verified together. The prior
+authority is restored and used to reactivate the Release if the new authority
+fails. After success, the prior pin is retained under
+`/var/lib/voice-agent-deployment-authority/backups/` and the activated commit is
+recorded in `current` there. Credential enrollment, authorization, rejection,
+activation, failure, and rollback outcomes are appended to `events.jsonl` in the same root-owned
+directory before the mutable `current` projection changes. Do not repair a missing unit with a one-off copy;
+the attended upgrade preserves the reviewed authority and rollback boundary.
+
 ## Health and rollback
 
 After first setup, `.github/workflows/promote-agent-host.yml` observes pushes to
@@ -125,15 +193,16 @@ granting it production authority; concurrent workflow runs cannot coalesce or
 reorder Human Merges.
 
 Every promotion atomically switches `/opt/voice-agent/current`, restarts the
-three services, and checks:
+four runtime services, and checks:
 
 ```bash
 sudo /usr/local/libexec/voice-agent/deployment-health.sh
 ```
 
-The check requires active API, worker, and broker units; the built PWA shell;
-the broker Unix socket and its health response; the API's localhost-only
-`/healthz`; and SQLite integrity plus the expected durable schema. Before a
+The check requires active API, worker, restricted Subagent, and broker units;
+the built PWA shell; the Subagent and broker Unix sockets; the broker health
+response; the API's localhost-only `/healthz`; and SQLite integrity plus the
+expected durable schema. Before a
 candidate can run an additive migration, Promotion writes and verifies
 `/var/lib/voice-agent/migration-backups/pre-<commit>.sqlite`. If verification
 fails, `promote-release.sh` atomically restores the previous symlink and its
@@ -163,8 +232,9 @@ copies. Repository install/build hooks run as the isolated
 `voice-agent-builder` user with an empty environment. A candidate supplies the
 unprivileged application files, while the pinned preflight and pinned systemd
 definitions retain the root/service boundary. Updating that pinned deployment
-authority is a separate attended setup action, not a consequence of a Human
-Merge. Root Git operations use only a root-owned bare mirror under
+authority uses the separate attended wizard above; it is never a consequence
+of a Human Merge alone. Root Git operations use only a root-owned bare mirror
+under
 `/var/lib/voice-agent-source` and the pinned HTTPS GitHub remote; the
 human-owned registered checkout and its Git configuration never execute in the
 privileged Promotion service. Because the repository is private, the wizard

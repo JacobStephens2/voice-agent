@@ -125,6 +125,23 @@ GitHub, and authenticated Keeplore browser logins, pins an exact source commit,
 then guides the exact telephone confirmation and structured-result review. See
 [`docs/operations/keeplore-button-trial.md`](docs/operations/keeplore-button-trial.md).
 
+When a later reviewed Release changes root-pinned promotion scripts or systemd
+definitions, activate those pins with the separate attended wizard before
+running acceptance that depends on them:
+
+```bash
+cd /opt/voice-agent/current
+./ops/upgrade-agent-host-deployment-authority.sh
+```
+
+The wizard accepts only the active immutable Human Merge, displays the complete
+authority diff, binds a five-minute root-owned challenge to the exact commit,
+uses an attended root approval plus a signed assertion to enroll one existing
+owner passkey on first use, verifies a second Fresh Passkey assertion, retains
+the previous pin, and rolls back if reactivation fails.
+See
+[`docs/operations/agent-host-release.md`](docs/operations/agent-host-release.md#attended-deployment-authority-upgrades).
+
 The CI-ready verification commands are:
 
 ```bash

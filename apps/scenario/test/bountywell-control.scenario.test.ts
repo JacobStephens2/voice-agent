@@ -36,6 +36,7 @@ test("the authenticated API registers and runs only the fixed Bountywell read ca
     store,
   });
   let fresh = false;
+  let deploymentAuthorityUpgradeRequests = 0;
   let promotionResumeRequests = 0;
   const api = createTaskApi({
     authentication: {
@@ -52,6 +53,20 @@ test("the authenticated API registers and runs only the fixed Bountywell read ca
     controls: runtime,
     origin: "https://voice.stephens.page",
     promotionControl: {
+      async readDeploymentAuthorityUpgradeChallenge() {
+        return {
+          challenge: "c".repeat(43),
+          commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          createdAt: "2026-08-15T22:00:00.000Z",
+          expiresAt: "2026-08-15T22:05:00.000Z",
+          kind: "authentication" as const,
+          options: { challenge: "c".repeat(43) },
+        };
+      },
+      async requestDeploymentAuthorityUpgrade() {
+        deploymentAuthorityUpgradeRequests += 1;
+        return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      },
       async requestResume() {
         promotionResumeRequests += 1;
         return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -81,7 +96,41 @@ test("the authenticated API registers and runs only the fixed Bountywell read ca
     });
     expect(blockedResume.statusCode).toBe(403);
 
+    const authorityUpgradeOptions = await api.inject({
+      headers,
+      method: "POST",
+      payload: { csrfToken: "csrf-token-value" },
+      url: "/api/operations/deployment-authority/upgrade-authorization/options",
+    });
+    expect(authorityUpgradeOptions.statusCode).toBe(200);
+    expect(authorityUpgradeOptions.json()).toEqual({
+      kind: "authentication",
+      options: { challenge: "c".repeat(43) },
+    });
+
+    const blockedAuthorityUpgrade = await api.inject({
+      headers: { origin: "https://voice.stephens.page" },
+      method: "POST",
+      payload: { ceremonyId: "c".repeat(43), response: { id: "passkey" } },
+      url: "/api/operations/deployment-authority/upgrade-authorization/verify",
+    });
+    expect(blockedAuthorityUpgrade.statusCode).toBe(401);
+    expect(deploymentAuthorityUpgradeRequests).toBe(0);
+
     fresh = true;
+    const authorizedUpgrade = await api.inject({
+      headers,
+      method: "POST",
+      payload: { ceremonyId: "c".repeat(43), response: { id: "passkey" } },
+      url: "/api/operations/deployment-authority/upgrade-authorization/verify",
+    });
+    expect(authorizedUpgrade.statusCode).toBe(202);
+    expect(authorizedUpgrade.json()).toEqual({
+      commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      status: "submitted",
+    });
+    expect(deploymentAuthorityUpgradeRequests).toBe(1);
+
     const queuedResume = await api.inject({
       headers,
       method: "POST",
@@ -146,7 +195,7 @@ test("the authenticated API registers and runs only the fixed Bountywell read ca
     expect(metrics.body).toContain(
       'voice_agent_operations{status="accepted"} 1',
     );
-    expect(metrics.body).toContain("voice_agent_policy_denials_total 2");
+    expect(metrics.body).toContain("voice_agent_policy_denials_total 3");
     expect(metrics.body).toMatch(/voice_agent_sqlite_database_bytes [1-9]\d*/u);
     expect(metrics.body).toMatch(
       /voice_agent_sqlite_filesystem_available_bytes [1-9]\d*/u,
