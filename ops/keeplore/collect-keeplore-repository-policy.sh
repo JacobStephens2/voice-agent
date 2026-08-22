@@ -54,17 +54,13 @@ jq -cn \
 # The App's own granted authority. The permissions and repository selection are
 # read as the App itself, which needs no repository permission at all; only the
 # repository list needs the installation token.
-if [[ -x "$script_directory/github-app-jwt.sh" ]]; then
-  application_jwt=$("$script_directory/github-app-jwt.sh")
-else
-  application_jwt=$("$script_directory/../release/github-app-jwt.sh")
-fi
-github_app_configuration=/etc/voice-agent/github-app.conf
-if [[ $(stat -c %U "$github_app_configuration") != root ]]; then
+application_jwt=$(keeplore_github_app_jwt)
+if [[ $(stat -c %U "$keeplore_github_app_configuration") != root ]]; then
   printf 'GitHub App source configuration is not root-owned.\n' >&2
   exit 1
 fi
-installation_id=$(awk -F'\t' 'NR == 1 { print $2 }' "$github_app_configuration")
+installation_id=$(awk -F'\t' 'NR == 1 { print $2 }' \
+  "$keeplore_github_app_configuration")
 if [[ ! $installation_id =~ ^[0-9]+$ ]]; then
   printf 'GitHub App source configuration names no installation.\n' >&2
   exit 1

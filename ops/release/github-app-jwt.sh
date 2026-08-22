@@ -11,7 +11,9 @@
 
 set -euo pipefail
 
-configuration=/etc/voice-agent/github-app.conf
+# Managed applications may supply their own pinned App identity. Voice Agent
+# releases keep the original paths when no override is present.
+configuration=${VOICE_AGENT_GITHUB_APP_CONFIGURATION:-/etc/voice-agent/github-app.conf}
 private_key=${VOICE_AGENT_GITHUB_APP_KEY_PATH:-/etc/voice-agent/github-app-private-key.pem}
 if [[ ! -f $configuration || ! -f $private_key ]]; then
   printf 'Root-owned GitHub App source credentials are unavailable.\n' >&2

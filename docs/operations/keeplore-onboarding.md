@@ -67,6 +67,14 @@ violation. GitHub grants every App `metadata: read` and does not let an
 installation drop it, so that one permission is tolerated at read level and
 nothing above it. The App holds no ruleset bypass.
 
+Keeplore uses its own App identity and root-owned credential files:
+`/etc/voice-agent/keeplore-github-app.conf` and
+`/etc/voice-agent/keeplore-github-app-private-key.pem`. It must not reuse or
+expand the read-only App installed only on `JacobStephens2/voice-agent` for
+Voice Agent source releases. The Keeplore release, reconciliation, and policy
+collector scripts resolve only the Keeplore identity, while the Voice Agent's
+release scripts retain their existing identity and permissions.
+
 ## Observing the repository policy from the host
 
 `collect-keeplore-repository-policy.sh` records both assessments from what the
