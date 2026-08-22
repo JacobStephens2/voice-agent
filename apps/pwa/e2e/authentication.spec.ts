@@ -6,6 +6,49 @@ import { expect, test } from "@playwright/test";
 const execute = promisify(execFile);
 const databasePath = "/tmp/voice-agent-pwa-e2e.sqlite";
 
+test("appearance follows the system and persists an explicit theme", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({ colorScheme: "dark" });
+  const page = await context.newPage();
+  await page.goto("/");
+
+  const appearance = page.getByRole("group", { name: "Appearance" });
+  await expect(appearance).toBeVisible();
+  await expect(appearance.getByRole("button", { name: "System" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
+    "content",
+    "#101713",
+  );
+
+  await appearance.getByRole("button", { name: "Light" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(await page.evaluate(() => localStorage.getItem("voice-agent.theme"))).toBe(
+    "light",
+  );
+  await page.reload();
+  await expect(appearance.getByRole("button", { name: "Light" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+  await appearance.getByRole("button", { name: "System" }).click();
+  expect(await page.evaluate(() => localStorage.getItem("voice-agent.theme"))).toBeNull();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+  await appearance.getByRole("button", { name: "Dark" }).click();
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await context.close();
+});
+
 test("two independent passkeys protect live evidence and recovery replaces only a passkey", async ({
   browser,
 }) => {

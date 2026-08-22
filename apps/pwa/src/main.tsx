@@ -61,6 +61,7 @@ import {
   TaskList,
 } from "./auth-views.tsx";
 import { EvidenceRecordPage } from "./evidence-record-page.tsx";
+import { ThemeControl } from "./theme-control.tsx";
 import "./styles.css";
 
 registerSW({ immediate: true });
@@ -595,4 +596,9 @@ function clearPendingBountywellRequestId(requestId: string): void {
 
 const root = document.getElementById("root");
 if (root === null) throw new Error("PWA root element is missing");
-createRoot(root).render(<StrictMode><App /></StrictMode>);
+createRoot(root).render(
+  <StrictMode>
+    <ThemeControl />
+    <App />
+  </StrictMode>,
+);
