@@ -253,7 +253,7 @@ note "Reviewed active Release: $MERGED_COMMIT"
 pause "Confirm the Release identity, then press Enter."
 
 stage "Review the pinned-authority differences"
-say "Review every script, verifier, and systemd definition that this attended action will pin. No credential values are read or displayed."
+say "Review every script, verifier, systemd definition, and AppArmor profile that this attended action will pin. No credential values are read or displayed."
 # shellcheck source=release/deployment-authority-manifest.sh
 source "$REPOSITORY_ROOT/ops/release/deployment-authority-manifest.sh"
 reviewed_authority_paths=()
@@ -266,6 +266,14 @@ for unit in "${voice_agent_authority_units[@]}"; do
   reviewed_authority_paths+=("systemd/$unit")
   show_difference "$unit" "$REPOSITORY_ROOT/ops/systemd/$unit" \
     "$ROOT_ORCHESTRATOR/systemd/$unit"
+done
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  reviewed_authority_paths+=("apparmor/$target_path")
+  show_difference "AppArmor $target_path" \
+    "$REPOSITORY_ROOT/$source_path" \
+    "$ROOT_ORCHESTRATOR/apparmor/$target_path"
 done
 for mapping in "${voice_agent_authority_programs[@]}"; do
   source_path=${mapping%%:*}
@@ -317,7 +325,7 @@ if [[ $NEEDS_ROOT_PASSKEY_ENROLLMENT == true ]]; then
 fi
 
 stage "Upgrade and activate the reviewed authority"
-say "The root helper consumes the narrow Fresh Passkey request, stages the exact reviewed manifest, retains the prior authority, and restores it if activation or health verification fails."
+say "The root helper consumes the narrow Fresh Passkey request, stages the exact reviewed manifest and AppArmor profile, retains the prior authority, and restores both if activation or health verification fails."
 confirm "Consume the authorization and activate Release $MERGED_COMMIT?" || exit 1
 sudo "$REPOSITORY_ROOT/ops/release/upgrade-deployment-authority.sh" \
   --activate "$MERGED_COMMIT"
@@ -328,6 +336,18 @@ sudo cmp -s "$REPOSITORY_ROOT/ops/release/promote-release.sh" \
   "$ROOT_ORCHESTRATOR/promote-release.sh"
 sudo cmp -s "$REPOSITORY_ROOT/ops/systemd/voice-agent-subagent.service" \
   "$ROOT_ORCHESTRATOR/systemd/voice-agent-subagent.service"
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+  source_path=${mapping%%:*}
+  profile=${mapping#*:}
+  sudo cmp -s "$REPOSITORY_ROOT/$source_path" \
+    "$ROOT_ORCHESTRATOR/apparmor/$profile"
+  sudo cmp -s "$ROOT_ORCHESTRATOR/apparmor/$profile" \
+    "/etc/apparmor.d/$profile"
+done
+sudo test "$(sudo cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+sudo grep -q '^bwrap (enforce)$' /sys/kernel/security/apparmor/profiles
+sudo grep -q '^unpriv_bwrap (enforce)$' \
+  /sys/kernel/security/apparmor/profiles
 sudo systemctl is-active --quiet voice-agent-subagent.service
 sudo "$ROOT_ORCHESTRATOR/deployment-health.sh"
 note "Next: cd /opt/voice-agent/current && ./ops/acceptance/run-keeplore-button-trial.sh"

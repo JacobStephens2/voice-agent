@@ -222,6 +222,14 @@ if ! sudo test -x /usr/bin/gh; then
   warn "The GitHub CLI is unavailable at /usr/bin/gh."
   exit 1
 fi
+if ! sudo test "$(sudo cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 || \
+  ! sudo grep -q '^bwrap (enforce)$' \
+    /sys/kernel/security/apparmor/profiles || \
+  ! sudo grep -q '^unpriv_bwrap (enforce)$' \
+    /sys/kernel/security/apparmor/profiles; then
+  warn "The Bubblewrap AppArmor profile is unavailable; run the attended deployment-authority upgrade from this reviewed Release."
+  exit 1
+fi
 if ! sudo -u voice-codex env -i \
   CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \
   PATH=/usr/local/bin:/usr/bin:/bin \
@@ -244,6 +252,27 @@ if ! sudo -u voice-codex env -i \
     PATH=/usr/local/bin:/usr/bin:/bin \
     /usr/bin/gh auth login --hostname github.com --git-protocol https --web
 fi
+GITHUB_LOGIN=$(sudo -u voice-codex env -i \
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  /usr/bin/gh api user --jq .login)
+if [[ $GITHUB_LOGIN == JacobStephens2 ]]; then
+  warn "The enrolled GitHub identity is the owner account, not a dedicated Keeplore-only user."
+  step "Remove it with: sudo -u voice-codex env -i GH_CONFIG_DIR=$GH_CONFIG_DIR HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin /usr/bin/gh auth logout --hostname github.com"
+  exit 1
+fi
+note "Enrolled GitHub identity: $GITHUB_LOGIN"
+confirm "Is $GITHUB_LOGIN the dedicated user with write access only to $KEEPLORE_REPOSITORY and no main-protection bypass?" || {
+  warn "Remove the rejected identity from the voice-codex GitHub store before rerunning this trial."
+  exit 1
+}
+if [[ $(sudo -u voice-codex env -i \
+  GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
+  PATH=/usr/local/bin:/usr/bin:/bin \
+  /usr/bin/gh api "repos/$KEEPLORE_REPOSITORY" --jq .permissions.push) != true ]]; then
+  warn "$GITHUB_LOGIN does not have write access to $KEEPLORE_REPOSITORY."
+  exit 1
+fi
 sudo -u voice-codex env -i \
   GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
   PATH=/usr/local/bin:/usr/bin:/bin \
@@ -256,14 +285,17 @@ sudo -u voice-codex env -i HOME=/var/lib/voice-codex \
   /usr/bin/git config --global user.email \
   "voice-codex@users.noreply.github.com"
 say "Proving the installed Codex supports the custom permission profile and that model commands cannot read either enrolled credential store."
-sudo -u voice-codex env -i \
+if ! sudo -u voice-codex env -i \
   CODEX_HOME="$CODEX_HOME" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-enrollment-check \
   --cd /opt/voice-agent/current \
   --config 'permissions.keeplore-enrollment-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-enrollment-check.network.enabled=false -- \
-  /bin/sh -c 'test ! -r "$CODEX_HOME/auth.json" && test ! -r "$GH_CONFIG_DIR/hosts.yml"'
+  /bin/sh -c 'test ! -r "$CODEX_HOME/auth.json" && test ! -r "$GH_CONFIG_DIR/hosts.yml"'; then
+  warn "The reviewed Codex enrollment sandbox failed its credential-isolation proof."
+  exit 1
+fi
 
 stage "Enroll the authenticated Keeplore browser session"
 say "The visual check uses its own Keeplore session state; it receives no server, database, SSH, or deployment credential."
@@ -283,14 +315,17 @@ sudo -u voice-codex env \
   https://keeplore.app
 sudo test -s "$CODEX_BROWSER_STATE"
 sudo chmod 0600 "$CODEX_BROWSER_STATE"
-sudo -u voice-codex env -i \
+if ! sudo -u voice-codex env -i \
   CODEX_BROWSER_STATE="$CODEX_BROWSER_STATE" CODEX_HOME="$CODEX_HOME" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-browser-check \
   --cd /opt/voice-agent/current \
   --config 'permissions.keeplore-browser-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-browser-check.network.enabled=false -- \
-  /bin/sh -c 'test ! -r "$CODEX_BROWSER_STATE"'
+  /bin/sh -c 'test ! -r "$CODEX_BROWSER_STATE"'; then
+  warn "The reviewed Codex browser-state isolation proof failed."
+  exit 1
+fi
 note "The browser state is readable only by trusted voice-codex runner code and is passed to neither the Voice Agent nor model-generated commands."
 
 stage "Pin the source revision and run the telephone trial"

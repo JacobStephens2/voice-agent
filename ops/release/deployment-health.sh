@@ -10,6 +10,21 @@ done
 systemctl is-active --quiet voice-agent-promotion-resume.path
 systemctl is-active --quiet voice-agent-probes.timer
 
+test "$(</proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1
+grep -q '^bwrap (enforce)$' /sys/kernel/security/apparmor/profiles
+grep -q '^unpriv_bwrap (enforce)$' /sys/kernel/security/apparmor/profiles
+(
+  cd /opt/voice-agent/current
+  runuser --user voice-codex -- env -i \
+    CODEX_HOME=/var/lib/voice-codex/.codex HOME=/var/lib/voice-codex \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    /usr/bin/codex sandbox --permission-profile voice-agent-health \
+    --cd /opt/voice-agent/current \
+    --config 'permissions.voice-agent-health.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
+    --config permissions.voice-agent-health.network.enabled=false -- \
+    /usr/bin/true >/dev/null
+)
+
 test -f /opt/voice-agent/current/apps/pwa/dist/index.html
 test -S /run/voice-agent-broker/broker.sock
 test -S /run/voice-agent-subagent/runner.sock
