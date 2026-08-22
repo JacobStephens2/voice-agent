@@ -233,8 +233,16 @@ banner "Voice Agent deployment-authority upgrade"
 
 stage "Verify the reviewed active Release"
 say "Only the exact active Release from the latest successful Human Merge may update root-pinned deployment authority."
-sudo test "$(sudo stat -c %U "$REPOSITORY_ROOT")" = root
-sudo test -z "$(sudo find "$REPOSITORY_ROOT" -perm /022 -print -quit)"
+# shellcheck source=release/release-immutability.sh
+source "$REPOSITORY_ROOT/ops/release/release-immutability.sh"
+if [[ $(sudo stat -c %U "$REPOSITORY_ROOT") != root ]]; then
+  warn "The active Release is not root-owned."
+  exit 1
+fi
+if ! voice_agent_release_tree_is_immutable "$REPOSITORY_ROOT"; then
+  warn "The active Release has writable content or a symlink that escapes its immutable tree."
+  exit 1
+fi
 if ! sudo awk -F '\t' -v commit="$MERGED_COMMIT" \
   '$2 == commit { found=1 } END { exit !found }' \
   /var/lib/voice-agent-promotions/verified-human-merges.tsv; then

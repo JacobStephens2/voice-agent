@@ -54,6 +54,7 @@ authorization_candidates="$authority_state/authorization-credentials.pending.jso
 reviewed_authorization_verifier="$release/ops/release/deployment-authority-authorization-verifier.mjs"
 authorization_verifier=$reviewed_authorization_verifier
 pinned_authorization_verifier="$authority/deployment-authority-authorization-verifier.mjs"
+release_immutability="$release/ops/release/release-immutability.sh"
 authority_events="$authority_state/events.jsonl"
 lock_path=$(host_path /run/voice-agent-deployment-authority-upgrade.lock)
 
@@ -82,9 +83,16 @@ if [[ ! -d $authority || ! -x $authority/promote-release.sh ]]; then
   exit 1
 fi
 
+if [[ ! -f $release_immutability ]]; then
+  printf 'The reviewed Release immutability verifier is unavailable.\n' >&2
+  exit 1
+fi
+# shellcheck source=release-immutability.sh
+source "$release_immutability"
+
 if [[ $test_mode == false ]]; then
   if [[ $(stat -c %U "$release") != root ]] || \
-    [[ -n $(find "$release" -perm /022 -print -quit) ]]; then
+    ! voice_agent_release_tree_is_immutable "$release"; then
     printf 'The active Release is not immutable root-owned source.\n' >&2
     exit 1
   fi

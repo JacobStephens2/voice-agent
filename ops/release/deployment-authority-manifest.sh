@@ -11,6 +11,7 @@ voice_agent_authority_scripts=(
   promote-release.sh
   promotion-state.sh
   record-promotion-failure.sh
+  release-immutability.sh
   resume-promotion.sh
   rollback-release.sh
   upgrade-deployment-authority.sh
