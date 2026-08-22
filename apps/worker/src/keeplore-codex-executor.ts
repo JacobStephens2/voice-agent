@@ -24,7 +24,7 @@ import { z } from "zod";
 const runnerMirror = "/var/lib/voice-codex/keeplore.git";
 const registeredSourceMirror = "/var/lib/keeplore-source/repository.git";
 const keeploreRemote = "https://github.com/JacobStephens2/keeplore.git";
-const codexExecutable = "/usr/local/bin/codex";
+const codexExecutable = "/usr/bin/codex";
 const maximumInputBytes = 1_000_000;
 const maximumOutputBytes = 1_000_000;
 const commandTimeoutMilliseconds = 30 * 60 * 1_000;
