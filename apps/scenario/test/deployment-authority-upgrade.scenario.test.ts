@@ -36,6 +36,63 @@ afterEach(async () => {
   );
 });
 
+test("release immutability accepts internal package symlinks but rejects mutable content and escaping links", async () => {
+  const root = await mkdtemp(join(tmpdir(), "voice-agent-immutable-release-"));
+  temporaryDirectories.push(root);
+  const release = join(root, "release");
+  const packageDirectory = join(
+    release,
+    "node_modules/.pnpm/example@1.0.0/node_modules/example",
+  );
+  const applicationModules = join(release, "apps/api/node_modules");
+  await Promise.all([
+    mkdir(packageDirectory, { recursive: true }),
+    mkdir(applicationModules, { recursive: true }),
+  ]);
+  const packageFile = join(packageDirectory, "index.js");
+  await writeFile(packageFile, "export {};\n");
+  await symlink(
+    "../../../node_modules/.pnpm/example@1.0.0/node_modules/example",
+    join(applicationModules, "example"),
+  );
+  const verifier = join(
+    repositoryRoot,
+    "ops/release/release-immutability.sh",
+  );
+  const verify = () =>
+    execFileAsync("bash", [
+      "-c",
+      'source "$1"; voice_agent_release_tree_is_immutable "$2"',
+      "release-immutability-test",
+      verifier,
+      release,
+    ]);
+
+  await expect(verify()).resolves.toBeDefined();
+
+  await chmod(packageFile, 0o664);
+  await expect(verify()).rejects.toBeDefined();
+  await chmod(packageFile, 0o644);
+
+  await symlink(root, join(applicationModules, "escaping"));
+  await expect(verify()).rejects.toBeDefined();
+
+  const [wizard, helper] = await Promise.all([
+    readFile(
+      join(repositoryRoot, "ops/upgrade-agent-host-deployment-authority.sh"),
+      "utf8",
+    ),
+    readFile(
+      join(repositoryRoot, "ops/release/upgrade-deployment-authority.sh"),
+      "utf8",
+    ),
+  ]);
+  expect(wizard).toContain(
+    'voice_agent_release_tree_is_immutable "$REPOSITORY_ROOT"',
+  );
+  expect(helper).toContain('voice_agent_release_tree_is_immutable "$release"');
+});
+
 test("an attended upgrade activates reviewed Subagent authority from existing pre-Subagent pins", async () => {
   const fixture = await deploymentAuthorityFixture();
 
@@ -546,6 +603,7 @@ process.stdout.write("{}\\n");
     "promote-main.sh",
     "promotion-state.sh",
     "record-promotion-failure.sh",
+    "release-immutability.sh",
     "resume-promotion.sh",
     "rollback-release.sh",
     "upgrade-deployment-authority.sh",
@@ -557,18 +615,22 @@ process.stdout.write("{}\\n");
       `#!/usr/bin/env bash\nprintf 'reviewed ${script}\\n'\n`,
     );
   }
+  const realReleaseScripts = [
+    "deployment-authority-manifest.sh",
+    "release-immutability.sh",
+    "upgrade-deployment-authority.sh",
+  ];
   await Promise.all(
-    ["deployment-authority-manifest.sh", "upgrade-deployment-authority.sh"].map(
-      (script) =>
-        copyFile(
-          join(repositoryRoot, "ops/release", script),
-          join(releaseScripts, script),
-        ),
+    realReleaseScripts.map((script) =>
+      copyFile(
+        join(repositoryRoot, "ops/release", script),
+        join(releaseScripts, script),
+      )
     ),
   );
   await Promise.all(
-    ["deployment-authority-manifest.sh", "upgrade-deployment-authority.sh"].map(
-      (script) => chmod(join(releaseScripts, script), 0o755),
+    realReleaseScripts.map((script) =>
+      chmod(join(releaseScripts, script), 0o755)
     ),
   );
 
