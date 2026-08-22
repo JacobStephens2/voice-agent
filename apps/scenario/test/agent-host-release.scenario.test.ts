@@ -70,12 +70,13 @@ fi
 });
 
 test("the Keeplore Subagent keeps model tools behind the registered CSS boundary", async () => {
-  const [executor, runner, verifier, subagentUnit] = await Promise.all(
+  const [executor, runner, verifier, subagentUnit, trial] = await Promise.all(
     [
       "apps/worker/src/keeplore-codex-executor.ts",
       "apps/worker/src/keeplore-subagent-runner-server.ts",
       "apps/worker/src/keeplore-visual-verifier.ts",
       "ops/systemd/voice-agent-subagent.service",
+      "ops/acceptance/run-keeplore-button-trial.sh",
     ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
   );
 
@@ -89,6 +90,10 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   expect(runner).toContain("/var/lib/voice-codex/results");
   expect(verifier).toContain("await context.setOffline(true)");
   expect(subagentUnit).toContain("PLAYWRIGHT_BROWSERS_PATH=");
+  for (const codexConsumer of [executor, trial]) {
+    expect(codexConsumer).toContain("/usr/bin/codex");
+    expect(codexConsumer).not.toContain("/usr/local/bin/codex");
+  }
 });
 
 test("the Agent Host release preserves its private ports and service boundaries", async () => {

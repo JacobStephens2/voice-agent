@@ -185,6 +185,7 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 
 TOTAL_STAGES=4
+CODEX=/usr/bin/codex
 CODEX_HOME=/var/lib/voice-codex/.codex
 CODEX_BROWSER_STATE=/var/lib/voice-codex/browser/keeplore.json
 GH_CONFIG_DIR=/var/lib/voice-codex/.config/gh
@@ -213,17 +214,23 @@ pause "Review the boundary report, then press Enter."
 stage "Enroll the separate Codex and GitHub identities"
 say "These credentials belong only to voice-codex. Existing credentials from your own Unix account are never copied."
 note "The Codex model permission profile cannot read the GitHub or browser stores; fixed runner code brokers only the registered push, pull request, and visual checks."
-sudo test -x /usr/local/bin/codex
-sudo test -x /usr/bin/gh
+if ! sudo test -x "$CODEX"; then
+  warn "The reviewed Codex CLI is unavailable at $CODEX."
+  exit 1
+fi
+if ! sudo test -x /usr/bin/gh; then
+  warn "The GitHub CLI is unavailable at /usr/bin/gh."
+  exit 1
+fi
 if ! sudo -u voice-codex env -i \
   CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \
   PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/local/bin/codex login status >/dev/null 2>&1; then
+  "$CODEX" login status >/dev/null 2>&1; then
   step "Complete the device flow using the separate eligible Codex subscription designated for this restricted identity."
   sudo -u voice-codex env -i \
     CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \
     PATH=/usr/local/bin:/usr/bin:/bin \
-    /usr/local/bin/codex login --device-auth
+    "$CODEX" login --device-auth
 fi
 sudo install -d -o voice-codex -g voice-codex -m 0700 \
   /var/lib/voice-codex/.config "$GH_CONFIG_DIR"
@@ -252,7 +259,7 @@ say "Proving the installed Codex supports the custom permission profile and that
 sudo -u voice-codex env -i \
   CODEX_HOME="$CODEX_HOME" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/local/bin/codex sandbox --permission-profile keeplore-enrollment-check \
+  "$CODEX" sandbox --permission-profile keeplore-enrollment-check \
   --cd /opt/voice-agent/current \
   --config 'permissions.keeplore-enrollment-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-enrollment-check.network.enabled=false -- \
@@ -279,7 +286,7 @@ sudo chmod 0600 "$CODEX_BROWSER_STATE"
 sudo -u voice-codex env -i \
   CODEX_BROWSER_STATE="$CODEX_BROWSER_STATE" CODEX_HOME="$CODEX_HOME" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/local/bin/codex sandbox --permission-profile keeplore-browser-check \
+  "$CODEX" sandbox --permission-profile keeplore-browser-check \
   --cd /opt/voice-agent/current \
   --config 'permissions.keeplore-browser-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-browser-check.network.enabled=false -- \
