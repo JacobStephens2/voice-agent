@@ -9,13 +9,17 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createKeeploreDelegationRuntime,
   createNodeRawAudioArtifactRemover,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
+  createUnixSocketKeeploreSubagentRunner,
 } from "@voice-agent/runtime";
 import {
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteKeeploreDelegationStore,
+  createSqliteKeeploreOnboardingStore,
   createSqliteTelephoneBoundaryStore,
   createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
@@ -92,6 +96,27 @@ const runtime = createDurableTaskRuntime({
   serviceController: createUnixSocketBountywellController(socketPath),
   store,
 });
+const keeploreOnboardingStore = createSqliteKeeploreOnboardingStore(databasePath);
+const keeploreRegistration = await keeploreOnboardingStore.findRegistration();
+const keeploreDelegationStore =
+  keeploreRegistration === undefined || process.env.KEEPLORE_SOURCE_COMMIT === undefined
+    ? undefined
+    : createSqliteKeeploreDelegationStore(databasePath);
+const keeploreDelegations =
+  keeploreRegistration === undefined ||
+  keeploreDelegationStore === undefined ||
+  process.env.KEEPLORE_SOURCE_COMMIT === undefined
+    ? undefined
+    : createKeeploreDelegationRuntime({
+        nextId: randomUUID,
+        now: () => new Date().toISOString(),
+        registration: keeploreRegistration,
+        runner: createUnixSocketKeeploreSubagentRunner(
+          requireEnvironment("VOICE_AGENT_SUBAGENT_SOCKET_PATH"),
+        ),
+        sourceCommit: process.env.KEEPLORE_SOURCE_COMMIT,
+        store: keeploreDelegationStore,
+      });
 const agentName = "voice-agent-telephone";
 const liveKitConnection = {
   apiKey: requireEnvironment("LIVEKIT_API_KEY"),
@@ -144,6 +169,8 @@ const serverRun = telephoneServer.run().catch((error: unknown) => {
 
 while (!stopping) {
   try {
+    const delegation = await keeploreDelegations?.processNext();
+    if (delegation !== undefined) continue;
     if (Date.now() >= nextEvidenceRetentionAt) {
       await continuityRuntime.runEvidenceLifecyclePolicy();
       nextEvidenceRetentionAt = Date.now() + 60 * 60 * 1_000;
@@ -269,6 +296,8 @@ await callbackRuntime.close();
 await telephoneBoundaries.close();
 await continuityRuntime.close();
 await runtime.close();
+keeploreDelegationStore?.close();
+keeploreOnboardingStore.close();
 if (serverFailure !== undefined) throw serverFailure;
 
 async function placeCallbackOrRecordFailure(

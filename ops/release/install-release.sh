@@ -54,6 +54,13 @@ id -u voice-agent-builder >/dev/null 2>&1 || useradd \
   --system --gid voice-agent-builder \
   --home-dir /var/lib/voice-agent-builder --shell /usr/sbin/nologin \
   voice-agent-builder
+getent group voice-subagent-client >/dev/null || \
+  groupadd --system voice-subagent-client
+getent group voice-codex >/dev/null || groupadd --system voice-codex
+id -u voice-codex >/dev/null 2>&1 || useradd \
+  --system --gid voice-codex \
+  --home-dir /var/lib/voice-codex --shell /usr/sbin/nologin \
+  voice-codex
 
 install -d -o root -g root -m 0755 /opt/voice-agent /opt/voice-agent/releases
 install -d -o voice-agent -g voice-agent -m 0750 /var/lib/voice-agent
@@ -63,6 +70,13 @@ install -d -o root -g voice-agent -m 0750 /var/lib/voice-agent-promotions
 install -d -o root -g voice-agent -m 1730 /var/lib/voice-agent-promotion-resume
 install -d -o voice-agent-builder -g voice-agent-builder -m 0750 \
   /var/lib/voice-agent-builder
+install -d -o voice-codex -g voice-codex -m 0700 \
+  /var/lib/voice-codex /var/lib/voice-codex/.codex \
+  /var/lib/voice-codex/run /var/lib/voice-codex/tmp
+install -d -o voice-codex -g voice-codex -m 0700 \
+  /var/lib/voice-agent-worktrees/keeplore
+install -d -o voice-codex -g voice-subagent-client -m 0750 \
+  /var/lib/voice-agent-evidence
 
 release="/opt/voice-agent/releases/$commit"
 if [[ ! -d "$release" ]]; then

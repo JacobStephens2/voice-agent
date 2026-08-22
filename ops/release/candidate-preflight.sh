@@ -22,6 +22,7 @@ script_directory=$(cd "$(dirname "$0")" && pwd)
 systemd-analyze verify \
   "$script_directory/systemd/voice-agent-api.service" \
   "$script_directory/systemd/voice-agent-worker.service" \
+  "$script_directory/systemd/voice-agent-subagent.service" \
   "$script_directory/systemd/voice-agent-broker.service" \
   "$script_directory/systemd/voice-agent-probes.service" \
   "$script_directory/systemd/voice-agent-probes.timer" \

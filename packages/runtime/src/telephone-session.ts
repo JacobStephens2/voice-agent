@@ -5,6 +5,7 @@ import {
   type EvidenceEventProjection,
   type EvidenceRecordProjection,
   type FinalizedTelephoneTurn,
+  type KeeploreDelegationRecord,
   type TelephoneConversationEvidenceEvent,
   type TelephoneProviderFailureStage,
   type TelephoneSessionActionResult,
@@ -42,6 +43,13 @@ interface TelephoneBountywellTasks {
   }): Promise<EvidenceRecordProjection>;
 }
 
+interface TelephoneKeeploreDelegations {
+  accept(input: { readonly requestId: string }): Promise<KeeploreDelegationRecord>;
+  get(taskId: string): Promise<KeeploreDelegationRecord | undefined>;
+  list(): Promise<readonly KeeploreDelegationRecord[]>;
+  requestStop(taskId: string): Promise<KeeploreDelegationRecord | undefined>;
+}
+
 export interface TelephoneSessionCoordinator {
   receiveProviderEvent(
     event: TelephoneSessionProviderEvent,
@@ -61,6 +69,7 @@ export interface TelephoneSessionEvidenceSink {
 interface TelephoneSessionCoordinatorOptions {
   readonly activeTaskId?: string;
   readonly interpreter: TelephoneTurnInterpreter;
+  readonly keeploreDelegations?: TelephoneKeeploreDelegations;
   readonly sessionEvidence?: TelephoneSessionEvidenceSink;
   readonly stateChangingTasks?: {
     claim(
@@ -76,9 +85,10 @@ interface TelephoneSessionCoordinatorOptions {
 }
 
 interface TelephoneSessionCoordinatorState {
+  activeKeeploreTaskId: string | undefined;
   pendingCompletionOfferTaskId: string | undefined;
   pendingStateChangingDiscussionId: string | undefined;
-  pendingStateChangingKind: "outage" | "other" | undefined;
+  pendingStateChangingKind: "keeplore-button-trial" | "outage" | "other" | undefined;
 }
 
 interface FinalizedTurnResult {
@@ -91,6 +101,7 @@ export function createTelephoneSessionCoordinator(
 ): TelephoneSessionCoordinator {
   const finalizedTurnResults = new Map<string, FinalizedTurnResult>();
   const state: TelephoneSessionCoordinatorState = {
+    activeKeeploreTaskId: undefined,
     pendingCompletionOfferTaskId: undefined,
     pendingStateChangingDiscussionId: undefined,
     pendingStateChangingKind: undefined,
@@ -254,6 +265,32 @@ async function handleFinalizedTurn(
         "Okay. I did not confirm that state-changing task.",
       );
     }
+    if (discussionKind === "keeplore-button-trial") {
+      if (options.keeploreDelegations === undefined) {
+        return guidance(
+          options,
+          turn,
+          "The registered Keeplore Delegation runner is unavailable.",
+        );
+      }
+      const record = await options.keeploreDelegations.accept({
+        requestId: `telephone:${turn.turnId}`,
+      });
+      state.activeKeeploreTaskId = record.task.id;
+      const responseId = `${turn.turnId}:delegation-response`;
+      return telephoneSessionActionResultSchema.parse({
+        actions: [
+          {
+            interruptible: true,
+            kind: "speak-semantic-response",
+            responseId,
+            taskId: record.task.id,
+            text:
+              "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+          },
+        ],
+      });
+    }
     // Only the presented unavailable-API drill recovers from an affirmative
     // Task Confirmation. Presenting here, after the confirmation, keeps the
     // fault report and the owner's consent on the same Durable Task.
@@ -318,6 +355,18 @@ async function handleFinalizedTurn(
       "Okay. I’ll keep this call open while the Durable Task continues.",
     );
   }
+  if (
+    transcriptRequestsKeeploreButtonTrialStatus(sanitizedTranscript) &&
+    options.keeploreDelegations !== undefined
+  ) {
+    const record =
+      state.activeKeeploreTaskId === undefined
+        ? (await options.keeploreDelegations.list()).at(-1)
+        : await options.keeploreDelegations.get(state.activeKeeploreTaskId);
+    if (record !== undefined) {
+      return keeploreStatusResponse(turn, record);
+    }
+  }
   const interpretation = telephoneTurnInterpretationSchema.parse(
     await options.interpreter.interpret({
       telephoneSessionId: turn.telephoneSessionId,
@@ -338,6 +387,40 @@ async function handleFinalizedTurn(
     summary: "Telephone turn interpretation timing was recorded.",
   });
   if (interpretation.intent === "stop") {
+    if (
+      state.activeKeeploreTaskId === undefined &&
+      options.keeploreDelegations !== undefined
+    ) {
+      const durableDelegations = await options.keeploreDelegations.list();
+      const activeDelegation =
+        durableDelegations.findLast(
+          (record) => record.task.status === "running",
+        ) ??
+        durableDelegations.findLast(
+          (record) => record.task.status === "pending",
+        );
+      state.activeKeeploreTaskId = activeDelegation?.task.id;
+    }
+    if (
+      state.activeKeeploreTaskId !== undefined &&
+      options.keeploreDelegations !== undefined
+    ) {
+      const taskId = state.activeKeeploreTaskId;
+      await options.keeploreDelegations.requestStop(taskId);
+      const responseId = `${turn.turnId}:stop-response`;
+      return telephoneSessionActionResultSchema.parse({
+        actions: [
+          {
+            interruptible: true,
+            kind: "speak-semantic-response",
+            responseId,
+            taskId,
+            text:
+              "I recorded the stop request. Restricted Codex will halt at its next safe boundary and preserve every completed commit and worktree change.",
+          },
+        ],
+      });
+    }
     if (
       options.activeTaskId === undefined ||
       options.tasks.requestStop === undefined
@@ -401,15 +484,18 @@ async function handleFinalizedTurn(
     }
     if (boundaryDecision?.decision === "accepted") {
       state.pendingStateChangingDiscussionId = confirmationId;
-      state.pendingStateChangingKind = transcriptReportsBountywellOutage(
+      state.pendingStateChangingKind = transcriptRequestsKeeploreButtonTrial(
         sanitizedTranscript,
       )
-        ? "outage"
-        : "other";
+        ? "keeplore-button-trial"
+        : transcriptReportsBountywellOutage(sanitizedTranscript)
+          ? "outage"
+          : "other";
     }
-    const text =
-      `Please confirm this state-changing task: ` +
-      `Bountywell production — ${taskDescription}`;
+    const text = transcriptRequestsKeeploreButtonTrial(sanitizedTranscript)
+      ? "Please confirm this state-changing task: Keeplore production — make table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight, while retaining content-based widths and leaving card view unchanged."
+      : `Please confirm this state-changing task: ` +
+        `Bountywell production — ${taskDescription}`;
     await options.sessionEvidence?.append({
       details: { responseId: confirmationId, text },
       id: confirmationId,
@@ -521,6 +607,55 @@ function isAffirmative(text: string): boolean {
   return /^(?:yes|yes(?:,\s*|\s+)please|yeah|yep|sure|okay|ok|please do)[.!]?$/iu.test(
     text.trim(),
   );
+}
+
+function transcriptRequestsKeeploreButtonTrial(text: string): boolean {
+  return (
+    /keeplore/iu.test(text) &&
+    /get rid of/iu.test(text) &&
+    /remove/iu.test(text) &&
+    /table/iu.test(text)
+  );
+}
+
+function transcriptRequestsKeeploreButtonTrialStatus(text: string): boolean {
+  return /keeplore/iu.test(text) && /(status|result|pull request)/iu.test(text);
+}
+
+function keeploreStatusResponse(
+  turn: FinalizedTelephoneTurn,
+  record: KeeploreDelegationRecord,
+): TelephoneSessionActionResult {
+  const result = record.delegation.result;
+  let text: string;
+  if (result?.status === "completed" && result.pullRequest.state === "open") {
+    const commitNoun = result.commits.length === 1 ? "commit" : "commits";
+    text =
+      `The Keeplore Button Trial is complete on branch ${result.branch} ` +
+      `with ${result.commits.length} ${commitNoun}. Its verified pull request ` +
+      `is ${result.pullRequest.url}. It has not been merged or deployed.`;
+  } else if (result?.status === "stopped") {
+    text =
+      "The Keeplore Button Trial is stopped. Its completed commits and worktree changes are preserved for inspection.";
+  } else if (result?.status === "failed") {
+    text =
+      "The Keeplore Button Trial could not be verified. Its worktree is quarantined for inspection and nothing was merged or deployed.";
+  } else if (record.task.status === "running") {
+    text = "The Keeplore Button Trial is still running in its restricted worktree.";
+  } else {
+    text = "The Keeplore Button Trial is delegated and waiting for restricted Codex.";
+  }
+  return telephoneSessionActionResultSchema.parse({
+    actions: [
+      {
+        interruptible: true,
+        kind: "speak-semantic-response",
+        responseId: `${turn.turnId}:keeplore-status-response`,
+        taskId: record.task.id,
+        text,
+      },
+    ],
+  });
 }
 
 async function guidance(

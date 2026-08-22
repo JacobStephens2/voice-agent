@@ -26,13 +26,17 @@ import { createBountywellCompletionReports } from "./bountywell-completion-repor
 import {
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
+  createKeeploreDelegationRuntime,
   createNodeRawAudioArtifactRemover,
   createTaskContinuityRuntime,
   createTelephoneBoundaryRuntime,
+  createUnixSocketKeeploreSubagentRunner,
 } from "@voice-agent/runtime";
 import {
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
+  createSqliteKeeploreDelegationStore,
+  createSqliteKeeploreOnboardingStore,
   createSqliteTaskContinuityStore,
   createSqliteTelephoneBoundaryStore,
 } from "@voice-agent/sqlite-store";
@@ -114,6 +118,30 @@ export default defineAgent({
       ),
       store: taskStore,
     });
+    const keeploreOnboardingStore = createSqliteKeeploreOnboardingStore(
+      databasePath,
+    );
+    const keeploreRegistration = await keeploreOnboardingStore.findRegistration();
+    const keeploreDelegationStore =
+      keeploreRegistration === undefined ||
+      process.env.KEEPLORE_SOURCE_COMMIT === undefined
+        ? undefined
+        : createSqliteKeeploreDelegationStore(databasePath);
+    const keeploreDelegations =
+      keeploreRegistration === undefined ||
+      keeploreDelegationStore === undefined ||
+      process.env.KEEPLORE_SOURCE_COMMIT === undefined
+        ? undefined
+        : createKeeploreDelegationRuntime({
+            nextId: randomUUID,
+            now: () => new Date().toISOString(),
+            registration: keeploreRegistration,
+            runner: createUnixSocketKeeploreSubagentRunner(
+              requireEnvironment("VOICE_AGENT_SUBAGENT_SOCKET_PATH"),
+            ),
+            sourceCommit: process.env.KEEPLORE_SOURCE_COMMIT,
+            store: keeploreDelegationStore,
+          });
     const callbackAdapter = createProductionLiveKitCallbackAdapter({
       agentName,
       apiKey: requireEnvironment("LIVEKIT_API_KEY"),
@@ -137,6 +165,7 @@ export default defineAgent({
           tasks,
           continuity,
           boundaries,
+          keeploreDelegations,
           dispatch,
         );
       } else {
@@ -147,6 +176,7 @@ export default defineAgent({
             tasks,
             continuity,
             boundaries,
+            keeploreDelegations,
             dispatch,
           );
         } else {
@@ -156,6 +186,7 @@ export default defineAgent({
             tasks,
             continuity,
             boundaries,
+            keeploreDelegations,
             dispatch,
           );
         }
@@ -165,6 +196,8 @@ export default defineAgent({
       await boundaries.close();
       await continuity.close();
       await tasks.close();
+      keeploreDelegationStore?.close();
+      keeploreOnboardingStore.close();
       await runtime.close();
     }
   },
@@ -174,6 +207,7 @@ type CallbackRuntime = ReturnType<typeof createCallbackHandshakeRuntime>;
 type TaskRuntime = ReturnType<typeof createDurableTaskRuntime>;
 type ContinuityRuntime = ReturnType<typeof createTaskContinuityRuntime>;
 type BoundaryRuntime = ReturnType<typeof createTelephoneBoundaryRuntime>;
+type KeeploreRuntime = ReturnType<typeof createKeeploreDelegationRuntime>;
 
 interface AuthenticationCallbackDispatch {
   readonly attempt: 1 | 2;
@@ -317,6 +351,7 @@ async function handleOutbound(
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
   boundaries: BoundaryRuntime,
+  keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: AuthenticationCallbackDispatch,
 ): Promise<void> {
   const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
@@ -467,6 +502,9 @@ async function handleOutbound(
               );
             },
           },
+          ...(keeploreDelegations === undefined
+            ? {}
+            : { keeploreDelegations }),
           tasks,
           telephoneSessionId: record.session.id,
           prolongedSilenceMs: prolongedSilenceMs(),
@@ -518,6 +556,7 @@ async function handleCompletionOutbound(
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
   boundaries: BoundaryRuntime,
+  keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
   const warmSession = await acquireWarmSessionLease({
@@ -667,6 +706,9 @@ async function handleCompletionOutbound(
       requestCompletionCallback: (input) =>
         requestCompletionCallback(callback, continuity, input),
       room: ctx.room,
+      ...(keeploreDelegations === undefined
+        ? {}
+        : { keeploreDelegations }),
       sessionEvidence: {
         ...completionSessionEvidence(
           tasks,
@@ -725,6 +767,7 @@ async function handleCompletionResumption(
   tasks: TaskRuntime,
   continuity: ContinuityRuntime,
   boundaries: BoundaryRuntime,
+  keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
   const warmSession = await acquireWarmSessionLease({
@@ -780,6 +823,9 @@ async function handleCompletionResumption(
       requestCompletionCallback: (input) =>
         requestCompletionCallback(callback, continuity, input),
       room: ctx.room,
+      ...(keeploreDelegations === undefined
+        ? {}
+        : { keeploreDelegations }),
       sessionEvidence: completionSessionEvidence(
         tasks,
         continuity,

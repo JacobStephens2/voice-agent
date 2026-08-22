@@ -69,6 +69,28 @@ fi
   }
 });
 
+test("the Keeplore Subagent keeps model tools behind the registered CSS boundary", async () => {
+  const [executor, runner, verifier, subagentUnit] = await Promise.all(
+    [
+      "apps/worker/src/keeplore-codex-executor.ts",
+      "apps/worker/src/keeplore-subagent-runner-server.ts",
+      "apps/worker/src/keeplore-visual-verifier.ts",
+      "ops/systemd/voice-agent-subagent.service",
+    ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
+  );
+
+  expect(executor).toContain('default_permissions="keeplore"');
+  expect(executor).toContain('"ui/style.css" = "write"');
+  expect(executor).toContain("permissions.keeplore.network.enabled=false");
+  expect(executor).not.toContain("sandbox_workspace_write.network_access=true");
+  expect(executor).toContain("runRegisteredVerification");
+  expect(executor).toContain("openOrObservePullRequest");
+  expect(runner).toContain('active.process.kill("SIGUSR1")');
+  expect(runner).toContain("/var/lib/voice-codex/results");
+  expect(verifier).toContain("await context.setOffline(true)");
+  expect(subagentUnit).toContain("PLAYWRIGHT_BROWSERS_PATH=");
+});
+
 test("the Agent Host release preserves its private ports and service boundaries", async () => {
   const [
     apiServer,
@@ -77,6 +99,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
     health,
     apiUnit,
     workerUnit,
+    subagentUnit,
     brokerUnit,
     installer,
     promotion,
@@ -98,6 +121,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
         "ops/release/deployment-health.sh",
         "ops/systemd/voice-agent-api.service",
         "ops/systemd/voice-agent-worker.service",
+        "ops/systemd/voice-agent-subagent.service",
         "ops/systemd/voice-agent-broker.service",
         "ops/release/install-release.sh",
         "ops/release/promote-release.sh",
@@ -127,6 +151,12 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(health).not.toContain("http://127.0.0.1:3474/");
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
+  expect(workerUnit).toContain("voice-subagent-client");
+  expect(workerUnit).toContain("EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env");
+  expect(subagentUnit).toContain("User=voice-codex");
+  expect(subagentUnit).toContain("InaccessiblePaths=/var/lib/voice-agent");
+  expect(subagentUnit).toContain("/run/docker.sock");
+  expect(subagentUnit).not.toContain("voice-broker-client");
   expect(brokerUnit).toContain("Group=voice-broker-client");
   expect(brokerUnit).toContain("StateDirectoryMode=0700");
   expect(installer).not.toContain("usermod");
@@ -134,6 +164,8 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(installer).toContain("/var/lib/voice-agent-source/repository.git");
   expect(installer).toContain("github-source-token.sh");
   expect(installer).toContain("runuser --user voice-agent-builder -- env -i");
+  expect(installer).toContain("voice-codex");
+  expect(installer).toContain("/var/lib/voice-agent-worktrees/keeplore");
   expect(wizard).toContain(
     "sudo -u voice-agent -g voice-broker-client env",
   );
@@ -168,11 +200,14 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(resumeService).toContain("LoadCredential=github-app-key:");
   expect(resumeService).toContain("/var/lib/voice-agent-broker");
   expect(promotion).toContain('"$script_directory/systemd/$unit"');
+  expect(promotion).toContain("voice-agent-subagent.service");
   expect(promotion).not.toContain('"$release/ops/systemd/$unit"');
   expect(promotion.indexOf("candidate-preflight.sh")).toBeLessThan(
     promotion.lastIndexOf("mv -Tf \"$candidate\" /opt/voice-agent/current"),
   );
   expect(preflight).toContain("systemd-analyze verify");
+  expect(preflight).toContain("voice-agent-subagent.service");
+  expect(health).toContain("/run/voice-agent-subagent/runner.sock");
 });
 
 test("the isolated release builder does not depend on a global pnpm shim", async () => {

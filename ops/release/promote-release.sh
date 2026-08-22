@@ -16,6 +16,7 @@ release="/opt/voice-agent/releases/$commit"
 unit_definitions=(
   voice-agent-api.service
   voice-agent-worker.service
+  voice-agent-subagent.service
   voice-agent-broker.service
   voice-agent-probes.service
   voice-agent-probes.timer
@@ -23,6 +24,7 @@ unit_definitions=(
 runtime_units=(
   voice-agent-api.service
   voice-agent-worker.service
+  voice-agent-subagent.service
   voice-agent-broker.service
 )
 enabled_units=("${runtime_units[@]}" voice-agent-probes.timer)
@@ -159,7 +161,8 @@ candidate=/opt/voice-agent/.current-candidate
 ln -sfn "$release" "$candidate"
 mv -Tf "$candidate" /opt/voice-agent/current
 switched=true
-systemctl restart voice-agent-broker.service voice-agent-api.service voice-agent-worker.service
+systemctl restart voice-agent-broker.service voice-agent-subagent.service \
+  voice-agent-api.service voice-agent-worker.service
 systemctl restart voice-agent-probes.timer
 systemctl start voice-agent-probes.service
 systemctl restart voice-agent-promotion-resume.path
