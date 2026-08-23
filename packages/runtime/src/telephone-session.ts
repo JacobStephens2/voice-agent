@@ -610,11 +610,7 @@ function isAffirmative(text: string): boolean {
 }
 
 function transcriptRequestsKeeploreButtonTrial(text: string): boolean {
-  return (
-    /get rid of/iu.test(text) &&
-    /remove/iu.test(text) &&
-    /table/iu.test(text)
-  );
+  return /get rid of/iu.test(text) && /remove/iu.test(text);
 }
 
 function transcriptRequestsKeeploreButtonTrialStatus(text: string): boolean {
