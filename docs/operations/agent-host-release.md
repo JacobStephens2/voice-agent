@@ -190,7 +190,10 @@ Noble's `bwrap-userns-restrict` profile instead of weakening that sysctl. The
 profile permits Bubblewrap to construct its namespace and strips capabilities
 from sandbox children. Candidate preflight requires the active system profile
 to match the root pin, and deployment health executes an offline Codex sandbox
-probe as `voice-codex`.
+probe as `voice-codex`. That probe resolves `current` to the exact immutable
+Release before constructing its narrow read-only permission profile because
+Bubblewrap enters a canonical working directory while Codex retains logical
+paths for read-only mounts.
 
 ## Health and rollback
 

@@ -190,12 +190,19 @@ CODEX_HOME=/var/lib/voice-codex/.codex
 CODEX_BROWSER_STATE=/var/lib/voice-codex/browser/keeplore.json
 GH_CONFIG_DIR=/var/lib/voice-codex/.config/gh
 KEEPLORE_REPOSITORY=JacobStephens2/keeplore
-PLAYWRIGHT=/opt/voice-agent/current/node_modules/.bin/playwright
 
 if [[ ! -e /opt/voice-agent/current ]]; then
   warn "Run this wizard on the Agent Host after promoting the reviewed Voice Agent release."
   exit 1
 fi
+RELEASE_ROOT=
+if ! RELEASE_ROOT=$(readlink -f /opt/voice-agent/current) || \
+  [[ ! $RELEASE_ROOT =~ ^/opt/voice-agent/releases/[0-9a-f]{40}$ ]] || \
+  [[ ! -d $RELEASE_ROOT ]]; then
+  warn "The active Voice Agent release path is invalid."
+  exit 1
+fi
+PLAYWRIGHT="$RELEASE_ROOT/node_modules/.bin/playwright"
 
 banner "Restricted Codex Keeplore Button Trial"
 
@@ -289,7 +296,7 @@ if ! sudo -u voice-codex env -i \
   CODEX_HOME="$CODEX_HOME" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-enrollment-check \
-  --cd /opt/voice-agent/current \
+  --cd "$RELEASE_ROOT" \
   --config 'permissions.keeplore-enrollment-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-enrollment-check.network.enabled=false -- \
   /bin/sh -c 'test ! -r "$CODEX_HOME/auth.json" && test ! -r "$GH_CONFIG_DIR/hosts.yml"'; then
@@ -319,7 +326,7 @@ if ! sudo -u voice-codex env -i \
   CODEX_BROWSER_STATE="$CODEX_BROWSER_STATE" CODEX_HOME="$CODEX_HOME" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-browser-check \
-  --cd /opt/voice-agent/current \
+  --cd "$RELEASE_ROOT" \
   --config 'permissions.keeplore-browser-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-browser-check.network.enabled=false -- \
   /bin/sh -c 'test ! -r "$CODEX_BROWSER_STATE"'; then
@@ -356,7 +363,7 @@ pause "Press Enter after the background Delegation reaches a terminal state."
 sudo -u voice-agent env \
   VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite \
   /usr/bin/node --experimental-strip-types \
-  /opt/voice-agent/current/apps/worker/src/keeplore-delegation-inspect.ts
+  "$RELEASE_ROOT/apps/worker/src/keeplore-delegation-inspect.ts"
 step "Open the reported pull request and inspect its branch, commits, changed file, automated check, authenticated desktop/mobile screenshots, computed styles, card-view proof, and risks. Do not merge until you accept it as the Human Merge."
 pause "Press Enter after reviewing the structured Delegation Result."
 
