@@ -105,6 +105,14 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   expect(publisherUnit).toContain("CapabilityBoundingSet=");
   expect(subagentUnit).toContain("PLAYWRIGHT_BROWSERS_PATH=");
   expect(subagentUnit).toContain("Requires=voice-agent-keeplore-publisher.service");
+  expect(trial).toContain('if [[ -z ${DISPLAY:-} ]]');
+  expect(trial).toContain(
+    "/var/lib/voice-codex/run/keeplore-xauthority.XXXXXX",
+  );
+  expect(trial).toContain('/usr/bin/xauth nlist "$DISPLAY"');
+  expect(trial).toContain('XAUTHORITY="$CODEX_XAUTHORITY"');
+  expect(trial).toContain('/usr/bin/xdpyinfo >/dev/null');
+  expect(trial).not.toContain("xhost");
   for (const codexConsumer of [executor, trial]) {
     expect(codexConsumer).toContain("/usr/bin/codex");
     expect(codexConsumer).not.toContain("/usr/local/bin/codex");
