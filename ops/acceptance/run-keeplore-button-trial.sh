@@ -281,11 +281,42 @@ sudo -u voice-codex env \
   "$PLAYWRIGHT" install chromium
 step "Run this stage from a host desktop or an SSH session with trusted display forwarding. Sign into Keeplore in the opened browser, then close it to save the session."
 confirm "Open the Keeplore authentication browser now?" || exit 1
+if [[ -z ${DISPLAY:-} ]]; then
+  warn "No graphical display is forwarded. Reconnect with trusted X11 forwarding before opening the Keeplore browser."
+  exit 1
+fi
+CODEX_XAUTHORITY=$(sudo -u voice-codex /usr/bin/mktemp \
+  /var/lib/voice-codex/run/keeplore-xauthority.XXXXXX)
+if [[ ! $CODEX_XAUTHORITY =~ ^/var/lib/voice-codex/run/keeplore-xauthority\.[A-Za-z0-9]+$ ]]; then
+  warn "The temporary Keeplore display credential escaped its private directory."
+  exit 1
+fi
+cleanup_xauthority() {
+  sudo -u voice-codex /usr/bin/rm -f -- "$CODEX_XAUTHORITY"
+}
+trap cleanup_xauthority EXIT
+if ! /usr/bin/xauth nlist "$DISPLAY" \
+  | sudo -u voice-codex env XAUTHORITY="$CODEX_XAUTHORITY" \
+    /usr/bin/xauth nmerge -; then
+  warn "The forwarded display credential could not be transferred to the fixed browser runner."
+  exit 1
+fi
+if ! sudo -u voice-codex env \
+  DISPLAY="$DISPLAY" XAUTHORITY="$CODEX_XAUTHORITY" \
+  HOME=/var/lib/voice-codex /usr/bin/xdpyinfo >/dev/null; then
+  warn "The restricted browser runner cannot reach the forwarded display."
+  exit 1
+fi
 sudo -u voice-codex env \
+  DISPLAY="$DISPLAY" XAUTHORITY="$CODEX_XAUTHORITY" \
   HOME=/var/lib/voice-codex \
   PLAYWRIGHT_BROWSERS_PATH=/var/lib/voice-codex/.cache/ms-playwright \
   "$PLAYWRIGHT" open --save-storage "$CODEX_BROWSER_STATE" \
   https://keeplore.app
+cleanup_xauthority
+sudo test ! -e "$CODEX_XAUTHORITY"
+trap - EXIT
+CODEX_XAUTHORITY=
 sudo test -s "$CODEX_BROWSER_STATE"
 sudo chmod 0600 "$CODEX_BROWSER_STATE"
 if ! sudo -u voice-codex env -i \
