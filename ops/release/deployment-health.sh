@@ -21,13 +21,20 @@ if ! grep -q '^bwrap (enforce)$' \
   printf 'Bubblewrap AppArmor profile is not enforcing.\n' >&2
   exit 1
 fi
+release_root=
+if ! release_root=$(readlink -f /opt/voice-agent/current) || \
+  [[ ! $release_root =~ ^/opt/voice-agent/releases/[0-9a-f]{40}$ ]] || \
+  [[ ! -d $release_root ]]; then
+  printf 'Active Voice Agent release path is invalid.\n' >&2
+  exit 1
+fi
 if ! (
-  cd /opt/voice-agent/current
+  cd "$release_root"
   runuser --user voice-codex -- env -i \
     CODEX_HOME=/var/lib/voice-codex/.codex HOME=/var/lib/voice-codex \
     PATH=/usr/local/bin:/usr/bin:/bin \
     /usr/bin/codex sandbox --permission-profile voice-agent-health \
-    --cd /opt/voice-agent/current \
+    --cd "$release_root" \
     --config 'permissions.voice-agent-health.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
     --config permissions.voice-agent-health.network.enabled=false -- \
     /usr/bin/true >/dev/null

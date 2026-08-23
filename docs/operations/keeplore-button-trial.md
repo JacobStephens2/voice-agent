@@ -38,6 +38,13 @@ above, and rerun the trial. The upgrade activates Ubuntu Noble's narrow profile
 and the health contract proves that the offline Codex sandbox works before the
 trial resumes.
 
+If an attended upgrade instead reports `bwrap: Can't chdir to
+/opt/voice-agent/releases/<commit>: No such file or directory`, the profile is
+active but the reviewed Release predates the canonical sandbox-working-directory
+fix. The rollback is expected. Do not add a manual bind mount or replace the
+`current` symlink; merge and promote the reviewed fix, then run the attended
+upgrade again from that new Release.
+
 ## Confirmation and Durable Task
 
 Only an authenticated Telephone Session can reach the coordinator. A request
