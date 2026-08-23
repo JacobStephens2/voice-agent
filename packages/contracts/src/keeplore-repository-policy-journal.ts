@@ -59,6 +59,7 @@ export const keeploreBranchBypassAttestationSchema = z
 export const keeploreGitHubAppObservationSchema = z
   .object({
     appId: z.number().int().positive(),
+    appSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/u),
     application: z.literal("keeplore-production"),
     installationId: z.number().int().positive(),
     kind: z.literal("github-app"),

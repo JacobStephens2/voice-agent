@@ -3,8 +3,10 @@ import { createSign } from "node:crypto";
 import {
   chmod,
   lstat,
+  mkdtemp,
   readFile,
   realpath,
+  rm,
   unlink,
 } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -17,6 +19,8 @@ const keeploreApplicationId = "keeplore-production" as const;
 const keeploreProductionBranch = "main" as const;
 const keeploreRemote = "https://github.com/JacobStephens2/keeplore.git";
 const worktreeRoot = "/var/lib/voice-agent-worktrees/keeplore";
+const runnerMirrorObjects = "/var/lib/voice-agent-worktrees/keeplore.git/objects";
+const publisherRuntimeDirectory = "/run/voice-agent-keeplore-publisher";
 const policyLifetimeMilliseconds = 7 * 24 * 60 * 60 * 1_000;
 const maximumClockSkewMilliseconds = 5 * 60 * 1_000;
 const maximumResponseBytes = 1_000_000;
@@ -68,8 +72,14 @@ interface AppCredentials {
   readonly privateKey: string;
 }
 
+interface IsolatedPushRepository {
+  readonly directory: string;
+  dispose(): Promise<void>;
+}
+
 export interface KeeploreCandidatePublisherDependencies {
   readonly credentialHelperPath: string;
+  createIsolatedPushRepository(): Promise<IsolatedPushRepository>;
   github(request: GitHubRequest): Promise<GitHubResponse>;
   readonly now: () => Date;
   readAppCredentials(): Promise<AppCredentials>;
@@ -120,7 +130,7 @@ export function createKeeploreCandidatePublisher(
         request.delegationId,
       );
       const credentials = await dependencies.readAppCredentials();
-      authorizeRepositoryPolicy({
+      const appSlug = authorizeRepositoryPolicy({
         appId: credentials.appId,
         installationId: credentials.installationId,
         journal: await dependencies.readPolicyJournal(),
@@ -142,39 +152,50 @@ export function createKeeploreCandidatePublisher(
         request.candidate.headCommit,
       );
 
-      let lastAuthenticationError: InstallationAuthenticationError | undefined;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        await assertDelegationStillActive(dependencies, delegation);
-        const token = await mintInstallationToken(
-          dependencies,
-          credentials,
-        );
-        try {
-          const pullRequest = await publishWithToken({
-            delegation,
-            dependencies,
-            headCommit: request.candidate.headCommit,
-            token,
-          });
-          return {
-            headCommit: request.candidate.headCommit,
-            pullRequest: {
-              baseBranch: keeploreProductionBranch,
-              headBranch: delegation.branch,
-              headCommit: request.candidate.headCommit,
-              state: "open",
-              url: pullRequest.url,
-            },
-            repository: keeploreRepository,
-          };
-        } catch (error) {
-          if (!(error instanceof InstallationAuthenticationError)) throw error;
-          lastAuthenticationError = error;
-        } finally {
-          await revokeInstallationToken(dependencies, token);
+      const pushRepository = await dependencies.createIsolatedPushRepository();
+      try {
+        if (
+          !pushRepository.directory.startsWith(
+            `${publisherRuntimeDirectory}/git-`,
+          )
+        ) {
+          throw new Error("Keeplore push repository is outside its runtime boundary");
         }
+        let lastAuthenticationError: InstallationAuthenticationError | undefined;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          await assertDelegationStillActive(dependencies, delegation);
+          const token = await mintInstallationToken(dependencies, credentials);
+          try {
+            const pullRequest = await publishWithToken({
+              appSlug,
+              delegation,
+              dependencies,
+              headCommit: request.candidate.headCommit,
+              pushRepository: pushRepository.directory,
+              token,
+            });
+            return {
+              headCommit: request.candidate.headCommit,
+              pullRequest: {
+                baseBranch: keeploreProductionBranch,
+                headBranch: delegation.branch,
+                headCommit: request.candidate.headCommit,
+                state: "open",
+                url: pullRequest.url,
+              },
+              repository: keeploreRepository,
+            };
+          } catch (error) {
+            if (!(error instanceof InstallationAuthenticationError)) throw error;
+            lastAuthenticationError = error;
+          } finally {
+            await revokeInstallationToken(dependencies, token);
+          }
+        }
+        throw lastAuthenticationError ?? new Error("Keeplore publication failed");
+      } finally {
+        await pushRepository.dispose();
       }
-      throw lastAuthenticationError ?? new Error("Keeplore publication failed");
     },
   };
 }
@@ -265,7 +286,7 @@ function authorizeRepositoryPolicy(input: {
   readonly installationId: number;
   readonly journal: string;
   readonly now: Date;
-}): void {
+}): string {
   const observations = input.journal
     .split("\n")
     .flatMap((line) => {
@@ -321,6 +342,8 @@ function authorizeRepositoryPolicy(input: {
     app.observedBy !== "github-app-credentials" ||
     app.appId !== input.appId ||
     app.installationId !== input.installationId ||
+    typeof app.appSlug !== "string" ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/u.test(app.appSlug) ||
     app.repositorySelection !== "selected" ||
     !hasExactStringMembers(app.repositories, [keeploreRepository]) ||
     !hasExactPermissions(app.permissions, {
@@ -332,6 +355,7 @@ function authorizeRepositoryPolicy(input: {
   ) {
     throw new Error("Keeplore GitHub App grant is not the reviewed installation");
   }
+  return app.appSlug;
 }
 
 async function inspectCandidate(
@@ -345,6 +369,8 @@ async function inspectCandidate(
         "-C",
         delegation.worktreePath,
         "--no-replace-objects",
+        "-c",
+        `safe.directory=${delegation.worktreePath}`,
         "-c",
         "core.hooksPath=/dev/null",
         "-c",
@@ -428,18 +454,26 @@ async function mintInstallationToken(
     throw new Error("Keeplore publication token could not be minted");
   }
   const token = requireRecord(response.body, "installation token response");
+  const rawToken =
+    typeof token.token === "string" &&
+    token.token.length > 0 &&
+    token.token.length <= 1_000
+      ? token.token
+      : undefined;
   if (
-    typeof token.token !== "string" ||
-    token.token.length < 20 ||
-    token.token.length > 1_000 ||
+    rawToken === undefined ||
+    rawToken.length < 20 ||
     !freshTokenExpiry(token.expires_at, now) ||
     token.repository_selection !== "selected" ||
     !hasNarrowedTokenPermissions(token.permissions) ||
     !tokenNamesOnlyKeeplore(token.repositories)
   ) {
+    if (rawToken !== undefined) {
+      await revokeInstallationToken(dependencies, rawToken);
+    }
     throw new Error("GitHub returned an unbounded publication token");
   }
-  return token.token;
+  return rawToken;
 }
 
 function createAppJwt(credentials: AppCredentials, now: Date): string {
@@ -457,15 +491,17 @@ function createAppJwt(credentials: AppCredentials, now: Date): string {
 }
 
 async function publishWithToken(input: {
+  readonly appSlug: string;
   readonly delegation: RegisteredDelegation;
   readonly dependencies: KeeploreCandidatePublisherDependencies;
   readonly headCommit: string;
+  readonly pushRepository: string;
   readonly token: string;
 }): Promise<PullRequestObservation> {
   const push = await input.dependencies.runGit(
     [
-      "-C",
-      input.delegation.worktreePath,
+      "--git-dir",
+      input.pushRepository,
       "--no-replace-objects",
       "-c",
       "protocol.allow=never",
@@ -493,12 +529,14 @@ async function publishWithToken(input: {
       "remote.origin.proxy=",
       "push",
       "--porcelain",
-      "origin",
+      keeploreRemote,
       `${input.headCommit}:refs/heads/${input.delegation.branch}`,
     ],
     {
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: runnerMirrorObjects,
+      GITHUB_APP_EXPECTED_PATH: "JacobStephens2/keeplore.git",
       GIT_NO_REPLACE_OBJECTS: "1",
       GIT_TERMINAL_PROMPT: "0",
       GITHUB_APP_INSTALLATION_TOKEN: input.token,
@@ -550,7 +588,12 @@ async function publishWithToken(input: {
     throw new Error("Keeplore pull request could not be independently observed");
   }
   const exact = parsePullRequest(independentlyObserved.body);
-  assertMatchingPullRequest(exact, input.delegation.branch, input.headCommit);
+  assertMatchingPullRequest(
+    exact,
+    input.delegation.branch,
+    input.headCommit,
+    input.appSlug,
+  );
   return exact;
 }
 
@@ -572,6 +615,7 @@ async function assertDelegationStillActive(
 }
 
 async function findPullRequest(input: {
+  readonly appSlug: string;
   readonly delegation: RegisteredDelegation;
   readonly dependencies: KeeploreCandidatePublisherDependencies;
   readonly headCommit: string;
@@ -596,7 +640,12 @@ async function findPullRequest(input: {
     throw new Error("Keeplore publication branch has multiple pull requests");
   }
   const observed = parsePullRequest(response.body[0]);
-  assertMatchingPullRequest(observed, input.delegation.branch, input.headCommit);
+  assertMatchingPullRequest(
+    observed,
+    input.delegation.branch,
+    input.headCommit,
+    input.appSlug,
+  );
   return observed;
 }
 
@@ -669,6 +718,7 @@ function assertMatchingPullRequest(
   pullRequest: PullRequestObservation,
   branch: string,
   headCommit: string,
+  appSlug: string,
 ): void {
   if (
     pullRequest.state !== "open" ||
@@ -678,7 +728,7 @@ function assertMatchingPullRequest(
     pullRequest.head.sha !== headCommit ||
     pullRequest.head.repository !== keeploreRepository ||
     pullRequest.user.type !== "Bot" ||
-    !pullRequest.user.login.endsWith("[bot]") ||
+    pullRequest.user.login !== `${appSlug}[bot]` ||
     pullRequest.url !==
       `https://github.com/${keeploreRepository}/pull/${pullRequest.number}`
   ) {
@@ -876,6 +926,7 @@ async function startProductionServer(): Promise<void> {
     "/usr/local/libexec/voice-agent/git-credential-github-app.sh";
   const publisher = createKeeploreCandidatePublisher({
     credentialHelperPath,
+    createIsolatedPushRepository: createProductionIsolatedPushRepository,
     github: productionGitHubRequest,
     now: () => new Date(),
     async readAppCredentials() {
@@ -953,6 +1004,28 @@ async function startProductionServer(): Promise<void> {
   const stop = () => server.close();
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+}
+
+async function createProductionIsolatedPushRepository(): Promise<IsolatedPushRepository> {
+  const directory = await mkdtemp(`${publisherRuntimeDirectory}/git-`);
+  try {
+    const initialized = await productionGit(
+      ["init", "--bare", "--quiet", directory],
+      safeGitEnvironment(),
+    );
+    if (initialized.exitCode !== 0) {
+      throw new Error("Isolated Keeplore push repository could not be initialized");
+    }
+  } catch (error) {
+    await rm(directory, { force: true, recursive: true });
+    throw error;
+  }
+  return {
+    directory,
+    async dispose() {
+      await rm(directory, { force: true, recursive: true });
+    },
+  };
 }
 
 async function handlePublisherRequest(

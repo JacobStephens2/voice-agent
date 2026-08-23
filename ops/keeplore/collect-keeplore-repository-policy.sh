@@ -73,6 +73,7 @@ repositories=$(keeplore_github_api 'installation/repositories?per_page=20' \
 
 jq -cn \
   --argjson appId "$application_id" \
+  --arg appSlug "$(jq -er '.app_slug' <<<"$installation")" \
   --argjson installationId "$installation_id" \
   --arg observedAt "$observed_at" \
   --argjson permissions "$(jq -c '.permissions' <<<"$installation")" \
@@ -80,6 +81,7 @@ jq -cn \
   --arg repositorySelection "$(jq -r '.repository_selection' <<<"$installation")" \
   '{
     appId: $appId,
+    appSlug: $appSlug,
     application: "keeplore-production",
     installationId: $installationId,
     kind: "github-app",

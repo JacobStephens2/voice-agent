@@ -46,6 +46,7 @@ const gitHubApp = (
 ) =>
   JSON.stringify({
     appId: 123,
+    appSlug: "keeplore-publisher",
     application: "keeplore-production",
     installationId: 456,
     kind: "github-app",
