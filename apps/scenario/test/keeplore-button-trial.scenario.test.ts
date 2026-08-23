@@ -29,6 +29,50 @@ afterEach(async () => {
   );
 });
 
+test("a spoken Keeplore name split by STT still receives the Keeplore confirmation", async () => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return successfulResult(brief, worktree);
+    },
+  });
+  await scenario.authenticateTelephoneSession("telephone-session-stt");
+
+  const requested = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-stt",
+    transcript:
+      "Get rid of button match remove. And keep lore's table view.",
+    turnId: "turn-stt-request",
+  });
+
+  expect(requested.actions).toEqual([
+    {
+      confirmationId: "turn-stt-request:confirmation",
+      interruptible: true,
+      kind: "request-task-confirmation",
+      text:
+        "Please confirm this state-changing task: Keeplore production — make table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight, while retaining content-based widths and leaving card view unchanged.",
+    },
+  ]);
+
+  const confirmed = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-stt",
+    transcript: "Yes.",
+    turnId: "turn-stt-confirm",
+  });
+
+  expect(confirmed.actions).toEqual([
+    {
+      interruptible: true,
+      kind: "speak-semantic-response",
+      responseId: "turn-stt-confirm:delegation-response",
+      taskId: "task-button-trial",
+      text:
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+    },
+  ]);
+  expect(await scenario.listDelegations()).toHaveLength(1);
+});
+
 test("an authenticated confirmed Keeplore Button Trial produces a bounded verified pull request", async () => {
   const scenario = await createScenario({
     async execute({ brief, worktree }) {

@@ -611,7 +611,7 @@ function isAffirmative(text: string): boolean {
 
 function transcriptRequestsKeeploreButtonTrial(text: string): boolean {
   return (
-    /keeplore/iu.test(text) &&
+    /(?:keeplore|keep\s+lore)/iu.test(text) &&
     /get rid of/iu.test(text) &&
     /remove/iu.test(text) &&
     /table/iu.test(text)

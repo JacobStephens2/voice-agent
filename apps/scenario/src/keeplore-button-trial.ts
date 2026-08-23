@@ -118,7 +118,7 @@ export async function createKeeploreButtonTrialScenario(
 
 function reportsKeeploreButtonTrial(transcript: string): boolean {
   return (
-    /keeplore/iu.test(transcript) &&
+    /(?:keeplore|keep\s+lore)/iu.test(transcript) &&
     /get rid of/iu.test(transcript) &&
     /remove/iu.test(transcript) &&
     /table/iu.test(transcript)
