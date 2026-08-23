@@ -29,7 +29,19 @@ afterEach(async () => {
   );
 });
 
-test("a spoken Keeplore name split by STT still receives the Keeplore confirmation", async () => {
+test.each([
+  [
+    "split words",
+    "Get rid of button match remove. And keep lore's table view.",
+  ],
+  [
+    "phonetic substitution",
+    "Next to get rid of button match remove in KeepLoors table view.",
+  ],
+])("a Keeplore STT %s still receives the Keeplore confirmation", async (
+  _variant,
+  transcript,
+) => {
   const scenario = await createScenario({
     async execute({ brief, worktree }) {
       return successfulResult(brief, worktree);
@@ -39,8 +51,7 @@ test("a spoken Keeplore name split by STT still receives the Keeplore confirmati
 
   const requested = await scenario.receiveTelephoneTurn({
     telephoneSessionId: "telephone-session-stt",
-    transcript:
-      "Get rid of button match remove. And keep lore's table view.",
+    transcript,
     turnId: "turn-stt-request",
   });
 
