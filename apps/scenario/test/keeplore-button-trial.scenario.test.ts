@@ -38,6 +38,10 @@ test.each([
     "phonetic substitution",
     "Next to get rid of button match remove in KeepLoors table view.",
   ],
+  [
+    "truncated target and scope",
+    "Make of the Get Rid of button match the remove. make of the get rid of button match the remove.",
+  ],
 ])("a Keeplore STT %s still receives the Keeplore confirmation", async (
   _variant,
   transcript,
@@ -82,6 +86,40 @@ test.each([
     },
   ]);
   expect(await scenario.listDelegations()).toHaveLength(1);
+});
+
+test.each([
+  "Make the Get Rid Of button larger.",
+  "Make the Remove button larger.",
+])("one trial control alone cannot create a Keeplore Delegation", async (
+  transcript,
+) => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return successfulResult(brief, worktree);
+    },
+  });
+  await scenario.authenticateTelephoneSession("telephone-session-incomplete");
+
+  const requested = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-incomplete",
+    transcript,
+    turnId: "turn-incomplete-request",
+  });
+  expect(requested.actions).not.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        text: expect.stringContaining("Keeplore production"),
+      }),
+    ]),
+  );
+
+  await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-incomplete",
+    transcript: "Yes.",
+    turnId: "turn-incomplete-confirm",
+  });
+  expect(await scenario.listDelegations()).toEqual([]);
 });
 
 test("an authenticated confirmed Keeplore Button Trial produces a bounded verified pull request", async () => {

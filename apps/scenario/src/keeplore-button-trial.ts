@@ -58,11 +58,11 @@ export async function createKeeploreButtonTrialScenario(
       async interpret(input) {
         return {
           durationMs: 1,
+          // The live classifier identifies generic state changes; the runtime
+          // under test owns the task-specific Keeplore routing decision.
           intent: /^stop[.!]?$/iu.test(input.text.trim())
             ? "stop"
-            : reportsKeeploreButtonTrial(input.text)
-              ? "state-changing"
-              : "unrelated",
+            : "state-changing",
           provider: "deterministic-keeplore-scenario-coordinator",
         };
       },
@@ -114,12 +114,4 @@ export async function createKeeploreButtonTrialScenario(
     },
     requestStop: (taskId) => runtime.requestStop(taskId),
   };
-}
-
-function reportsKeeploreButtonTrial(transcript: string): boolean {
-  return (
-    /get rid of/iu.test(transcript) &&
-    /remove/iu.test(transcript) &&
-    /table/iu.test(transcript)
-  );
 }
