@@ -89,6 +89,82 @@ test.each([
 });
 
 test.each([
+  ["duplicated yes", "Yes. yes"],
+  ["correctness statement", "That is correct."],
+  ["confirmation statement", "I confirm."],
+])("an observed STT %s confirms the pending Keeplore task", async (
+  _variant,
+  transcript,
+) => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return successfulResult(brief, worktree);
+    },
+  });
+  await scenario.authenticateTelephoneSession("telephone-session-confirmation");
+  await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-confirmation",
+    transcript:
+      "Make the Get Rid Of button match Remove in Keeplore's table view.",
+    turnId: "turn-confirmation-request",
+  });
+
+  const confirmed = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-confirmation",
+    transcript,
+    turnId: "turn-confirmation-response",
+  });
+
+  expect(confirmed.actions).toEqual([
+    {
+      interruptible: true,
+      kind: "speak-semantic-response",
+      responseId: "turn-confirmation-response:delegation-response",
+      taskId: "task-button-trial",
+      text:
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+    },
+  ]);
+  expect(await scenario.listDelegations()).toHaveLength(1);
+});
+
+test.each([
+  "Yes, but only if you also change card view.",
+  "I do not confirm.",
+])("qualified or negative speech does not confirm the Keeplore task", async (
+  transcript,
+) => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return successfulResult(brief, worktree);
+    },
+  });
+  await scenario.authenticateTelephoneSession("telephone-session-rejected");
+  await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-rejected",
+    transcript:
+      "Make the Get Rid Of button match Remove in Keeplore's table view.",
+    turnId: "turn-rejected-request",
+  });
+
+  const rejected = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-rejected",
+    transcript,
+    turnId: "turn-rejected-response",
+  });
+
+  expect(rejected.actions).toEqual([
+    {
+      interruptible: true,
+      kind: "speak-guidance",
+      responseId: "turn-rejected-response:guidance",
+      text: "Okay. I did not confirm that state-changing task.",
+    },
+  ]);
+  expect(await scenario.listDelegations()).toEqual([]);
+});
+
+test.each([
   "Make the Get Rid Of button larger.",
   "Make the Remove button larger.",
 ])("one trial control alone cannot create a Keeplore Delegation", async (
