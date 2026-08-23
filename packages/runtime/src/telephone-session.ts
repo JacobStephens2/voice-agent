@@ -604,9 +604,36 @@ async function handleFinalizedTurn(
 }
 
 function isAffirmative(text: string): boolean {
-  return /^(?:yes|yes(?:,\s*|\s+)please|yeah|yep|sure|okay|ok|please do)[.!]?$/iu.test(
-    text.trim(),
-  );
+  const normalized = text
+    .trim()
+    .toLocaleLowerCase("en-US")
+    .replace(/’/gu, "'")
+    .replace(/[,.!?]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  const words = normalized.split(" ");
+  return [
+    "yes",
+    "yes please",
+    "yeah",
+    "yep",
+    "sure",
+    "okay",
+    "ok",
+    "please do",
+    "that is correct",
+    "that's correct",
+    "i confirm",
+    "correct",
+  ].some((phrase) => {
+    const phraseWords = phrase.split(" ");
+    return (
+      words.length % phraseWords.length === 0 &&
+      words.every(
+        (word, index) => word === phraseWords[index % phraseWords.length],
+      )
+    );
+  });
 }
 
 function transcriptRequestsKeeploreButtonTrial(text: string): boolean {
