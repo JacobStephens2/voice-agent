@@ -33,6 +33,7 @@ exec 8>/run/voice-agent-main-promotion-queue.lock
 flock -x 8
 source_token=$("$script_directory/github-source-token.sh")
 GIT_TERMINAL_PROMPT=0 GITHUB_APP_INSTALLATION_TOKEN="$source_token" \
+  GITHUB_APP_EXPECTED_PATH=JacobStephens2/voice-agent.git \
   "${git_repository[@]}" \
   -c credential.helper= \
   -c credential.helper="$script_directory/git-credential-github-app.sh" \

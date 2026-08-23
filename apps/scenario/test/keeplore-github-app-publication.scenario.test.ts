@@ -1,5 +1,6 @@
 import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 
 import {
@@ -502,6 +503,16 @@ test("the credential helper returns a token only for the exact registered HTTPS 
     });
     expect(rejected.status).not.toBe(0);
     expect(rejected.stdout).not.toContain(installationToken);
+  }
+
+  for (const [consumer, expectedPath] of [
+    ["../../../ops/release/install-release.sh", "JacobStephens2/voice-agent.git"],
+    ["../../../ops/release/promote-main.sh", "JacobStephens2/voice-agent.git"],
+    ["../../../ops/keeplore/install-keeplore-release.sh", "JacobStephens2/keeplore.git"],
+  ] as const) {
+    expect(readFileSync(new URL(consumer, import.meta.url), "utf8")).toContain(
+      `GITHUB_APP_EXPECTED_PATH=${expectedPath}`,
+    );
   }
 });
 
