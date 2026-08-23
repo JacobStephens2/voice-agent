@@ -8,8 +8,9 @@ repeatable attended procedure on the Agent Host:
 ```
 
 The wizard deliberately does not run during an ordinary release. A human must
-complete the separate provider, repository, and Keeplore browser logins before
-the worker admits this Delegation.
+complete the separate Codex subscription and Keeplore browser logins before
+the worker admits this Delegation. GitHub requires no user login: publication
+uses the reviewed least-privilege Keeplore GitHub App from onboarding.
 
 The first stage requires `voice-agent-subagent.service`. If the active reviewed
 Release contains that unit but systemd reports it absent, do not copy the unit
@@ -30,7 +31,10 @@ candidates at the root terminal, assert one approved key to enroll it in the
 root-only registry, and then make a second assertion to authorize the upgrade.
 Later runs require the authorization assertion directly.
 
-Stage 2 also requires the reviewed `bwrap-userns-restrict` AppArmor profile.
+Stage 2 also requires the reviewed `bwrap-userns-restrict` AppArmor profile and
+the pinned `voice-agent-keeplore-publisher.service`. Both become active root
+authority only through the attended deployment-authority upgrade above after
+the Release has been Human Merged and promoted.
 If Bubblewrap reports `RTM_NEWADDR` or `uid_map` permission errors, do not set
 `kernel.apparmor_restrict_unprivileged_userns=0` and do not make Bubblewrap
 setuid. Promote the reviewed fix, run the attended deployment-authority upgrade
@@ -75,26 +79,43 @@ The runner owns a bare mirror and one persistent worktree per Delegation under
 configuration and rules and selects a custom permission profile with network
 disabled. Model-generated commands can read only `ui/artifacts/useby.php` and
 `ui/artifacts/useby.js` and can write only `ui/style.css`; they cannot read the
-Codex, GitHub, or browser credential stores. Repository instructions, issue
-text, test output, and web content are untrusted data and cannot expand those
-paths or authority.
+Codex or browser credential stores or reach the publisher socket. Repository
+instructions, issue text, test output, and web content are untrusted data and
+cannot expand those paths or authority.
 
 Fixed host code—not the model—copies the candidate into a disposable directory
 and runs the registered PHPUnit command there in a second network-disabled
-profile, injects the candidate CSS into an authenticated
-browser after taking that browser offline, commits only `ui/style.css`, pushes
-the exact assigned ref, and creates or observes the pull request. Codex returns
-only whether a candidate is ready and bounded risks; it never receives GitHub
-or browser authority and cannot self-attest verification.
+profile, injects the candidate CSS into an authenticated browser after taking
+that browser offline, and commits only `ui/style.css`. Codex returns only
+whether a candidate is ready and bounded risks; it never receives GitHub or
+browser authority and cannot self-attest verification.
 
-The dedicated GitHub account enrolled by the wizard must have write access to
-`JacobStephens2/keeplore` only and no production-branch bypass. It may push the
-assigned `codex/keeplore-button-<delegation>` branch and open or update a pull
-request against `main`; only a later Human Merge can authorize Promotion.
-The wizard rejects the `JacobStephens2` owner account and verifies that the
-enrolled identity reports push access to Keeplore. If the wrong identity was
-enrolled, remove it only from the `voice-codex` GitHub configuration, rerun the
-wizard, and complete device authentication with the dedicated user.
+After those checks leave one clean commit, the fixed runner sends one strict
+`create-or-observe-pull-request` request over a private Unix socket. The pinned,
+root-owned publisher re-reads the running Delegation from SQLite, independently
+checks its branch, base, clean worktree, exact head, single commit, changed path,
+and token-free Keeplore remote, then reads the root-owned repository-policy
+journal. Publication proceeds only while that journal contains fresh observations
+of the selected Keeplore installation, its exact `checks:read`, `contents:write`,
+and `pull_requests:write` grant (plus implicit `metadata:read`), protected `main`
+rules, and a current owner attestation naming no bypass actors.
+
+The publisher signs the App JWT in its own process and requests an installation
+token narrowed to Keeplore with only Contents write and Pull requests write.
+The raw token is kept out of files, arguments, logs, evidence, the Subagent, and
+the Delegation Result. Git receives it through the pinned ephemeral credential
+helper while the stored remote remains token-free. Publisher code constructs
+the sole allowed refspec and GitHub endpoints itself, pushes only the exact
+assigned `codex/keeplore-button-<delegation>` commit, creates or observes the PR
+against `main`, and then independently re-reads an open App-bot PR with the exact
+repository, base, branch, and head. It best-effort revokes every token.
+
+An expired or revoked token permits one fresh publication attempt. The retry
+reuses the already verified commit, first observes any PR that the prior attempt
+created, and never reruns Codex, verification, or commit creation. Other errors
+quarantine the worktree. The App still has no ruleset bypass, merge, close,
+administration, or deployment authority; only a later Human Merge can authorize
+Promotion.
 
 ## Verification and result
 
@@ -123,6 +144,27 @@ Codex events and the telephone transcript do not cross the runner boundary.
 The runner also caches each terminal structured result so a worker reconnect
 does not repeat publication. The wizard prints the latest structured record with
 `apps/worker/src/keeplore-delegation-inspect.ts` for attended review.
+
+## Publication recovery and credential custody
+
+The App configuration and PEM remain root-owned at
+`/etc/voice-agent/keeplore-github-app.conf` and
+`/etc/voice-agent/keeplore-github-app-private-key.pem`; systemd copies them into
+the pinned root-owned publisher's private runtime credential directory. The
+publisher reads those copies only when publication is requested.
+`voice-codex` must have no
+`gh` login or stored GitHub user token. The wizard removes the obsolete trial
+`hosts.yml` after confirmation and proves the model sandbox cannot reach the
+publisher socket.
+
+If publication reports `publication-refused`, do not add a user login or copy a
+token into the worktree. Check `voice-agent-keeplore-publisher.service`, run the
+Keeplore repository-policy collector, and, if the owner attestation is stale,
+repeat `record-keeplore-bypass-attestation.sh` with the authenticated owner
+account. Then resume the same Durable Task; the fixed publisher reuses the clean
+verified candidate. Changes to the publisher program or unit require another
+Human Merge, Promotion, and attended deployment-authority upgrade before they
+can become root authority.
 
 ## Stop, quarantine, and cleanup
 

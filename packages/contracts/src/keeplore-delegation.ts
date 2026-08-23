@@ -34,9 +34,38 @@ export const keeploreDelegationCapabilities = [
   "delegated-worktree.write",
   "verification.run",
   "authenticated-browser.verify",
-  "non-production-branch.push",
-  "pull-request.write",
+  "verified-candidate.publish",
 ] as const;
+
+export const keeploreCandidatePublicationRequestSchema = z
+  .object({
+    candidate: z
+      .object({
+        automatedVerificationPassed: z.literal(true),
+        headCommit: commitSchema,
+        visualVerificationPassed: z.literal(true),
+      })
+      .strict(),
+    delegationId: identifierSchema.regex(/^[A-Za-z0-9_-]+$/u),
+    operation: z.literal("create-or-observe-pull-request"),
+  })
+  .strict();
+
+export const keeploreCandidatePublicationResultSchema = z
+  .object({
+    headCommit: commitSchema,
+    pullRequest: z
+      .object({
+        baseBranch: z.literal(keeploreProductionBranch),
+        headBranch: z.string().min(1).max(200),
+        headCommit: commitSchema,
+        state: z.literal("open"),
+        url: z.url().startsWith(`https://github.com/${keeploreRepository}/pull/`),
+      })
+      .strict(),
+    repository: z.literal(keeploreRepository),
+  })
+  .strict();
 
 export const keeploreWorktreeSchema = z
   .object({
@@ -74,7 +103,6 @@ export const keeploreDelegationBriefSchema = z
       z.literal(keeploreDelegationCapabilities[2]),
       z.literal(keeploreDelegationCapabilities[3]),
       z.literal(keeploreDelegationCapabilities[4]),
-      z.literal(keeploreDelegationCapabilities[5]),
     ]),
     delegationId: identifierSchema,
     durableTask: z
@@ -246,6 +274,12 @@ export const keeploreDelegationRecordSchema = z
   .strict();
 
 export type KeeploreWorktree = z.infer<typeof keeploreWorktreeSchema>;
+export type KeeploreCandidatePublicationRequest = z.infer<
+  typeof keeploreCandidatePublicationRequestSchema
+>;
+export type KeeploreCandidatePublicationResult = z.infer<
+  typeof keeploreCandidatePublicationResultSchema
+>;
 export type KeeploreDelegationBrief = z.infer<
   typeof keeploreDelegationBriefSchema
 >;

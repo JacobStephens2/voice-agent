@@ -21,7 +21,9 @@ import {
 } from "@voice-agent/contracts";
 import { z } from "zod";
 
-const runnerMirror = "/var/lib/voice-codex/keeplore.git";
+import { createUnixSocketKeeploreCandidatePublisher } from "./keeplore-publication-client.ts";
+
+const runnerMirror = "/var/lib/voice-agent-worktrees/keeplore.git";
 const registeredSourceMirror = "/var/lib/keeplore-source/repository.git";
 const keeploreRemote = "https://github.com/JacobStephens2/keeplore.git";
 const codexExecutable = "/usr/bin/codex";
@@ -78,6 +80,10 @@ for (const signal of ["SIGTERM", "SIGUSR1"] as const) {
 }
 
 const input = inputSchema.parse(await readStandardInput());
+const publisher = createUnixSocketKeeploreCandidatePublisher(
+  process.env.VOICE_AGENT_KEEPLORE_PUBLISHER_SOCKET_PATH ??
+    "/run/voice-agent-keeplore-publisher/publisher.sock",
+);
 if (!/^[A-Za-z0-9_-]+$/u.test(input.brief.delegationId)) {
   throw new Error("Delegation identity is not safe for persistent storage");
 }
@@ -155,9 +161,16 @@ try {
   }
 
   checkForStop();
-  await pushCandidate();
-  checkForStop();
-  pullRequest = await openOrObservePullRequest(observed.headCommit);
+  const publication = await publisher.publish({
+    candidate: {
+      automatedVerificationPassed: true,
+      headCommit: observed.headCommit,
+      visualVerificationPassed: true,
+    },
+    delegationId: input.brief.delegationId,
+    operation: "create-or-observe-pull-request",
+  });
+  pullRequest = { state: "open", url: publication.pullRequest.url };
   checkForStop();
   observed = await observeWorktree();
   checkForStop();
@@ -187,7 +200,7 @@ try {
 }
 
 async function ensureRunnerMirror(): Promise<void> {
-  if (!(await exists(runnerMirror))) {
+  if (!(await exists(`${runnerMirror}/HEAD`))) {
     await mkdir(dirname(runnerMirror), { mode: 0o700, recursive: true });
     await requireCommand(
       "git",
@@ -543,114 +556,6 @@ async function assertVisualAcceptance(evidence: Verification): Promise<void> {
   }
 }
 
-async function pushCandidate(): Promise<void> {
-  await git([
-    "-C",
-    worktreePath,
-    "push",
-    "--set-upstream",
-    "origin",
-    `HEAD:refs/heads/${input.worktree.branch}`,
-  ]);
-}
-
-async function openOrObservePullRequest(headCommit: string): Promise<PullRequest> {
-  let observation = await observePullRequest();
-  if (observation !== undefined && pullRequestObservationMatches(observation, headCommit)) {
-    pullRequest = { state: "open", url: observation.url };
-  }
-  checkForStop();
-  if (observation === undefined) {
-    const created = await requireCommand(
-      "gh",
-      [
-        "pr",
-        "create",
-        "--repo",
-        input.brief.registeredCodebase.repository,
-        "--base",
-        input.brief.registeredCodebase.productionBranch,
-        "--head",
-        input.worktree.branch,
-        "--title",
-        "Match Keeplore table action controls",
-        "--body",
-        "Restricted Keeplore Button Trial. Human Merge required; no deployment was performed.",
-      ],
-      "open the scoped Keeplore pull request",
-    );
-    const createdUrl = created.stdout.trim();
-    const expectedPrefix =
-      `https://github.com/${input.brief.registeredCodebase.repository}/pull/`;
-    if (createdUrl.startsWith(expectedPrefix)) {
-      pullRequest = { state: "open", url: createdUrl };
-    }
-    checkForStop();
-    observation = await observePullRequest();
-    if (observation !== undefined && pullRequestObservationMatches(observation, headCommit)) {
-      pullRequest = { state: "open", url: observation.url };
-    }
-    checkForStop();
-  }
-  if (observation === undefined || !pullRequestObservationMatches(observation, headCommit)) {
-    throw new Error("Keeplore pull request does not match the scoped branch commit");
-  }
-  return { state: "open", url: observation.url };
-}
-
-function pullRequestObservationMatches(
-  observation: {
-    readonly baseRefName: string;
-    readonly headRefName: string;
-    readonly headRefOid: string;
-    readonly state: string;
-  },
-  headCommit: string,
-): boolean {
-  return (
-    observation.state === "OPEN" &&
-    observation.baseRefName === input.brief.registeredCodebase.productionBranch &&
-    observation.headRefName === input.worktree.branch &&
-    observation.headRefOid === headCommit
-  );
-}
-
-async function observePullRequest(): Promise<
-  | {
-      readonly baseRefName: string;
-      readonly headRefName: string;
-      readonly headRefOid: string;
-      readonly state: string;
-      readonly url: string;
-    }
-  | undefined
-> {
-  const result = await runBoundedCommand(
-    "gh",
-    [
-      "pr",
-      "view",
-      input.worktree.branch,
-      "--repo",
-      input.brief.registeredCodebase.repository,
-      "--json",
-      "baseRefName,headRefName,headRefOid,state,url",
-    ],
-    { env: trustedEnvironment() },
-  );
-  if (result.exitCode !== 0) return undefined;
-  return z
-    .object({
-      baseRefName: z.string(),
-      headRefName: z.string(),
-      headRefOid: z.string().regex(/^[0-9a-f]{40}$/u),
-      state: z.string(),
-      url: z.url().startsWith("https://github.com/"),
-    })
-    .strict()
-    .parse(JSON.parse(result.stdout));
-}
-
 async function observeWorktree(): Promise<ObservedWorktree> {
   const [
     branch,
@@ -902,9 +807,6 @@ function verificationEnvironment(verificationPath: string): NodeJS.ProcessEnv {
 function trustedEnvironment(): NodeJS.ProcessEnv {
   return {
     CODEX_HOME: "/var/lib/voice-codex/.codex",
-    GH_PROMPT_DISABLED: "1",
-    GH_CONFIG_DIR: "/var/lib/voice-codex/.config/gh",
-    GIT_TERMINAL_PROMPT: "0",
     HOME: "/var/lib/voice-codex",
     LANG: "C.UTF-8",
     PATH: "/usr/local/bin:/usr/bin:/bin",

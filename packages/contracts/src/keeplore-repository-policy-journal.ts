@@ -58,7 +58,9 @@ export const keeploreBranchBypassAttestationSchema = z
  */
 export const keeploreGitHubAppObservationSchema = z
   .object({
+    appId: z.number().int().positive(),
     application: z.literal("keeplore-production"),
+    installationId: z.number().int().positive(),
     kind: z.literal("github-app"),
     observedAt: timestampSchema,
     observedBy: z.literal("github-app-credentials"),

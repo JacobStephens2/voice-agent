@@ -73,8 +73,9 @@ install -d -o voice-agent-builder -g voice-agent-builder -m 0750 \
 install -d -o voice-codex -g voice-codex -m 0700 \
   /var/lib/voice-codex /var/lib/voice-codex/.codex \
   /var/lib/voice-codex/run /var/lib/voice-codex/tmp
-install -d -o voice-codex -g voice-codex -m 0700 \
-  /var/lib/voice-agent-worktrees/keeplore
+install -d -o voice-codex -g voice-subagent-client -m 0770 \
+  /var/lib/voice-agent-worktrees/keeplore \
+  /var/lib/voice-agent-worktrees/keeplore.git
 install -d -o voice-codex -g voice-subagent-client -m 0750 \
   /var/lib/voice-agent-evidence
 

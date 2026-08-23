@@ -45,7 +45,9 @@ const gitHubApp = (
   overrides: Record<string, unknown> = {},
 ) =>
   JSON.stringify({
+    appId: 123,
     application: "keeplore-production",
+    installationId: 456,
     kind: "github-app",
     observedAt: collectedAt,
     observedBy: "github-app-credentials",

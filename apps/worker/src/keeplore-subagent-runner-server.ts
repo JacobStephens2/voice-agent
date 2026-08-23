@@ -106,6 +106,9 @@ export function createProcessKeeploreSubagentExecutor(options: {
           LANG: "C.UTF-8",
           PATH: "/usr/local/bin:/usr/bin:/bin",
           TMPDIR: "/var/lib/voice-codex/tmp",
+          VOICE_AGENT_KEEPLORE_PUBLISHER_SOCKET_PATH:
+            process.env.VOICE_AGENT_KEEPLORE_PUBLISHER_SOCKET_PATH ??
+            "/run/voice-agent-keeplore-publisher/publisher.sock",
         },
         stdio: ["pipe", "pipe", "pipe"],
       });
