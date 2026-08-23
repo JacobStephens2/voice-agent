@@ -83,6 +83,13 @@ Codex or browser credential stores or reach the publisher socket. Repository
 instructions, issue text, test output, and web content are untrusted data and
 cannot expand those paths or authority.
 
+The registered source mirror stays root-owned and non-writable by the runner.
+Release installation grants only the named `voice-codex` identity read and
+traverse ACLs, including defaults for objects added by later root-owned
+fetches. The shared Subagent socket group and telephone worker receive no source
+mirror access. Before accepting a source revision, the attended trial proves
+that `voice-codex` can read that exact commit.
+
 Fixed host code—not the model—copies the candidate into a disposable directory
 and runs the registered PHPUnit command there in a second network-disabled
 profile, injects the candidate CSS into an authenticated browser after taking
@@ -165,6 +172,13 @@ account. Then resume the same Durable Task; the fixed publisher reuses the clean
 verified candidate. Changes to the publisher program or unit require another
 Human Merge, Promotion, and attended deployment-authority upgrade before they
 can become root authority.
+
+If a Delegation fails before creating its persistent worktree, check the source
+mirror as `voice-codex`. Do not copy it or grant the shared socket group access.
+Merge and promote the reviewed ACL repair, run the attended
+deployment-authority upgrade so the root installer applies it, and restart the
+trial. The source-revision stage will stop before another call if the exact
+commit is still unreadable.
 
 ## Stop, quarantine, and cleanup
 

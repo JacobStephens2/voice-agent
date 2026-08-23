@@ -346,6 +346,12 @@ if [[ ! $KEEPLORE_SOURCE_COMMIT =~ ^[0-9a-f]{40}$ ]] || \
   warn "Choose an exact commit already present in the root-owned Keeplore source mirror."
   exit 1
 fi
+if ! sudo -u voice-codex -g voice-subagent-client /usr/bin/git \
+  --git-dir="$SOURCE_MIRROR" cat-file -e \
+  "$KEEPLORE_SOURCE_COMMIT^{commit}"; then
+  warn "The restricted Subagent cannot read the registered Keeplore source commit."
+  exit 1
+fi
 delegation_environment=$(mktemp)
 printf 'KEEPLORE_SOURCE_COMMIT=%s\n' "$KEEPLORE_SOURCE_COMMIT" \
   > "$delegation_environment"
