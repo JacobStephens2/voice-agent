@@ -123,6 +123,9 @@ test("the Agent Host narrowly enables Bubblewrap user namespaces for Codex", asy
   expect(promotion).not.toContain("apparmor_parser -r");
   expect(health).toContain("/sys/kernel/security/apparmor/profiles");
   expect(health).toContain("permissions.voice-agent-health.network.enabled=false");
+  expect(health).toContain("Bubblewrap AppArmor profile is not enforcing");
+  expect(health).toContain("Offline Codex sandbox health probe failed");
+  expect(promotion).toContain("Final failed health probe follows");
   expect(trial).toContain("The Bubblewrap AppArmor profile is unavailable");
   expect(trial).toContain("$GITHUB_LOGIN == JacobStephens2");
   expect(trial).toContain('"repos/$KEEPLORE_REPOSITORY" --jq .permissions.push');
