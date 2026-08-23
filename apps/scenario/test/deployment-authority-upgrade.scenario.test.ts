@@ -119,6 +119,21 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
     readFile(
       join(
         fixture.authority,
+        "systemd/voice-agent-keeplore-publisher.service",
+      ),
+      "utf8",
+    ),
+  ).resolves.toContain("voice-agent-keeplore-publisher.service");
+  await expect(
+    readFile(
+      join(fixture.authority, "keeplore-github-app-publisher.ts"),
+      "utf8",
+    ),
+  ).resolves.toBe("export {};\n");
+  await expect(
+    readFile(
+      join(
+        fixture.authority,
         "apparmor/bwrap-userns-restrict",
       ),
       "utf8",
@@ -611,6 +626,10 @@ await writeFile(outputPath ?? "", await readFile(registryPath ?? "", "utf8"));
 process.stdout.write("{}\\n");
 `,
   );
+  await writeFile(
+    join(releaseScripts, "keeplore-github-app-publisher.ts"),
+    "export {};\n",
+  );
   await symlink(release, join(root, "opt/voice-agent/current"));
   await writeFile(
     join(promotionState, "state.tsv"),
@@ -703,6 +722,7 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     "voice-agent-probes.timer",
     "voice-agent-promotion-resume.path",
     "voice-agent-promotion-resume.service",
+    "voice-agent-keeplore-publisher.service",
     "voice-agent-subagent.service",
     "voice-agent-worker.service",
   ];

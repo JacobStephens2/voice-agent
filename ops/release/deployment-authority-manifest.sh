@@ -21,6 +21,7 @@ voice_agent_authority_scripts=(
 voice_agent_authority_units=(
   voice-agent-api.service
   voice-agent-worker.service
+  voice-agent-keeplore-publisher.service
   voice-agent-subagent.service
   voice-agent-broker.service
   voice-agent-probes.service
@@ -35,6 +36,7 @@ voice_agent_authority_apparmor_profiles=(
 
 voice_agent_authority_programs=(
   "ops/release/deployment-authority-authorization-verifier.mjs:deployment-authority-authorization-verifier.mjs"
+  "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts"
 )
 
 voice_agent_authority_extras=(

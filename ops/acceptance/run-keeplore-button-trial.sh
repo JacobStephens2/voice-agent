@@ -188,8 +188,7 @@ TOTAL_STAGES=4
 CODEX=/usr/bin/codex
 CODEX_HOME=/var/lib/voice-codex/.codex
 CODEX_BROWSER_STATE=/var/lib/voice-codex/browser/keeplore.json
-GH_CONFIG_DIR=/var/lib/voice-codex/.config/gh
-KEEPLORE_REPOSITORY=JacobStephens2/keeplore
+PUBLISHER_SOCKET=/run/voice-agent-keeplore-publisher/publisher.sock
 
 if [[ ! -e /opt/voice-agent/current ]]; then
   warn "Run this wizard on the Agent Host after promoting the reviewed Voice Agent release."
@@ -209,24 +208,22 @@ banner "Restricted Codex Keeplore Button Trial"
 stage "Verify the restricted Subagent boundary"
 say "The reviewed release owns provisioning; this stage verifies it without broadening authority."
 sudo systemctl is-active --quiet voice-agent-subagent.service
+sudo systemctl is-active --quiet voice-agent-keeplore-publisher.service
 id voice-codex >/dev/null
 getent group voice-subagent-client >/dev/null
 sudo test "$(sudo stat -c %U /var/lib/voice-codex)" = voice-codex
 sudo test "$(sudo stat -c %a /var/lib/voice-codex)" = 700
 sudo test "$(sudo stat -c %U /var/lib/voice-agent-worktrees/keeplore)" = voice-codex
-sudo systemd-analyze security voice-agent-subagent.service --no-pager || true
-step "Confirm the unit has no sudo capabilities, Docker socket, production directory, production secret source, or Operations Broker access."
+sudo systemd-analyze security voice-agent-subagent.service \
+  voice-agent-keeplore-publisher.service --no-pager || true
+step "Confirm the Subagent has no sudo capabilities, Docker socket, production directory, production secret source, or Operations Broker access, and that only the pinned publisher holds App publication authority."
 pause "Review the boundary report, then press Enter."
 
-stage "Enroll the separate Codex and GitHub identities"
-say "These credentials belong only to voice-codex. Existing credentials from your own Unix account are never copied."
-note "The Codex model permission profile cannot read the GitHub or browser stores; fixed runner code brokers only the registered push, pull request, and visual checks."
+stage "Enroll Codex and verify App publication"
+say "Only the eligible Codex subscription belongs to voice-codex. GitHub publication uses the reviewed root-owned Keeplore App without a user login."
+note "The model permission profile cannot read the Codex or browser stores or reach the typed publisher socket."
 if ! sudo test -x "$CODEX"; then
   warn "The reviewed Codex CLI is unavailable at $CODEX."
-  exit 1
-fi
-if ! sudo test -x /usr/bin/gh; then
-  warn "The GitHub CLI is unavailable at /usr/bin/gh."
   exit 1
 fi
 if ! sudo test "$(sudo cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" = 1 || \
@@ -247,62 +244,31 @@ if ! sudo -u voice-codex env -i \
     PATH=/usr/local/bin:/usr/bin:/bin \
     "$CODEX" login --device-auth
 fi
-sudo install -d -o voice-codex -g voice-codex -m 0700 \
-  /var/lib/voice-codex/.config "$GH_CONFIG_DIR"
+if sudo test -e /var/lib/voice-codex/.config/gh/hosts.yml; then
+  confirm "Remove the obsolete dedicated-user GitHub login from voice-codex?" || exit 1
+  sudo rm -f -- /var/lib/voice-codex/.config/gh/hosts.yml
+fi
+sudo test ! -e /var/lib/voice-codex/.config/gh/hosts.yml
+sudo test "$(sudo stat -c %U /etc/voice-agent/keeplore-github-app.conf)" = root
+sudo test "$(sudo stat -c %U /etc/voice-agent/keeplore-github-app-private-key.pem)" = root
+sudo -u voice-codex test ! -r /etc/voice-agent/keeplore-github-app-private-key.pem
+sudo systemctl start keeplore-repository-policy.service
+sudo -u voice-codex -g voice-subagent-client /usr/bin/curl \
+  --fail --silent --show-error --max-time 5 \
+  --unix-socket "$PUBLISHER_SOCKET" http://localhost/healthz >/dev/null
+say "Proving the installed Codex supports the custom permission profile and that model commands cannot read the subscription credential or reach publication authority."
 if ! sudo -u voice-codex env -i \
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
-  PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/bin/gh auth status --hostname github.com >/dev/null 2>&1; then
-  step "Use a dedicated GitHub user that can write only $KEEPLORE_REPOSITORY, cannot bypass main protection, and has no access to unrelated repositories."
-  sudo -u voice-codex env -i \
-    GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
-    PATH=/usr/local/bin:/usr/bin:/bin \
-    /usr/bin/gh auth login --hostname github.com --git-protocol https --web
-fi
-GITHUB_LOGIN=$(sudo -u voice-codex env -i \
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
-  PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/bin/gh api user --jq .login)
-if [[ $GITHUB_LOGIN == JacobStephens2 ]]; then
-  warn "The enrolled GitHub identity is the owner account, not a dedicated Keeplore-only user."
-  step "Remove it with: sudo -u voice-codex env -i GH_CONFIG_DIR=$GH_CONFIG_DIR HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin /usr/bin/gh auth logout --hostname github.com"
-  exit 1
-fi
-note "Enrolled GitHub identity: $GITHUB_LOGIN"
-confirm "Is $GITHUB_LOGIN the dedicated user with write access only to $KEEPLORE_REPOSITORY and no main-protection bypass?" || {
-  warn "Remove the rejected identity from the voice-codex GitHub store before rerunning this trial."
-  exit 1
-}
-if [[ $(sudo -u voice-codex env -i \
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
-  PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/bin/gh api "repos/$KEEPLORE_REPOSITORY" --jq .permissions.push) != true ]]; then
-  warn "$GITHUB_LOGIN does not have write access to $KEEPLORE_REPOSITORY."
-  exit 1
-fi
-sudo -u voice-codex env -i \
-  GH_CONFIG_DIR="$GH_CONFIG_DIR" HOME=/var/lib/voice-codex \
-  PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/bin/gh auth setup-git
-sudo -u voice-codex env -i HOME=/var/lib/voice-codex \
-  PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/bin/git config --global user.name "Voice Agent Restricted Codex"
-sudo -u voice-codex env -i HOME=/var/lib/voice-codex \
-  PATH=/usr/local/bin:/usr/bin:/bin \
-  /usr/bin/git config --global user.email \
-  "voice-codex@users.noreply.github.com"
-say "Proving the installed Codex supports the custom permission profile and that model commands cannot read either enrolled credential store."
-if ! sudo -u voice-codex env -i \
-  CODEX_HOME="$CODEX_HOME" GH_CONFIG_DIR="$GH_CONFIG_DIR" \
+  CODEX_HOME="$CODEX_HOME" PUBLISHER_SOCKET="$PUBLISHER_SOCKET" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-enrollment-check \
   --cd "$RELEASE_ROOT" \
   --config 'permissions.keeplore-enrollment-check.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
   --config permissions.keeplore-enrollment-check.network.enabled=false -- \
-  /bin/sh -c 'test ! -r "$CODEX_HOME/auth.json" && test ! -r "$GH_CONFIG_DIR/hosts.yml"'; then
+  /bin/sh -c 'test ! -r "$CODEX_HOME/auth.json" && test ! -S "$PUBLISHER_SOCKET"'; then
   warn "The reviewed Codex enrollment sandbox failed its credential-isolation proof."
   exit 1
 fi
+note "The publisher will refuse stale App assessment or owner bypass attestation. If publication is refused, refresh repository-policy collection and record a new owner attestation before retrying."
 
 stage "Enroll the authenticated Keeplore browser session"
 say "The visual check uses its own Keeplore session state; it receives no server, database, SSH, or deployment credential."
@@ -355,7 +321,8 @@ printf 'KEEPLORE_SOURCE_COMMIT=%s\n' "$KEEPLORE_SOURCE_COMMIT" \
 sudo install -o root -g root -m 0644 "$delegation_environment" \
   /etc/voice-agent/keeplore-delegation.env
 rm -f -- "$delegation_environment"
-sudo systemctl restart voice-agent-subagent.service voice-agent-worker.service
+sudo systemctl restart voice-agent-keeplore-publisher.service \
+  voice-agent-subagent.service voice-agent-worker.service
 step "Call the registered Voice Agent telephone and say: Make the Get Rid Of button match Remove in Keeplore's table view."
 step "Confirm only after the exact readback names Keeplore production, table-only scope, visual measurements, and unchanged card view."
 step "Say Stop at any point to preserve completed commits and unfinished work without reset, stash, or deletion."

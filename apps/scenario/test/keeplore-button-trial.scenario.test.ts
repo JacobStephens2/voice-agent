@@ -97,8 +97,7 @@ test("an authenticated confirmed Keeplore Button Trial produces a bounded verifi
       "delegated-worktree.write",
       "verification.run",
       "authenticated-browser.verify",
-      "non-production-branch.push",
-      "pull-request.write",
+      "verified-candidate.publish",
     ],
     delegationId: "delegation-button-trial",
     durableTask: {

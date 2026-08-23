@@ -16,12 +16,20 @@ release="/opt/voice-agent/releases/$commit"
 unit_definitions=(
   voice-agent-api.service
   voice-agent-worker.service
+  voice-agent-keeplore-publisher.service
   voice-agent-subagent.service
   voice-agent-broker.service
   voice-agent-probes.service
   voice-agent-probes.timer
 )
 runtime_units=(
+  voice-agent-api.service
+  voice-agent-worker.service
+  voice-agent-keeplore-publisher.service
+  voice-agent-subagent.service
+  voice-agent-broker.service
+)
+legacy_runtime_units=(
   voice-agent-api.service
   voice-agent-worker.service
   voice-agent-subagent.service
@@ -77,7 +85,12 @@ rollback_failed_promotion() {
   if [[ $switched == true && -n $previous && -d $previous ]]; then
     ln -sfn "$previous" "$candidate"
     mv -Tf "$candidate" /opt/voice-agent/current
-    systemctl restart "${runtime_units[@]}"
+    if systemctl cat voice-agent-keeplore-publisher.service >/dev/null 2>&1; then
+      systemctl restart voice-agent-keeplore-publisher.service
+    else
+      systemctl stop voice-agent-keeplore-publisher.service || true
+    fi
+    systemctl restart "${legacy_runtime_units[@]}"
     if systemctl cat voice-agent-probes.timer >/dev/null 2>&1; then
       systemctl restart voice-agent-probes.timer
       systemctl start voice-agent-probes.service
@@ -163,7 +176,8 @@ candidate=/opt/voice-agent/.current-candidate
 ln -sfn "$release" "$candidate"
 mv -Tf "$candidate" /opt/voice-agent/current
 switched=true
-systemctl restart voice-agent-broker.service voice-agent-subagent.service \
+systemctl restart voice-agent-broker.service \
+  voice-agent-keeplore-publisher.service voice-agent-subagent.service \
   voice-agent-api.service voice-agent-worker.service
 systemctl restart voice-agent-probes.timer
 systemctl start voice-agent-probes.service

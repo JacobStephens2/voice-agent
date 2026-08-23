@@ -59,9 +59,9 @@ if [[ $(stat -c %U "$keeplore_github_app_configuration") != root ]]; then
   printf 'GitHub App source configuration is not root-owned.\n' >&2
   exit 1
 fi
-installation_id=$(awk -F'\t' 'NR == 1 { print $2 }' \
-  "$keeplore_github_app_configuration")
-if [[ ! $installation_id =~ ^[0-9]+$ ]]; then
+IFS=$'\t' read -r application_id installation_id \
+  < "$keeplore_github_app_configuration"
+if [[ ! $application_id =~ ^[0-9]+$ || ! $installation_id =~ ^[0-9]+$ ]]; then
   printf 'GitHub App source configuration names no installation.\n' >&2
   exit 1
 fi
@@ -72,12 +72,18 @@ repositories=$(keeplore_github_api 'installation/repositories?per_page=20' \
   | jq -c '[.repositories[]?.full_name] | .[0:20]')
 
 jq -cn \
+  --argjson appId "$application_id" \
+  --arg appSlug "$(jq -er '.app_slug' <<<"$installation")" \
+  --argjson installationId "$installation_id" \
   --arg observedAt "$observed_at" \
   --argjson permissions "$(jq -c '.permissions' <<<"$installation")" \
   --argjson repositories "$repositories" \
   --arg repositorySelection "$(jq -r '.repository_selection' <<<"$installation")" \
   '{
+    appId: $appId,
+    appSlug: $appSlug,
     application: "keeplore-production",
+    installationId: $installationId,
     kind: "github-app",
     observedAt: $observedAt,
     observedBy: "github-app-credentials",

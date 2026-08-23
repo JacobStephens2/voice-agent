@@ -28,6 +28,7 @@ git_repository=(git -c protocol.allow=never -c protocol.https.allow=always \
 source_remote="https://github.com/$keeplore_repository.git"
 release_token=$(keeplore_github_token)
 GIT_TERMINAL_PROMPT=0 GITHUB_APP_INSTALLATION_TOKEN="$release_token" \
+  GITHUB_APP_EXPECTED_PATH=JacobStephens2/keeplore.git \
   "${git_repository[@]}" \
   -c credential.helper= \
   -c credential.helper="$script_directory/../release/git-credential-github-app.sh" \

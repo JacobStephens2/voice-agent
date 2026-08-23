@@ -42,7 +42,7 @@ The selected modular voice pipeline begins with AssemblyAI speech-to-text, an Op
 - Code and operations are limited to explicitly Registered Codebases.
 - Authority expansion, policy changes, and sensitive debugging require a fresh passkey.
 - Subagents work under separate restricted identities in isolated non-production branches and worktrees.
-- A Subagent may push a branch and open a pull request, but it cannot write to `main` or merge its own work.
+- A Subagent may prepare a verified candidate; a typed least-privilege publisher may push only its assigned non-production branch and open its pull request, never write `main` or merge.
 - Every Human Merge triggers a serial, verified Promotion with rollback and a circuit breaker.
 - Unattended changes must be recoverable, scoped, auditable, and automatically verified.
 - Durable Tasks and idempotent Operations remain authoritative across calls, callbacks, PWA sessions, and process restarts.
@@ -120,9 +120,10 @@ the Agent Host:
 ./ops/acceptance/run-keeplore-button-trial.sh
 ```
 
-It verifies the `voice-codex` service boundary, walks the separate Codex,
-GitHub, and authenticated Keeplore browser logins, pins an exact source commit,
-then guides the exact telephone confirmation and structured-result review. See
+It verifies the `voice-codex` service boundary and root-owned typed GitHub App
+publisher, walks the separate Codex and authenticated Keeplore browser logins,
+pins an exact source commit, then guides the exact telephone confirmation and
+structured-result review. No GitHub user login is stored. See
 [`docs/operations/keeplore-button-trial.md`](docs/operations/keeplore-button-trial.md).
 
 When a later reviewed Release changes root-pinned promotion scripts or systemd

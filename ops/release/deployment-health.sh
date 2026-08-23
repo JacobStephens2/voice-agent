@@ -4,7 +4,8 @@ exec 8>&-
 exec 9>&-
 
 for unit in voice-agent-api.service voice-agent-worker.service \
-  voice-agent-subagent.service voice-agent-broker.service; do
+  voice-agent-keeplore-publisher.service voice-agent-subagent.service \
+  voice-agent-broker.service; do
   systemctl is-active --quiet "$unit"
 done
 systemctl is-active --quiet voice-agent-promotion-resume.path
@@ -46,6 +47,11 @@ fi
 test -f /opt/voice-agent/current/apps/pwa/dist/index.html
 test -S /run/voice-agent-broker/broker.sock
 test -S /run/voice-agent-subagent/runner.sock
+test -S /run/voice-agent-keeplore-publisher/publisher.sock
+runuser --user voice-codex --group voice-subagent-client -- /usr/bin/curl \
+  --fail --silent --show-error --max-time 5 \
+  --unix-socket /run/voice-agent-keeplore-publisher/publisher.sock \
+  http://localhost/healthz >/dev/null
 curl --fail --silent --show-error --max-time 5 \
   http://127.0.0.1:3472/healthz >/dev/null
 worker_environment=$(systemctl show voice-agent-worker.service \
@@ -79,4 +85,4 @@ if (( current_time - probe_modified > 120 )); then
   exit 1
 fi
 
-printf 'Voice Agent API, worker, restricted Subagent, broker, explicit probes, static PWA, and SQLite health checks passed.\n'
+printf 'Voice Agent API, worker, restricted Subagent, typed Keeplore publisher, broker, explicit probes, static PWA, and SQLite health checks passed.\n'
