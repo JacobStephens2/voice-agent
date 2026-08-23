@@ -79,7 +79,7 @@ for (const signal of ["SIGTERM", "SIGUSR1"] as const) {
   });
 }
 
-const input = inputSchema.parse(await readStandardInput());
+const input = inputSchema.parse(JSON.parse(await readStandardInput()));
 const publisher = createUnixSocketKeeploreCandidatePublisher(
   process.env.VOICE_AGENT_KEEPLORE_PUBLISHER_SOCKET_PATH ??
     "/run/voice-agent-keeplore-publisher/publisher.sock",
