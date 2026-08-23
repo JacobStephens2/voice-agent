@@ -185,5 +185,7 @@ if [[ $healthy == true ]]; then
   exit 0
 fi
 
-printf 'Release %s failed health verification.\n' "$commit" >&2
+printf 'Release %s failed health verification. Final failed health probe follows.\n' \
+  "$commit" >&2
+"$script_directory/deployment-health.sh" || true
 exit 1
