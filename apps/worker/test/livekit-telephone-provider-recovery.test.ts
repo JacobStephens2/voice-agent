@@ -1,4 +1,9 @@
-import { APITimeoutError, llm, voice } from "@livekit/agents";
+import {
+  APIStatusError,
+  APITimeoutError,
+  llm,
+  voice,
+} from "@livekit/agents";
 import type { Room } from "@livekit/rtc-node";
 import type { TelephoneConversationEvidenceEvent } from "@voice-agent/contracts";
 import {
@@ -380,6 +385,259 @@ describe("bounded LiveKit telephone provider recovery", () => {
       await tasks.close();
     }
   });
+
+  test("a synthesis fault speaking the Completion Callback confirmation is reported against synthesis", async () => {
+    const pendingRecord = {
+      evidence: [],
+      task: {
+        conclusion: "Bountywell inquiry is pending.",
+        createdAt: "2026-08-24T09:00:00.000Z",
+        id: "task-pending-callback",
+        kind: "bountywell.health.inquiry",
+        question: "Is Bountywell healthy?",
+        status: "pending",
+        updatedAt: "2026-08-24T09:00:00.000Z",
+      },
+    };
+    const session = new RecoverySessionHarness({
+      extraCompletedTurns: [
+        llm.ChatMessage.create({
+          content: "Yes, I confirm.",
+          createdAt: 1_787_000_004_000,
+          id: "recovery-completed-turn-002",
+          role: "user",
+        }),
+      ],
+      failSaysMatching: "call you back",
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    await runLiveKitTelephoneSession(
+      {
+        ...sessionOptions({
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks: {
+            async appendTelephoneEvidence() {
+              return pendingRecord;
+            },
+            async submitTelephoneBountywellHealthInquiry() {
+              return pendingRecord;
+            },
+          } as unknown as ReturnType<typeof createDurableTaskRuntime>,
+          telephoneSessionId: "telephone-session-callback-tts",
+        }),
+        endCall: async () => undefined,
+        async requestCompletionCallback() {
+          return { text: "I will call you back once the work is done." };
+        },
+      },
+      dependencies,
+    );
+
+    // The Completion Callback was requested and only its confirmation failed
+    // to play, which is the synthesis provider's fault and not the agent's.
+    expect(logProviderFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: {
+          message: "Speech synthesis timed out",
+          name: "APITimeoutError",
+        },
+        provider: "inworld",
+        stage: "tts",
+      }),
+    );
+  });
+
+  test("a synthesis fault playing the repeat prompt is reported against synthesis", async () => {
+    const tasks = await createTasks("retry-prompt-tts");
+    const session = new RecoverySessionHarness({
+      failSaysMatching: "Please say that again",
+      transcriptionTimeout: true,
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 26,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-retry-prompt-tts",
+          }),
+          endCall: async () => undefined,
+        },
+        dependencies,
+      );
+
+      // The recognition retry is what was running, but speech is what failed.
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: {
+            message: "Speech synthesis timed out",
+            name: "APITimeoutError",
+          },
+          provider: "inworld",
+          stage: "tts",
+        }),
+      );
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a fault after the answer is spoken is attributed to the Voice Agent, not the interpretation provider", async () => {
+    const tasks = await createTasks("agent-stage");
+    const session = new RecoverySessionHarness();
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const endCall = vi.fn(async () => undefined);
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 22,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+    const options = sessionOptions({
+      evidence,
+      recordProviderFailure,
+      session,
+      tasks,
+      telephoneSessionId: "telephone-session-agent-stage",
+    });
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...options,
+          endCall,
+          sessionEvidence: {
+            async append(event) {
+              // The reported symptom: the caller hears the whole answer, and
+              // the line drops while the work after it is being recorded.
+              if (
+                event.kind === "telephone.provider.timing" &&
+                "stage" in event.details &&
+                event.details.stage === "tts"
+              ) {
+                throw new Error("evidence append failed");
+              }
+              await options.sessionEvidence.append(event);
+            },
+          },
+        },
+        dependencies,
+      );
+
+      expect(session.spokenTexts[0]).toContain("Bountywell's API is healthy.");
+      expect(recordProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: "agent" }),
+      );
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: { message: "evidence append failed", name: "Error" },
+          provider: "voice-agent",
+          stage: "agent",
+        }),
+      );
+      expect(endCall).toHaveBeenCalledTimes(1);
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("an interpretation provider failure is still reported against the interpretation stage", async () => {
+    const tasks = await createTasks("coordinator-stage");
+    const session = new RecoverySessionHarness();
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret(): Promise<never> {
+          throw new APIStatusError({
+            message: "unreadable: cancel the Bountywell drill",
+            options: { statusCode: 503 },
+          });
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-coordinator-stage",
+          }),
+          endCall: async () => undefined,
+        },
+        dependencies,
+      );
+
+      // The provider's own message may quote the transcript it was given, so
+      // the operator gets its type and status alone.
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: { name: "APIStatusError", status: 503 },
+          provider: "openai",
+          stage: "coordinator",
+        }),
+      );
+    } finally {
+      await tasks.close();
+    }
+  });
 });
 
 function turnIdentityOf(
@@ -517,6 +775,7 @@ class RecoverySessionHarness {
   readonly spokenTexts: string[] = [];
   readonly #extraCompletedTurns: readonly llm.ChatMessage[];
   readonly #failEverySay: boolean;
+  readonly #failSaysMatching: string | undefined;
   readonly #handlers = new Map<string, (event: never) => void>();
   readonly #transcriptionTimeout: boolean;
 
@@ -524,11 +783,13 @@ class RecoverySessionHarness {
     options: {
       readonly extraCompletedTurns?: readonly llm.ChatMessage[];
       readonly failEverySay?: boolean;
+      readonly failSaysMatching?: string;
       readonly transcriptionTimeout?: boolean;
     } = {},
   ) {
     this.#extraCompletedTurns = options.extraCompletedTurns ?? [];
     this.#failEverySay = options.failEverySay ?? false;
+    this.#failSaysMatching = options.failSaysMatching;
     this.#transcriptionTimeout = options.transcriptionTimeout ?? false;
   }
 
@@ -552,7 +813,11 @@ class RecoverySessionHarness {
       },
       say(text: string) {
         harness.attemptedSays += 1;
-        if (harness.#failEverySay) {
+        if (
+          harness.#failEverySay ||
+          (harness.#failSaysMatching !== undefined &&
+            text.includes(harness.#failSaysMatching))
+        ) {
           throw new APITimeoutError({ message: "Speech synthesis timed out" });
         }
         harness.spokenTexts.push(text);

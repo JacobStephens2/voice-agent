@@ -450,6 +450,7 @@ async function expectPostStartProviderFailure(
   await boundaries.reserveWarmSession(sessionId);
   await boundaries.activateSession(sessionId);
   const session = new PostStartFailureSessionHarness(event);
+  const logProviderFailure = vi.fn();
   const evidence: unknown[] = [];
   const notifications: unknown[] = [];
   const endCall = vi.fn(async () => undefined);
@@ -486,9 +487,22 @@ async function expectPostStartProviderFailure(
             throw new Error("Interpreter must not run after provider failure");
           },
         }),
+        logProviderFailure,
       },
     );
 
+    // The framework reported this fault for a named provider. Recognition and
+    // interpretation are handed the caller's words, so only synthesis — which
+    // sees the agent's own text — keeps the provider's message.
+    expect(logProviderFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error:
+          stage === "tts"
+            ? { message: "secret tts response", name: "Error" }
+            : { name: "Error" },
+        stage,
+      }),
+    );
     expect(endCall).toHaveBeenCalledOnce();
     expect(session.playedFailureFrames).toBeGreaterThan(0);
     expect(evidence).toEqual([

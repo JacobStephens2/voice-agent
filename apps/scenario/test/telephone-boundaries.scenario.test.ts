@@ -450,6 +450,7 @@ describe("Telephone fail-closed boundaries", () => {
         other: 0,
       });
       expect(metrics.providerFailures).toEqual({
+        agent: { timeout: 0, unavailable: 0 },
         coordinator: { timeout: 0, unavailable: 0 },
         setup: { timeout: 0, unavailable: 0 },
         stt: { timeout: 1, unavailable: 0 },

@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
+import { telephoneSpeechProviderStages } from "@voice-agent/contracts";
 import type {
   TelephoneProviderFailureRecovery,
   TelephoneProviderFailureStage,
@@ -30,7 +31,9 @@ import {
 import {
   describeProviderError,
   logProviderFailureToStandardError,
+  ProviderReportedError,
   type ProviderFailureLogger,
+  underlyingProviderError,
 } from "./provider-error-description.ts";
 import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
 import {
@@ -97,7 +100,9 @@ export async function runLiveKitTelephoneSession(
     createInterpreter: () => new LiveKitTelephoneTurnInterpreter(),
   },
 ): Promise<void> {
-  const interpreter = dependencies.createInterpreter();
+  const interpreter = markInterpretationFailures(
+    dependencies.createInterpreter(),
+  );
   const logProviderFailure =
     dependencies.logProviderFailure ?? logProviderFailureToStandardError;
   const coordinator = createTelephoneSessionCoordinator({
@@ -240,7 +245,7 @@ export async function runLiveKitTelephoneSession(
         await performAction(spoken);
         return;
       }
-      if (action.stage === "coordinator") {
+      if (action.stage === "coordinator" || action.stage === "agent") {
         const turn = lastFinalizedTurn;
         const result =
           turn === undefined
@@ -260,16 +265,14 @@ export async function runLiveKitTelephoneSession(
       }
       // Recognition cannot be replayed from here, so the caller is asked to
       // repeat into the same pending state rather than left in silence.
-      await session
-        .say(unrecognizedSpeechPrompt, {
-          addToChatCtx: false,
-          allowInterruptions: true,
-        })
-        .waitForPlayout();
+      await speakMarkedResponse(session, unrecognizedSpeechPrompt, {
+        allowInterruptions: true,
+      });
     } catch (error) {
+      const attributed = attributeTurnPipelineFailure(error, action.stage);
       await recordProviderFailureAndRecover(
-        action.stage,
-        error,
+        attributed.stage,
+        attributed.error,
         action.taskId,
         "terminal",
       );
@@ -343,10 +346,12 @@ export async function runLiveKitTelephoneSession(
     processing = processing
       .then(() =>
         // The LiveKit session itself is unusable, so there is nothing left to
-        // replay: this fault ends the call on its first report.
+        // replay: this fault ends the call on its first report. The framework
+        // named the provider behind it, so its message is that provider's own
+        // however it was raised.
         recordProviderFailureAndRecover(
           stage,
-          providerError.error ?? providerError,
+          new ProviderReportedError(providerError.error ?? providerError),
           options.activeTaskId,
           "terminal",
         ),
@@ -369,9 +374,13 @@ export async function runLiveKitTelephoneSession(
           await performAction(action);
         }
       })
-      .catch((error: unknown) =>
-        recordProviderFailureAndRecover("coordinator", error),
-      );
+      .catch((error: unknown) => {
+        const attributed = attributeTurnPipelineFailure(error, "agent");
+        return recordProviderFailureAndRecover(
+          attributed.stage,
+          attributed.error,
+        );
+      });
   }
 
   function rejectTelephoneInput(error: unknown): void {
@@ -605,11 +614,19 @@ class LiveKitTelephoneTurnInterpreter implements TelephoneTurnInterpreter {
       role: "developer",
     });
     context.addMessage({ content: input.text, role: "user" });
-    const stream = this.#model.chat({
-      chatCtx: context,
-      connOptions: boundedProviderConnectOptions("coordinator"),
-    });
-    const response = await collectWithTimeout(stream, coordinatorTimeoutMs);
+    // Only the model call itself is the provider's, so a fault it raises never
+    // has its message logged; the typed-intent invariant below is ours and is
+    // named in full.
+    let response: string;
+    try {
+      const stream = this.#model.chat({
+        chatCtx: context,
+        connOptions: boundedProviderConnectOptions("coordinator"),
+      });
+      response = await collectWithTimeout(stream, coordinatorTimeoutMs);
+    } catch (error) {
+      throw new ProviderReportedError(error);
+    }
     const intent = response.trim();
     if (
       intent !== "bountywell-health" &&
@@ -692,12 +709,9 @@ async function performConversationAction(
       taskId: action.taskId,
       telephoneSessionId: action.telephoneSessionId,
     });
-    await session
-      .say(result.text, {
-        addToChatCtx: false,
-        allowInterruptions: false,
-      })
-      .waitForPlayout();
+    await speakMarkedResponse(session, result.text, {
+      allowInterruptions: false,
+    });
     await endCallOnce();
     return;
   }
@@ -929,12 +943,93 @@ function stableIdentifier(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 32);
 }
 
+/**
+ * A fault carried out of the stage that raised it.
+ *
+ * The turn pipeline runs the interpretation provider and the Voice Agent's own
+ * coordination behind one catch, so a fault escaping it says nothing about
+ * which of the two failed. Only the provider call is marked, and everything
+ * else is the Voice Agent's own.
+ */
+class TelephoneStageError extends Error {
+  override readonly cause: unknown;
+  readonly stage: TelephoneProviderFailureStage;
+
+  constructor(stage: TelephoneProviderFailureStage, cause: unknown) {
+    super(`Telephone ${stage} stage failed`);
+    this.cause = cause;
+    this.stage = stage;
+  }
+}
+
+/**
+ * Speak one bounded response outside the main answering path.
+ *
+ * Those two responses are played where the surrounding catch is reporting some
+ * other stage, so a synthesis fault is marked as the synthesis provider's
+ * rather than taking the stage of the work that happened to be running.
+ */
+async function speakMarkedResponse(
+  session: voice.AgentSession,
+  text: string,
+  options: { readonly allowInterruptions: boolean },
+): Promise<void> {
+  try {
+    await session
+      .say(text, { addToChatCtx: false, ...options })
+      .waitForPlayout();
+  } catch (error) {
+    throw new TelephoneStageError("tts", error);
+  }
+}
+
+/**
+ * Report the interpretation provider's own faults under the interpretation
+ * stage, wherever in the turn pipeline they surface.
+ */
+function markInterpretationFailures(
+  interpreter: ClosableTelephoneTurnInterpreter,
+): ClosableTelephoneTurnInterpreter {
+  return {
+    close: () => interpreter.close(),
+    async interpret(input) {
+      try {
+        return await interpreter.interpret(input);
+      } catch (error) {
+        throw new TelephoneStageError("coordinator", error);
+      }
+    },
+  };
+}
+
+/**
+ * Name the stage that raised a fault escaping the turn pipeline.
+ *
+ * Attributing every such fault to the interpretation provider is what reported
+ * an evidence write, a timing record, or a broken invariant of ours as an
+ * OpenAI outage.
+ */
+function attributeTurnPipelineFailure(
+  error: unknown,
+  fallbackStage: TelephoneProviderFailureStage,
+): {
+  readonly error: unknown;
+  readonly stage: TelephoneProviderFailureStage;
+} {
+  return error instanceof TelephoneStageError
+    ? { error: error.cause, stage: error.stage }
+    : { error, stage: fallbackStage };
+}
+
 function providerForStage(
   stage: TelephoneProviderFailureStage,
-): "assemblyai" | "inworld" | "livekit" | "openai" {
+): "assemblyai" | "inworld" | "livekit" | "openai" | "voice-agent" {
   if (stage === "stt") return "assemblyai";
   if (stage === "coordinator") return "openai";
   if (stage === "tts") return "inworld";
+  // A fault in the Voice Agent's own turn pipeline has no provider behind it,
+  // and naming one there is what sent three rounds of diagnosis at OpenAI.
+  if (stage === "agent") return "voice-agent";
   return "livekit";
 }
 
@@ -967,7 +1062,8 @@ export function mapProviderFailureEvent(input: {
     stage: input.stage,
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
   };
-  return input.stage !== "setup" && input.error instanceof APITimeoutError
+  return isSpeechStage(input.stage) &&
+    underlyingProviderError(input.error) instanceof APITimeoutError
     ? {
         ...common,
         kind: "provider-timeout",
@@ -978,6 +1074,12 @@ export function mapProviderFailureEvent(input: {
         failure: "unavailable",
         kind: "provider-failure",
       };
+}
+
+function isSpeechStage(
+  stage: TelephoneProviderFailureStage,
+): stage is TelephoneSpeechProviderStage {
+  return (telephoneSpeechProviderStages as readonly string[]).includes(stage);
 }
 
 function providerTimeoutMs(stage: TelephoneSpeechProviderStage): number {

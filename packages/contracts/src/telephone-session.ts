@@ -16,6 +16,9 @@ export type TelephoneSpeechProviderStage =
 export const telephoneProviderFailureStages = [
   ...telephoneSpeechProviderStages,
   "setup",
+  // The Voice Agent's own turn pipeline: a fault raised here is this system's,
+  // not a speech or interpretation provider's.
+  "agent",
 ] as const;
 export type TelephoneProviderFailureStage =
   (typeof telephoneProviderFailureStages)[number];

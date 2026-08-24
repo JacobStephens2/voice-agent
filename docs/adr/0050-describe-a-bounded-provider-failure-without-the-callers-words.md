@@ -4,6 +4,8 @@ An Evidence Record excludes raw provider output, so a Telephone Session that end
 
 A Telephone Session Fault is exempt from that restriction because it is not a provider's account of anything: it is a broken invariant this system raises in fixed text authored here, so its message is logged at every stage, and every site that raises one must keep its message free of a transcript, a spoken response, or a caller identity. The distinction is what lets an operator separate our own fault from a provider outage without placing another call — the failure that prompted this was attributed to the interpretation provider through three rounds of diagnosis while being neither a provider's error nor an invariant that had been marked.
 
+ADR-0052 supersedes the rule for which messages are withheld: a message is now withheld only where the error is a provider's account of what it was given, rather than at every stage whose provider sees the caller's words. The operator log line, its sanitization and truncation, and the Evidence Record's exclusion of the fault's description remain active.
+
 ## Consequences
 
 An ordinary error raised outside the marked set still logs no message at the recognition and interpretation stages. That is the deliberate cost of defaulting to the caller's privacy, and it means a fault escaping an unmarked path stays unnamed until the path is marked or the rule is narrowed to withhold messages only from errors a provider SDK itself raised.
