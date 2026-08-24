@@ -168,6 +168,13 @@ const screenshotSchema = z
   })
   .strict();
 
+export const keeploreDelegationFailureKinds = [
+  "delegation-execution",
+  "model-declined",
+  "restricted-runner",
+  "sandbox-initialization",
+] as const;
+
 export const keeploreDelegationResultSchema = z
   .object({
     branch: z.string().min(1).max(200),
@@ -192,6 +199,15 @@ export const keeploreDelegationResultSchema = z
         sudo: z.literal(false),
       })
       .strict(),
+    failure: z
+      .object({
+        evidencePaths: z.array(absolutePathSchema).max(4),
+        kind: z.enum(keeploreDelegationFailureKinds),
+        message: z.string().min(1).max(300),
+        name: z.string().min(1).max(120),
+      })
+      .strict()
+      .nullable(),
     pullRequest: z
       .discriminatedUnion("state", [
         z.object({ state: z.literal("none"), url: z.null() }).strict(),
@@ -285,6 +301,9 @@ export type KeeploreDelegationBrief = z.infer<
 >;
 export type KeeploreDelegationResult = z.infer<
   typeof keeploreDelegationResultSchema
+>;
+export type KeeploreDelegationFailure = NonNullable<
+  KeeploreDelegationResult["failure"]
 >;
 export type KeeploreDelegationRecord = z.infer<
   typeof keeploreDelegationRecordSchema

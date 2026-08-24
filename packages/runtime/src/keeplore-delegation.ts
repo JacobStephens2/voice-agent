@@ -182,7 +182,10 @@ function quarantinedResult(
   error: unknown,
   completedAt: string,
 ): KeeploreDelegationResult {
-  const risk = error instanceof Error ? error.message : "Invalid Subagent result";
+  const risk =
+    error instanceof Error && error.message !== ""
+      ? error.message
+      : "Invalid Subagent result";
   return keeploreDelegationResultSchema.parse({
     branch: worktree.branch,
     changedFiles: parsedResult?.changedFiles ?? [],
@@ -202,6 +205,14 @@ function quarantinedResult(
       productionSecrets: false,
       providerLogin: "separate-eligible-subscription",
       sudo: false,
+    },
+    // A Subagent that described what ended its own run keeps that account; the
+    // policy rejection replaces it only when the Subagent named nothing.
+    failure: parsedResult?.failure ?? {
+      evidencePaths: [],
+      kind: "delegation-execution",
+      message: risk.slice(0, 300),
+      name: error instanceof Error ? error.constructor.name : typeof error,
     },
     pullRequest: { state: "none", url: null },
     risks: [risk.slice(0, 300)],
@@ -248,6 +259,7 @@ function stoppedBeforeExecutionResult(
       providerLogin: "separate-eligible-subscription",
       sudo: false,
     },
+    failure: null,
     pullRequest: { state: "none", url: null },
     risks: [],
     status: "stopped",

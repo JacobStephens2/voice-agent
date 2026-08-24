@@ -153,10 +153,14 @@ async function collectStructuredResult(
     }
     stdout.push(chunk);
   });
-  // The raw Codex event stream is deliberately discarded. Only its bounded
-  // byte count influences the terminal error exposed to the Voice Agent.
+  // The raw Codex event stream never reaches here: the executor captures the
+  // restricted runner's own output and retains what it keeps as Delegation
+  // evidence. What remains on this stream is the executor's account of its own
+  // run, so it is forwarded, bounded, to the Agent Host journal.
   child.stderr.on("data", (chunk: Buffer) => {
+    const forwardable = stderrBytes + chunk.length <= maximumResultBytes;
     stderrBytes = Math.min(maximumResultBytes + 1, stderrBytes + chunk.length);
+    if (forwardable) process.stderr.write(chunk);
   });
   const exitCode = await new Promise<number | null>((resolve, reject) => {
     child.once("error", reject);

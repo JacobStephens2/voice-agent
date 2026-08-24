@@ -91,6 +91,14 @@ export function validateKeeploreDelegationResult(
   if (result.worktree.baseCommit !== brief.registeredCodebase.sourceCommit) {
     throw new Error("Delegated Worktree does not use the registered revision");
   }
+  for (const path of result.failure?.evidencePaths ?? []) {
+    if (
+      !path.startsWith(`/var/lib/voice-agent-evidence/${brief.delegationId}/`) ||
+      path.split("/").includes("..")
+    ) {
+      throw new Error("Delegation failure evidence escaped its evidence directory");
+    }
+  }
   const editable = new Set<string>(brief.boundedContext.editablePaths);
   if (result.changedFiles.some((path) => !editable.has(path))) {
     throw new Error("Delegation Result changed a path outside the table-only scope");
@@ -103,6 +111,9 @@ export function validateKeeploreDelegationResult(
       throw new Error("Incomplete Delegated Worktrees must be retained or quarantined");
     }
     return;
+  }
+  if (result.failure !== null) {
+    throw new Error("A completed Delegation must not report a failure");
   }
   if (
     result.worktree.dirty ||

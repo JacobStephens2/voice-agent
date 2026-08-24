@@ -17,11 +17,20 @@ import {
   keeploreDelegationBriefSchema,
   keeploreDelegationResultSchema,
   keeploreWorktreeSchema,
+  type KeeploreDelegationFailure,
   type KeeploreDelegationResult,
 } from "@voice-agent/contracts";
 import { z } from "zod";
 
 import { keeploreModelSandboxConfigArguments } from "./keeplore-model-sandbox.ts";
+import {
+  buildRestrictedRunnerEvidence,
+  describeDelegationFailure,
+  logDelegationFailure,
+  RestrictedRunFailure,
+  restrictedRunnerEvidenceFileName,
+  type RestrictedRunnerEvidence,
+} from "./keeplore-restricted-failure.ts";
 import { createUnixSocketKeeploreCandidatePublisher } from "./keeplore-publication-client.ts";
 
 const runnerMirror = "/var/lib/voice-agent-worktrees/keeplore.git";
@@ -101,9 +110,11 @@ if (input.brief.registeredCodebase.verificationCommand !== "vendor/bin/phpunit")
 const runDirectory = `/var/lib/voice-codex/run/${input.brief.delegationId}`;
 const evidenceDirectory =
   `/var/lib/voice-agent-evidence/${input.brief.delegationId}`;
+const modelWorkspaceEvidenceDirectory = `${evidenceDirectory}/model-workspace`;
 let verification = unavailableVerification();
 let pullRequest: PullRequest = { state: "none", url: null };
 let risks: string[] = [];
+const failureEvidencePaths: string[] = [];
 
 try {
   checkForStop();
@@ -122,7 +133,10 @@ try {
     const report = await runCodex();
     risks = [...report.risks];
     if (report.status !== "ready") {
-      throw new Error("Restricted Codex did not prepare a candidate change");
+      throw new RestrictedRunFailure(
+        "model-declined",
+        "Restricted Codex ran and reported no candidate change",
+      );
     }
     checkForStop();
     observed = await observeWorktree();
@@ -175,6 +189,7 @@ try {
   checkForStop();
 
   const completed = resultFromObserved({
+    failure: null,
     observed,
     pullRequest,
     risks,
@@ -185,10 +200,17 @@ try {
 } catch (error) {
   const stopped = error instanceof StopRequestedError || stopRequested;
   const observed = await observeWorktreeSafely();
+  const failure = stopped
+    ? null
+    : describeDelegationFailure(error, failureEvidencePaths);
+  if (failure !== null) {
+    logDelegationFailure({ delegationId: input.brief.delegationId, failure });
+  }
   const reason = stopped
     ? "Execution stopped at a safe command boundary; all work and evidence were retained."
     : "Restricted execution failed; its persistent worktree and evidence were quarantined.";
   const result = resultFromObserved({
+    failure,
     observed,
     pullRequest,
     risks: [...risks, reason],
@@ -361,24 +383,78 @@ async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
     }
     checkForStop();
     if (result.exitCode !== 0) {
-      throw new Error("Restricted Codex ended before preparing a candidate");
+      const evidence = buildRestrictedRunnerEvidence(result);
+      await retainRestrictedRunEvidence(modelWorkspace, evidence);
+      throw new RestrictedRunFailure(
+        evidence.kind,
+        evidence.kind === "sandbox-initialization"
+          ? `Restricted Codex sandbox did not start; the runner exited with code ${result.exitCode ?? "unknown"}`
+          : `Restricted Codex ended before preparing a candidate with code ${result.exitCode ?? "unknown"}`,
+      );
     }
     const report = modelReportSchema.parse(
       JSON.parse(await readFile(resultPath, "utf8")),
     );
-    if (report.status === "ready") {
-      await assertModelReferencesUnchanged(modelWorkspace, referenceBaselines);
-      const candidateCss = await readFile(
-        `${modelWorkspace}/${modelCandidatePath}`,
-        "utf8",
+    if (report.status !== "ready") {
+      // The model ran and declined. Its workspace is the only account of what
+      // it was given, so it is retained beside the runner's own evidence.
+      await retainRestrictedRunEvidence(
+        modelWorkspace,
+        buildRestrictedRunnerEvidence(result, "model-declined"),
       );
-      await assertTableOnlyCandidate(candidateCss);
-      await writeFile(`${worktreePath}/${modelCandidatePath}`, candidateCss);
+      return report;
     }
+    await assertModelReferencesUnchanged(modelWorkspace, referenceBaselines);
+    const candidateCss = await readFile(
+      `${modelWorkspace}/${modelCandidatePath}`,
+      "utf8",
+    );
+    await assertTableOnlyCandidate(candidateCss);
+    await writeFile(`${worktreePath}/${modelCandidatePath}`, candidateCss);
     return report;
+  } catch (error) {
+    if (!(error instanceof StopRequestedError)) {
+      await retainRestrictedRunEvidence(modelWorkspace);
+    }
+    throw error;
   } finally {
     await rm(modelWorkspace, { force: true, recursive: true });
   }
+}
+
+/**
+ * Keep what the restricted run left behind before its workspace is removed.
+ *
+ * The workspace holds only the reference and editable files copied out of the
+ * Delegated Worktree and whatever the sandboxed model wrote beside them, so
+ * retaining it carries no telephone transcript into the evidence directory.
+ * Retention is best effort: a failed run must still return its structured
+ * Delegation Result.
+ */
+async function retainRestrictedRunEvidence(
+  modelWorkspace: string,
+  evidence?: RestrictedRunnerEvidence,
+): Promise<void> {
+  try {
+    await mkdir(evidenceDirectory, { mode: 0o700, recursive: true });
+    if (evidence !== undefined) {
+      const evidencePath = `${evidenceDirectory}/${restrictedRunnerEvidenceFileName}`;
+      await writeFile(evidencePath, JSON.stringify(evidence), { mode: 0o600 });
+      recordFailureEvidence(evidencePath);
+    }
+    await rm(modelWorkspaceEvidenceDirectory, { force: true, recursive: true });
+    await cp(modelWorkspace, modelWorkspaceEvidenceDirectory, {
+      recursive: true,
+    });
+    recordFailureEvidence(modelWorkspaceEvidenceDirectory);
+  } catch {
+    // Retained evidence is diagnostic. Losing it must not replace the failure
+    // that a Delegation Result is about to report.
+  }
+}
+
+function recordFailureEvidence(path: string): void {
+  if (!failureEvidencePaths.includes(path)) failureEvidencePaths.push(path);
 }
 
 async function assertModelReferencesUnchanged(
@@ -725,6 +801,7 @@ function assertScopedCandidate(observed: ObservedWorktree): void {
 }
 
 function resultFromObserved(inputResult: {
+  readonly failure: KeeploreDelegationFailure | null;
   readonly observed: ObservedWorktree;
   readonly pullRequest: PullRequest;
   readonly risks: string[];
@@ -748,6 +825,7 @@ function resultFromObserved(inputResult: {
     completedAt: new Date().toISOString(),
     delegationId: input.brief.delegationId,
     environment: restrictedEnvironment(),
+    failure: inputResult.failure,
     pullRequest: inputResult.pullRequest,
     risks: inputResult.risks.slice(0, 20),
     status: inputResult.status,

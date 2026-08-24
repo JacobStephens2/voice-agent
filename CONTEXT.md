@@ -49,8 +49,12 @@ The structured input to a Subagent containing the goal, Registered Codebase, con
 _Avoid_: Prompt, transcript, handoff message
 
 **Delegation Result**:
-The structured Subagent outcome containing status, verification, risks, and the branch, commits, changed files, and pull-request state for each affected codebase.
+The structured Subagent outcome containing status, verification, risks, the failure that ended a run, and the branch, commits, changed files, and pull-request state for each affected codebase.
 _Avoid_: Final answer, raw agent log
+
+**Restricted Run Evidence**:
+The trusted runner's own account of a failed Delegation, retained under that Delegation's evidence directory: the restricted runner's exit status and bounded standard error, and the model workspace as it stood when the run ended, carrying no voice transcript.
+_Avoid_: Model report, agent transcript, event stream
 
 **Secret Execution Manifest**:
 An authenticated, versioned allowlist describing credentials that may be resolved for one restricted execution path; it controls blast radius but does not conceal injected credentials from the receiving process.
