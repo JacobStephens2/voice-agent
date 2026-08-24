@@ -28,15 +28,9 @@ for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
   cmp -s "$script_directory/apparmor/$profile" "$target_path"
   /usr/sbin/apparmor_parser -Q "$script_directory/apparmor/$profile"
 done
-systemd-analyze verify \
-  "$script_directory/systemd/voice-agent-api.service" \
-  "$script_directory/systemd/voice-agent-worker.service" \
-  "$script_directory/systemd/voice-agent-keeplore-publisher.service" \
-  "$script_directory/systemd/voice-agent-subagent.service" \
-  "$script_directory/systemd/voice-agent-broker.service" \
-  "$script_directory/systemd/voice-agent-probes.service" \
-  "$script_directory/systemd/voice-agent-probes.timer" \
-  "$script_directory/systemd/voice-agent-promotion-resume.path" \
-  "$script_directory/systemd/voice-agent-promotion-resume.service"
+# Every pinned unit definition is verified, so preflight coverage widens with
+# the manifest instead of drifting behind it.
+pinned_unit_paths=("${voice_agent_authority_units[@]/#/$script_directory/systemd/}")
+systemd-analyze verify "${pinned_unit_paths[@]}"
 
 printf 'Candidate Release %s passed static and systemd preflight.\n' "$commit"

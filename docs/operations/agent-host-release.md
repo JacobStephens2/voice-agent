@@ -249,7 +249,11 @@ pins reviewed orchestration and service definitions under root-owned
 copies. Repository install/build hooks run as the isolated
 `voice-agent-builder` user with an empty environment. A candidate supplies the
 unprivileged application files, while the pinned preflight and pinned systemd
-definitions retain the root/service boundary. Updating that pinned deployment
+definitions retain the root/service boundary. Every Promotion installs every
+unit definition the manifest pins, so the definitions active under
+`/etc/systemd/system` are the pinned set rather than a narrower copy of it; a
+reviewed unit change therefore takes effect once the attended upgrade pins it
+and the Release is re-promoted. Updating that pinned deployment
 authority uses the separate attended wizard above; it is never a consequence
 of a Human Merge alone. Root Git operations use only a root-owned bare mirror
 under
