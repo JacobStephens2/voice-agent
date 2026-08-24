@@ -13,15 +13,13 @@ fi
 
 commit=$1
 release="/opt/voice-agent/releases/$commit"
-unit_definitions=(
-  voice-agent-api.service
-  voice-agent-worker.service
-  voice-agent-keeplore-publisher.service
-  voice-agent-subagent.service
-  voice-agent-broker.service
-  voice-agent-probes.service
-  voice-agent-probes.timer
-)
+script_directory=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=deployment-authority-manifest.sh
+source "$script_directory/deployment-authority-manifest.sh"
+# The installed set is the pinned set. A narrower list here would strand a
+# reviewed unit change in the pinned authority: promoted, pinned, and never
+# delivered to /etc/systemd/system.
+unit_definitions=("${voice_agent_authority_units[@]}")
 runtime_units=(
   voice-agent-api.service
   voice-agent-worker.service
@@ -36,6 +34,12 @@ legacy_runtime_units=(
   voice-agent-broker.service
 )
 enabled_units=("${runtime_units[@]}" voice-agent-probes.timer)
+# A first installation that never had a previous Release is stopped through the
+# Release's own units. The Promotion resume path is recovery machinery and is
+# left running so a Fresh Passkey Action can still reach the queue.
+installation_units=(
+  "${runtime_units[@]}" voice-agent-probes.service voice-agent-probes.timer
+)
 if [[ ! -f "$release/.voice-agent-release" ]] || \
   [[ $(<"$release/.voice-agent-release") != "$commit" ]]; then
   printf 'Immutable release %s is unavailable.\n' "$commit" >&2
@@ -43,7 +47,6 @@ if [[ ! -f "$release/.voice-agent-release" ]] || \
 fi
 exec 9>/run/voice-agent-promotion.lock
 flock -x 9
-script_directory=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=promotion-state.sh
 source "$script_directory/promotion-state.sh"
 promotion_state_initialize
@@ -108,7 +111,7 @@ rollback_failed_promotion() {
       "$(basename "$previous")" >&2
   elif [[ $switched == true ]]; then
     rm -f -- /opt/voice-agent/current
-    systemctl stop "${unit_definitions[@]}" || true
+    systemctl stop "${installation_units[@]}" || true
     printf 'No previous release existed; stopped the failed first installation.\n' >&2
   fi
 }

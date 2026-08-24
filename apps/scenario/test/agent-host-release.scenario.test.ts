@@ -358,7 +358,7 @@ test("the Agent Host release preserves its private ports and service boundaries"
     promotion.lastIndexOf("mv -Tf \"$candidate\" /opt/voice-agent/current"),
   );
   expect(preflight).toContain("systemd-analyze verify");
-  expect(preflight).toContain("voice-agent-subagent.service");
+  expect(preflight).toContain("voice_agent_authority_units");
   expect(health).toContain("/run/voice-agent-subagent/runner.sock");
   expect(health).toContain("/run/voice-agent-keeplore-publisher/publisher.sock");
 });
@@ -438,7 +438,8 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
   expect(apiServer).toContain("VOICE_AGENT_APPLICATION_PROBE_METRICS_PATH");
   expect(apiUnit).toContain("/var/lib/voice-agent-probes/probes.prom");
   expect(health).toContain("voice_agent_monitoring_same_host 1");
-  expect(preflight).toContain("voice-agent-probes.service");
+  expect(authorityManifest).toContain("voice-agent-probes.service");
+  expect(preflight).toContain("voice_agent_authority_units");
   expect(promotion).toContain("voice-agent-probes.timer");
   expect(setup).toContain("install-grafana-dashboard.sh");
   expect(setup).toContain("voice_agent_authority_units");
