@@ -1,4 +1,5 @@
 import { APITimeoutError } from "@livekit/agents";
+import { TelephoneSessionFault } from "@voice-agent/runtime";
 import { describe, expect, test } from "vitest";
 
 import { describeProviderError } from "../src/provider-error-description.ts";
@@ -55,6 +56,31 @@ describe("sanitized provider error description", () => {
     expect(
       describeProviderError(new Error("room join refused"), "setup"),
     ).toStrictEqual({ message: "room join refused", name: "Error" });
+  });
+
+  test("a fault this codebase raised keeps its message at every stage", () => {
+    // These messages are fixed strings written here, so no stage can leak a
+    // caller's words through one.
+    expect(
+      describeProviderError(
+        new TelephoneSessionFault(
+          "Telephone coordinator returned an invalid typed intent",
+        ),
+        "coordinator",
+      ),
+    ).toStrictEqual({
+      message: "Telephone coordinator returned an invalid typed intent",
+      name: "TelephoneSessionFault",
+    });
+    expect(
+      describeProviderError(
+        new TelephoneSessionFault("Completed telephone turn identity is unavailable"),
+        "stt",
+      ),
+    ).toStrictEqual({
+      message: "Completed telephone turn identity is unavailable",
+      name: "TelephoneSessionFault",
+    });
   });
 
   test("a long message is truncated rather than logged whole", () => {

@@ -2,6 +2,7 @@ import type {
   TelephoneProviderFailureRecovery,
   TelephoneProviderFailureStage,
 } from "@voice-agent/contracts";
+import { TelephoneSessionFault } from "@voice-agent/runtime";
 
 const maximumMessageLength = 200;
 
@@ -24,12 +25,15 @@ export interface ProviderErrorDescription {
 /**
  * Describe a provider error without carrying caller content into the log.
  *
- * The message is kept only for the stages whose provider never receives the
- * caller's words. Recognition is given the caller's audio and may quote the
- * transcript back in its error; interpretation is given that transcript in its
- * prompt and may echo it the same way. Synthesis and session setup see only
- * the agent's own text, which is already recorded as evidence, so their
- * messages are the ones worth keeping.
+ * A provider's message is kept only for the stages whose provider never
+ * receives the caller's words. Recognition is given the caller's audio and may
+ * quote the transcript back in its error; interpretation is given that
+ * transcript in its prompt and may echo it the same way. Synthesis and session
+ * setup see only the agent's own text, which is already recorded as evidence,
+ * so their messages are the ones worth keeping.
+ *
+ * A [TelephoneSessionFault] is this codebase describing its own broken
+ * invariant in a fixed string, so its message is kept at every stage.
  */
 export function describeProviderError(
   error: unknown,
@@ -41,9 +45,10 @@ export function describeProviderError(
   const carrier = error as unknown as Record<string, unknown>;
   const code = typeof carrier.code === "string" ? carrier.code : undefined;
   const status = typeof carrier.status === "number" ? carrier.status : undefined;
-  const message = stageSeesCallerSpeech(stage)
-    ? undefined
-    : sanitizeMessage(error.message);
+  const message =
+    error instanceof TelephoneSessionFault || !stageSeesCallerSpeech(stage)
+      ? sanitizeMessage(error.message)
+      : undefined;
   return {
     ...(code === undefined ? {} : { code }),
     ...(message === undefined ? {} : { message }),

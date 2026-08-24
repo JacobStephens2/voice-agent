@@ -1,7 +1,10 @@
 import { APITimeoutError, llm, voice } from "@livekit/agents";
 import type { Room } from "@livekit/rtc-node";
 import type { TelephoneConversationEvidenceEvent } from "@voice-agent/contracts";
-import { createDurableTaskRuntime } from "@voice-agent/runtime";
+import {
+  createDurableTaskRuntime,
+  TelephoneSessionFault,
+} from "@voice-agent/runtime";
 import { createSqliteDurableTaskStore } from "@voice-agent/sqlite-store";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -207,6 +210,63 @@ describe("bounded LiveKit telephone provider recovery", () => {
     ).toHaveLength(1);
     expect(session.failurePlaybacks).toBe(1);
     expect(endCall).toHaveBeenCalledTimes(1);
+  });
+
+  test("an interpretation fault this codebase raised is logged with its message", async () => {
+    const tasks = await createTasks("coordinator-fault-logged");
+    const session = new RecoverySessionHarness();
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    let attempts = 0;
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new TelephoneSessionFault(
+              "Telephone coordinator returned an invalid typed intent",
+            );
+          }
+          return {
+            durationMs: 18,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        sessionOptions({
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks,
+          telephoneSessionId: "telephone-session-coordinator-fault",
+        }),
+        dependencies,
+      );
+
+      // Interpretation is handed the caller's transcript, so a provider error
+      // there logs its type alone. This message is our own fixed string, and
+      // withholding it is what left the fault undiagnosable.
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: {
+            message: "Telephone coordinator returned an invalid typed intent",
+            name: "TelephoneSessionFault",
+          },
+          stage: "coordinator",
+        }),
+      );
+    } finally {
+      await tasks.close();
+    }
   });
 
   test("a speech failure that ends the call is logged with a sanitized description", async () => {

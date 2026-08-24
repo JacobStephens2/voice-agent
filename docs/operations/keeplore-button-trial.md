@@ -203,11 +203,16 @@ sudo journalctl -u voice-agent-worker.service \
 ```
 
 The description carries the error's type, and its status or code when the
-provider supplies one. It carries the provider's message only for the speech
+provider supplies one. It carries a *provider's* message only for the speech
 synthesis and session setup stages, whose providers never receive the caller's
-words. Recognition and interpretation errors may quote the transcript, so those
-stages log their type alone. The durable Evidence Record is unchanged by this
-line and still carries no provider text.
+words. Recognition and interpretation errors may quote the transcript, so a
+provider error at those stages logs its type alone.
+
+A `TelephoneSessionFault` is different: it is this codebase reporting its own
+broken invariant in a fixed string, so its message is logged at every stage.
+Seeing one means the fault is ours, not the provider's, whatever the `provider`
+field says. The durable Evidence Record is unchanged by this line and still
+carries no provider text.
 
 The matching Telephone Session records `provider-failure` as its end reason;
 `disconnected`, `completed`, `maximum-duration`, and `prolonged-silence` are

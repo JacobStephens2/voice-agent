@@ -24,6 +24,7 @@ import {
   type KeeploreDelegationRuntime,
   type TelephoneSessionEvidenceSink,
   type TelephoneTurnInterpreter,
+  TelephoneSessionFault,
 } from "@voice-agent/runtime";
 
 import {
@@ -616,7 +617,7 @@ class LiveKitTelephoneTurnInterpreter implements TelephoneTurnInterpreter {
       intent !== "stop" &&
       intent !== "unrelated"
     ) {
-      throw new Error("Telephone coordinator returned an invalid typed intent");
+      throw new TelephoneSessionFault("Telephone coordinator returned an invalid typed intent");
     }
     return {
       durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
@@ -684,7 +685,7 @@ async function performConversationAction(
   }
   if (action.kind === "request-completion-callback-and-disconnect") {
     if (requestCompletionCallback === undefined) {
-      throw new Error("Completion Callback control is unavailable");
+      throw new TelephoneSessionFault("Completion Callback control is unavailable");
     }
     const result = await requestCompletionCallback({
       requestId: action.requestId,
@@ -760,7 +761,7 @@ export async function playPrerecordedProviderFailure(
   }
   const output = session.output.audio;
   if (output === null) {
-    throw new Error("Telephone audio output is unavailable");
+    throw new TelephoneSessionFault("Telephone audio output is unavailable");
   }
   const bytes = await readFile(providerFailureAudioPath);
   const audioBytes = bytes.buffer.slice(
@@ -825,7 +826,7 @@ export function mapCompletedTelephoneTurnEvent(input: {
 }): Extract<TelephoneSessionProviderEvent, { kind: "turn-finalized" }> {
   const turnId = finalizedTurnId(input.telephoneSessionId, input.itemId);
   if (input.speechStartedAt === undefined) {
-    throw new Error("Completed telephone turn speech boundary is unavailable");
+    throw new TelephoneSessionFault("Completed telephone turn speech boundary is unavailable");
   }
   return {
     deliveryId: finalizedDeliveryId(
@@ -850,7 +851,7 @@ function finalizedTurnId(
   itemId: string | null,
 ): string {
   if (itemId === null) {
-    throw new Error("Completed telephone turn identity is unavailable");
+    throw new TelephoneSessionFault("Completed telephone turn identity is unavailable");
   }
   return stableIdentifier(`turn:${telephoneSessionId}:completed:${itemId}`);
 }
@@ -901,7 +902,7 @@ export class LiveKitTelephoneTurnAdapter {
   > {
     const transcript = message.rawTextContent;
     if (transcript === undefined || transcript.trim().length === 0) {
-      throw new Error("Completed telephone turn transcript is unavailable");
+      throw new TelephoneSessionFault("Completed telephone turn transcript is unavailable");
     }
     if (this.#speechStartedAt === undefined && this.#acceptedCompletedTurn) {
       return this.transcription({
