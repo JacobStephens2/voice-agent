@@ -22,12 +22,21 @@ export const keeploreButtonTrialGoal =
   "Make Keeplore's table-view Get Rid Of control match the row-level Remove control without changing card view." as const;
 
 export const keeploreButtonTrialAcceptanceCriteria = [
-  "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight.",
+  "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight at both the desktop and mobile verification viewports.",
   "Both table-view controls retain content-based widths.",
   "Card view is visually unchanged.",
   "Declared automated verification and authenticated desktop and mobile visual verification pass.",
   "Only a non-production branch is pushed and a pull request is opened without merging or deploying.",
 ] as const;
+
+/**
+ * The criterion wording every Brief accepted before the criteria named both
+ * verification viewports carries. The measurement never changed — desktop and
+ * mobile were always both verified — so a Delegation stored under the older
+ * sentence is still readable and still lists.
+ */
+export const supersededKeeploreButtonTrialAcceptanceCriterion =
+  "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight." as const;
 
 export const keeploreDelegationCapabilities = [
   "registered-source.read",
@@ -81,7 +90,10 @@ export const keeploreWorktreeSchema = z
 export const keeploreDelegationBriefSchema = z
   .object({
     acceptanceCriteria: z.tuple([
-      z.literal(keeploreButtonTrialAcceptanceCriteria[0]),
+      z.union([
+        z.literal(keeploreButtonTrialAcceptanceCriteria[0]),
+        z.literal(supersededKeeploreButtonTrialAcceptanceCriterion),
+      ]),
       z.literal(keeploreButtonTrialAcceptanceCriteria[1]),
       z.literal(keeploreButtonTrialAcceptanceCriteria[2]),
       z.literal(keeploreButtonTrialAcceptanceCriteria[3]),

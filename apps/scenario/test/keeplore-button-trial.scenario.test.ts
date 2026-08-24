@@ -347,7 +347,7 @@ test("an authenticated confirmed Keeplore Button Trial produces a bounded verifi
   });
   expect(accepted?.delegation.brief).toMatchObject({
     acceptanceCriteria: [
-      "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight.",
+      "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight at both the desktop and mobile verification viewports.",
       "Both table-view controls retain content-based widths.",
       "Card view is visually unchanged.",
       "Declared automated verification and authenticated desktop and mobile visual verification pass.",
@@ -1041,6 +1041,65 @@ test("a Delegation Result stored before its failure account was recorded still l
     expect(records).toHaveLength(1);
     expect(records[0]?.delegation.result?.failure).toBeNull();
     expect(records[0]?.delegation.result?.status).toBe("completed");
+  } finally {
+    await reopened.close();
+  }
+});
+
+test("a Delegation Brief stored under the superseded criterion wording still lists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-button-criterion-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const scenario = await createKeeploreButtonTrialScenario({
+    databasePath,
+    ids: ["task-button-trial", "delegation-button-trial"],
+    now,
+    registration: keeploreRegistration(),
+    runner: {
+      async execute({ brief, worktree }) {
+        return successfulResult(brief, worktree);
+      },
+    },
+    sourceCommit,
+  });
+  await confirmTrial(scenario, "superseded-criterion");
+  expect((await scenario.processNextDelegation())?.task.status).toBe(
+    "completed",
+  );
+  await scenario.close();
+
+  // Briefs accepted before the criterion named both verification viewports
+  // carry the shorter wording.
+  const database = new Database(databasePath);
+  const rewritten = database
+    .prepare(
+      `UPDATE keeplore_delegations
+       SET brief_json = json_set(brief_json, '$.acceptanceCriteria[0]', ?)`,
+    )
+    .run(
+      "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight.",
+    );
+  expect(rewritten.changes).toBe(1);
+  database.close();
+
+  const reopened = await createKeeploreButtonTrialScenario({
+    databasePath,
+    ids: [],
+    now,
+    registration: keeploreRegistration(),
+    runner: {
+      async execute() {
+        throw new Error("the runner is outside this repro");
+      },
+    },
+    sourceCommit,
+  });
+  try {
+    const records = await reopened.listDelegations();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.delegation.brief.acceptanceCriteria[0]).toBe(
+      "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight.",
+    );
   } finally {
     await reopened.close();
   }
