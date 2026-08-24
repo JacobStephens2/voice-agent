@@ -21,6 +21,7 @@ import {
 } from "@voice-agent/contracts";
 import { z } from "zod";
 
+import { keeploreModelSandboxConfigArguments } from "./keeplore-model-sandbox.ts";
 import { createUnixSocketKeeploreCandidatePublisher } from "./keeplore-publication-client.ts";
 
 const runnerMirror = "/var/lib/voice-agent-worktrees/keeplore.git";
@@ -30,8 +31,6 @@ const codexExecutable = "/usr/bin/codex";
 const maximumInputBytes = 1_000_000;
 const maximumOutputBytes = 1_000_000;
 const commandTimeoutMilliseconds = 30 * 60 * 1_000;
-const modelFilesystemPermissions =
-  '{":minimal" = "read", ":workspace_roots" = {"ui/artifacts/useby.js" = "read", "ui/artifacts/useby.php" = "read", "ui/style.css" = "write"}}';
 const verificationFilesystemPermissions =
   '{":minimal" = "read", ":workspace_roots" = {"." = "write", "**/*.env" = "deny", "private/environment_variables.php" = "deny"}}';
 
@@ -298,48 +297,101 @@ async function assertRegisteredFiles(): Promise<void> {
 async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
   const schemaPath = `${runDirectory}/model-report.schema.json`;
   const resultPath = `${runDirectory}/model-report.json`;
-  await writeFile(schemaPath, JSON.stringify(z.toJSONSchema(modelReportSchema)), {
-    mode: 0o600,
-  });
-  const result = await runBoundedCommand(
-    codexExecutable,
-    [
-      "exec",
-      "--ephemeral",
-      "--ignore-user-config",
-      "--ignore-rules",
-      "--strict-config",
-      "--config",
-      'approval_policy="never"',
-      "--config",
-      'default_permissions="keeplore"',
-      "--config",
-      `permissions.keeplore.filesystem=${modelFilesystemPermissions}`,
-      "--config",
-      "permissions.keeplore.network.enabled=false",
-      "--output-schema",
-      schemaPath,
-      "--output-last-message",
-      resultPath,
-      "--cd",
-      worktreePath,
-      "-",
-    ],
-    {
-      env: codexEnvironment(),
-      input: buildPrompt(),
-      onSpawn(child) {
-        modelProcess = child;
-      },
-      terminateGroupOnClose: true,
-    },
+  const modelReferencePaths = input.brief.boundedContext.referencePaths;
+  const [modelCandidatePath] = input.brief.boundedContext.editablePaths;
+  const modelWorkspace = await mkdtemp(
+    `/var/lib/voice-codex/tmp/model-${input.brief.delegationId}-`,
   );
-  modelProcess = undefined;
-  checkForStop();
-  if (result.exitCode !== 0) {
-    throw new Error("Restricted Codex ended before preparing a candidate");
+  try {
+    await mkdir(`${modelWorkspace}/ui/artifacts`, {
+      mode: 0o700,
+      recursive: true,
+    });
+    const referenceBaselines = await Promise.all(
+      modelReferencePaths.map(async (path) => {
+        const contents = await readFile(`${worktreePath}/${path}`, "utf8");
+        await cp(`${worktreePath}/${path}`, `${modelWorkspace}/${path}`);
+        return [path, contents] as const;
+      }),
+    );
+    await cp(
+      `${worktreePath}/${modelCandidatePath}`,
+      `${modelWorkspace}/${modelCandidatePath}`,
+    );
+    await writeFile(
+      schemaPath,
+      JSON.stringify(z.toJSONSchema(modelReportSchema)),
+      { mode: 0o600 },
+    );
+    let result: CommandResult;
+    try {
+      result = await runBoundedCommand(
+        codexExecutable,
+        [
+          "exec",
+          "--ephemeral",
+          "--ignore-user-config",
+          "--ignore-rules",
+          "--strict-config",
+          "--skip-git-repo-check",
+          "--config",
+          'approval_policy="never"',
+          "--config",
+          'default_permissions="keeplore"',
+          ...keeploreModelSandboxConfigArguments("keeplore"),
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          resultPath,
+          "--cd",
+          modelWorkspace,
+          "-",
+        ],
+        {
+          env: codexEnvironment(),
+          input: buildPrompt(),
+          onSpawn(child) {
+            modelProcess = child;
+          },
+          terminateGroupOnClose: true,
+        },
+      );
+    } finally {
+      modelProcess = undefined;
+    }
+    checkForStop();
+    if (result.exitCode !== 0) {
+      throw new Error("Restricted Codex ended before preparing a candidate");
+    }
+    const report = modelReportSchema.parse(
+      JSON.parse(await readFile(resultPath, "utf8")),
+    );
+    if (report.status === "ready") {
+      await assertModelReferencesUnchanged(modelWorkspace, referenceBaselines);
+      const candidateCss = await readFile(
+        `${modelWorkspace}/${modelCandidatePath}`,
+        "utf8",
+      );
+      await assertTableOnlyCandidate(candidateCss);
+      await writeFile(`${worktreePath}/${modelCandidatePath}`, candidateCss);
+    }
+    return report;
+  } finally {
+    await rm(modelWorkspace, { force: true, recursive: true });
   }
-  return modelReportSchema.parse(JSON.parse(await readFile(resultPath, "utf8")));
+}
+
+async function assertModelReferencesUnchanged(
+  modelWorkspace: string,
+  expectedReferences: ReadonlyArray<readonly [string, string]>,
+): Promise<void> {
+  for (const [path, expectedContents] of expectedReferences) {
+    if (
+      (await readFile(`${modelWorkspace}/${path}`, "utf8")) !== expectedContents
+    ) {
+      throw new Error("Restricted Codex altered a Keeplore reference file");
+    }
+  }
 }
 
 function buildPrompt(): string {
