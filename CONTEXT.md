@@ -12,8 +12,24 @@ _Avoid_: Operations Copilot, voice interface
 Any agent initiated by the Voice Agent to perform delegated work, including Codex, Claude Code, Grok, and Kimi Code sessions.
 _Avoid_: Specialist Agent, worker
 
+**Code Subagent**:
+A Subagent that may receive repository context and modify Delegated Worktrees while using brokers for Git publication, dependency access, and external effects rather than unrestricted public-network access.
+_Avoid_: Coding provider, unrestricted shell
+
+**Research Subagent**:
+A Subagent that may use the unrestricted public internet without receiving repository contents, host credentials, or administrative authority and returns a primary-source Research Finding.
+_Avoid_: Code Subagent, browser tool
+
+**Research Finding**:
+A durable Markdown artifact in a codebase that answers a research question from primary sources with citations and implementation-relevant limitations.
+_Avoid_: Raw webpage, browsing transcript, uncited summary
+
+**Provider Enrollment**:
+An attended credential-custody action that binds one Subagent provider identity to its authenticated subscription or API route, observed privacy settings, and accepted runtime without granting repository, publication, or host authority by itself.
+_Avoid_: Provider login, Delegation, authority activation
+
 **Delegation**:
-The automatic transfer of deeper work from the Voice Agent to another agent selected by the Voice Agent.
+The automatic transfer of deeper work, potentially spanning multiple codebases, from the Voice Agent to another agent selected by the Voice Agent.
 _Avoid_: Handoff, agent call
 
 **Durable Task**:
@@ -33,7 +49,7 @@ The structured input to a Subagent containing the goal, Registered Codebase, con
 _Avoid_: Prompt, transcript, handoff message
 
 **Delegation Result**:
-The structured Subagent outcome containing status, branch, commits, changed files, verification, risks, and pull-request state.
+The structured Subagent outcome containing status, verification, risks, and the branch, commits, changed files, and pull-request state for each affected codebase.
 _Avoid_: Final answer, raw agent log
 
 **Secret Execution Manifest**:
@@ -44,21 +60,37 @@ _Avoid_: Environment file, vault access, secret containment
 An execution in which a narrow broker uses a credential on behalf of a caller and returns a sanitized result without disclosing the credential to the Voice Agent or Subagent.
 _Avoid_: Secret injection, manifest, shared credential
 
+**Credential Custody Boundary**:
+The designated host stores whose SSH, provider, browser-session, passkey, TLS, deployment, and application credentials may be used only through typed brokers and are never directly readable by a Subagent.
+_Avoid_: Repository secret filtering, hidden prompt, unrestricted root
+
 **Code Inquiry**:
 A narrow, read-only search of a registered codebase performed directly by the Voice Agent to answer an immediate conversational question using bounded code excerpts; broad analysis and all code changes are delegated to a Subagent.
 _Avoid_: Delegation, code edit, repository dump
 
 **Registered Codebase**:
-A repository explicitly enrolled for Code Inquiry and Delegation with a fixed path, remote, production branch, permitted read scope, isolated-worktree location, verification commands, and, when deployed, a Deployment Contract.
+A repository enrolled explicitly or through policy-authorized discovery for Code Inquiry and Delegation with a fixed path, remote, production branch, isolated-worktree location, verification commands, and, when deployed, a Deployment Contract.
 _Avoid_: Application directory, discovered repository, arbitrary path
 
+**Configuration Repository**:
+The private Registered Codebase that represents reproducible Agent Host packages, services, network policy, device setup, recovery inventory, and other Host Patch targets.
+_Avoid_: Server notes, live host configuration, backup
+
 **Delegated Worktree**:
-The persistent isolated Git worktree and non-production branch assigned to one Delegation; it remains until its pull request is merged or closed and is never automatically removed while dirty.
+The persistent isolated Git worktree and non-production branch assigned to one codebase within a Delegation; a multi-codebase Delegation owns one per affected repository. It remains until its pull request is merged or closed and is never automatically removed while dirty.
 _Avoid_: Live checkout, shared working tree, temporary directory
 
 **Human Merge**:
 A pull-request merge into a Registered Codebase's production branch performed by an authenticated human GitHub user after required checks, never a direct push or bot action; it authorizes Promotion of that exact merge commit.
 _Avoid_: Push to main, automated merge, deployment approval
+
+**Administrative Publisher App**:
+A GitHub App installed across the owner's repositories that may push one task-assigned non-production branch and create or observe its pull request with a repository-narrowed token, but cannot merge, administer repositories, bypass rules, or deploy.
+_Avoid_: Personal access token, Keeplore App, GitHub user login
+
+**Repository Administration Broker**:
+A typed credential-custody service that may create private repositories, observe or install standard production-branch rules, and observe the Administrative Publisher App installation without accessing repository contents, weakening rules, or approving, merging, closing, or deleting.
+_Avoid_: Administrative Publisher App, GitHub administrator shell
 
 **Incident Diagnosis**:
 A conversational investigation that establishes why an observed server operation or service failed and proposes a remedy without applying it.
@@ -68,6 +100,14 @@ _Avoid_: Debug session, troubleshooting request
 A change to application code, data, services, or infrastructure intended to alter the state of a system.
 _Avoid_: Fix, action
 
+**Live Patch**:
+A time-bounded, independently recoverable mutation of version-controlled production files whose accepted diff must be reproduced in an isolated branch and pull request or removed from production at its rollback deadline.
+_Avoid_: Hotfix, direct deploy, production edit
+
+**Host Patch**:
+A time-bounded, independently recoverable mutation of non-version-controlled Agent Host state that must be captured in a reproducible configuration repository or removed at its rollback deadline.
+_Avoid_: Manual server tweak, permanent shell change
+
 **Incident Response**:
 The handling of an incident from diagnosis through any chosen intervention and verification.
 _Avoid_: Incident Diagnosis
@@ -76,16 +116,29 @@ _Avoid_: Incident Diagnosis
 The pre-authorized limits within which the Voice Agent may perform interventions without requesting per-action approval.
 _Avoid_: Blanket permission, unrestricted access
 
+**Administrative Autonomy Policy**:
+A Fresh-Passkey-activated Standing Autonomy Policy that permits broad multi-codebase work and brokered Agent Host administration without per-Operation approval while withholding designated credential-store access, production-branch mutation, ad hoc production-data mutation, and self-activation of authority.
+Its authenticated revision remains active until Administrative Suspension or another Fresh Passkey Action revises it.
+_Avoid_: YOLO mode, always approve, unrestricted root
+
+**Administrative Suspension**:
+An owner-triggered state that refuses new administrative Operations, activates every armed Live Patch and Host Patch rollback, and preserves Delegated Worktrees and Evidence Records until a Fresh Passkey Action reactivates Administrative Autonomy.
+_Avoid_: Task stop, service shutdown, rollback deletion
+
 **Task Confirmation**:
-A concise spoken readback of the target application, environment, and intended state-changing outcome that the user confirms before the Voice Agent accepts a Durable Task or Delegation.
+A concise spoken readback of the target application, environment, and intended state-changing outcome—not the eventual Operation plan—that remains pending until the user affirmatively confirms or declines it, before the Voice Agent accepts a Durable Task or Delegation.
 _Avoid_: Per-operation approval, conversational acknowledgement
 
 **Bounded Excerpt**:
 An explicitly requested, code-filtered subset of server data that may be shared with a hosted model provider.
 _Avoid_: Raw payload, unrestricted context
 
+**Production Data Observation**:
+A brokered, task-relevant view of live data that defaults to schema, aggregates, bounded samples, and secret or personal-data redaction; raw records require the confirmed task to identify them.
+_Avoid_: Database access, production dump, unrestricted query
+
 **Evidence Record**:
-The canonical visual history of a Durable Task, including conversations, inspected evidence, Operations, delegated work, changes, verification, and conclusions; raw telephone audio is excluded outside temporary debugging.
+The canonical visual history of a Durable Task, including conversations, inspected evidence, Operations, delegated work, changes, verification, and conclusions; raw telephone audio and raw command or provider output are excluded outside temporary debugging or execution.
 _Avoid_: Transcript, chat history
 
 **Evidence Lifecycle Policy**:
@@ -99,6 +152,10 @@ _Avoid_: Dashboard, native app, telephone interface
 **Telephone Session**:
 A live outbound telephone call that serves as the primary conversational channel after a Callback Handshake succeeds through answering-machine detection and DTMF confirmation.
 _Avoid_: Voice chat, phone interface
+
+**Task Media**:
+Audio, video, or image content explicitly attached to or identified in a confirmed Durable Task for disclosure to its selected provider; it excludes raw Telephone Session audio unless separately authorized.
+_Avoid_: Call recording, ambient media
 
 **WebRTC Session**:
 A live voice conversation carried directly between the PWA and the Voice Agent over the internet rather than through the telephone network.
