@@ -400,6 +400,7 @@ describe("production-shaped LiveKit telephone turns", () => {
 
     expect(recordProviderFailure).toHaveBeenCalledWith({
       failureClass: "unavailable",
+      recovery: "retryable",
       sessionId: "telephone-session-start-failure",
       stage: "setup",
     });

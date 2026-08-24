@@ -12,6 +12,7 @@ import {
   telephoneUsageRecordedEvidenceEventSchema,
   telephoneUsageSources,
   type TelephoneBoundaryEvidenceEvent,
+  type TelephoneProviderFailureRecovery,
   type TelephoneProviderFailureStage,
 } from "@voice-agent/contracts";
 import type {
@@ -518,10 +519,19 @@ export function createTelephoneBoundaryRuntime(
     readSession: (sessionId: string) => options.store.findSession(sessionId),
     async recordProviderFailure(input: {
       readonly failureClass: TelephoneProviderFailureClass;
+      /** Defaults to terminal, so an unclassified fault still ends the session. */
+      readonly recovery?: TelephoneProviderFailureRecovery;
       readonly sessionId: string;
       readonly stage: TelephoneProviderFailureStage;
     }) {
-      await options.store.recordProviderFailure(input);
+      const recovery = input.recovery ?? "terminal";
+      await options.store.recordProviderFailure({
+        failureClass: input.failureClass,
+        stage: input.stage,
+      });
+      // A retryable fault leaves the caller on the line, so the boundary record
+      // must stay open until whatever actually ends the call ends it.
+      if (recovery === "retryable") return { ended: false } as const;
       return endSession(input.sessionId, "provider-failure");
     },
     async recordUsage(input: {
