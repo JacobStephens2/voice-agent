@@ -171,7 +171,16 @@ export async function runLiveKitTelephoneSession(
     try {
       await playPrerecordedProviderFailure(session);
     } finally {
-      await endCallOnce();
+      try {
+        await endCallOnce();
+      } finally {
+        // The fault ends the call here, so this is when the boundary record
+        // closes: a retryable fault the caller survived left it open.
+        await options.boundaries.endSession(
+          options.telephoneSessionId,
+          "provider-failure",
+        );
+      }
     }
   }
 
@@ -322,6 +331,7 @@ export async function runLiveKitTelephoneSession(
             providerEvent.kind === "provider-timeout"
               ? "timeout"
               : "unavailable",
+          recovery,
           sessionId: options.telephoneSessionId,
           stage,
         });
