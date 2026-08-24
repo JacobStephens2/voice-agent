@@ -294,6 +294,24 @@ export function createSqliteKeeploreDelegationStore(
   };
 }
 
+/**
+ * A Delegation Result stored before ADR-0051 carries no account of what ended
+ * the run. Those rows are read as reporting no failure rather than failing the
+ * whole projection, which would take every Delegation listing down with them —
+ * the trial's inspection, and a status or Stop turn on a live call.
+ */
+function withRecordedFailure(result: unknown): unknown {
+  if (
+    typeof result !== "object" ||
+    result === null ||
+    Array.isArray(result) ||
+    "failure" in result
+  ) {
+    return result;
+  }
+  return { ...result, failure: null };
+}
+
 function requireRecord(row: DelegationRow | undefined): KeeploreDelegationRecord {
   if (row === undefined) throw new Error("Keeplore Delegation is unavailable");
   return projectRecord(row);
@@ -305,7 +323,9 @@ function projectRecord(row: DelegationRow): KeeploreDelegationRecord {
   const result: KeeploreDelegationResult | undefined =
     row.result_json === null
       ? undefined
-      : keeploreDelegationResultSchema.parse(JSON.parse(row.result_json));
+      : keeploreDelegationResultSchema.parse(
+          withRecordedFailure(JSON.parse(row.result_json)),
+        );
   return keeploreDelegationRecordSchema.parse({
     delegation: {
       brief,

@@ -990,6 +990,62 @@ async function createScenario(
   });
 }
 
+test("a Delegation Result stored before its failure account was recorded still lists", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-button-legacy-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const scenario = await createKeeploreButtonTrialScenario({
+    databasePath,
+    ids: ["task-button-trial", "delegation-button-trial"],
+    now,
+    registration: keeploreRegistration(),
+    runner: {
+      async execute({ brief, worktree }) {
+        return successfulResult(brief, worktree);
+      },
+    },
+    sourceCommit,
+  });
+  await confirmTrial(scenario, "legacy-result");
+  expect((await scenario.processNextDelegation())?.task.status).toBe(
+    "completed",
+  );
+  await scenario.close();
+
+  // Rows written before ADR-0051 carry no `failure` key at all.
+  const database = new Database(databasePath);
+  const stripped = database
+    .prepare(
+      "UPDATE keeplore_delegations SET result_json = json_remove(result_json, '$.failure')",
+    )
+    .run();
+  expect(stripped.changes).toBe(1);
+  database.close();
+
+  const reopened = await createKeeploreButtonTrialScenario({
+    databasePath,
+    ids: [],
+    now,
+    registration: keeploreRegistration(),
+    runner: {
+      async execute() {
+        throw new Error("the runner is outside this repro");
+      },
+    },
+    sourceCommit,
+  });
+  try {
+    // Listing must not throw: the trial's inspection, and a status or Stop turn
+    // on a live call, all project every stored Delegation.
+    const records = await reopened.listDelegations();
+    expect(records).toHaveLength(1);
+    expect(records[0]?.delegation.result?.failure).toBeNull();
+    expect(records[0]?.delegation.result?.status).toBe("completed");
+  } finally {
+    await reopened.close();
+  }
+});
+
 async function confirmTrial(
   scenario: KeeploreButtonTrialScenario,
   suffix: string,
