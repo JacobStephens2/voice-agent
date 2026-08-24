@@ -6,6 +6,11 @@ import type {
 } from "@voice-agent/contracts";
 
 import { mapProviderFailureEvent } from "./livekit-telephone-session.ts";
+import {
+  describeProviderError,
+  logProviderFailureToStandardError,
+  type ProviderFailureLogger,
+} from "./provider-error-description.ts";
 
 export class TelephoneSetupProviderError extends Error {
   readonly stage: TelephoneProviderFailureStage;
@@ -27,6 +32,8 @@ export async function recordTelephoneSetupProviderFailure(input: {
   ) => Promise<unknown>;
   readonly error: unknown;
   readonly failureEventId: string;
+  /** Defaults to the operator journal; a test supplies its own sink. */
+  readonly log?: ProviderFailureLogger;
   readonly occurredAt: string;
   readonly recordProviderFailure: (input: {
     readonly failureClass: "timeout" | "unavailable";
@@ -52,6 +59,15 @@ export async function recordTelephoneSetupProviderFailure(input: {
   });
   const failureClass =
     failure.kind === "provider-timeout" ? "timeout" : "unavailable";
+  // Setup faults end the call before it is answered, so this line is the only
+  // description of them that survives.
+  (input.log ?? logProviderFailureToStandardError)({
+    error: describeProviderError(classified.error, classified.stage),
+    provider: failure.provider,
+    recovery: "terminal",
+    stage: failure.stage,
+    telephoneSessionId: input.telephoneSessionId,
+  });
   await input.append({
     details:
       failure.kind === "provider-timeout"

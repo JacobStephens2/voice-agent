@@ -191,6 +191,28 @@ deployment-authority upgrade so the root installer applies it, and restart the
 trial. The source-revision stage will stop before another call if the exact
 commit is still unreadable.
 
+## Diagnosing a dropped call
+
+A Telephone Session that ends on a bounded provider fault writes one line to
+the worker journal naming the stage, the provider, and a sanitized description
+of what the provider said:
+
+```bash
+sudo journalctl -u voice-agent-worker.service \
+  --grep 'bounded telephone provider failure' --since '1 hour ago'
+```
+
+The description carries the error's type, and its status or code when the
+provider supplies one. It carries the provider's message only for the speech
+synthesis and session setup stages, whose providers never receive the caller's
+words. Recognition and interpretation errors may quote the transcript, so those
+stages log their type alone. The durable Evidence Record is unchanged by this
+line and still carries no provider text.
+
+The matching Telephone Session records `provider-failure` as its end reason;
+`disconnected`, `completed`, `maximum-duration`, and `prolonged-silence` are
+the other outcomes and mean the providers were not at fault.
+
 ## Stop, quarantine, and cleanup
 
 Saying “Stop” records the request durably and sends `SIGUSR1` through the typed
