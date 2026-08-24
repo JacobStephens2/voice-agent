@@ -200,14 +200,43 @@ try {
 }
 
 async function ensureRunnerMirror(): Promise<void> {
-  if (!(await exists(`${runnerMirror}/HEAD`))) {
-    await mkdir(dirname(runnerMirror), { mode: 0o700, recursive: true });
-    await requireCommand(
-      "git",
-      ["clone", "--bare", registeredSourceMirror, runnerMirror],
-      "create the restricted Keeplore mirror",
-    );
+  const sourceBundleDirectory = await mkdtemp(
+    `/var/lib/voice-codex/tmp/source-${input.brief.delegationId}-`,
+  );
+  const sourceBundlePath = `${sourceBundleDirectory}/repository.bundle`;
+  try {
+    await git([
+      `--git-dir=${registeredSourceMirror}`,
+      "bundle",
+      "create",
+      sourceBundlePath,
+      "--all",
+    ]);
     checkForStop();
+    if (!(await exists(`${runnerMirror}/HEAD`))) {
+      await mkdir(dirname(runnerMirror), { mode: 0o700, recursive: true });
+      await requireCommand(
+        "git",
+        ["clone", "--bare", sourceBundlePath, runnerMirror],
+        "create the restricted Keeplore mirror",
+      );
+      checkForStop();
+    }
+    await git([
+      `--git-dir=${runnerMirror}`,
+      "fetch",
+      sourceBundlePath,
+      "+refs/*:refs/keeplore-source/*",
+    ]);
+    checkForStop();
+    await git([
+      `--git-dir=${runnerMirror}`,
+      "cat-file",
+      "-e",
+      `${input.brief.registeredCodebase.sourceCommit}^{commit}`,
+    ]);
+  } finally {
+    await rm(sourceBundleDirectory, { force: true, recursive: true });
   }
   await git([
     `--git-dir=${runnerMirror}`,
@@ -215,13 +244,6 @@ async function ensureRunnerMirror(): Promise<void> {
     "set-url",
     "origin",
     keeploreRemote,
-  ]);
-  checkForStop();
-  await git([
-    `--git-dir=${runnerMirror}`,
-    "fetch",
-    registeredSourceMirror,
-    input.brief.registeredCodebase.sourceCommit,
   ]);
 }
 
