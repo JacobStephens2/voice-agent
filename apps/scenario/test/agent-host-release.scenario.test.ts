@@ -70,9 +70,19 @@ fi
 });
 
 test("the Keeplore Subagent keeps model tools behind the registered CSS boundary", async () => {
-  const [executor, runner, verifier, publisher, publisherUnit, subagentUnit, trial] = await Promise.all(
+  const [
+    executor,
+    modelSandbox,
+    runner,
+    verifier,
+    publisher,
+    publisherUnit,
+    subagentUnit,
+    trial,
+  ] = await Promise.all(
     [
       "apps/worker/src/keeplore-codex-executor.ts",
+      "apps/worker/src/keeplore-model-sandbox.ts",
       "apps/worker/src/keeplore-subagent-runner-server.ts",
       "apps/worker/src/keeplore-visual-verifier.ts",
       "ops/release/keeplore-github-app-publisher.ts",
@@ -83,8 +93,24 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   );
 
   expect(executor).toContain('default_permissions="keeplore"');
-  expect(executor).toContain('"ui/style.css" = "write"');
-  expect(executor).toContain("permissions.keeplore.network.enabled=false");
+  expect(executor).toContain('from "./keeplore-model-sandbox.ts"');
+  expect(modelSandbox).toContain('":workspace_roots" = {"." = "write"}');
+  expect(modelSandbox).toContain("keeploreModelSandboxConfigArguments");
+  expect(modelSandbox).toContain("probeKeeploreModelSandbox");
+  expect(modelSandbox).toContain("keeplore-model-profile.");
+  expect(executor).toContain("modelWorkspace");
+  expect(executor).toContain('"--skip-git-repo-check"');
+  expect(executor).toContain("assertModelReferencesUnchanged");
+  expect(executor).not.toContain('"ui/style.css" = "write"');
+  expect(executor).toContain(
+    "input.brief.boundedContext.referencePaths",
+  );
+  expect(executor).toContain(
+    "input.brief.boundedContext.editablePaths",
+  );
+  expect(modelSandbox).toContain(
+    "permissions.${profileName}.network.enabled=false",
+  );
   expect(executor).not.toContain("sandbox_workspace_write.network_access=true");
   expect(executor).toContain("runRegisteredVerification");
   expect(executor).toContain("createUnixSocketKeeploreCandidatePublisher");
@@ -118,6 +144,10 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   expect(trial).toContain('/usr/bin/xauth nlist "$DISPLAY"');
   expect(trial).toContain('XAUTHORITY="$CODEX_XAUTHORITY"');
   expect(trial).toContain('/usr/bin/xdpyinfo >/dev/null');
+  expect(trial).toContain(
+    "apps/worker/src/keeplore-model-sandbox-probe.ts",
+  );
+  expect(trial).not.toContain("permissions.keeplore-model-check.filesystem=");
   expect(trial).toContain(
     "sudo -u voice-codex -g voice-subagent-client /usr/bin/git",
   );

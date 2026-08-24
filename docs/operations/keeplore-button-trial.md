@@ -77,11 +77,15 @@ database, Operations Broker socket, or production credential source.
 The runner owns a bare mirror and one persistent worktree per Delegation under
 `/var/lib/voice-agent-worktrees/keeplore`. Its Codex invocation ignores user
 configuration and rules and selects a custom permission profile with network
-disabled. Model-generated commands can read only `ui/artifacts/useby.php` and
-`ui/artifacts/useby.js` and can write only `ui/style.css`; they cannot read the
-Codex or browser credential stores or reach the publisher socket. Repository
-instructions, issue text, test output, and web content are untrusted data and
-cannot expand those paths or authority.
+disabled. Fixed host code stages only `ui/artifacts/useby.php`,
+`ui/artifacts/useby.js`, and `ui/style.css` in a disposable non-repository model
+workspace. The sandbox receives that directory as its sole writable workspace
+root; it cannot read the rest of the Delegated Worktree, the Codex or browser
+credential stores, or the publisher socket. Before copying anything back, fixed
+host code proves both references stayed byte-identical and validates the
+candidate CSS; only `ui/style.css` can reach the persistent worktree.
+Repository instructions, issue text, test output, and web content are untrusted
+data and cannot expand those paths or authority.
 
 The registered source mirror stays root-owned and non-writable by the runner.
 Release installation grants only the named `voice-codex` identity read and
