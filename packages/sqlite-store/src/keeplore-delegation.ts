@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 
 import {
+  keeploreButtonTrialGoal,
   keeploreDelegationBriefSchema,
   keeploreDelegationRecordSchema,
   keeploreDelegationResultSchema,
@@ -11,6 +12,8 @@ import {
   type KeeploreDelegationResult,
 } from "@voice-agent/contracts";
 import type { KeeploreDelegationStore } from "@voice-agent/durable-store";
+
+import { createDurableTaskTable } from "./durable-task-table.ts";
 
 interface DelegationRow {
   readonly brief_json: string;
@@ -26,6 +29,9 @@ export function createSqliteKeeploreDelegationStore(
 ): KeeploreDelegationStore {
   const database = new Database(databasePath);
   database.pragma("journal_mode = WAL");
+  // A Keeplore Delegation mints a Durable Task identity, so the Durable Tasks
+  // row is written on this same connection and in the same transaction.
+  createDurableTaskTable(database);
   database.exec(`
     CREATE TABLE IF NOT EXISTS keeplore_delegations (
       task_id TEXT PRIMARY KEY,
@@ -84,6 +90,36 @@ export function createSqliteKeeploreDelegationStore(
       event_id, task_id, kind, occurred_at, payload_json
     ) VALUES (?, ?, ?, ?, ?)
   `);
+  // Delegations accepted before the Durable Task was registered still owe one
+  // Durable Tasks row, or telephone evidence recorded under their identity has
+  // nowhere to land.
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO durable_tasks (
+        id, request_id, kind, status, question, conclusion, created_at, updated_at
+      )
+      SELECT task_id, request_id, 'keeplore.button-trial', status, ?,
+        CASE status
+          WHEN 'completed' THEN 'Keeplore Button Trial pull request is ready for Human Merge.'
+          WHEN 'running' THEN 'Keeplore Button Trial is running.'
+          WHEN 'stopped' THEN 'Keeplore Button Trial stopped with its worktree preserved.'
+          WHEN 'failed' THEN 'Keeplore Button Trial could not be verified.'
+          ELSE 'Keeplore Button Trial is delegated.'
+        END,
+        created_at, updated_at
+      FROM keeplore_delegations
+    `)
+    .run(keeploreButtonTrialGoal);
+  const insertDurableTask = database.prepare(`
+    INSERT INTO durable_tasks (
+      id, request_id, kind, status, question, conclusion, created_at, updated_at
+    ) VALUES (?, ?, 'keeplore.button-trial', ?, ?, ?, ?, ?)
+  `);
+  const updateDurableTask = database.prepare(`
+    UPDATE durable_tasks
+    SET status = ?, conclusion = ?, updated_at = ?
+    WHERE id = ?
+  `);
 
   return {
     async claimNext(input) {
@@ -115,6 +151,12 @@ export function createSqliteKeeploreDelegationStore(
               WHERE task_id = ? AND status = 'pending'
             `)
             .run(JSON.stringify(worktree), input.claimedAt, brief.durableTask.id);
+          updateDurableTask.run(
+            "running",
+            conclusionFor("running"),
+            input.claimedAt,
+            brief.durableTask.id,
+          );
         }
         appendEvent.run(
           randomUUID(),
@@ -152,6 +194,12 @@ export function createSqliteKeeploreDelegationStore(
             input.completedAt,
             input.taskId,
           );
+        updateDurableTask.run(
+          input.result.status,
+          conclusionFor(input.result.status),
+          input.completedAt,
+          input.taskId,
+        );
         appendEvent.run(
           randomUUID(),
           input.taskId,
@@ -171,6 +219,15 @@ export function createSqliteKeeploreDelegationStore(
     },
     async persistAccepted(input) {
       database.transaction(() => {
+        insertDurableTask.run(
+          input.brief.durableTask.id,
+          input.brief.durableTask.requestId,
+          "pending",
+          keeploreButtonTrialGoal,
+          conclusionFor("pending"),
+          input.brief.durableTask.acceptedAt,
+          input.brief.durableTask.acceptedAt,
+        );
         database
           .prepare(`
             INSERT INTO keeplore_delegations (
@@ -217,6 +274,15 @@ export function createSqliteKeeploreDelegationStore(
             input.requestedAt,
             JSON.stringify({ requested: true }),
           );
+          const stopping = selectByTask.get(input.taskId);
+          if (stopping !== undefined) {
+            updateDurableTask.run(
+              stopping.status,
+              conclusionFor(stopping.status),
+              input.requestedAt,
+              input.taskId,
+            );
+          }
         }
       }).immediate();
       const row = selectByTask.get(input.taskId);
@@ -252,6 +318,7 @@ function projectRecord(row: DelegationRow): KeeploreDelegationRecord {
       createdAt: brief.durableTask.acceptedAt,
       id: brief.durableTask.id,
       kind: "keeplore.button-trial",
+      question: keeploreButtonTrialGoal,
       status: row.status,
       updatedAt: row.updated_at,
     },

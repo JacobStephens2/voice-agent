@@ -45,6 +45,7 @@ import {
   keeploreOnboardingTaskSchema,
   type KeeploreOnboardingEvidenceRecordProjection,
 } from "./keeplore-onboarding.ts";
+import { keeploreButtonTrialTaskSchema } from "./keeplore-delegation.ts";
 
 export * from "./promotion.ts";
 export * from "./callback-handshake.ts";
@@ -300,14 +301,20 @@ export const bountywellHealthTaskSchema = z.object({
   updatedAt: timestampSchema,
 });
 
-export const bountywellTaskSchema = z.discriminatedUnion("kind", [
+/**
+ * Every Durable Task the authoritative task store holds. A Keeplore Button
+ * Trial belongs here because accepting the Delegation mints one Durable Task
+ * identity, and telephone evidence is appended under that identity.
+ */
+export const durableTaskSchema = z.discriminatedUnion("kind", [
   bountywellHealthTaskSchema,
   bountywellOutageTaskSchema,
+  keeploreButtonTrialTaskSchema,
 ]);
 
 export const evidenceRecordProjectionSchema = z.object({
   evidence: z.array(evidenceEventProjectionSchema).max(100),
-  task: bountywellTaskSchema,
+  task: durableTaskSchema,
 });
 
 export type EvidenceRecordProjection = z.infer<
@@ -330,6 +337,7 @@ export const voiceAgentEvidenceRecordProjectionSchema = z.union([
 export const evidenceRecordSummarySchema = z.discriminatedUnion("kind", [
   bountywellHealthTaskSchema,
   bountywellOutageTaskSchema,
+  keeploreButtonTrialTaskSchema,
   keeploreOnboardingTaskSchema,
   promotionEvidenceRecordProjectionSchema.shape.task,
   telephoneSessionEvidenceRecordProjectionSchema.shape.task,

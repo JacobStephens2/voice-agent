@@ -270,6 +270,7 @@ export const keeploreButtonTrialTaskSchema = z
     createdAt: timestampSchema,
     id: identifierSchema,
     kind: z.literal("keeplore.button-trial"),
+    question: z.literal(keeploreButtonTrialGoal),
     status: z.enum(["pending", "running", "completed", "stopped", "failed"]),
     updatedAt: timestampSchema,
   })
