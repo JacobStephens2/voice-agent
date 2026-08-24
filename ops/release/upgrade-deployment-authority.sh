@@ -202,11 +202,18 @@ fi
 if [[ $mode == prepare ]]; then
   rm -f -- "$authorization_challenge" "$authorization_request" \
     "$authorization_candidates"
-  if ! "$node_bin" "$authorization_verifier" prepare "$commit" \
+  if ! prepare_report=$("$node_bin" "$authorization_verifier" prepare "$commit" \
     "$authorization_challenge" "$authorization_credentials" \
-    "$authentication_database" "$authorization_candidates"; then
+    "$authentication_database" "$authorization_candidates"); then
     rm -f -- "$authorization_challenge" "$authorization_candidates"
     exit 1
+  fi
+  # The verifier's last line is machine-shaped: kind, tab, expiry instant. Any
+  # earlier line is the attended candidate summary the owner has to read.
+  prepared_challenge=${prepare_report##*$'\n'}
+  candidate_summary=${prepare_report%"$prepared_challenge"}
+  if [[ -n $candidate_summary ]]; then
+    printf '%s' "$candidate_summary"
   fi
   if [[ $test_mode == false ]]; then
     chown root:voice-agent "$authorization_challenge"
@@ -222,6 +229,13 @@ if [[ $mode == prepare ]]; then
   fi
   printf 'Prepared a five-minute root-owned Fresh Passkey challenge for %s.\n' \
     "$commit"
+  # An absolute instant alone reads like a log line. The owner is about to
+  # switch to the browser and authenticate, so say how much window is left.
+  "$node_bin" -e '
+const expiresAt = new Date(process.argv[1]);
+const minutes = Math.round((expiresAt.getTime() - Date.now()) / 60_000);
+process.stdout.write(`It expires at ${expiresAt.toISOString().slice(11, 19)} UTC, about ${minutes} minutes from now; authenticate in the PWA before then.\n`);
+' "${prepared_challenge#*$'\t'}"
   exit 0
 fi
 

@@ -57,6 +57,8 @@ import {
   type RegisteredTelephoneInput,
 } from "@voice-agent/contracts";
 
+import { describeRequestFailure } from "./request-failure.ts";
+
 const csrfCookieName = "__Host-voice_agent_csrf";
 
 export type ProtectedContent =
@@ -604,10 +606,20 @@ async function postJson<T>(
   });
   if (!response.ok) {
     throw new Error(
-      response.status === 403
-        ? "The request failed its origin or CSRF check."
-        : "Authentication could not be completed.",
+      describeRequestFailure(
+        response.status,
+        await readOptionalJson(response),
+        "Authentication could not be completed.",
+      ),
     );
   }
   return parser.parse(await response.json());
+}
+
+async function readOptionalJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
 }

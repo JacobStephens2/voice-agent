@@ -195,6 +195,36 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
   ]);
 });
 
+test("the attended prepare stage states the remaining challenge lifetime in relative terms", async () => {
+  const fixture = await deploymentAuthorityFixture();
+  const releaseScripts = join(
+    fixture.root,
+    "opt/voice-agent/releases",
+    fixture.commit,
+    "ops/release",
+  );
+  await copyFile(
+    join(repositoryRoot, "ops/release/deployment-authority-authorization-verifier.mjs"),
+    join(releaseScripts, "deployment-authority-authorization-verifier.mjs"),
+  );
+  const { publicKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  await writeFile(
+    join(fixture.authorityState, "authorization-credentials.json"),
+    `${JSON.stringify(registryForKey(Buffer.from("owner-passkey"), publicKey, "Owner passkey"))}\n`,
+  );
+
+  const { stdout } = await execFileAsync(
+    fixture.upgrader,
+    ["--prepare", fixture.commit],
+    { env: { ...process.env, VOICE_AGENT_AUTHORITY_TEST_ROOT: fixture.root } },
+  );
+
+  expect(stdout).toMatch(/about 5 minutes from now/u);
+  expect(stdout).toMatch(/It expires at \d{2}:\d{2}:\d{2} UTC/u);
+  // The machine-shaped instant belongs to the verifier, not to the owner.
+  expect(stdout).not.toMatch(/^authentication\t/mu);
+});
+
 test("rollback restores the event-derived current projection after publication", async () => {
   const fixture = await deploymentAuthorityFixture({ oldPromoterSucceeds: true });
   const activeProfile = join(

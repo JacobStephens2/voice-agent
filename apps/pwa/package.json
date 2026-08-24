@@ -4,6 +4,7 @@
   "type": "module",
   "exports": {
     ".": "./src/task-page.tsx",
+    "./request-failure": "./src/request-failure.ts",
     "./server": "./src/server.tsx"
   },
   "scripts": {

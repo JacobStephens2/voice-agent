@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./deployment-authority-challenge": "./src/deployment-authority-challenge.ts"
   },
   "scripts": {
     "bootstrap-code": "node --experimental-strip-types src/bootstrap-cli.ts",
