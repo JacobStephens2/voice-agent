@@ -52,8 +52,11 @@ commit=$requested_commit
 flock -u 9
 
 if ! "$script_directory/install-release.sh" "$repository" "$commit"; then
+  # This resume only runs while the breaker is already open for exactly this
+  # commit, so its failure is already counted. Record the attempt as evidence
+  # without counting it again.
   "$script_directory/record-promotion-failure.sh" \
-    "$commit" fresh-passkey-resume-build
+    "$commit" fresh-passkey-resume-build --already-counted
   exit 1
 fi
 VOICE_AGENT_FRESH_PASSKEY_RESUME=1 \

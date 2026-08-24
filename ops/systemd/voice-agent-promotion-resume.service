@@ -2,6 +2,13 @@
 Description=Resume the Voice Agent Promotion queue after a Fresh Passkey Action
 After=network-online.target
 Wants=network-online.target
+# Recovery must never refuse to start. Under the default start limit, repeated
+# Fresh Passkey Actions can rate-limit this unit into a state that blocks its
+# own path trigger until a root terminal runs systemctl reset-failed — exactly
+# when the Deployment Circuit Breaker is open and the owner needs it. The
+# request file is consumed before any build, and a resumed failure is recorded
+# without counting, so the script bounds repetition instead.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
