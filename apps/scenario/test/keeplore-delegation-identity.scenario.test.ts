@@ -100,7 +100,7 @@ test("the Keeplore readback records telephone evidence under the Delegation's Du
     turnId: "turn-confirm",
   });
   const spoken = confirmed.actions[0];
-  if (spoken?.kind !== "speak-semantic-response") {
+  if (spoken?.kind !== "offer-completion-callback") {
     throw new Error("the confirmation did not produce the delegation readback");
   }
 
@@ -124,6 +124,10 @@ test("the Keeplore readback records telephone evidence under the Delegation's Du
     status: "pending",
   });
   expect(record?.evidence).toMatchObject([
+    {
+      details: { responseId: "turn-confirm:delegation-response" },
+      kind: "telephone.semantic.response",
+    },
     {
       details: {
         durationMs: 8_000,

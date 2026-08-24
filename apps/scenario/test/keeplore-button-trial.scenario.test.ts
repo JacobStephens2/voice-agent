@@ -79,11 +79,11 @@ test.each([
   expect(confirmed.actions).toEqual([
     {
       interruptible: true,
-      kind: "speak-semantic-response",
+      kind: "offer-completion-callback",
       responseId: "turn-stt-confirm:delegation-response",
       taskId: "task-button-trial",
       text:
-        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. Nothing will be merged or deployed. I can disconnect and call your registered telephone when it finishes. Would you like that?",
     },
   ]);
   expect(await scenario.listDelegations()).toHaveLength(1);
@@ -125,11 +125,11 @@ test.each([
   expect(confirmed.actions).toEqual([
     {
       interruptible: true,
-      kind: "speak-semantic-response",
+      kind: "offer-completion-callback",
       responseId: "turn-confirmation-response:delegation-response",
       taskId: "task-button-trial",
       text:
-        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. Nothing will be merged or deployed. I can disconnect and call your registered telephone when it finishes. Would you like that?",
     },
   ]);
   expect(await scenario.listDelegations()).toHaveLength(1);
@@ -215,11 +215,11 @@ test("unrecognized speech leaves the same Task Confirmation pending", async () =
   expect(confirmed.actions).toEqual([
     {
       interruptible: true,
-      kind: "speak-semantic-response",
+      kind: "offer-completion-callback",
       responseId: "turn-ambiguous-confirm:delegation-response",
       taskId: "task-button-trial",
       text:
-        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. Nothing will be merged or deployed. I can disconnect and call your registered telephone when it finishes. Would you like that?",
     },
   ]);
   expect(await scenario.listDelegations()).toHaveLength(1);
@@ -244,7 +244,7 @@ test("a redelivered confirmation turn cannot create a second Delegation", async 
     turnId: "turn-duplicate-confirm",
   });
   expect(confirmed.actions).toMatchObject([
-    { kind: "speak-semantic-response" },
+    { kind: "offer-completion-callback" },
   ]);
 
   const redelivered = await scenario.receiveTelephoneTurn({
@@ -330,11 +330,11 @@ test("an authenticated confirmed Keeplore Button Trial produces a bounded verifi
   expect(confirmed.actions).toEqual([
     {
       interruptible: true,
-      kind: "speak-semantic-response",
+      kind: "offer-completion-callback",
       responseId: "turn-confirm:delegation-response",
       taskId: "task-button-trial",
       text:
-        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. Nothing will be merged or deployed. I can disconnect and call your registered telephone when it finishes. Would you like that?",
     },
   ]);
 
@@ -538,7 +538,7 @@ test("work accepted by natural confirmation survives call loss and stays visible
     turnId: "turn-lost-confirm",
   });
   expect(confirmed.actions).toMatchObject([
-    { kind: "speak-semantic-response", taskId: "task-button-trial" },
+    { kind: "offer-completion-callback", taskId: "task-button-trial" },
   ]);
   // The call drops before the Subagent runs at all.
   await lostCall.close();

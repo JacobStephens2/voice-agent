@@ -262,9 +262,13 @@ const offerCompletionCallbackActionSchema = z.object({
   kind: z.literal("offer-completion-callback"),
   responseId: identifierSchema,
   taskId: identifierSchema,
-  text: z.literal(
+  // The offer is spoken verbatim, so each context that may make it is pinned
+  // here: background work already under way, and a Delegation whose outcome
+  // will outlive the call that confirmed it.
+  text: z.enum([
     "This is still running. I can disconnect and call your registered telephone when it finishes. Would you like that?",
-  ),
+    "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. Nothing will be merged or deployed. I can disconnect and call your registered telephone when it finishes. Would you like that?",
+  ]),
 });
 const requestCompletionCallbackAndDisconnectActionSchema = z.object({
   interruptible: z.literal(false),
