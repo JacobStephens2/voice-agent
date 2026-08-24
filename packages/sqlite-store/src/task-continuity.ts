@@ -103,7 +103,10 @@ export function createSqliteTaskContinuityStore(
       reports.state
     FROM task_completion_reports AS reports
     JOIN durable_tasks AS tasks ON tasks.id = reports.task_id
-    WHERE tasks.status IN ('completed', 'cancelled')
+    -- A Delegation reaches its terminal state as 'failed' or 'stopped' just as
+    -- often as 'completed', and those are the outcomes a caller most needs
+    -- reported, so every terminal status claims its report.
+    WHERE tasks.status IN ('completed', 'cancelled', 'failed', 'stopped')
       AND (
         reports.state = 'waiting-task'
         OR (

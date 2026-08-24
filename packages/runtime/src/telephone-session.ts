@@ -93,6 +93,7 @@ interface TelephoneSessionCoordinatorOptions {
 interface TelephoneSessionCoordinatorState {
   activeKeeploreTaskId: string | undefined;
   lastFinalizedTurnId: string | undefined;
+  pendingCompletionOfferKind: "background-inquiry" | "delegation" | undefined;
   pendingCompletionOfferTaskId: string | undefined;
   pendingStateChangingDiscussionId: string | undefined;
   pendingStateChangingKind: "keeplore-button-trial" | "outage" | "other" | undefined;
@@ -112,6 +113,7 @@ export function createTelephoneSessionCoordinator(
   const state: TelephoneSessionCoordinatorState = {
     activeKeeploreTaskId: undefined,
     lastFinalizedTurnId: undefined,
+    pendingCompletionOfferKind: undefined,
     pendingCompletionOfferTaskId: undefined,
     pendingStateChangingDiscussionId: undefined,
     pendingStateChangingKind: undefined,
@@ -316,16 +318,40 @@ async function handleFinalizedTurn(
         requestId: `telephone:${turn.turnId}`,
       });
       state.activeKeeploreTaskId = record.task.id;
+      // A Delegation outlives the call that ordered it, and this session has no
+      // way to speak into itself once the Delegation reaches its terminal
+      // state. The confirmation therefore offers the Completion Callback that
+      // can carry the outcome instead of promising a report the call cannot
+      // deliver.
+      state.pendingCompletionOfferTaskId = record.task.id;
+      state.pendingCompletionOfferKind = "delegation";
       const responseId = `${turn.turnId}:delegation-response`;
+      const text =
+        "The Keeplore Button Trial is confirmed and delegated to restricted " +
+        "Codex on a non-production branch. Nothing will be merged or " +
+        "deployed. I can disconnect and call your registered telephone when " +
+        "it finishes. Would you like that?";
+      const evidence = {
+        details: { responseId, text },
+        id: responseId,
+        kind: "telephone.semantic.response" as const,
+        occurredAt: turn.occurredAt,
+        summary:
+          "A Completion Callback offer was prepared for the confirmed Delegation.",
+      };
+      await options.tasks.appendTelephoneEvidence({
+        event: evidence,
+        taskId: record.task.id,
+      });
+      await options.sessionEvidence?.append(evidence);
       return telephoneSessionActionResultSchema.parse({
         actions: [
           {
             interruptible: true,
-            kind: "speak-semantic-response",
+            kind: "offer-completion-callback",
             responseId,
             taskId: record.task.id,
-            text:
-              "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+            text,
           },
         ],
       });
@@ -372,7 +398,14 @@ async function handleFinalizedTurn(
       ],
     });
   }
-  if (state.pendingCompletionOfferTaskId !== undefined) {
+  // An offer made alongside a Delegation confirmation is a convenience the
+  // caller may talk past. It is resolved further down, once the turn's intent
+  // is known, so that a stop request or a status question is answered on its
+  // own terms rather than read as a refusal of the callback.
+  if (
+    state.pendingCompletionOfferTaskId !== undefined &&
+    state.pendingCompletionOfferKind !== "delegation"
+  ) {
     const taskId = state.pendingCompletionOfferTaskId;
     const offerSpeech = classifyConfirmationSpeech(sanitizedTranscript);
     if (offerSpeech === "ambiguous") {
@@ -384,6 +417,7 @@ async function handleFinalizedTurn(
         "I did not catch that. Would you like me to disconnect and call you back when this finishes?",
       );
     }
+    state.pendingCompletionOfferKind = undefined;
     state.pendingCompletionOfferTaskId = undefined;
     if (offerSpeech === "affirmative") {
       return telephoneSessionActionResultSchema.parse({
@@ -435,6 +469,36 @@ async function handleFinalizedTurn(
     occurredAt: turn.occurredAt,
     summary: "Telephone turn interpretation timing was recorded.",
   });
+  if (
+    state.pendingCompletionOfferKind === "delegation" &&
+    state.pendingCompletionOfferTaskId !== undefined &&
+    interpretation.intent !== "stop"
+  ) {
+    const taskId = state.pendingCompletionOfferTaskId;
+    const offerSpeech = classifyConfirmationSpeech(sanitizedTranscript);
+    if (offerSpeech !== "ambiguous") {
+      state.pendingCompletionOfferKind = undefined;
+      state.pendingCompletionOfferTaskId = undefined;
+      if (offerSpeech === "affirmative") {
+        return telephoneSessionActionResultSchema.parse({
+          actions: [
+            {
+              interruptible: false,
+              kind: "request-completion-callback-and-disconnect",
+              requestId: `completion-callback:${turn.turnId}`,
+              taskId,
+              telephoneSessionId: turn.telephoneSessionId,
+            },
+          ],
+        });
+      }
+      return guidance(
+        options,
+        turn,
+        "Okay. I’ll keep this call open while the Durable Task continues.",
+      );
+    }
+  }
   if (interpretation.intent === "stop") {
     if (
       state.activeKeeploreTaskId === undefined &&
@@ -594,6 +658,7 @@ async function handleFinalizedTurn(
   const responseId = `${turn.turnId}:response`;
   if (record.task.status === "pending") {
     state.pendingCompletionOfferTaskId = record.task.id;
+    state.pendingCompletionOfferKind = "background-inquiry";
     const offerResponseId = `${turn.turnId}:completion-offer`;
     const text =
       "This is still running. I can disconnect and call your registered telephone when it finishes. Would you like that?" as const;
