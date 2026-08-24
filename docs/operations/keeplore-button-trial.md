@@ -45,6 +45,10 @@ unit's own restriction, so a green stage 2 now means the Delegation's sandbox
 starts. No narrower restriction works: Bubblewrap requests every namespace in one
 call, so denying any single type fails exactly like denying all of them.
 
+If it reports `loopback: Failed to create NETLINK_ROUTE socket`, the unit's
+`RestrictAddressFamilies` is missing `AF_NETLINK`, which bwrap needs to bring
+loopback up inside the network namespace it unshares — also ADR-0054.
+
 If Bubblewrap reports `RTM_NEWADDR` or `uid_map` permission errors, do not set
 `kernel.apparmor_restrict_unprivileged_userns=0` and do not make Bubblewrap
 setuid. Promote the reviewed fix, run the attended deployment-authority upgrade
