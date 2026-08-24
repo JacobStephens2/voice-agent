@@ -219,6 +219,50 @@ test("the Agent Host narrowly enables Bubblewrap user namespaces for Codex", asy
   }
 });
 
+test("the Subagent unit lets restricted Codex open its Bubblewrap sandbox", async () => {
+  const [subagentUnit, health, trial] = await Promise.all(
+    [
+      "ops/systemd/voice-agent-subagent.service",
+      "ops/release/deployment-health.sh",
+      "ops/acceptance/run-keeplore-button-trial.sh",
+    ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
+  );
+
+  // Bubblewrap asks for CLONE_NEWUSER|CLONE_NEWNS in one clone call, so any
+  // namespace restriction on this unit denies the sandbox outright and every
+  // Delegation fails before the model reads a file.
+  expect(subagentUnit).toContain("RestrictNamespaces=false");
+  expect(subagentUnit).not.toContain("RestrictNamespaces=true");
+  expect(subagentUnit).toContain("NoNewPrivileges=true");
+  expect(subagentUnit).toContain("CapabilityBoundingSet=");
+  expect(subagentUnit).toContain("ProtectSystem=strict");
+
+  // Both sandbox probes must run under the Subagent unit's own namespace
+  // restriction; an attended shell starts Bubblewrap where the service cannot.
+  for (const probe of [health, trial]) {
+    expect(probe).toContain('--property="RestrictNamespaces=');
+    expect(probe).toContain(
+      "systemctl show voice-agent-subagent.service",
+    );
+  }
+  expect(health).toContain(
+    "Offline Codex sandbox health probe failed under the Subagent unit restrictions",
+  );
+  expect(health).not.toContain("runuser --user voice-codex -- env -i");
+  expect(trial).toContain(
+    "The reviewed Codex model workspace sandbox failed to initialize under the Subagent unit restrictions",
+  );
+  expect(trial).not.toContain(
+    "sudo -u voice-codex -g voice-subagent-client env -i",
+  );
+  for (const hostPolicy of [health, trial]) {
+    expect(hostPolicy).not.toContain(
+      "kernel.apparmor_restrict_unprivileged_userns=0",
+    );
+    expect(hostPolicy).not.toContain("chmod u+s /usr/bin/bwrap");
+  }
+});
+
 test("the Agent Host release preserves its private ports and service boundaries", async () => {
   const [
     apiServer,

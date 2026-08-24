@@ -268,12 +268,19 @@ if ! sudo -u voice-codex env -i \
   warn "The reviewed Codex enrollment sandbox failed its credential-isolation proof."
   exit 1
 fi
-if ! sudo -u voice-codex -g voice-subagent-client env -i \
-  CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex LANG=C.UTF-8 \
-  PATH=/usr/local/bin:/usr/bin:/bin TMPDIR=/var/lib/voice-codex/tmp \
+SUBAGENT_NAMESPACES=$(sudo systemctl show voice-agent-subagent.service \
+  --property=RestrictNamespaces --value)
+say "Probing the model workspace sandbox under the Subagent unit's own namespace restriction; an attended shell can start Bubblewrap where the service cannot."
+if ! sudo systemd-run --quiet --pipe --wait --collect \
+  --unit=voice-agent-keeplore-model-sandbox-probe \
+  --property=User=voice-codex --property=Group=voice-subagent-client \
+  --property="RestrictNamespaces=$SUBAGENT_NAMESPACES" \
+  --setenv=CODEX_HOME="$CODEX_HOME" --setenv=HOME=/var/lib/voice-codex \
+  --setenv=LANG=C.UTF-8 --setenv=PATH=/usr/local/bin:/usr/bin:/bin \
+  --setenv=TMPDIR=/var/lib/voice-codex/tmp \
   /usr/bin/node --experimental-strip-types \
   "$RELEASE_ROOT/apps/worker/src/keeplore-model-sandbox-probe.ts"; then
-  warn "The reviewed Codex model workspace sandbox failed to initialize."
+  warn "The reviewed Codex model workspace sandbox failed to initialize under the Subagent unit restrictions."
   exit 1
 fi
 note "The publisher will refuse stale App assessment or owner bypass attestation. If publication is refused, refresh repository-policy collection and record a new owner attestation before retrying."

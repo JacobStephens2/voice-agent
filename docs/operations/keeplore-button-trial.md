@@ -35,6 +35,16 @@ Stage 2 also requires the reviewed `bwrap-userns-restrict` AppArmor profile and
 the pinned `voice-agent-keeplore-publisher.service`. Both become active root
 authority only through the attended deployment-authority upgrade above after
 the Release has been Human Merged and promoted.
+
+If Bubblewrap reports `No permissions to create new namespace`, read the
+Subagent unit before the AppArmor profile. A namespace restriction on
+`voice-agent-subagent.service` denies Bubblewrap's `clone` outright and leaves no
+AppArmor denial in the audit log, while `bwrap` still succeeds for `voice-codex`
+from an attended shell — see ADR-0054. Both sandbox probes here run under that
+unit's own restriction, so a green stage 2 now means the Delegation's sandbox
+starts. No narrower restriction works: Bubblewrap requests every namespace in one
+call, so denying any single type fails exactly like denying all of them.
+
 If Bubblewrap reports `RTM_NEWADDR` or `uid_map` permission errors, do not set
 `kernel.apparmor_restrict_unprivileged_userns=0` and do not make Bubblewrap
 setuid. Promote the reviewed fix, run the attended deployment-authority upgrade
