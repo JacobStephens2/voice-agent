@@ -129,6 +129,10 @@ _Avoid_: Task stop, service shutdown, rollback deletion
 A concise spoken readback of the target application, environment, and intended state-changing outcome—not the eventual Operation plan—that remains pending until the user affirmatively confirms or declines it, before the Voice Agent accepts a Durable Task or Delegation.
 _Avoid_: Per-operation approval, conversational acknowledgement
 
+**Bounded Provider Retry**:
+The single recovery a Telephone Session may spend on a transient speech-provider fault, replayed under the durable turn identity that already failed; a fault with nothing left to replay, and every later failure, ends the call through one prerecorded response instead while preserving accepted Durable Tasks.
+_Avoid_: Automatic provider failover, unlimited retry, redial
+
 **Bounded Excerpt**:
 An explicitly requested, code-filtered subset of server data that may be shared with a hosted model provider.
 _Avoid_: Raw payload, unrestricted context

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   telephoneProviderFailureEvidenceEventSchema,
+  telephoneProviderRetryEvidenceEventSchema,
   telephoneProviderTimingEvidenceEventSchema,
   telephoneResponseInterruptedEvidenceEventSchema,
   telephoneSemanticResponseEvidenceEventSchema,
@@ -69,6 +70,7 @@ export const telephoneEvidenceEventSchema = z.discriminatedUnion("kind", [
   telephoneTurnFinalizedEvidenceEventSchema,
   telephoneProviderTimingEvidenceEventSchema,
   telephoneProviderFailureEvidenceEventSchema,
+  telephoneProviderRetryEvidenceEventSchema,
   telephoneResponseInterruptedEvidenceEventSchema,
   telephoneSemanticResponseEvidenceEventSchema,
   z.object({

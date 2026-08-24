@@ -9,6 +9,7 @@ import {
 } from "./callback-handshake.ts";
 import {
   telephoneProviderFailureEvidenceEventSchema,
+  telephoneProviderRetryEvidenceEventSchema,
   telephoneProviderTimingEvidenceEventSchema,
   telephoneResponseInterruptedEvidenceEventSchema,
   telephoneSemanticResponseEvidenceEventSchema,
@@ -230,6 +231,7 @@ export const evidenceEventProjectionSchema = z.discriminatedUnion("kind", [
   telephoneTurnFinalizedEvidenceEventSchema,
   telephoneProviderTimingEvidenceEventSchema,
   telephoneProviderFailureEvidenceEventSchema,
+  telephoneProviderRetryEvidenceEventSchema,
   telephoneResponseInterruptedEvidenceEventSchema,
   completionCallbackRequestedEvidenceEventSchema,
   completionCallbackOutcomeEvidenceEventSchema,

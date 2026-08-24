@@ -86,6 +86,16 @@ export const telephoneProviderFailureEvidenceEventSchema = z.object({
   kind: z.literal("telephone.provider.failure"),
 });
 
+export const telephoneProviderRetryEvidenceEventSchema = z.object({
+  ...telephoneEvidenceFields,
+  details: z.object({
+    provider: providerNameSchema,
+    stage: providerFailureStageSchema,
+    turnId: turnIdentifierSchema.optional(),
+  }),
+  kind: z.literal("telephone.provider.retry"),
+});
+
 export const telephoneConversationEvidenceEventSchema = z.discriminatedUnion(
   "kind",
   [
@@ -94,6 +104,7 @@ export const telephoneConversationEvidenceEventSchema = z.discriminatedUnion(
     telephoneSemanticResponseEvidenceEventSchema,
     telephoneResponseInterruptedEvidenceEventSchema,
     telephoneProviderFailureEvidenceEventSchema,
+    telephoneProviderRetryEvidenceEventSchema,
   ],
 );
 export type TelephoneConversationEvidenceEvent = z.infer<
@@ -151,12 +162,28 @@ export const telephoneProviderTimingEventSchema = z
   })
   .strict();
 
+/**
+ * Whether the reporting adapter still has something to replay. `terminal` marks
+ * a fault the Telephone Session cannot recover from — an unusable session or a
+ * failed start — so it never spends the session's single bounded retry.
+ */
+export const telephoneProviderFailureRecoveries = [
+  "retryable",
+  "terminal",
+] as const;
+export type TelephoneProviderFailureRecovery =
+  (typeof telephoneProviderFailureRecoveries)[number];
+const providerFailureRecoverySchema = z
+  .enum(telephoneProviderFailureRecoveries)
+  .optional();
+
 export const telephoneProviderTimeoutEventSchema = z
   .object({
     deliveryId: deliveryIdentifierSchema,
     kind: z.literal("provider-timeout"),
     occurredAt: timestampSchema,
     provider: providerNameSchema,
+    recovery: providerFailureRecoverySchema,
     stage: providerFailureStageSchema,
     taskId: identifierSchema.optional(),
     timeoutMs: durationSchema,
@@ -170,6 +197,7 @@ export const telephoneProviderFailureEventSchema = z
     kind: z.literal("provider-failure"),
     occurredAt: timestampSchema,
     provider: providerNameSchema,
+    recovery: providerFailureRecoverySchema,
     stage: providerFailureStageSchema,
     taskId: identifierSchema.optional(),
   })
@@ -242,6 +270,13 @@ const requestCompletionCallbackAndDisconnectActionSchema = z.object({
   taskId: identifierSchema,
   telephoneSessionId: identifierSchema,
 });
+const retryProviderTurnActionSchema = z.object({
+  kind: z.literal("retry-provider-turn"),
+  retryId: identifierSchema,
+  stage: providerFailureStageSchema,
+  taskId: identifierSchema.optional(),
+  turnId: turnIdentifierSchema.optional(),
+});
 export const telephoneSessionActionSchema = z.discriminatedUnion("kind", [
   speakSemanticResponseActionSchema,
   speakGuidanceActionSchema,
@@ -249,6 +284,7 @@ export const telephoneSessionActionSchema = z.discriminatedUnion("kind", [
   playPrerecordedFailureActionSchema,
   offerCompletionCallbackActionSchema,
   requestCompletionCallbackAndDisconnectActionSchema,
+  retryProviderTurnActionSchema,
 ]);
 export type TelephoneSessionAction = z.infer<
   typeof telephoneSessionActionSchema

@@ -7,13 +7,17 @@ import {
   type FinalizedTelephoneTurn,
   type KeeploreDelegationRecord,
   type TelephoneConversationEvidenceEvent,
+  type TelephoneProviderFailureRecovery,
   type TelephoneProviderFailureStage,
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import type { TelephoneBoundaryDecision } from "@voice-agent/durable-store";
-import { transcriptReportsBountywellOutage } from "@voice-agent/policy";
+import {
+  classifyConfirmationSpeech,
+  transcriptReportsBountywellOutage,
+} from "@voice-agent/policy";
 
 export interface TelephoneTurnInterpreter {
   interpret(input: {
@@ -86,9 +90,12 @@ interface TelephoneSessionCoordinatorOptions {
 
 interface TelephoneSessionCoordinatorState {
   activeKeeploreTaskId: string | undefined;
+  lastFinalizedTurnId: string | undefined;
   pendingCompletionOfferTaskId: string | undefined;
   pendingStateChangingDiscussionId: string | undefined;
   pendingStateChangingKind: "keeplore-button-trial" | "outage" | "other" | undefined;
+  providerRetryUsed: boolean;
+  terminalFailureIssued: boolean;
 }
 
 interface FinalizedTurnResult {
@@ -102,9 +109,12 @@ export function createTelephoneSessionCoordinator(
   const finalizedTurnResults = new Map<string, FinalizedTurnResult>();
   const state: TelephoneSessionCoordinatorState = {
     activeKeeploreTaskId: undefined,
+    lastFinalizedTurnId: undefined,
     pendingCompletionOfferTaskId: undefined,
     pendingStateChangingDiscussionId: undefined,
     pendingStateChangingKind: undefined,
+    providerRetryUsed: false,
+    terminalFailureIssued: false,
   };
   return {
     async receiveProviderEvent(untrustedEvent) {
@@ -118,11 +128,16 @@ export function createTelephoneSessionCoordinator(
             const spoken = result.actions.find(
               (action) => action.kind === "speak-semantic-response",
             );
+            // Two different transcripts under one durable turn identity is a
+            // recognition integrity fault rather than a transient one, so it
+            // is never spent on the session's single retry.
             return recordProviderFailure(
               options,
+              state,
               {
                 deliveryId: event.deliveryId,
                 occurredAt: event.occurredAt,
+                recovery: "terminal",
                 ...(spoken === undefined ? {} : { taskId: spoken.taskId }),
               },
               {
@@ -201,19 +216,29 @@ export function createTelephoneSessionCoordinator(
         return telephoneSessionActionResultSchema.parse({ actions: [] });
       }
       if (event.kind === "provider-timeout") {
-        return recordProviderFailure(options, event, {
-          failure: "timeout",
-          provider: event.provider,
-          stage: event.stage,
-          timeoutMs: event.timeoutMs,
-        });
+        return recordProviderFailure(
+          options,
+          state,
+          event,
+          {
+            failure: "timeout",
+            provider: event.provider,
+            stage: event.stage,
+            timeoutMs: event.timeoutMs,
+          },
+        );
       }
       if (event.kind === "provider-failure") {
-        return recordProviderFailure(options, event, {
-          failure: event.failure,
-          provider: event.provider,
-          stage: event.stage,
-        });
+        return recordProviderFailure(
+          options,
+          state,
+          event,
+          {
+            failure: event.failure,
+            provider: event.provider,
+            stage: event.stage,
+          },
+        );
       }
       throw new Error("Unsupported Telephone Session provider event");
     },
@@ -226,6 +251,7 @@ async function handleFinalizedTurn(
   turn: FinalizedTelephoneTurn,
   sanitizedTranscript: string,
 ): Promise<TelephoneSessionActionResult> {
+  state.lastFinalizedTurnId = turn.turnId;
   await options.sessionEvidence?.append({
     details: {
       telephoneSessionId: turn.telephoneSessionId,
@@ -252,13 +278,24 @@ async function handleFinalizedTurn(
   if (state.pendingStateChangingDiscussionId !== undefined) {
     const discussionId = state.pendingStateChangingDiscussionId;
     const discussionKind = state.pendingStateChangingKind;
+    const speech = classifyConfirmationSpeech(sanitizedTranscript);
+    if (speech === "ambiguous") {
+      // The same Task Confirmation stays pending and keeps its claimed
+      // state-changing slot, so unreadable speech costs the owner a repetition
+      // rather than the decision itself.
+      return guidance(
+        options,
+        turn,
+        "I did not catch that. The same Task Confirmation is still pending. Please say yes to confirm it or no to decline it.",
+      );
+    }
     state.pendingStateChangingDiscussionId = undefined;
     state.pendingStateChangingKind = undefined;
     await options.stateChangingTasks?.release(
       turn.telephoneSessionId,
       discussionId,
     );
-    if (!isAffirmative(sanitizedTranscript)) {
+    if (speech === "negative") {
       return guidance(
         options,
         turn,
@@ -335,8 +372,18 @@ async function handleFinalizedTurn(
   }
   if (state.pendingCompletionOfferTaskId !== undefined) {
     const taskId = state.pendingCompletionOfferTaskId;
+    const offerSpeech = classifyConfirmationSpeech(sanitizedTranscript);
+    if (offerSpeech === "ambiguous") {
+      // The offer is a pending decision too: unreadable speech leaves it open
+      // instead of silently keeping the caller on a call they wanted to end.
+      return guidance(
+        options,
+        turn,
+        "I did not catch that. Would you like me to disconnect and call you back when this finishes?",
+      );
+    }
     state.pendingCompletionOfferTaskId = undefined;
-    if (isAffirmative(sanitizedTranscript)) {
+    if (offerSpeech === "affirmative") {
       return telephoneSessionActionResultSchema.parse({
         actions: [
           {
@@ -603,39 +650,6 @@ async function handleFinalizedTurn(
   });
 }
 
-function isAffirmative(text: string): boolean {
-  const normalized = text
-    .trim()
-    .toLocaleLowerCase("en-US")
-    .replace(/’/gu, "'")
-    .replace(/[,.!?]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  const words = normalized.split(" ");
-  return [
-    "yes",
-    "yes please",
-    "yeah",
-    "yep",
-    "sure",
-    "okay",
-    "ok",
-    "please do",
-    "that is correct",
-    "that's correct",
-    "i confirm",
-    "correct",
-  ].some((phrase) => {
-    const phraseWords = phrase.split(" ");
-    return (
-      words.length % phraseWords.length === 0 &&
-      words.every(
-        (word, index) => word === phraseWords[index % phraseWords.length],
-      )
-    );
-  });
-}
-
 function transcriptRequestsKeeploreButtonTrial(text: string): boolean {
   return /get rid of/iu.test(text) && /remove/iu.test(text);
 }
@@ -705,14 +719,26 @@ async function guidance(
   });
 }
 
+/**
+ * Record one bounded speech-provider failure and decide what the call does
+ * next.
+ *
+ * A Telephone Session spends at most one recovery: the first transient failure
+ * is retried against the same durable turn identity, and any remaining failure
+ * ends the call once. Both outcomes append the failing component to evidence,
+ * and the terminal response is issued exactly once so a stuttering provider
+ * cannot replay the prerecorded audio.
+ */
 async function recordProviderFailure(
   options: {
     readonly sessionEvidence?: TelephoneSessionEvidenceSink;
     readonly tasks: TelephoneBountywellTasks;
   },
+  state: TelephoneSessionCoordinatorState,
   event: {
     readonly deliveryId: string;
     readonly occurredAt: string;
+    readonly recovery?: TelephoneProviderFailureRecovery | undefined;
     readonly taskId?: string | undefined;
   },
   details:
@@ -744,17 +770,67 @@ async function recordProviderFailure(
         ? "A speech provider exceeded its bounded timeout."
         : "A speech provider reported a bounded failure.",
   };
+  // A setup failure has no accepted turn to replay: the session never started,
+  // so it ends on its first report rather than spending the retry.
+  const retrying =
+    (event.recovery ?? "retryable") === "retryable" &&
+    details.stage !== "setup" &&
+    !state.providerRetryUsed;
   await options.sessionEvidence?.append(evidence);
-  await options.sessionEvidence?.requestFailureNotification?.({
-    failureEventId: evidence.id,
-    occurredAt: evidence.occurredAt,
-  });
+  if (!retrying) {
+    await options.sessionEvidence?.requestFailureNotification?.({
+      failureEventId: evidence.id,
+      occurredAt: evidence.occurredAt,
+    });
+  }
   if (event.taskId !== undefined) {
     await options.tasks.appendTelephoneEvidence({
       event: evidence,
       taskId: event.taskId,
     });
   }
+  if (retrying) {
+    state.providerRetryUsed = true;
+    const retry = {
+      details: {
+        provider: details.provider,
+        stage: details.stage,
+        ...(state.lastFinalizedTurnId === undefined
+          ? {}
+          : { turnId: state.lastFinalizedTurnId }),
+      },
+      id: `${event.deliveryId}:retry`,
+      kind: "telephone.provider.retry" as const,
+      occurredAt: event.occurredAt,
+      summary: "One bounded speech-provider retry was authorized.",
+    };
+    await options.sessionEvidence?.append(retry);
+    if (event.taskId !== undefined) {
+      await options.tasks.appendTelephoneEvidence({
+        event: retry,
+        taskId: event.taskId,
+      });
+    }
+    return telephoneSessionActionResultSchema.parse({
+      actions: [
+        {
+          kind: "retry-provider-turn",
+          retryId: retry.id,
+          stage: details.stage,
+          ...(event.taskId === undefined ? {} : { taskId: event.taskId }),
+          ...(state.lastFinalizedTurnId === undefined
+            ? {}
+            : { turnId: state.lastFinalizedTurnId }),
+        },
+      ],
+    });
+  }
+  if (state.terminalFailureIssued) {
+    // The call is already ending on the first terminal response. Later
+    // failures stay in evidence but never speak again.
+    return telephoneSessionActionResultSchema.parse({ actions: [] });
+  }
+  state.terminalFailureIssued = true;
   return telephoneSessionActionResultSchema.parse({
     actions: [
       {

@@ -734,11 +734,11 @@ describe("Telephone Bountywell health inquiry", () => {
       ).resolves.toEqual({
         actions: [
           {
-            interruptible: false,
-            kind: "play-prerecorded-failure-and-end",
+            kind: "retry-provider-turn",
+            retryId: "tts-timeout-001:retry",
+            stage: "tts",
             taskId: spoken.taskId,
-            text:
-              "The voice service is temporarily unavailable. Please check the Evidence Record.",
+            turnId: "provider-turn-001",
           },
         ],
       });
@@ -763,14 +763,40 @@ describe("Telephone Bountywell health inquiry", () => {
           },
         ],
       });
+      await expect(
+        scenario.receiveProviderEvent({
+          deliveryId: "coordinator-failure-002",
+          failure: "unavailable",
+          kind: "provider-failure",
+          occurredAt: "2026-08-17T18:00:03.000Z",
+          provider: "openai",
+          stage: "coordinator",
+          taskId: spoken.taskId,
+        }),
+      ).resolves.toEqual({ actions: [] });
 
       const record = await scenario.readEvidenceRecord(spoken.taskId);
-      expect(record?.evidence.at(-3)?.kind).toBe("telephone.provider.timing");
-      expect(record?.evidence.at(-2)).toMatchObject({
+      expect(record?.evidence.at(-4)).toMatchObject({
         details: {
           failure: "timeout",
           provider: "inworld",
           stage: "tts",
+        },
+        kind: "telephone.provider.failure",
+      });
+      expect(record?.evidence.at(-3)).toMatchObject({
+        details: {
+          provider: "inworld",
+          stage: "tts",
+          turnId: "provider-turn-001",
+        },
+        kind: "telephone.provider.retry",
+      });
+      expect(record?.evidence.at(-2)).toMatchObject({
+        details: {
+          failure: "unavailable",
+          provider: "openai",
+          stage: "coordinator",
         },
         kind: "telephone.provider.failure",
       });
@@ -784,12 +810,12 @@ describe("Telephone Bountywell health inquiry", () => {
       });
       expect(scenario.failureNotifications).toEqual([
         {
-          failureEventId: "tts-timeout-001:failure",
-          occurredAt: "2026-08-17T18:00:02.000Z",
-        },
-        {
           failureEventId: "coordinator-failure-001:failure",
           occurredAt: "2026-08-17T18:00:02.500Z",
+        },
+        {
+          failureEventId: "coordinator-failure-002:failure",
+          occurredAt: "2026-08-17T18:00:03.000Z",
         },
       ]);
       expect(JSON.stringify(record)).not.toContain("rawProviderPayload");
