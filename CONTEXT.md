@@ -133,6 +133,10 @@ _Avoid_: Per-operation approval, conversational acknowledgement
 The single recovery a Telephone Session may spend on a transient speech-provider fault, replayed under the durable turn identity that already failed; a fault with nothing left to replay, and every later failure, ends the call through one prerecorded response instead while preserving accepted Durable Tasks.
 _Avoid_: Automatic provider failover, unlimited retry, redial
 
+**Telephone Session Fault**:
+A broken invariant the Voice Agent itself raises during a Telephone Session, as opposed to a failure a speech or interpretation provider reported; its description is fixed text authored in the system and carries nothing from the call, which is what makes it safe to describe to an operator at any stage.
+_Avoid_: Provider failure, provider outage, speech error
+
 **Bounded Excerpt**:
 An explicitly requested, code-filtered subset of server data that may be shared with a hosted model provider.
 _Avoid_: Raw payload, unrestricted context
