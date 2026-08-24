@@ -650,6 +650,52 @@ describe("Telephone Bountywell health inquiry", () => {
     }
   });
 
+  test("a fault the Voice Agent raised in its own turn handling is not recorded as a provider failure", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "voice-agent-telephone-agent-fault-"));
+    temporaryDirectories.push(directory);
+    const scenario = await createTelephoneBountywellScenario({
+      databasePath: join(directory, "voice-agent.sqlite"),
+      ids: ["must-not-be-used"],
+      now: "2026-08-17T19:00:00.000Z",
+      observation: {
+        checks: [
+          {
+            facts: { statusCode: 200 },
+            outcome: "pass",
+            source: "public-health",
+            summary: "The public health endpoint responded successfully.",
+          },
+        ],
+        observedAt: "2026-08-17T19:00:01.000Z",
+        rejectedEvidenceCount: 0,
+      },
+    });
+
+    try {
+      await scenario.receiveProviderEvent({
+        deliveryId: "agent-failure-001",
+        failure: "unavailable",
+        kind: "provider-failure",
+        occurredAt: "2026-08-17T19:00:02.000Z",
+        provider: "voice-agent",
+        recovery: "terminal",
+        stage: "agent",
+      });
+
+      expect(scenario.sessionEvidence.at(-1)).toMatchObject({
+        details: {
+          failure: "unavailable",
+          provider: "voice-agent",
+          stage: "agent",
+        },
+        kind: "telephone.provider.failure",
+        summary: "The Voice Agent reached a bounded fault in its own turn handling.",
+      });
+    } finally {
+      await scenario.close();
+    }
+  });
+
   test("provider timing and timeouts produce deterministic sanitized evidence and actions", async () => {
     const directory = await mkdtemp(join(tmpdir(), "voice-agent-telephone-provider-"));
     temporaryDirectories.push(directory);

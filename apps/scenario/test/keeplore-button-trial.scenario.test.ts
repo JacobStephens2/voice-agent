@@ -10,6 +10,7 @@ import {
 } from "@voice-agent/scenario";
 import type {
   KeeploreDelegationBrief,
+  KeeploreDelegationFailure,
   KeeploreDelegationResult,
   KeeploreRegistration,
   KeeploreWorktree,
@@ -834,6 +835,80 @@ test("an out-of-scope Subagent result is quarantined and cannot publish a pull r
   });
 });
 
+test("a Delegation that failed in the restricted sandbox records what ended it", async () => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return failedSandboxResult(brief, worktree);
+    },
+  });
+  await confirmTrial(scenario, "sandbox");
+
+  const failed = await scenario.processNextDelegation();
+
+  expect(failed?.delegation.result?.failure).toEqual({
+    evidencePaths: [
+      "/var/lib/voice-agent-evidence/delegation-button-trial/restricted-runner-failure.json",
+      "/var/lib/voice-agent-evidence/delegation-button-trial/model-workspace",
+    ],
+    kind: "sandbox-initialization",
+    message:
+      "Restricted Codex sandbox did not start; the runner exited with code 1",
+    name: "RestrictedRunFailure",
+  });
+  expect(failed).toMatchObject({
+    delegation: {
+      result: {
+        changedFiles: [],
+        cleanup: {
+          eligible: false,
+          quarantineReason:
+            "Delegated Worktree is incomplete or dirty and must be retained",
+        },
+        commits: [],
+        pullRequest: { state: "none", url: null },
+        status: "failed",
+      },
+    },
+    task: {
+      conclusion: "Keeplore Button Trial could not be verified.",
+      status: "failed",
+    },
+  });
+});
+
+test("failure evidence outside the Delegation evidence directory is quarantined", async () => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      const result = failedSandboxResult(brief, worktree);
+      return {
+        ...result,
+        failure: {
+          ...result.failure,
+          evidencePaths: ["/var/lib/voice-codex/tmp/model-workspace"],
+        },
+      };
+    },
+  });
+  await confirmTrial(scenario, "escaped-evidence");
+
+  const failed = await scenario.processNextDelegation();
+
+  expect(failed).toMatchObject({
+    delegation: {
+      result: {
+        cleanup: {
+          eligible: false,
+          quarantineReason:
+            "Delegation policy rejected the Subagent result; worktree quarantined",
+        },
+        risks: ["Delegation failure evidence escaped its evidence directory"],
+        status: "failed",
+      },
+    },
+    task: { status: "failed" },
+  });
+});
+
 test("a result that reports another repository's pull request is quarantined", async () => {
   const scenario = await createScenario({
     async execute({ brief, worktree }) {
@@ -999,6 +1074,7 @@ function successfulResult(
       providerLogin: "separate-eligible-subscription",
       sudo: false,
     },
+    failure: null,
     pullRequest: {
       state: "open",
       url: "https://github.com/JacobStephens2/keeplore/pull/101",
@@ -1047,6 +1123,60 @@ function successfulResult(
   };
 }
 
+function failedSandboxResult(
+  brief: KeeploreDelegationBrief,
+  worktree: KeeploreWorktree,
+): KeeploreDelegationResult & { readonly failure: KeeploreDelegationFailure } {
+  const evidenceDirectory = `/var/lib/voice-agent-evidence/${brief.delegationId}`;
+  return {
+    branch: worktree.branch,
+    changedFiles: [],
+    cleanup: {
+      eligible: false,
+      quarantineReason:
+        "Delegated Worktree is incomplete or dirty and must be retained",
+    },
+    commits: [],
+    completedAt: now,
+    delegationId: brief.delegationId,
+    environment: {
+      dockerSocket: false,
+      identity: "voice-codex",
+      operationsBroker: false,
+      productionDirectoryWrite: false,
+      productionSecrets: false,
+      providerLogin: "separate-eligible-subscription",
+      sudo: false,
+    },
+    failure: {
+      evidencePaths: [
+        `${evidenceDirectory}/restricted-runner-failure.json`,
+        `${evidenceDirectory}/model-workspace`,
+      ],
+      kind: "sandbox-initialization",
+      message:
+        "Restricted Codex sandbox did not start; the runner exited with code 1",
+      name: "RestrictedRunFailure",
+    },
+    pullRequest: { state: "none", url: null },
+    risks: [
+      "Workspace sandbox prevented reading the two permitted reference files.",
+    ],
+    status: "failed",
+    verification: {
+      automated: [],
+      cardView: {
+        afterHash: "unavailable",
+        beforeHash: "unavailable",
+        unchanged: false,
+      },
+      computedStyles: [],
+      screenshots: [],
+    },
+    worktree: { ...worktree, dirty: true, state: "failed" },
+  };
+}
+
 function stoppedResult(
   brief: KeeploreDelegationBrief,
   worktree: KeeploreWorktree,
@@ -1070,6 +1200,7 @@ function stoppedResult(
       providerLogin: "separate-eligible-subscription",
       sudo: false,
     },
+    failure: null,
     pullRequest: { state: "none", url: null },
     risks: ["The preserved worktree contains uncommitted work."],
     status: "stopped",

@@ -1,8 +1,16 @@
-import { APITimeoutError } from "@livekit/agents";
+import {
+  APIStatusError,
+  APITimeoutError,
+  UnexpectedModelBehavior,
+} from "@livekit/agents";
 import { TelephoneSessionFault } from "@voice-agent/runtime";
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 
-import { describeProviderError } from "../src/provider-error-description.ts";
+import {
+  describeProviderError,
+  ProviderReportedError,
+} from "../src/provider-error-description.ts";
 
 describe("sanitized provider error description", () => {
   test("an Error keeps its type and message", () => {
@@ -31,25 +39,97 @@ describe("sanitized provider error description", () => {
     });
   });
 
-  test("a recognition failure never carries its message, which may echo a transcript", () => {
-    const error = Object.assign(
-      new Error("could not transcribe: cancel the Bountywell drill"),
-      { status: 400 },
-    );
+  test("a recognition provider's message is withheld, since it may echo a transcript", () => {
+    const error = new APIStatusError({
+      message: "could not transcribe: cancel the Bountywell drill",
+      options: { statusCode: 400 },
+    });
 
     expect(describeProviderError(error, "stt")).toStrictEqual({
-      name: "Error",
+      name: "APIStatusError",
       status: 400,
     });
   });
 
-  test("an interpretation failure is equally strict, since its prompt holds the transcript", () => {
+  test("an interpretation provider is equally strict, since its prompt holds the transcript", () => {
     expect(
       describeProviderError(
-        new Error("bad request: cancel the Bountywell drill"),
+        new APIStatusError({
+          message: "bad request: cancel the Bountywell drill",
+        }),
         "coordinator",
       ),
-    ).toStrictEqual({ name: "Error" });
+    ).toStrictEqual({ name: "APIStatusError" });
+  });
+
+  test("a framework report of unexpected model behaviour is withheld too", () => {
+    expect(
+      describeProviderError(
+        new UnexpectedModelBehavior("the model replied: cancel the drill"),
+        "coordinator",
+      ),
+    ).toStrictEqual({ name: "UnexpectedModelBehavior" });
+  });
+
+  test("a validation failure is withheld, since it names the value that failed", () => {
+    const error = z
+      .object({ intent: z.enum(["stop", "unrelated"]) })
+      .safeParse({ intent: "cancel the Bountywell drill" }).error;
+
+    expect(describeProviderError(error, "coordinator")).toStrictEqual({
+      name: "ZodError",
+    });
+  });
+
+  test("an ordinary error at a caller-speech stage keeps its message", () => {
+    // The fault that prompted this rule arrived here: a plain Error raised by
+    // code in this repository, withheld because the stage it escaped through
+    // is handed the caller's words.
+    const error = Object.assign(new Error("evidence append failed"), {
+      status: 500,
+    });
+
+    expect(describeProviderError(error, "coordinator")).toStrictEqual({
+      message: "evidence append failed",
+      name: "Error",
+      status: 500,
+    });
+  });
+
+  test("a fault raised in this system's own turn pipeline keeps its message", () => {
+    expect(
+      describeProviderError(
+        new TelephoneSessionFault("Telephone audio output is unavailable"),
+        "agent",
+      ),
+    ).toStrictEqual({
+      message: "Telephone audio output is unavailable",
+      name: "TelephoneSessionFault",
+    });
+  });
+
+  test("an error the framework reported for a provider is withheld whatever its class", () => {
+    // The session error event names the failing provider, so a plain Error
+    // arriving that way is still the provider's account of itself.
+    const error = new ProviderReportedError(
+      Object.assign(new Error("could not transcribe: cancel the drill"), {
+        status: 500,
+      }),
+    );
+
+    expect(describeProviderError(error, "stt")).toStrictEqual({
+      name: "Error",
+      status: 500,
+    });
+  });
+
+  test("a reported synthesis failure still keeps its message, which is the agent's own text", () => {
+    expect(
+      describeProviderError(
+        new ProviderReportedError(new Error("voice unavailable")),
+        "tts",
+      ),
+    ).toStrictEqual({ message: "voice unavailable", name: "Error" });
   });
 
   test("a session-setup failure keeps its message, which sees no caller speech", () => {
@@ -106,6 +186,22 @@ describe("sanitized provider error description", () => {
     });
     expect(describeProviderError(null, "setup")).toStrictEqual({
       name: "null",
+    });
+  });
+
+  test("a provider SDK status stands in for a status field it does not carry", () => {
+    expect(
+      describeProviderError(
+        new APIStatusError({
+          message: "voice unavailable",
+          options: { statusCode: 503 },
+        }),
+        "tts",
+      ),
+    ).toStrictEqual({
+      message: "voice unavailable",
+      name: "APIStatusError",
+      status: 503,
     });
   });
 

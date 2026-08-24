@@ -49,8 +49,12 @@ The structured input to a Subagent containing the goal, Registered Codebase, con
 _Avoid_: Prompt, transcript, handoff message
 
 **Delegation Result**:
-The structured Subagent outcome containing status, verification, risks, and the branch, commits, changed files, and pull-request state for each affected codebase.
+The structured Subagent outcome containing status, verification, risks, the failure that ended a run, and the branch, commits, changed files, and pull-request state for each affected codebase.
 _Avoid_: Final answer, raw agent log
+
+**Restricted Runner Evidence**:
+The trusted runner's own account of a failed Delegation, retained under that Delegation's evidence directory: the restricted runner's exit status and bounded standard error, and the model workspace as it stood when the run ended, carrying no voice transcript.
+_Avoid_: Model report, agent transcript, event stream
 
 **Secret Execution Manifest**:
 An authenticated, versioned allowlist describing credentials that may be resolved for one restricted execution path; it controls blast radius but does not conceal injected credentials from the receiving process.
@@ -130,11 +134,11 @@ A concise spoken readback of the target application, environment, and intended s
 _Avoid_: Per-operation approval, conversational acknowledgement
 
 **Bounded Provider Retry**:
-The single recovery a Telephone Session may spend on a transient speech-provider fault, replayed under the durable turn identity that already failed; a fault with nothing left to replay, and every later failure, ends the call through one prerecorded response instead while preserving accepted Durable Tasks.
+The single recovery a Telephone Session may spend on a transient fault of a speech provider or of the Voice Agent's own turn handling, replayed under the durable turn identity that already failed; a fault with nothing left to replay, and every later failure, ends the call through one prerecorded response instead while preserving accepted Durable Tasks.
 _Avoid_: Automatic provider failover, unlimited retry, redial
 
 **Telephone Session Fault**:
-A broken invariant the Voice Agent itself raises during a Telephone Session, as opposed to a failure a speech or interpretation provider reported; its description is fixed text authored in the system and carries nothing from the call, which is what makes it safe to describe to an operator at any stage.
+A broken invariant the Voice Agent itself raises during a Telephone Session, as opposed to a failure a speech or interpretation provider reported; its description is fixed text authored in the system and carries nothing from the call, which is what makes it safe to describe to an operator at any stage. Every fault the Voice Agent raises while handling a turn, marked or not, is reported against its own failing stage rather than a provider's.
 _Avoid_: Provider failure, provider outage, speech error
 
 **Bounded Excerpt**:

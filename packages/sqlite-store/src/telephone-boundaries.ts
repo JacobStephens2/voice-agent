@@ -693,6 +693,12 @@ export function createSqliteTelephoneBoundaryStore(
           warmSessions: countSessions.get("warm")?.value ?? 0,
         },
         providerFailures: {
+          agent: {
+            timeout:
+              readCounter.get("provider-failure:agent:timeout")?.value ?? 0,
+            unavailable:
+              readCounter.get("provider-failure:agent:unavailable")?.value ?? 0,
+          },
           coordinator: {
             timeout:
               readCounter.get("provider-failure:coordinator:timeout")?.value ?? 0,

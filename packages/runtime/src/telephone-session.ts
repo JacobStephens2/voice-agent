@@ -722,8 +722,8 @@ async function guidance(
 }
 
 /**
- * Record one bounded speech-provider failure and decide what the call does
- * next.
+ * Record one bounded failure of a speech provider or of the Voice Agent's own
+ * turn handling, and decide what the call does next.
  *
  * A Telephone Session spends at most one recovery: the first transient failure
  * is retried against the same durable turn identity, and any remaining failure
@@ -767,10 +767,7 @@ async function recordProviderFailure(
     id: `${event.deliveryId}:failure`,
     kind: "telephone.provider.failure",
     occurredAt: event.occurredAt,
-    summary:
-      details.failure === "timeout"
-        ? "A speech provider exceeded its bounded timeout."
-        : "A speech provider reported a bounded failure.",
+    summary: failureSummary(details),
   };
   // A setup failure has no accepted turn to replay: the session never started,
   // so it ends on its first report rather than spending the retry.
@@ -843,6 +840,22 @@ async function recordProviderFailure(
       },
     ],
   });
+}
+
+/**
+ * A fault the Voice Agent raised in its own turn pipeline is not a provider's,
+ * and an Evidence Record that says otherwise reads as a provider outage.
+ */
+function failureSummary(details: {
+  readonly failure: "timeout" | "unavailable";
+  readonly stage: TelephoneProviderFailureStage;
+}): string {
+  if (details.stage === "agent") {
+    return "The Voice Agent reached a bounded fault in its own turn handling.";
+  }
+  return details.failure === "timeout"
+    ? "A speech provider exceeded its bounded timeout."
+    : "A speech provider reported a bounded failure.";
 }
 
 function sanitizeFinalizedTurn(transcript: string): string {
