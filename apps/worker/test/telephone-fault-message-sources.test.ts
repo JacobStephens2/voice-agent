@@ -21,9 +21,10 @@ const telephoneFaultSources = [
 const faultCarriers = new Set(["ProviderReportedError", "TelephoneStageError"]);
 
 // A fault raises one double-quoted literal and nothing else: no template, no
-// concatenation, no value passed through from the call.
+// concatenation, no value passed through from the call. A provider SDK's error
+// takes its literal under a `message` field, which is the same fixed text.
 const throwSite =
-  /throw new (?<carrier>\w+)\(\s*(?<message>"(?:[^"\\]|\\.)*"\s*[),])?/gu;
+  /throw new (?<carrier>\w+)\(\s*(?:\{\s*message:\s*)?(?<message>"(?:[^"\\]|\\.)*"\s*[),}])?/gu;
 
 describe("telephone fault messages", () => {
   test.each(telephoneFaultSources)(

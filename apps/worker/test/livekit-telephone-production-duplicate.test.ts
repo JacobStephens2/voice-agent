@@ -554,8 +554,16 @@ class LiveKitSessionHarness {
       say(text: string) {
         harness.spokenTexts.push(text);
         return {
+          done: () => true,
+          exception: () => undefined,
           interrupted: false,
-          async waitForPlayout() {},
+          async waitForPlayout() {
+            // A working provider plays its first synthesized frame, which is
+            // what moves the agent into speaking.
+            harness.emit(voice.AgentSessionEventTypes.AgentStateChanged, {
+              newState: "speaking",
+            });
+          },
         };
       },
       async start(input: { agent: voice.Agent }) {
