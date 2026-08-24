@@ -233,6 +233,11 @@ test("the Subagent unit lets restricted Codex open its Bubblewrap sandbox", asyn
   // Delegation fails before the model reads a file.
   expect(subagentUnit).toContain("RestrictNamespaces=false");
   expect(subagentUnit).not.toContain("RestrictNamespaces=true");
+  // With the model sandbox's network disabled, bwrap unshares the network
+  // namespace and brings loopback up inside it over a NETLINK_ROUTE socket.
+  expect(subagentUnit).toContain(
+    "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
+  );
   expect(subagentUnit).toContain("NoNewPrivileges=true");
   expect(subagentUnit).toContain("CapabilityBoundingSet=");
   expect(subagentUnit).toContain("ProtectSystem=strict");

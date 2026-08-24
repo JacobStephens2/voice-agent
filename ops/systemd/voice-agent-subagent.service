@@ -38,7 +38,11 @@ ProtectSystem=strict
 ReadOnlyPaths=/var/lib/keeplore-source
 ReadWritePaths=/var/lib/voice-codex /var/lib/voice-agent-worktrees/keeplore /var/lib/voice-agent-worktrees/keeplore.git /var/lib/voice-agent-evidence
 InaccessiblePaths=/var/lib/voice-agent /var/lib/voice-agent-broker /var/www /opt/keeplore /run/voice-agent-broker /run/docker.sock /var/run/docker.sock
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK is Bubblewrap's, not the runner's: with the model sandbox's
+# network disabled, bwrap unshares the network namespace and brings up loopback
+# inside it, which needs a NETLINK_ROUTE socket. Without this the sandbox dies
+# in setup and the model reads nothing. The sandbox still has no network.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 # Restricted Codex runs the model workspace inside Bubblewrap, which asks the
 # kernel for CLONE_NEWUSER|CLONE_NEWNS in one clone call. systemd's namespace
 # seccomp filter matches that whole mask, so restricting any single namespace
