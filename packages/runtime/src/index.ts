@@ -27,6 +27,7 @@ import {
 export * from "./callback-handshake.ts";
 export * from "./telephone-boundaries.ts";
 export * from "./telephone-session.ts";
+export * from "./telephone-session-fault.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-delegation.ts";

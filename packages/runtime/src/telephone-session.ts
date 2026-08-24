@@ -14,6 +14,8 @@ import {
   type TelephoneTurnInterpretation,
 } from "@voice-agent/contracts";
 import type { TelephoneBoundaryDecision } from "@voice-agent/durable-store";
+
+import { TelephoneSessionFault } from "./telephone-session-fault.ts";
 import {
   classifyConfirmationSpeech,
   transcriptReportsBountywellOutage,
@@ -240,7 +242,7 @@ export function createTelephoneSessionCoordinator(
           },
         );
       }
-      throw new Error("Unsupported Telephone Session provider event");
+      throw new TelephoneSessionFault("Unsupported Telephone Session provider event");
     },
   };
 }
@@ -858,7 +860,7 @@ function sanitizeFinalizedTurn(transcript: string): string {
 
 function semanticOutageAnswer(record: EvidenceRecordProjection): string {
   if (record.task.kind !== "bountywell.outage.recovery") {
-    throw new Error("Bountywell outage Evidence Record is unavailable");
+    throw new TelephoneSessionFault("Bountywell outage Evidence Record is unavailable");
   }
   const diagnosis = record.evidence.find((event) => event.kind === "diagnosis.recorded");
   const diagnosed =
@@ -892,7 +894,7 @@ function semanticBountywellAnswer(record: EvidenceRecordProjection): string {
     (event) => event.kind === "evidence.observed",
   );
   if (observed?.kind !== "evidence.observed") {
-    throw new Error("Bountywell health evidence is unavailable");
+    throw new TelephoneSessionFault("Bountywell health evidence is unavailable");
   }
   const checks = observed.details.checks;
   const primary = checks.find((check) => check.source === "public-health");
@@ -905,7 +907,7 @@ function semanticBountywellAnswer(record: EvidenceRecordProjection): string {
 
   if (record.task.conclusion === "Bountywell API is healthy.") {
     if (primary?.source !== "public-health") {
-      throw new Error("Healthy Bountywell evidence lacks a primary health fact");
+      throw new TelephoneSessionFault("Healthy Bountywell evidence lacks a primary health fact");
     }
     const uncertainty =
       observed.details.uncertainty ??
