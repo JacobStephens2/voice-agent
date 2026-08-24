@@ -78,7 +78,9 @@ Five stages. What to expect, and where to stop:
    signed-in session is not authorization. On a first-ever upgrade there is an
    extra one-time step: approve the displayed candidate passkeys at the root
    terminal, assert one to enroll it, then assert again to authorize. Abort if a
-   displayed candidate is unexpected.
+   displayed candidate is unexpected. The prepare stage states when the
+   challenge expires and how long is left; if the window lapses, the PWA says
+   the challenge expired and the prepare stage is re-run from the terminal.
 4. **Upgrade and activate.** Stages the manifest, switches the pin, retains the
    prior authority, and re-promotes the same Release through the newly pinned
    promoter so new unit definitions are installed and health-verified together.

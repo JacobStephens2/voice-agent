@@ -75,6 +75,8 @@ import {
   type VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
+import { DeploymentAuthorityChallengeError } from "./deployment-authority-challenge.ts";
+
 export interface EvidenceRecordReader {
   getEvidenceRecord(
     taskId: string,
@@ -724,6 +726,60 @@ function registerTelephoneControlRoutes(
   });
 }
 
+/**
+ * Read the challenge for a route, answering the owner instead of failing bare.
+ *
+ * Both deployment-authority routes need the same answer to the same question,
+ * and an unanswered expiry during an attended ceremony was indistinguishable
+ * from a server fault, so the mapping lives in one place.
+ */
+async function readUpgradeChallenge(
+  reply: FastifyReply,
+  promotionControl: NonNullable<TaskApiOptions["promotionControl"]>,
+): Promise<DeploymentAuthorityUpgradeChallenge | undefined> {
+  try {
+    return await promotionControl.readDeploymentAuthorityUpgradeChallenge();
+  } catch (error) {
+    if (rejectDeploymentAuthorityChallenge(reply, error)) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Log every refused challenge, and answer the routine ones.
+ *
+ * Returns whether the reply was sent: a routine rejection is the owner's to
+ * act on and carries its message and reason, while an unexpected challenge
+ * file stays a server fault whose detail never leaves the journal.
+ */
+function rejectDeploymentAuthorityChallenge(
+  reply: FastifyReply,
+  error: unknown,
+): boolean {
+  if (!(error instanceof DeploymentAuthorityChallengeError)) return false;
+  writeOperatorLogLine({
+    level: error.routine ? 40 : 50,
+    msg: "deployment-authority upgrade challenge rejected",
+    reason: error.reason,
+    routine: error.routine,
+  });
+  if (!error.routine) return false;
+  void reply.code(409).send({ error: error.message, reason: error.reason });
+  return true;
+}
+
+/**
+ * One bounded line per rejection, shaped like the worker's operator lines so
+ * one journal holds one log format.
+ */
+function writeOperatorLogLine(entry: {
+  readonly level: number;
+  readonly msg: string;
+  readonly [field: string]: unknown;
+}): void {
+  process.stderr.write(`${JSON.stringify({ time: Date.now(), ...entry })}\n`);
+}
+
 function registerPromotionControlRoute(
   api: FastifyInstance,
   options: {
@@ -746,8 +802,11 @@ function registerPromotionControlRoute(
         options.records,
       );
       if (sessionToken === undefined) return;
-      const authorization =
-        await options.promotionControl.readDeploymentAuthorityUpgradeChallenge();
+      const authorization = await readUpgradeChallenge(
+        reply,
+        options.promotionControl,
+      );
+      if (authorization === undefined) return reply;
       return { kind: authorization.kind, options: authorization.options };
     },
   );
@@ -761,16 +820,25 @@ function registerPromotionControlRoute(
         await options.records.recordPolicyDenial?.();
         return reply.code(401).send({ error: "Authentication required" });
       }
-      const authorization =
-        await options.promotionControl.readDeploymentAuthorityUpgradeChallenge();
+      const authorization = await readUpgradeChallenge(
+        reply,
+        options.promotionControl,
+      );
+      if (authorization === undefined) return reply;
       if (body.ceremonyId !== authorization.challenge) {
         await options.records.recordPolicyDenial?.();
         return reply.code(403).send({ error: "Fresh Passkey Action required" });
       }
-      const commit = await options.promotionControl.requestDeploymentAuthorityUpgrade({
-        ...authorization,
-        response: body.response,
-      });
+      let commit: string;
+      try {
+        commit = await options.promotionControl.requestDeploymentAuthorityUpgrade({
+          ...authorization,
+          response: body.response,
+        });
+      } catch (error) {
+        if (rejectDeploymentAuthorityChallenge(reply, error)) return reply;
+        throw error;
+      }
       return reply.code(202).send(
         deploymentAuthorityUpgradeResponseSchema.parse({
           commit,
