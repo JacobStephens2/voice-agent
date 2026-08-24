@@ -29,18 +29,25 @@ if ! release_root=$(readlink -f /opt/voice-agent/current) || \
   printf 'Active Voice Agent release path is invalid.\n' >&2
   exit 1
 fi
-if ! (
-  cd "$release_root"
-  runuser --user voice-codex -- env -i \
-    CODEX_HOME=/var/lib/voice-codex/.codex HOME=/var/lib/voice-codex \
-    PATH=/usr/local/bin:/usr/bin:/bin \
-    /usr/bin/codex sandbox --permission-profile voice-agent-health \
-    --cd "$release_root" \
-    --config 'permissions.voice-agent-health.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
-    --config permissions.voice-agent-health.network.enabled=false -- \
-    /usr/bin/true >/dev/null
-); then
-  printf 'Offline Codex sandbox health probe failed.\n' >&2
+# Probe the sandbox under the Subagent unit's own namespace restriction. An
+# attended shell can start Bubblewrap when the service cannot, so a probe run
+# outside that confinement certifies an environment no Delegation ever runs in.
+subagent_namespaces=$(systemctl show voice-agent-subagent.service \
+  --property=RestrictNamespaces --value)
+if ! systemd-run --quiet --pipe --wait --collect \
+  --unit=voice-agent-codex-sandbox-health \
+  --property=User=voice-codex \
+  --property="RestrictNamespaces=$subagent_namespaces" \
+  --working-directory="$release_root" \
+  --setenv=CODEX_HOME=/var/lib/voice-codex/.codex \
+  --setenv=HOME=/var/lib/voice-codex \
+  --setenv=PATH=/usr/local/bin:/usr/bin:/bin \
+  /usr/bin/codex sandbox --permission-profile voice-agent-health \
+  --cd "$release_root" \
+  --config 'permissions.voice-agent-health.filesystem={":minimal" = "read", ":workspace_roots" = {"apps/worker/src/keeplore-codex-executor.ts" = "read"}}' \
+  --config permissions.voice-agent-health.network.enabled=false -- \
+  /usr/bin/true >/dev/null; then
+  printf 'Offline Codex sandbox health probe failed under the Subagent unit restrictions.\n' >&2
   exit 1
 fi
 

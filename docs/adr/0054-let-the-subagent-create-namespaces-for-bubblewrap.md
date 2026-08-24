@@ -1,0 +1,17 @@
+# Let the Subagent create namespaces so Bubblewrap can confine the model
+
+Every Keeplore Delegation failed about nineteen seconds after acceptance. Restricted Codex started, received its Delegation Brief, and its first command — reading `ui/style.css` and the two reference files — died with `bwrap: No permissions to create new namespace`. The Delegation Result recorded `model-declined`, the boundary held, and ten Delegations in a row reached `failed` without a single file being read.
+
+The kernel and AppArmor were not refusing. `kernel.apparmor_restrict_unprivileged_userns` was `1`, the reviewed `bwrap` and `unpriv_bwrap` profiles were installed, byte-identical to the active Release, and enforcing, and `bwrap --unshare-user --dev-bind / / /bin/true` succeeded for `voice-codex` from an attended shell. A failing run added no AppArmor denial to the audit log at all. The refusal came from `RestrictNamespaces=true` on `voice-agent-subagent.service`: under it, Bubblewrap's `clone(CLONE_NEWNS|CLONE_NEWUSER|SIGCHLD)` returns `EPERM` from systemd's seccomp filter.
+
+No narrower setting exists. Bubblewrap asks for every namespace it wants in one `clone` call, and the filter matches that whole flag mask, so restricting any single namespace type — `user`, `mnt`, `pid`, `net`, `ipc`, `uts`, or `cgroup` — denies the sandbox exactly as `true` does. Each was measured individually. The Subagent unit therefore sets `RestrictNamespaces=false`; every other hardening property it carries was measured to be compatible with the sandbox and stays.
+
+The namespace boundary moves to where it was always intended to sit. `kernel.apparmor_restrict_unprivileged_userns` stays `1`, Bubblewrap stays non-setuid, and the reviewed enforcing `bwrap` and `unpriv_bwrap` profiles confine what the namespaces the runner can now create are able to do — the child profile denies capabilities outright. The alternative, keeping the unit's seccomp restriction and starting the model run as its own pinned unit through a narrow polkit rule, preserves more of the runner's own confinement but adds a unit, a polkit grant, and the model's standard streams crossing a unit boundary; that is a larger boundary change than the fault requires and it is not ruled out for later.
+
+## Consequences
+
+The Subagent runner process can now create namespaces itself, not only through Bubblewrap. That authority is bounded by the same AppArmor profiles and by the unit's remaining hardening — no capabilities, no new privileges, a strict read-only system with a named writable set, and an inaccessible Voice Agent database, broker socket, Docker socket, and Keeplore production directory.
+
+Both sandbox proofs now run under the Subagent unit's own namespace restriction, read from the live unit, rather than from an attended shell. Running them from a shell is what let this fault ship: `run-keeplore-button-trial.sh` and `deployment-health.sh` both certified a Bubblewrap that starts for a logged-in `voice-codex` and could never start for the service, so stage two went green while every call still failed. A future restriction that breaks the sandbox now fails the health contract and the trial instead of the Delegation.
+
+Changing the unit changes root-pinned deployment authority. The fix reaches the Agent Host only through the attended deployment-authority upgrade from a Human Merged, promoted Release; copying the unit by hand is not the remedy, and neither is `kernel.apparmor_restrict_unprivileged_userns=0` or a setuid Bubblewrap.
