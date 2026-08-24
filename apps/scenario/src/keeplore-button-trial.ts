@@ -8,7 +8,10 @@ import {
   createTelephoneSessionCoordinator,
   type KeeploreSubagentRunner,
 } from "@voice-agent/runtime";
-import { createSqliteKeeploreDelegationStore } from "@voice-agent/sqlite-store";
+import {
+  createSqliteDurableTaskStore,
+  createSqliteKeeploreDelegationStore,
+} from "@voice-agent/sqlite-store";
 
 export interface KeeploreButtonTrialScenarioOptions {
   readonly databasePath: string;
@@ -39,6 +42,10 @@ export async function createKeeploreButtonTrialScenario(
   const ids = [...options.ids];
   const authenticatedSessions = new Set<string>();
   const store = createSqliteKeeploreDelegationStore(options.databasePath);
+  // Accepting a Delegation registers its Durable Task, so telephone evidence
+  // recorded under that identity reaches the same authoritative task store the
+  // worker uses.
+  const taskStore = createSqliteDurableTaskStore(options.databasePath);
   const runtime = createKeeploreDelegationRuntime({
     nextId() {
       const id = ids.shift();
@@ -77,9 +84,11 @@ export async function createKeeploreButtonTrialScenario(
       },
     },
     tasks: {
-      async appendTelephoneEvidence() {
-        throw new Error("Keeplore telephone evidence has no Bountywell task");
-      },
+      appendTelephoneEvidence: (input) =>
+        taskStore.appendEvidence({
+          ...input,
+          updatedAt: input.event.occurredAt,
+        }),
       async submitTelephoneBountywellHealthInquiry() {
         throw new Error("Bountywell inquiry is outside this scenario");
       },
@@ -91,6 +100,7 @@ export async function createKeeploreButtonTrialScenario(
     },
     async close() {
       store.close();
+      taskStore.close();
     },
     getDelegation: (taskId) => runtime.get(taskId),
     listDelegations: () => runtime.list(),

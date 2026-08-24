@@ -26,6 +26,7 @@ import {
   createBountywellReadRegistration,
   createBountywellRestartRegistration,
 } from "@voice-agent/policy";
+import { createDurableTaskTable, ensureColumn } from "./durable-task-table.ts";
 
 export { createSqliteAuthenticationStore } from "./authentication.ts";
 export {
@@ -949,18 +950,8 @@ function operationalSpeechStage(
 }
 
 function createSchema(database: Database.Database): void {
+  createDurableTaskTable(database);
   database.exec(`
-    CREATE TABLE IF NOT EXISTS durable_tasks (
-      id TEXT PRIMARY KEY,
-      request_id TEXT NOT NULL UNIQUE,
-      kind TEXT NOT NULL,
-      status TEXT NOT NULL,
-      question TEXT NOT NULL,
-      conclusion TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS operations (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES durable_tasks(id),
@@ -1042,21 +1033,6 @@ function createSchema(database: Database.Database): void {
     END;
   `);
   ensureColumn(database, "operations", "lease_expires_at", "TEXT");
-  ensureColumn(database, "durable_tasks", "cancellation_requested_at", "TEXT");
-}
-
-function ensureColumn(
-  database: Database.Database,
-  table: string,
-  column: string,
-  declaration: string,
-): void {
-  const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{
-    readonly name: string;
-  }>;
-  if (!columns.some((candidate) => candidate.name === column)) {
-    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${declaration}`);
-  }
 }
 
 function isSqliteConstraint(error: unknown): boolean {
