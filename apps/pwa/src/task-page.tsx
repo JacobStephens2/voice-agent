@@ -25,6 +25,7 @@ const eventLabels: Record<EvidenceEventProjection["kind"], string> = {
   "timer.lifecycle": "Recovery timer",
   "telephone.provider.timing": "Speech provider timing",
   "telephone.provider.failure": "Speech provider failure",
+  "telephone.provider.retry": "Speech provider retry",
   "telephone.response.interrupted": "Spoken response interrupted",
   "telephone.semantic.response": "Spoken response prepared",
   "telephone.session.ended": "Telephone Session ended",

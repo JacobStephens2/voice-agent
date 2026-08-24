@@ -17,6 +17,7 @@ const eventLabels: Record<TelephoneEvidenceEvent["kind"], string> = {
   "telephone.inbound.received": "Inbound call received",
   "telephone.machine.detected": "Answer classified",
   "telephone.provider.failure": "Speech provider failure",
+  "telephone.provider.retry": "Speech provider retry",
   "telephone.provider.timing": "Speech provider timing",
   "telephone.response.interrupted": "Spoken response interrupted",
   "telephone.retry.scheduled": "Retry scheduled",

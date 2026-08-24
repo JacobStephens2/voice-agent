@@ -92,6 +92,12 @@ test.each([
   ["duplicated yes", "Yes. yes"],
   ["correctness statement", "That is correct."],
   ["confirmation statement", "I confirm."],
+  ["dashed confirmation", "I confirm - Yes"],
+  ["em-dashed confirmation", "I confirm—yes"],
+  ["reordered confirmation", "yes, I confirm"],
+  ["contracted correctness statement", "That's correct."],
+  ["repeated affirmative fragments", "Yeah. Yes. Yes, please."],
+  ["filled affirmative", "Well, okay — go ahead."],
 ])("an observed STT %s confirms the pending Keeplore task", async (
   _variant,
   transcript,
@@ -131,6 +137,9 @@ test.each([
 test.each([
   "Yes, but only if you also change card view.",
   "I do not confirm.",
+  "Yes — no, do not do that.",
+  "That is not correct.",
+  "Correct, unless it touches card view.",
 ])("qualified or negative speech does not confirm the Keeplore task", async (
   transcript,
 ) => {
@@ -162,6 +171,93 @@ test.each([
     },
   ]);
   expect(await scenario.listDelegations()).toEqual([]);
+});
+
+test("unrecognized speech leaves the same Task Confirmation pending", async () => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return successfulResult(brief, worktree);
+    },
+  });
+  await scenario.authenticateTelephoneSession("telephone-session-ambiguous");
+  const requested = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-ambiguous",
+    transcript:
+      "Make the Get Rid Of button match Remove in Keeplore's table view.",
+    turnId: "turn-ambiguous-request",
+  });
+  expect(requested.actions).toMatchObject([
+    { kind: "request-task-confirmation" },
+  ]);
+
+  const unclear = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-ambiguous",
+    transcript: "Sorry, the line broke up there.",
+    turnId: "turn-ambiguous-unclear",
+  });
+  expect(unclear.actions).toEqual([
+    {
+      interruptible: true,
+      kind: "speak-guidance",
+      responseId: "turn-ambiguous-unclear:guidance",
+      text:
+        "I did not catch that. The same Task Confirmation is still pending. Please say yes to confirm it or no to decline it.",
+    },
+  ]);
+  expect(await scenario.listDelegations()).toEqual([]);
+
+  const confirmed = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-ambiguous",
+    transcript: "I confirm—yes",
+    turnId: "turn-ambiguous-confirm",
+  });
+  expect(confirmed.actions).toEqual([
+    {
+      interruptible: true,
+      kind: "speak-semantic-response",
+      responseId: "turn-ambiguous-confirm:delegation-response",
+      taskId: "task-button-trial",
+      text:
+        "The Keeplore Button Trial is confirmed and delegated to restricted Codex on a non-production branch. I’ll report its verified pull request without merging or deploying it.",
+    },
+  ]);
+  expect(await scenario.listDelegations()).toHaveLength(1);
+});
+
+test("a redelivered confirmation turn cannot create a second Delegation", async () => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      return successfulResult(brief, worktree);
+    },
+  });
+  await scenario.authenticateTelephoneSession("telephone-session-duplicate");
+  await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-duplicate",
+    transcript:
+      "Make the Get Rid Of button match Remove in Keeplore's table view.",
+    turnId: "turn-duplicate-request",
+  });
+  const confirmed = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-duplicate",
+    transcript: "Yes, I confirm.",
+    turnId: "turn-duplicate-confirm",
+  });
+  expect(confirmed.actions).toMatchObject([
+    { kind: "speak-semantic-response" },
+  ]);
+
+  const redelivered = await scenario.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-duplicate",
+    transcript: "Yes, I confirm.",
+    turnId: "turn-duplicate-confirm",
+  });
+
+  expect(redelivered.actions).toEqual([]);
+  expect(await scenario.listDelegations()).toHaveLength(1);
+  const record = await scenario.getDelegation("task-button-trial");
+  expect(record?.delegation.brief.durableTask.requestId).toBe(
+    "telephone:turn-duplicate-confirm",
+  );
 });
 
 test.each([
@@ -408,6 +504,101 @@ test("a running Delegation resumes after worker restart with append-only evidenc
     "accepted",
     "claimed",
     "resumed",
+    "completed",
+  ]);
+});
+
+test("work accepted by natural confirmation survives call loss and stays visible", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-button-call-loss-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const lostCall = await createKeeploreButtonTrialScenario({
+    databasePath,
+    ids: ["task-button-trial", "delegation-button-trial"],
+    now,
+    registration: keeploreRegistration(),
+    runner: {
+      async execute() {
+        throw new Error("The lost call must not execute the Delegation");
+      },
+    },
+    sourceCommit,
+  });
+  await lostCall.authenticateTelephoneSession("telephone-session-lost");
+  await lostCall.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-lost",
+    transcript:
+      "Make the Get Rid Of button match Remove in Keeplore's table view.",
+    turnId: "turn-lost-request",
+  });
+  const confirmed = await lostCall.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-lost",
+    transcript: "I confirm—yes",
+    turnId: "turn-lost-confirm",
+  });
+  expect(confirmed.actions).toMatchObject([
+    { kind: "speak-semantic-response", taskId: "task-button-trial" },
+  ]);
+  // The call drops before the Subagent runs at all.
+  await lostCall.close();
+
+  const recovered = await createKeeploreButtonTrialScenario({
+    databasePath,
+    ids: [],
+    now,
+    registration: keeploreRegistration(),
+    runner: {
+      async execute({ brief, worktree }) {
+        return successfulResult(brief, worktree);
+      },
+    },
+    sourceCommit,
+  });
+  const completed = await recovered.processNextDelegation();
+  expect(completed?.task).toMatchObject({
+    conclusion: "Keeplore Button Trial pull request is ready for Human Merge.",
+    id: "task-button-trial",
+    status: "completed",
+  });
+  expect(completed?.delegation.brief.durableTask.requestId).toBe(
+    "telephone:turn-lost-confirm",
+  );
+  expect(JSON.stringify(completed?.delegation.brief)).not.toContain(
+    "I confirm",
+  );
+  expect(JSON.stringify(completed?.delegation.brief)).not.toContain(
+    "Get Rid Of button match Remove",
+  );
+
+  await recovered.authenticateTelephoneSession("telephone-session-recovered");
+  const reported = await recovered.receiveTelephoneTurn({
+    telephoneSessionId: "telephone-session-recovered",
+    transcript: "What is the status of the Keeplore Button Trial?",
+    turnId: "turn-recovered-status",
+  });
+  expect(reported.actions).toEqual([
+    {
+      interruptible: true,
+      kind: "speak-semantic-response",
+      responseId: "turn-recovered-status:keeplore-status-response",
+      taskId: "task-button-trial",
+      text:
+        "The Keeplore Button Trial is complete on branch codex/keeplore-button-delegation-button-trial with 1 commit. Its verified pull request is https://github.com/JacobStephens2/keeplore/pull/101. It has not been merged or deployed.",
+    },
+  ]);
+  await recovered.close();
+
+  const database = new Database(databasePath, { readonly: true });
+  const events = database
+    .prepare(`
+      SELECT kind FROM keeplore_delegation_events
+      WHERE task_id = ? ORDER BY rowid
+    `)
+    .all("task-button-trial") as Array<{ readonly kind: string }>;
+  database.close();
+  expect(events.map((event) => event.kind)).toEqual([
+    "accepted",
+    "claimed",
     "completed",
   ]);
 });

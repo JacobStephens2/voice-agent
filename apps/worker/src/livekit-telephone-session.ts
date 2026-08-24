@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import type {
+  TelephoneProviderFailureRecovery,
   TelephoneProviderFailureStage,
   TelephoneSessionAction,
   TelephoneSessionProviderEvent,
@@ -40,6 +41,8 @@ const providerFailureAudioPath = fileURLToPath(
   new URL("../assets/provider-failure.pcm", import.meta.url),
 );
 const providerFailureSampleRate = 24_000;
+const unrecognizedSpeechPrompt =
+  "Sorry, I did not catch that. Please say that again.";
 
 interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
   close(): Promise<void>;
@@ -111,6 +114,10 @@ export async function runLiveKitTelephoneSession(
   );
   let processing = Promise.resolve();
   let failureEnded = false;
+  let lastFinalizedTurn:
+    | Extract<TelephoneSessionProviderEvent, { kind: "turn-finalized" }>
+    | undefined;
+  let lastSpokenAction: TelephoneSessionAction | undefined;
   let callEnding = false;
   let maximumDurationTimeout: ReturnType<typeof setTimeout> | undefined;
   let prolongedSilenceTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -174,10 +181,96 @@ export async function runLiveKitTelephoneSession(
     }, prolongedSilenceMs);
   }
 
-  async function recordProviderFailureAndEnd(
+  async function performAction(action: TelephoneSessionAction): Promise<void> {
+    if (action.kind === "retry-provider-turn") {
+      await retryProviderTurn(action);
+      return;
+    }
+    if (
+      action.kind === "speak-semantic-response" ||
+      action.kind === "speak-guidance" ||
+      action.kind === "request-task-confirmation" ||
+      action.kind === "offer-completion-callback"
+    ) {
+      // Remembered so a bounded text-to-speech retry replays this exact
+      // response instead of composing a second one.
+      lastSpokenAction = action;
+    }
+    await performConversationAction(
+      session,
+      coordinator,
+      action,
+      playFailureAndEnd,
+      recordProviderFailureAndRecover,
+      endCallOnce,
+      options.requestCompletionCallback,
+    );
+  }
+
+  /**
+   * Replay the work the failing provider stage was doing, under the durable
+   * identity it already had. The coordinator grants at most one retry per
+   * Telephone Session, so a still-failing provider ends the call on its next
+   * report rather than looping.
+   */
+  async function retryProviderTurn(
+    action: Extract<
+      TelephoneSessionAction,
+      { kind: "retry-provider-turn" }
+    >,
+  ): Promise<void> {
+    if (failureEnded || callEnding) return;
+    try {
+      if (action.stage === "tts") {
+        const spoken = lastSpokenAction;
+        if (spoken === undefined) {
+          await playFailureAndEnd();
+          return;
+        }
+        await performAction(spoken);
+        return;
+      }
+      if (action.stage === "coordinator") {
+        const turn = lastFinalizedTurn;
+        const result =
+          turn === undefined
+            ? undefined
+            : await coordinator.receiveProviderEvent(turn);
+        // The turn may already be recorded as answered — the fault happened
+        // after the coordinator produced its actions — so a replay that speaks
+        // nothing leaves the caller in silence and must end the call instead.
+        if (result === undefined || result.actions.length === 0) {
+          await playFailureAndEnd();
+          return;
+        }
+        for (const next of result.actions) {
+          await performAction(next);
+        }
+        return;
+      }
+      // Recognition cannot be replayed from here, so the caller is asked to
+      // repeat into the same pending state rather than left in silence.
+      await session
+        .say(unrecognizedSpeechPrompt, {
+          addToChatCtx: false,
+          allowInterruptions: true,
+        })
+        .waitForPlayout();
+    } catch (error) {
+      await recordProviderFailureAndRecover(
+        action.stage,
+        error,
+        action.taskId,
+        "terminal",
+      );
+    }
+  }
+
+  async function recordProviderFailureAndRecover(
     stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
+    recovery: TelephoneProviderFailureRecovery = "retryable",
   ): Promise<void> {
     if (failureEnded) return;
     const occurredAt = new Date().toISOString();
@@ -188,12 +281,17 @@ export async function runLiveKitTelephoneSession(
       deliveryId,
       error,
       occurredAt,
+      recovery,
       stage,
       ...(taskId === undefined ? {} : { taskId }),
     });
+    let retry:
+      | Extract<TelephoneSessionAction, { kind: "retry-provider-turn" }>
+      | undefined;
     try {
-      await coordinator.receiveProviderEvent(
-        providerEvent,
+      const result = await coordinator.receiveProviderEvent(providerEvent);
+      retry = result.actions.find(
+        (action) => action.kind === "retry-provider-turn",
       );
     } finally {
       try {
@@ -206,7 +304,11 @@ export async function runLiveKitTelephoneSession(
           stage,
         });
       } finally {
-        await playFailureAndEnd();
+        if (retry === undefined) {
+          await playFailureAndEnd();
+        } else {
+          await retryProviderTurn(retry);
+        }
       }
     }
   }
@@ -221,10 +323,13 @@ export async function runLiveKitTelephoneSession(
     if (stage === undefined) return;
     processing = processing
       .then(() =>
-        recordProviderFailureAndEnd(
+        // The LiveKit session itself is unusable, so there is nothing left to
+        // replay: this fault ends the call on its first report.
+        recordProviderFailureAndRecover(
           stage,
           providerError.error ?? providerError,
           options.activeTaskId,
+          "terminal",
         ),
       )
       .catch(() => undefined);
@@ -237,29 +342,23 @@ export async function runLiveKitTelephoneSession(
       .then(async () => {
         if (providerEvent.kind === "turn-finalized") {
           resetProlongedSilenceDeadline();
+          lastFinalizedTurn = providerEvent;
           await options.boundaries.noteActivity(options.telephoneSessionId);
         }
         const result = await coordinator.receiveProviderEvent(providerEvent);
         for (const action of result.actions) {
-          await performConversationAction(
-            session,
-            coordinator,
-            action,
-            playFailureAndEnd,
-            recordProviderFailureAndEnd,
-            endCallOnce,
-            options.requestCompletionCallback,
-          );
+          await performAction(action);
         }
       })
       .catch((error: unknown) =>
-        recordProviderFailureAndEnd("coordinator", error),
+        recordProviderFailureAndRecover("coordinator", error),
       );
   }
 
   function rejectTelephoneInput(error: unknown): void {
     processing = processing
-      .then(() => recordProviderFailureAndEnd("stt", error))
+      // A turn the adapter cannot map has no durable identity to retry under.
+      .then(() => recordProviderFailureAndRecover("stt", error, undefined, "terminal"))
       .catch(() => undefined);
   }
 
@@ -291,7 +390,7 @@ export async function runLiveKitTelephoneSession(
   session.on(voice.AgentSessionEventTypes.UserTranscriptionTimeout, () => {
     processing = processing
       .then(() =>
-        recordProviderFailureAndEnd(
+        recordProviderFailureAndRecover(
           "stt",
           new APITimeoutError({ message: "Transcription timed out" }),
         ),
@@ -329,7 +428,7 @@ export async function runLiveKitTelephoneSession(
         room: options.room,
       });
     } catch (error) {
-      await recordProviderFailureAndEnd("setup", error, options.activeTaskId);
+      await recordProviderFailureAndRecover("setup", error, options.activeTaskId);
       return;
     }
     resetProlongedSilenceDeadline();
@@ -382,10 +481,11 @@ export async function runLiveKitTelephoneSession(
             })
             .waitForPlayout();
         } catch (error) {
-          await recordProviderFailureAndEnd(
+          await recordProviderFailureAndRecover(
             "tts",
             error,
             options.activeTaskId,
+            "terminal",
           );
         }
       }
@@ -546,9 +646,9 @@ function createConversationSession(prolongedSilenceMs: number): voice.AgentSessi
 async function performConversationAction(
   session: voice.AgentSession,
   coordinator: ReturnType<typeof createTelephoneSessionCoordinator>,
-  action: TelephoneSessionAction,
+  action: Exclude<TelephoneSessionAction, { kind: "retry-provider-turn" }>,
   playFailureAndEnd: () => Promise<void>,
-  recordProviderFailureAndEnd: (
+  recordProviderFailureAndRecover: (
     stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
@@ -592,7 +692,7 @@ async function performConversationAction(
     });
     await speech.waitForPlayout();
   } catch (error) {
-    await recordProviderFailureAndEnd(
+    await recordProviderFailureAndRecover(
       "tts",
       error,
       action.kind === "speak-semantic-response" ? action.taskId : undefined,
@@ -631,6 +731,15 @@ async function performConversationAction(
 export async function playPrerecordedProviderFailure(
   session: voice.AgentSession,
 ): Promise<void> {
+  // Any half-spoken semantic response is abandoned first. Streaming the
+  // prerecorded frames alongside live speech is what makes the caller hear the
+  // failure sentence begin twice, so the output is cleared before it plays.
+  try {
+    await session.interrupt({ force: true });
+  } catch {
+    // Nothing was speaking, or the session already stopped. Either way the
+    // prerecorded response is still the last thing the caller hears.
+  }
   const output = session.output.audio;
   if (output === null) {
     throw new Error("Telephone audio output is unavailable");
@@ -825,6 +934,7 @@ export function mapProviderFailureEvent(input: {
   readonly deliveryId: string;
   readonly error: unknown;
   readonly occurredAt: string;
+  readonly recovery?: TelephoneProviderFailureRecovery;
   readonly stage: TelephoneProviderFailureStage;
   readonly taskId?: string;
 }):
@@ -834,6 +944,7 @@ export function mapProviderFailureEvent(input: {
     deliveryId: input.deliveryId,
     occurredAt: input.occurredAt,
     provider: providerForStage(input.stage),
+    ...(input.recovery === undefined ? {} : { recovery: input.recovery }),
     stage: input.stage,
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),
   };
