@@ -90,6 +90,13 @@ fetches. The shared Subagent socket group and telephone worker receive no source
 mirror access. Before accepting a source revision, the attended trial proves
 that `voice-codex` can read that exact commit.
 
+The runner does not mark the root-owned mirror as a Git `safe.directory` or
+clone it directly across the ownership boundary. Fixed host code exports its
+reviewed refs to a private temporary Git bundle, imports that bundle into the
+runner-owned mirror, verifies the exact registered commit, and removes the
+bundle before model work begins. The runner mirror retains only the token-free
+Keeplore HTTPS remote.
+
 Fixed host code—not the model—copies the candidate into a disposable directory
 and runs the registered PHPUnit command there in a second network-disabled
 profile, injects the candidate CSS into an authenticated browser after taking

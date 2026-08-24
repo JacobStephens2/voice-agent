@@ -88,6 +88,12 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   expect(executor).not.toContain("sandbox_workspace_write.network_access=true");
   expect(executor).toContain("runRegisteredVerification");
   expect(executor).toContain("createUnixSocketKeeploreCandidatePublisher");
+  expect(executor).toMatch(/"bundle",\s*"create"/u);
+  expect(executor).toMatch(/"fetch",\s*sourceBundlePath/u);
+  expect(executor).not.toMatch(
+    /"clone",\s*"--bare",\s*registeredSourceMirror/u,
+  );
+  expect(executor).not.toContain("safe.directory");
   expect(executor).not.toContain('"gh"');
   expect(runner).toContain('active.process.kill("SIGUSR1")');
   expect(runner).toContain("/var/lib/voice-codex/results");
