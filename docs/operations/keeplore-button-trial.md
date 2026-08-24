@@ -156,7 +156,8 @@ A completed result is accepted only when all of these are true:
 - the observed worktree branch and base commit match the brief;
 - the only changed path is `ui/style.css`, with at least one observed commit;
 - existing CSS remains byte-for-byte intact and the sole appended rule targets
-  exactly the table-only Get Rid Of selector with no width, URL, or at-rule;
+  exactly the table-only Get Rid Of selector with no width, URL, or at-rule,
+  and `white-space` is registered for `nowrap` alone (see ADR-0055);
 - the declared automated command passed;
 - authenticated desktop and mobile screenshots exist in the Delegation's
   private evidence directory;

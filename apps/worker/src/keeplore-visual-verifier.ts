@@ -5,6 +5,8 @@ import type { KeeploreDelegationResult } from "@voice-agent/contracts";
 import { chromium, type Page } from "playwright";
 import { z } from "zod";
 
+import { keeploreVerificationViewports } from "./keeplore-verification-viewports.ts";
+
 const inputSchema = z
   .object({
     delegationId: z.string().min(1).max(120),
@@ -16,10 +18,6 @@ const input = inputSchema.parse(JSON.parse(await readStandardInput()));
 const candidateCss = await readFile(`${input.worktreePath}/ui/style.css`, "utf8");
 const storageState = "/var/lib/voice-codex/browser/keeplore.json";
 const targetUrl = "https://keeplore.app/artifacts/useby.php";
-const viewports = [
-  { height: 900, name: "desktop" as const, width: 1440 },
-  { height: 844, name: "mobile" as const, width: 390 },
-];
 
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({ storageState });
@@ -28,7 +26,7 @@ const computedStyles: KeeploreDelegationResult["verification"]["computedStyles"]
 const cardBefore: unknown[] = [];
 const cardAfter: unknown[] = [];
 try {
-  for (const viewport of viewports) {
+  for (const viewport of keeploreVerificationViewports) {
     await context.setOffline(false);
     const page = await context.newPage();
     await page.setViewportSize(viewport);
