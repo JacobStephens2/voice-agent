@@ -23,15 +23,18 @@ import {
 import { z } from "zod";
 
 import { keeploreModelSandboxConfigArguments } from "./keeplore-model-sandbox.ts";
+import { createUnixSocketKeeploreCandidatePublisher } from "./keeplore-publication-client.ts";
 import {
+  BoundedCommandError,
   buildRestrictedRunnerEvidence,
   describeDelegationFailure,
   logDelegationFailure,
+  logEvidenceRetentionFailure,
   RestrictedRunFailure,
+  restrictedRunEvidenceFor,
   restrictedRunnerEvidenceFileName,
   type RestrictedRunnerEvidence,
 } from "./keeplore-restricted-failure.ts";
-import { createUnixSocketKeeploreCandidatePublisher } from "./keeplore-publication-client.ts";
 
 const runnerMirror = "/var/lib/voice-agent-worktrees/keeplore.git";
 const registeredSourceMirror = "/var/lib/keeplore-source/repository.git";
@@ -324,6 +327,7 @@ async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
   const modelWorkspace = await mkdtemp(
     `/var/lib/voice-codex/tmp/model-${input.brief.delegationId}-`,
   );
+  let runnerResult: CommandResult | undefined;
   try {
     await mkdir(`${modelWorkspace}/ui/artifacts`, {
       mode: 0o700,
@@ -345,9 +349,8 @@ async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
       JSON.stringify(z.toJSONSchema(modelReportSchema)),
       { mode: 0o600 },
     );
-    let result: CommandResult;
     try {
-      result = await runBoundedCommand(
+      runnerResult = await runBoundedCommand(
         codexExecutable,
         [
           "exec",
@@ -382,14 +385,13 @@ async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
       modelProcess = undefined;
     }
     checkForStop();
-    if (result.exitCode !== 0) {
-      const evidence = buildRestrictedRunnerEvidence(result);
-      await retainRestrictedRunEvidence(modelWorkspace, evidence);
+    if (runnerResult.exitCode !== 0) {
+      const kind = buildRestrictedRunnerEvidence(runnerResult).kind;
       throw new RestrictedRunFailure(
-        evidence.kind,
-        evidence.kind === "sandbox-initialization"
-          ? `Restricted Codex sandbox did not start; the runner exited with code ${result.exitCode ?? "unknown"}`
-          : `Restricted Codex ended before preparing a candidate with code ${result.exitCode ?? "unknown"}`,
+        kind,
+        kind === "sandbox-initialization"
+          ? `Restricted Codex sandbox did not start; the runner exited with code ${runnerResult.exitCode ?? "unknown"}`
+          : `Restricted Codex ended before preparing a candidate with code ${runnerResult.exitCode ?? "unknown"}`,
       );
     }
     const report = modelReportSchema.parse(
@@ -400,7 +402,7 @@ async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
       // it was given, so it is retained beside the runner's own evidence.
       await retainRestrictedRunEvidence(
         modelWorkspace,
-        buildRestrictedRunnerEvidence(result, "model-declined"),
+        buildRestrictedRunnerEvidence(runnerResult, "model-declined"),
       );
       return report;
     }
@@ -414,7 +416,10 @@ async function runCodex(): Promise<z.infer<typeof modelReportSchema>> {
     return report;
   } catch (error) {
     if (!(error instanceof StopRequestedError)) {
-      await retainRestrictedRunEvidence(modelWorkspace);
+      await retainRestrictedRunEvidence(
+        modelWorkspace,
+        restrictedRunEvidenceFor(error, runnerResult),
+      );
     }
     throw error;
   } finally {
@@ -447,9 +452,15 @@ async function retainRestrictedRunEvidence(
       recursive: true,
     });
     recordFailureEvidence(modelWorkspaceEvidenceDirectory);
-  } catch {
+  } catch (error) {
     // Retained evidence is diagnostic. Losing it must not replace the failure
-    // that a Delegation Result is about to report.
+    // that a Delegation Result is about to report, but it must not pass
+    // unremarked either: an unwritable evidence directory is itself the fault
+    // this reporting exists to name.
+    logEvidenceRetentionFailure({
+      delegationId: input.brief.delegationId,
+      error,
+    });
   }
 }
 
@@ -928,13 +939,24 @@ async function runBoundedCommand(
   if (options.terminateGroupOnClose === true) {
     terminateProcessGroup(child, true);
   }
-  if (exceededBound) throw new Error("Restricted command output exceeded its bound");
-  if (timedOut) throw new Error("Restricted command exceeded its time bound");
-  return {
+  const result: CommandResult = {
     exitCode,
     stderr: Buffer.concat(stderr).toString("utf8"),
     stdout: Buffer.concat(stdout).toString("utf8"),
   };
+  if (exceededBound) {
+    throw new BoundedCommandError(
+      "Restricted command output exceeded its bound",
+      result,
+    );
+  }
+  if (timedOut) {
+    throw new BoundedCommandError(
+      "Restricted command exceeded its time bound",
+      result,
+    );
+  }
+  return result;
 }
 
 function codexEnvironment(): NodeJS.ProcessEnv {

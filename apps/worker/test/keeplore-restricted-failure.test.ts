@@ -1,11 +1,18 @@
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 
 import {
+  BoundedCommandError,
   buildRestrictedRunnerEvidence,
   describeDelegationFailure,
+  logEvidenceRetentionFailure,
   RestrictedRunFailure,
+  restrictedRunEvidenceFor,
   restrictedRunnerEvidenceFileName,
 } from "../src/keeplore-restricted-failure.ts";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 test("a caught execution error is described by its type and message", () => {
   class KeeploreWorktreeError extends Error {}
@@ -128,4 +135,70 @@ test("retained restricted runner evidence carries only the runner's own output",
   expect(evidence.stderrTruncated).toBe(true);
   expect(evidence.stderr.length).toBeLessThanOrEqual(64_000);
   expect(restrictedRunnerEvidenceFileName).toBe("restricted-runner-failure.json");
+});
+
+test("a runner that mentions its sandbox while failing elsewhere is not a sandbox fault", () => {
+  expect(
+    buildRestrictedRunnerEvidence({
+      exitCode: 3,
+      stderr: "stream error: exceeded retry limit inside the bwrap sandbox",
+    }).kind,
+  ).toBe("restricted-runner");
+});
+
+test("a mount that could not be set up is a sandbox fault", () => {
+  expect(
+    buildRestrictedRunnerEvidence({
+      exitCode: 1,
+      stderr: "Failed to mount proc on /newroot/proc: Permission denied",
+    }).kind,
+  ).toBe("sandbox-initialization");
+});
+
+test("a run stopped by its own bound keeps the output it had already produced", () => {
+  const evidence = restrictedRunEvidenceFor(
+    new BoundedCommandError("Restricted command exceeded its time bound", {
+      exitCode: null,
+      stderr: "bwrap: Creating new namespace failed: Operation not permitted",
+    }),
+    undefined,
+  );
+
+  expect(evidence).toEqual({
+    exitCode: null,
+    kind: "sandbox-initialization",
+    stderr: "bwrap: Creating new namespace failed: Operation not permitted",
+    stderrTruncated: false,
+  });
+});
+
+test("a run that failed after the runner returned keeps the runner's own output", () => {
+  expect(
+    restrictedRunEvidenceFor(new Error("Restricted Codex altered a Keeplore reference file"), {
+      exitCode: 0,
+      stderr: "model workspace ready",
+    }),
+  ).toMatchObject({ exitCode: 0, kind: "delegation-execution" });
+  expect(restrictedRunEvidenceFor(new Error("preparation failed"), undefined)).toBeUndefined();
+});
+
+test("evidence that could not be retained is reported rather than lost in silence", () => {
+  const written: string[] = [];
+  vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    written.push(String(chunk));
+    return true;
+  });
+
+  logEvidenceRetentionFailure({
+    delegationId: "delegation-1",
+    error: new Error("EACCES: permission denied, mkdir '/var/lib/voice-agent-evidence'"),
+  });
+
+  const logged: unknown = JSON.parse(written.join(""));
+  expect(logged).toMatchObject({
+    delegationId: "delegation-1",
+    error: { name: "Error" },
+    level: 40,
+    msg: "keeplore delegation evidence was not retained",
+  });
 });

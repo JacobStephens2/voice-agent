@@ -4,6 +4,12 @@ import type {
 } from "@voice-agent/contracts";
 import { TelephoneSessionFault } from "@voice-agent/runtime";
 
+import {
+  describeErrorName,
+  sanitizeErrorMessage,
+  writeOperatorLogLine,
+} from "./error-description.ts";
+
 const maximumMessageLength = 200;
 
 /**
@@ -39,20 +45,18 @@ export function describeProviderError(
   error: unknown,
   stage: TelephoneProviderFailureStage,
 ): ProviderErrorDescription {
-  if (!(error instanceof Error)) {
-    return { name: error === null ? "null" : typeof error };
-  }
+  if (!(error instanceof Error)) return { name: describeErrorName(error) };
   const carrier = error as unknown as Record<string, unknown>;
   const code = typeof carrier.code === "string" ? carrier.code : undefined;
   const status = typeof carrier.status === "number" ? carrier.status : undefined;
   const message =
     error instanceof TelephoneSessionFault || !stageSeesCallerSpeech(stage)
-      ? sanitizeMessage(error.message)
+      ? sanitizeErrorMessage(error.message, maximumMessageLength)
       : undefined;
   return {
     ...(code === undefined ? {} : { code }),
     ...(message === undefined ? {} : { message }),
-    name: error.constructor.name === "" ? "Error" : error.constructor.name,
+    name: describeErrorName(error),
     ...(status === undefined ? {} : { status }),
   };
 }
@@ -61,17 +65,6 @@ function stageSeesCallerSpeech(
   stage: TelephoneProviderFailureStage,
 ): boolean {
   return stage === "stt" || stage === "coordinator";
-}
-
-function sanitizeMessage(message: string): string | undefined {
-  // Control characters would split one failure across several log lines.
-  const collapsed = message
-    .replaceAll(/[\p{Cc}\p{Cf}\s]+/gu, " ")
-    .trim();
-  if (collapsed === "") return undefined;
-  return collapsed.length > maximumMessageLength
-    ? `${collapsed.slice(0, maximumMessageLength - 1)}…`
-    : collapsed;
 }
 
 /** One operator-facing report of a bounded provider failure. */
@@ -85,20 +78,13 @@ export interface ProviderFailureLogEntry {
 
 export type ProviderFailureLogger = (entry: ProviderFailureLogEntry) => void;
 
-/**
- * The default sink. The worker's other log lines come from the agents
- * framework's own logger, so this matches their shape and lands in the same
- * journal without adding a logging dependency to a privileged service.
- */
+/** The default sink: one operator log line on this worker's standard error. */
 export const logProviderFailureToStandardError: ProviderFailureLogger = (
   entry,
 ) => {
-  process.stderr.write(
-    `${JSON.stringify({
-      level: 50,
-      msg: "bounded telephone provider failure",
-      time: Date.now(),
-      ...entry,
-    })}\n`,
-  );
+  writeOperatorLogLine({
+    level: 50,
+    msg: "bounded telephone provider failure",
+    ...entry,
+  });
 };

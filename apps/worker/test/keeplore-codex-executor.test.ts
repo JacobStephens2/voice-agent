@@ -51,7 +51,7 @@ test(
     const spawned = runExecutor(
       executorInput({
         delegationId,
-        // No commit resolves, so preparation ends before Codex is spawned.
+        // No commit resolves, so the run cannot reach the restricted model.
         sourceCommit: "0".repeat(40),
         worktreePath: `${worktreeRoot}/${delegationId}`,
         worktreeRoot,
@@ -69,6 +69,14 @@ test(
     });
     expect(result.failure?.name.length).toBeGreaterThan(0);
     expect(result.failure?.message.length).toBeGreaterThan(0);
+    // A preparation failure is not one of the kinds only a started run can
+    // produce, so the recorded failure names this run and not the model's.
+    expect(["model-declined", "restricted-runner", "sandbox-initialization"]).not.toContain(
+      result.failure?.kind,
+    );
+    expect(result.changedFiles).toEqual([]);
+    expect(result.commits).toEqual([]);
+    expect(result.worktree.state).toBe("failed");
     expect(result.pullRequest).toEqual({ state: "none", url: null });
     expect(spawned.stderr).toContain("keeplore delegation failed");
     expect(spawned.stderr).toContain(delegationId);

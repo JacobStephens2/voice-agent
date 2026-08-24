@@ -52,7 +52,7 @@ _Avoid_: Prompt, transcript, handoff message
 The structured Subagent outcome containing status, verification, risks, the failure that ended a run, and the branch, commits, changed files, and pull-request state for each affected codebase.
 _Avoid_: Final answer, raw agent log
 
-**Restricted Run Evidence**:
+**Restricted Runner Evidence**:
 The trusted runner's own account of a failed Delegation, retained under that Delegation's evidence directory: the restricted runner's exit status and bounded standard error, and the model workspace as it stood when the run ended, carrying no voice transcript.
 _Avoid_: Model report, agent transcript, event stream
 
