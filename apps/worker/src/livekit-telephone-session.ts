@@ -26,6 +26,11 @@ import {
   type TelephoneTurnInterpreter,
 } from "@voice-agent/runtime";
 
+import {
+  describeProviderError,
+  logProviderFailureToStandardError,
+  type ProviderFailureLogger,
+} from "./provider-error-description.ts";
 import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
 import {
   meterTelephoneSessionUsage,
@@ -51,6 +56,8 @@ interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
 export interface LiveKitTelephoneSessionDependencies {
   createConversationSession(prolongedSilenceMs: number): voice.AgentSession;
   createInterpreter(): ClosableTelephoneTurnInterpreter;
+  /** Defaults to the operator journal; a test supplies its own sink. */
+  logProviderFailure?: ProviderFailureLogger;
 }
 
 export async function runLiveKitTelephoneSession(
@@ -90,6 +97,8 @@ export async function runLiveKitTelephoneSession(
   },
 ): Promise<void> {
   const interpreter = dependencies.createInterpreter();
+  const logProviderFailure =
+    dependencies.logProviderFailure ?? logProviderFailureToStandardError;
   const coordinator = createTelephoneSessionCoordinator({
     ...(options.activeTaskId === undefined
       ? {}
@@ -284,6 +293,15 @@ export async function runLiveKitTelephoneSession(
       recovery,
       stage,
       ...(taskId === undefined ? {} : { taskId }),
+    });
+    // Logged before anything durable is written: this fault may end the call,
+    // and the Evidence Record deliberately keeps no description of it.
+    logProviderFailure({
+      error: describeProviderError(error, stage),
+      provider: providerEvent.provider,
+      recovery,
+      stage,
+      telephoneSessionId: options.telephoneSessionId,
     });
     let retry:
       | Extract<TelephoneSessionAction, { kind: "retry-provider-turn" }>

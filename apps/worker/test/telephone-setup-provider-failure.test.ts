@@ -24,6 +24,49 @@ describe("fixed-speech Telephone Session setup failures", () => {
     expect(recordProviderFailure).not.toHaveBeenCalled();
   });
 
+  test("logs the classified setup failure so the fault has an operator copy", async () => {
+    const append = vi.fn(async () => undefined);
+    const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
+    const log = vi.fn();
+
+    await recordTelephoneSetupProviderFailure({
+      append,
+      error: new TelephoneSetupProviderError(
+        "setup",
+        Object.assign(new Error("room join refused"), { status: 503 }),
+      ),
+      failureEventId: "logged-session-start-failure",
+      log,
+      occurredAt: "2026-08-17T20:00:00.000Z",
+      recordProviderFailure,
+      telephoneSessionId: "telephone-session-logged-start",
+    });
+
+    expect(log).toHaveBeenCalledWith({
+      error: { message: "room join refused", name: "Error", status: 503 },
+      provider: "livekit",
+      recovery: "terminal",
+      stage: "setup",
+      telephoneSessionId: "telephone-session-logged-start",
+    });
+  });
+
+  test("logs nothing for an error it does not attribute to a provider", async () => {
+    const log = vi.fn();
+
+    await recordTelephoneSetupProviderFailure({
+      append: vi.fn(async () => undefined),
+      error: new Error("durable application write failed"),
+      failureEventId: "unlogged-catch-path-failure",
+      log,
+      occurredAt: "2026-08-17T20:00:00.000Z",
+      recordProviderFailure: vi.fn(async () => ({ ended: true as const })),
+      telephoneSessionId: "telephone-session-unlogged",
+    });
+
+    expect(log).not.toHaveBeenCalled();
+  });
+
   test("records a classified session-start failure as sanitized setup failure", async () => {
     const append = vi.fn(async () => undefined);
     const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));

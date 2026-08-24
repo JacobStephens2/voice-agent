@@ -209,6 +209,62 @@ describe("bounded LiveKit telephone provider recovery", () => {
     expect(endCall).toHaveBeenCalledTimes(1);
   });
 
+  test("a speech failure that ends the call is logged with a sanitized description", async () => {
+    const tasks = await createTasks("tts-logged");
+    const session = new RecoverySessionHarness({ failEverySay: true });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-tts-logged",
+          }),
+          endCall: async () => undefined,
+        },
+        dependencies,
+      );
+
+      // The call dies on this fault, so the operator's only copy of what the
+      // provider said is this line.
+      expect(logProviderFailure).toHaveBeenCalledWith({
+        error: {
+          message: "Speech synthesis timed out",
+          name: "APITimeoutError",
+        },
+        provider: "inworld",
+        recovery: "retryable",
+        stage: "tts",
+        telephoneSessionId: "telephone-session-tts-logged",
+      });
+      // The bounded retry fails the same way, and the fault that actually
+      // ends the call is reported too rather than only the first one.
+      expect(logProviderFailure).toHaveBeenCalledTimes(2);
+    } finally {
+      await tasks.close();
+    }
+  });
+
   test("a remaining speech failure plays one prerecorded response and ends the call once", async () => {
     const tasks = await createTasks("tts-terminal");
     const session = new RecoverySessionHarness({ failEverySay: true });
