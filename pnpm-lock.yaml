@@ -112,6 +112,9 @@ importers:
       '@voice-agent/operations-broker':
         specifier: workspace:*
         version: link:../../packages/operations-broker
+      '@voice-agent/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
       '@voice-agent/pwa':
         specifier: workspace:*
         version: link:../pwa
@@ -146,6 +149,9 @@ importers:
       '@voice-agent/operations-broker':
         specifier: workspace:*
         version: link:../../packages/operations-broker
+      '@voice-agent/policy':
+        specifier: workspace:*
+        version: link:../../packages/policy
       '@voice-agent/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime

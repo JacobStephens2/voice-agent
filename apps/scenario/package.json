@@ -15,6 +15,7 @@
     "@voice-agent/auth": "workspace:*",
     "@voice-agent/contracts": "workspace:*",
     "@voice-agent/operations-broker": "workspace:*",
+    "@voice-agent/policy": "workspace:*",
     "@voice-agent/pwa": "workspace:*",
     "@voice-agent/runtime": "workspace:*",
     "@voice-agent/sqlite-store": "workspace:*",

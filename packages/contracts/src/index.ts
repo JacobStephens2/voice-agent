@@ -56,6 +56,7 @@ export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";
 export * from "./keeplore-delegation.ts";
 export * from "./keeplore-promotion-journal.ts";
+export * from "./keeplore-trial-promotion.ts";
 export * from "./keeplore-repository-policy-journal.ts";
 export * from "./recognized-speech-model.ts";
 

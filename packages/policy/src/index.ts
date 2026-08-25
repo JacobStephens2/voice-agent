@@ -14,6 +14,7 @@ import {
 } from "@voice-agent/contracts";
 
 export * from "./keeplore-delegation.ts";
+export * from "./keeplore-trial-promotion.ts";
 
 export function createBountywellReadRegistration(
   registeredAt: string,

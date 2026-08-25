@@ -422,4 +422,5 @@ export * from "./keeplore-live-inspector.ts";
 export * from "./keeplore-registration-file.ts";
 
 export * from "./keeplore-promotion-evidence.ts";
+export * from "./keeplore-trial-promotion.ts";
 export * from "./keeplore-repository-policy.ts";

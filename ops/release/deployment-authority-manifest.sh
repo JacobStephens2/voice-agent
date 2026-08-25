@@ -44,9 +44,16 @@ voice_agent_authority_programs=(
 # authority installed above; these must travel with it, because a host carrying
 # a newer publisher and an older writer refuses every publication over a field
 # one side stopped writing and the other still requires.
+# The promoter and the shared boundaries it sources travel together for the
+# same reason: post-Promotion appearance verification is declared in the
+# registration and read by the promoter, and a host carrying one half of that
+# pair either verifies nothing or reads a setting nobody writes.
 voice_agent_authority_keeplore_tools=(
   "ops/keeplore/collect-keeplore-repository-policy.sh:collect-keeplore-repository-policy.sh"
+  "ops/keeplore/keeplore-config.sh:keeplore-config.sh"
+  "ops/keeplore/promote-keeplore-release.sh:promote-keeplore-release.sh"
   "ops/keeplore/record-keeplore-bypass-attestation.sh:record-keeplore-bypass-attestation.sh"
+  "ops/keeplore/resolve-keeplore-worktree.sh:resolve-keeplore-worktree.sh"
 )
 
 voice_agent_authority_extras=(

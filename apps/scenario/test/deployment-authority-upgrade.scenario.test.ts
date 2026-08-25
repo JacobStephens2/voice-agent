@@ -36,6 +36,20 @@ afterEach(async () => {
   );
 });
 
+/**
+ * The Keeplore programs the attended upgrade installs as root authority. The
+ * publisher's journal writers and the promoter that reads the registration's
+ * appearance-verification setting all have to move together; a host holding a
+ * mixed set refuses or skips work with no obvious cause.
+ */
+const keeploreAuthorityTools = [
+  "collect-keeplore-repository-policy.sh",
+  "keeplore-config.sh",
+  "promote-keeplore-release.sh",
+  "record-keeplore-bypass-attestation.sh",
+  "resolve-keeplore-worktree.sh",
+] as const;
+
 test("release immutability accepts internal package symlinks but rejects mutable content and escaping links", async () => {
   const root = await mkdtemp(join(tmpdir(), "voice-agent-immutable-release-"));
   temporaryDirectories.push(root);
@@ -106,10 +120,7 @@ test("an attended upgrade installs the Keeplore policy tools the pinned publishe
   // The publisher re-derives its authority from the journal these two write.
   // A host that upgraded the publisher while leaving them behind refused every
   // publication with an unlogged 422 for three days.
-  for (const tool of [
-    "collect-keeplore-repository-policy.sh",
-    "record-keeplore-bypass-attestation.sh",
-  ]) {
+  for (const tool of keeploreAuthorityTools) {
     await expect(
       readFile(join(fixture.keeploreTools, tool), "utf8"),
     ).resolves.toContain(`reviewed ${tool}`);
@@ -712,10 +723,7 @@ process.stdout.write("{}\\n");
     join(releaseScripts, "keeplore-github-app-publisher.ts"),
     "export {};\n",
   );
-  for (const tool of [
-    "collect-keeplore-repository-policy.sh",
-    "record-keeplore-bypass-attestation.sh",
-  ]) {
+  for (const tool of keeploreAuthorityTools) {
     await writeExecutable(
       join(release, "ops/keeplore", tool),
       `#!/usr/bin/env bash\nprintf 'reviewed ${tool}\\n'\n`,

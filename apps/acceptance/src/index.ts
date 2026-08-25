@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { isAuthenticatedTaskUrl } from "./authenticated-task-url.ts";
+
 const identifierSchema = z.string().min(1).max(120);
 const timestampSchema = z.iso.datetime();
 const releaseCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
@@ -197,9 +199,4 @@ function isPassingRun(run: PstnRunEvent): boolean {
     run.telephoneBoundaryChecks === "passed";
 }
 
-function isAuthenticatedTaskUrl(value: string): boolean {
-  const url = new URL(value);
-  return url.origin === "https://voice.stephens.page" &&
-    url.pathname === "/" &&
-    url.searchParams.get("task") !== null;
-}
+export * from "./slice-three.ts";
