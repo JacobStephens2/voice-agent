@@ -251,6 +251,9 @@ KEEPLORE_VERIFICATION_COMMAND=$VERIFICATION_COMMAND
 KEEPLORE_PREFLIGHT_COMMAND=$PREFLIGHT_COMMAND
 KEEPLORE_GITHUB_APP_CONFIGURATION=/etc/voice-agent/keeplore-github-app.conf
 KEEPLORE_GITHUB_APP_KEY_PATH=/etc/voice-agent/keeplore-github-app-private-key.pem
+KEEPLORE_APPEARANCE_VERIFICATION=0
+KEEPLORE_CONTRACT_REVISION=1
+KEEPLORE_REQUIRED_CHECK=keeplore-verification
 CONFIGURATION
 sudo chown root:root "$KEEPLORE_CONFIGURATION"
 sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
@@ -263,7 +266,7 @@ for script in keeplore-config.sh inspect-keeplore.sh install-keeplore-release.sh
   keeplore-health.sh promote-keeplore-main.sh promote-keeplore-release.sh \
   prune-keeplore-releases.sh reconcile-keeplore-merges.sh \
   collect-keeplore-repository-policy.sh record-keeplore-bypass-attestation.sh \
-  repoint-keeplore-vhosts.sh; do
+  resolve-keeplore-worktree.sh repoint-keeplore-vhosts.sh; do
   sudo install -o root -g root -m 0755 \
     "$REPOSITORY_ROOT/ops/keeplore/$script" "$KEEPLORE_TOOLS/$script"
 done

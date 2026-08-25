@@ -305,7 +305,8 @@ resolves the latest pending or running Delegation from durable state before it
 applies the stop.
 
 The clean, verified, completed worktree remains ineligible for cleanup while
-its pull request is open, so it can receive review work. A later lifecycle may
-make it eligible only after the pull request is merged or closed and the
-worktree is still clean. Stopped, failed, dirty, out-of-scope, or unverifiable
+its pull request is open, so it can receive review work. It becomes eligible
+only after the pull request is merged or closed and the worktree is still clean;
+that decision, and everything else after the owner accepts the pull request, is
+`docs/operations/keeplore-button-trial-promotion.md`. Stopped, failed, dirty, out-of-scope, or unverifiable
 worktrees are retained with a quarantine reason for inspection.

@@ -217,6 +217,10 @@ _Avoid_: Live checkout, mutable build, branch
 One serial, auditable attempt to make a Release active, including preflight checks, any authorized migration, atomic switching, post-Promotion health verification, and automatic rollback on failure.
 _Avoid_: Deployment job, release build
 
+**Production Appearance Verification**:
+The post-Promotion observation, taken by the trusted promoter's own root-owned browser against the authenticated production view, that decides whether the Release now serving actually renders what its Human Merge was for; a Delegation's measurement of its own candidate is never accepted in its place, and a failed verdict restores the retained Release.
+_Avoid_: Health check, screenshot review, candidate verification
+
 **Self-Promotion**:
 The Promotion of the Voice Agent's own Registered Codebase by the runtime it replaces, enrolled through the same Fresh Passkey Action, Human Merge, immutable Release, verification, and rollback boundaries as every other application; repository source may propose a Deployment Contract or policy revision but merging it never activates authority, alters credentials, or expands capabilities.
 _Avoid_: Self-update, agent redeploy, self-authorization
@@ -280,6 +284,10 @@ _Avoid_: Branch protection check, policy scan, compliance status
 **Keeplore Button Trial**:
 A feature-work trial in which the Voice Agent delegates resizing the “Get Rid Of” controls on Keeplore's use-by table to match its row-level “Remove” controls.
 _Avoid_: Button test
+
+**Keeplore Button Trial Promotion**:
+The completion of the Keeplore Button Trial after the owner's Human Merge: the automatic Promotion of that exact commit, its Production Appearance Verification, and the single terminal Evidence Record that links the confirmed telephone request, Delegation Brief and Result, branch, commits, pull request, merge, Release, verification, any rollback, and the notice the owner received.
+_Avoid_: Deploy step, trial cleanup, second trial
 
 **Bountywell Outage Drill**:
 A controlled Incident Response trial in which `bountywell-api.service` is deliberately stopped behind an independent recovery timer and the Voice Agent must diagnose and recover it without being told the injected fault.

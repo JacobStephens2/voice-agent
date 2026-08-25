@@ -34,6 +34,9 @@ keeplore_load_configuration() {
   keeplore_verification_command=
   keeplore_github_app_configuration=
   keeplore_github_app_key_path=
+  keeplore_appearance_verification=
+  keeplore_contract_revision=
+  keeplore_required_check=
   while IFS='=' read -r key value; do
     case "$key" in
       KEEPLORE_REPOSITORY) keeplore_repository=$value ;;
@@ -55,6 +58,9 @@ keeplore_load_configuration() {
       KEEPLORE_VERIFICATION_COMMAND) keeplore_verification_command=$value ;;
       KEEPLORE_GITHUB_APP_CONFIGURATION) keeplore_github_app_configuration=$value ;;
       KEEPLORE_GITHUB_APP_KEY_PATH) keeplore_github_app_key_path=$value ;;
+      KEEPLORE_APPEARANCE_VERIFICATION) keeplore_appearance_verification=$value ;;
+      KEEPLORE_CONTRACT_REVISION) keeplore_contract_revision=$value ;;
+      KEEPLORE_REQUIRED_CHECK) keeplore_required_check=$value ;;
       *) ;;
     esac
   done < "$keeplore_configuration"
@@ -69,6 +75,15 @@ keeplore_load_configuration() {
   keeplore_current_link=${keeplore_current_link:-${keeplore_release_root%/releases}/current}
   keeplore_github_app_configuration=${keeplore_github_app_configuration:-/etc/voice-agent/keeplore-github-app.conf}
   keeplore_github_app_key_path=${keeplore_github_app_key_path:-/etc/voice-agent/keeplore-github-app-private-key.pem}
+  # Post-Promotion appearance verification belongs to the Deployment Contract
+  # revision that asked for it. It is off by default: the onboarding merge and
+  # every ordinary Keeplore change promote before the table controls are meant
+  # to match, and a verification they were never meant to pass would roll them
+  # back.
+  keeplore_appearance_verification=${keeplore_appearance_verification:-0}
+  keeplore_contract_revision=${keeplore_contract_revision:-1}
+  keeplore_required_check=${keeplore_required_check:-keeplore-verification}
+  keeplore_production_branch=${keeplore_production_branch:-main}
 
   if [[ ! $keeplore_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
     [[ $keeplore_live_checkout != /* ]] || \
@@ -78,7 +93,8 @@ keeplore_load_configuration() {
     [[ $keeplore_github_app_configuration != /* ]] || \
     [[ $keeplore_github_app_key_path != /* ]] || \
     [[ $keeplore_shared_root != /* ]] || \
-    [[ ! $keeplore_retained_releases =~ ^[1-9][0-9]*$ ]]; then
+    [[ ! $keeplore_retained_releases =~ ^[1-9][0-9]*$ ]] || \
+    [[ ! $keeplore_contract_revision =~ ^[1-9][0-9]*$ ]]; then
     printf 'Keeplore registration is incomplete or malformed.\n' >&2
     return 1
   fi
@@ -149,6 +165,46 @@ header = "Accept: application/vnd.github+json"
 header = "Authorization: Bearer $credential"
 header = "X-GitHub-Api-Version: 2022-11-28"
 CONFIG
+}
+
+# Where the promoter writes production appearance evidence. Named once so the
+# promoter, the attended wizard, and the Evidence Record projection cannot
+# disagree about where the screenshots for a Release are.
+keeplore_production_evidence_directory() {
+  printf '/var/lib/voice-agent-evidence/keeplore-production/%s' "$1"
+}
+
+# The required check contexts the production branch's own rules name, read from
+# the root-owned repository-policy journal rather than from configuration: the
+# rule is what GitHub enforces, and a configured name that drifted from it would
+# let a Release be built on a check nobody requires. The configured name is the
+# fallback only while no branch-rules observation exists.
+keeplore_required_checks() {
+  local journal
+  journal=$(keeplore_repository_policy_journal)
+  local observed
+  observed=$(jq -sr --arg branch "$keeplore_production_branch" '
+    [ .[]
+      | select(.kind == "branch-rules" and .branch == $branch)
+    ] | last | .requiredChecks // [] | .[]' "$journal" 2>/dev/null || printf '')
+  if [[ -n $observed ]]; then
+    printf '%s\n' "$observed"
+    return 0
+  fi
+  printf '%s\n' "$keeplore_required_check"
+}
+
+# Run the trusted production appearance verifier from the active Voice Agent
+# Release. It reads the root-owned production browser session rather than the
+# restricted Subagent's credential store, so a Delegation cannot supply the
+# browser that judges its own change in production.
+keeplore_run_production_verifier() {
+  local release=${VOICE_AGENT_RELEASE:-/opt/voice-agent/current}
+  runuser --user voice-agent -- env -i \
+    HOME=/var/lib/voice-agent \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    /usr/bin/node --experimental-strip-types \
+    "$release/apps/worker/src/keeplore-production-verifier.ts" 9>&-
 }
 
 keeplore_require_commit() {

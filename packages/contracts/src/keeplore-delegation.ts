@@ -232,7 +232,7 @@ export const keeploreDelegationBriefSchema = z
   })
   .strict();
 
-const computedButtonStyleSchema = z
+export const keeploreComputedButtonStyleSchema = z
   .object({
     backgroundColor: z.string().min(1).max(80),
     borderBottomWidth: z.string().min(1).max(40),
@@ -252,11 +252,17 @@ const computedButtonStyleSchema = z
     paddingTop: z.string().min(1).max(40),
     textTransform: z.string().min(1).max(40),
     width: z.string().min(1).max(40),
-    widthMode: z.literal("content"),
+    /**
+     * Whether the control's width follows its content. A control that did not
+     * widen when probed is recorded as `fixed` rather than refused, so the
+     * acceptance gates can name the width failure instead of reporting that no
+     * measurement arrived at all.
+     */
+    widthMode: z.enum(["content", "fixed"]),
   })
   .strict();
 
-const screenshotSchema = z
+export const keeploreScreenshotSchema = z
   .object({
     authenticated: z.boolean(),
     path: absolutePathSchema,
@@ -346,14 +352,14 @@ export const keeploreDelegationResultSchema = z
           .array(
             z
               .object({
-                getRidOf: computedButtonStyleSchema,
-                remove: computedButtonStyleSchema,
+                getRidOf: keeploreComputedButtonStyleSchema,
+                remove: keeploreComputedButtonStyleSchema,
                 viewport: z.enum(["desktop", "mobile"]),
               })
               .strict(),
           )
           .max(4),
-        screenshots: z.array(screenshotSchema).max(4),
+        screenshots: z.array(keeploreScreenshotSchema).max(4),
       })
       .strict(),
     worktree: keeploreWorktreeSchema,
@@ -393,7 +399,7 @@ export const keeploreDelegationRecordSchema = z
   .strict();
 
 export type KeeploreComputedButtonStyle = z.infer<
-  typeof computedButtonStyleSchema
+  typeof keeploreComputedButtonStyleSchema
 >;
 export type KeeploreWorktree = z.infer<typeof keeploreWorktreeSchema>;
 export type KeeploreCandidatePublicationRequest = z.infer<

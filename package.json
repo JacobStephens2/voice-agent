@@ -7,6 +7,7 @@
   },
   "scripts": {
     "acceptance:slice-one": "pnpm --filter @voice-agent/acceptance cli --",
+    "acceptance:slice-three": "pnpm --filter @voice-agent/acceptance slice-three-cli --",
     "auth:bootstrap": "pnpm --filter @voice-agent/api bootstrap-code --",
     "browser:test": "playwright test",
     "build": "pnpm -r --if-present build",

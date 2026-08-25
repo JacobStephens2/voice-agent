@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
     "cli": "node --experimental-strip-types src/cli.ts",
+    "slice-three-cli": "node --experimental-strip-types src/slice-three-cli.ts",
     "test": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
