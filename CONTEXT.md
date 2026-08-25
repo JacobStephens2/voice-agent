@@ -141,6 +141,10 @@ _Avoid_: Automatic provider failover, unlimited retry, redial
 A broken invariant the Voice Agent itself raises during a Telephone Session, as opposed to a failure a speech or interpretation provider reported; its description is fixed text authored in the system and carries nothing from the call, which is what makes it safe to describe to an operator at any stage. Every fault the Voice Agent raises while handling a turn, marked or not, is reported against its own failing stage rather than a provider's.
 _Avoid_: Provider failure, provider outage, speech error
 
+**Speech Provider Error Frame**:
+A speech gateway's own account of a failure it reported — its code, its human-readable reason, and its retryable flag — read off the raw frame before the agents framework narrows it away, and carried into the operator's report of the fault as a named fault class: an upstream provider outage, or a credential, entitlement, or quota fault of this system's own account. Its retryable flag, not an inference of this system's, decides the Bounded Provider Retry.
+_Avoid_: Provider error message, websocket payload, error code
+
 **Bounded Excerpt**:
 An explicitly requested, code-filtered subset of server data that may be shared with a hosted model provider.
 _Avoid_: Raw payload, unrestricted context

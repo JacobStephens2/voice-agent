@@ -1,4 +1,5 @@
 import {
+  APIError,
   APIStatusError,
   APITimeoutError,
   llm,
@@ -20,6 +21,7 @@ import {
   runLiveKitTelephoneSession,
   type LiveKitTelephoneSessionDependencies,
 } from "../src/livekit-telephone-session.ts";
+import { SpeechProviderErrorFrameLog } from "../src/speech-provider-error-frame.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -325,6 +327,239 @@ describe("bounded LiveKit telephone provider recovery", () => {
       // The bounded retry fails the same way, and the fault that actually
       // ends the call is reported too rather than only the first one.
       expect(logProviderFailure).toHaveBeenCalledTimes(2);
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a speech provider's own reason is logged instead of an undefined message", async () => {
+    const tasks = await createTasks("tts-gateway-reason");
+    const session = new RecoverySessionHarness({
+      failEverySay: true,
+      gatewayErrorFrame: {
+        code: "upstream_error",
+        message: "inworld: upstream request timed out",
+        retryable: true,
+        session_id: "tts-abc123",
+        // The gateway echoes what it was asked to say; none of it may reach
+        // the operator's journal.
+        transcript: "restart the Bountywell API",
+        type: "error",
+      },
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        sessionOptions({
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks,
+          telephoneSessionId: "telephone-session-tts-gateway-reason",
+        }),
+        dependencies,
+      );
+
+      // Diagnosing this fault previously meant hand-building a websocket
+      // client against the gateway: the line said `undefined`.
+      expect(logProviderFailure).toHaveBeenCalledWith({
+        error: {
+          code: "upstream_error",
+          fault: "upstream",
+          message: "inworld: upstream request timed out",
+          name: "APIError",
+          retryable: true,
+        },
+        provider: "inworld",
+        recovery: "retryable",
+        stage: "tts",
+        telephoneSessionId: "telephone-session-tts-gateway-reason",
+      });
+      expect(JSON.stringify(logProviderFailure.mock.calls)).not.toContain(
+        "Bountywell",
+      );
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a fault the provider calls unretryable ends the call without spending the retry", async () => {
+    const tasks = await createTasks("tts-gateway-terminal");
+    const session = new RecoverySessionHarness({
+      failEverySay: true,
+      gatewayErrorFrame: {
+        code: "unauthenticated",
+        message: "invalid api key",
+        retryable: false,
+        type: "error",
+      },
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        sessionOptions({
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks,
+          telephoneSessionId: "telephone-session-tts-gateway-terminal",
+        }),
+        dependencies,
+      );
+
+      // A wrong credential is not a provider outage, and the operator can see
+      // that without probing the gateway by hand.
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.objectContaining({ fault: "credential" }),
+          recovery: "terminal",
+        }),
+      );
+      // Retrying a credential the provider has already refused only spends the
+      // one recovery this Telephone Session has.
+      expect(recordProviderFailure).toHaveBeenCalledTimes(1);
+      expect(
+        evidence.filter((event) => event.kind === "telephone.provider.retry"),
+      ).toHaveLength(0);
+      expect(session.failurePlaybacks).toBe(1);
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a fault the provider calls retryable spends the retry the worker would have refused", async () => {
+    const tasks = await createTasks("tts-gateway-retryable");
+    const session = new RecoverySessionHarness({
+      failEverySay: true,
+      gatewayErrorFrame: {
+        code: "upstream_error",
+        message: "inworld: upstream request timed out",
+        retryable: true,
+        type: "error",
+      },
+      withoutCompletedTurn: true,
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret(): Promise<never> {
+          throw new Error("The failed opening speech answers no turn");
+        },
+      }),
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        sessionOptions({
+          evidence,
+          openingText: "Hello, this is your operations agent.",
+          recordProviderFailure,
+          session,
+          tasks,
+          telephoneSessionId: "telephone-session-tts-gateway-retryable",
+        }),
+        dependencies,
+      );
+
+      // The opening speech is reported as terminal on its own, so this
+      // recovery came from the provider rather than from this worker's guess.
+      expect(recordProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ recovery: "retryable", stage: "tts" }),
+      );
+      expect(
+        evidence.filter((event) => event.kind === "telephone.provider.retry"),
+      ).toHaveLength(1);
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("an error frame carrying no reason still names a usable fault", async () => {
+    const tasks = await createTasks("tts-gateway-bare");
+    const session = new RecoverySessionHarness({
+      failEverySay: true,
+      gatewayErrorFrame: { session_id: "tts-abc123", type: "error" },
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        sessionOptions({
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks,
+          telephoneSessionId: "telephone-session-tts-gateway-bare",
+        }),
+        dependencies,
+      );
+
+      // Nothing was discarded and nothing threw: the frame said only that the
+      // gateway failed, and that is what the line says.
+      expect(logProviderFailure).toHaveBeenCalledWith({
+        error: {
+          fault: "unknown",
+          message: "LiveKit TTS returned error: undefined",
+          name: "APIError",
+        },
+        provider: "inworld",
+        recovery: "retryable",
+        stage: "tts",
+        telephoneSessionId: "telephone-session-tts-gateway-bare",
+      });
     } finally {
       await tasks.close();
     }
@@ -1169,6 +1404,8 @@ class RecoverySessionHarness {
   readonly #extraCompletedTurns: readonly llm.ChatMessage[];
   readonly #failEverySay: boolean;
   readonly #failSaysMatching: string | undefined;
+  readonly #gatewayErrorFrame: unknown;
+  readonly #gatewayFrames = new SpeechProviderErrorFrameLog();
   readonly #handlers = new Map<string, (event: never) => void>();
   readonly #hangEverySay: boolean;
   readonly #playoutMs: number | undefined;
@@ -1184,6 +1421,11 @@ class RecoverySessionHarness {
       readonly extraCompletedTurns?: readonly llm.ChatMessage[];
       readonly failEverySay?: boolean;
       readonly failSaysMatching?: string;
+      /**
+       * The raw frame the speech gateway sends before the framework gives up
+       * on the stream, exactly as it arrives on the websocket.
+       */
+      readonly gatewayErrorFrame?: unknown;
       /** The playout of every speech never finishes at all. */
       readonly hangEverySay?: boolean;
       /** Every speech starts audibly and then plays for this long. */
@@ -1200,6 +1442,7 @@ class RecoverySessionHarness {
     this.#extraCompletedTurns = options.extraCompletedTurns ?? [];
     this.#failEverySay = options.failEverySay ?? false;
     this.#failSaysMatching = options.failSaysMatching;
+    this.#gatewayErrorFrame = options.gatewayErrorFrame;
     this.#hangEverySay = options.hangEverySay ?? false;
     this.#playoutMs = options.playoutMs;
     this.#stallEverySay = options.stallEverySay ?? false;
@@ -1226,6 +1469,7 @@ class RecoverySessionHarness {
           async waitForPlayout() {},
         },
       },
+      tts: { errorFrames: harness.#gatewayFrames },
       say(text: string) {
         harness.attemptedSays += 1;
         if (
@@ -1233,6 +1477,14 @@ class RecoverySessionHarness {
           (harness.#failSaysMatching !== undefined &&
             text.includes(harness.#failSaysMatching))
         ) {
+          if (harness.#gatewayErrorFrame !== undefined) {
+            // The gateway reports its error frame and the framework, whose
+            // schema keeps none of it, raises this exact message.
+            harness.#gatewayFrames.observe(
+              Buffer.from(JSON.stringify(harness.#gatewayErrorFrame)),
+            );
+            throw new APIError("LiveKit TTS returned error: undefined");
+          }
           throw new APITimeoutError({ message: "Speech synthesis timed out" });
         }
         if (harness.#abandonEverySay) {

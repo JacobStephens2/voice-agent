@@ -37,6 +37,12 @@ import {
 } from "./provider-error-description.ts";
 import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
 import {
+  ObservedSpeechProviderSTT,
+  ObservedSpeechProviderTTS,
+  type SpeechProviderErrorFrame,
+  speechProviderErrorFrames,
+} from "./speech-provider-error-frame.ts";
+import {
   meterTelephoneSessionUsage,
   reportTelephoneSpendingWarning,
   type TelephoneUsageRates,
@@ -375,17 +381,42 @@ export async function runLiveKitTelephoneSession(
     }
   }
 
+  /**
+   * What the failing speech gateway said about itself, if it said anything.
+   *
+   * The framework's schema drops the gateway's code, reason, and retryable
+   * flag, so the provider it speaks through keeps the raw frame and hands it
+   * over to the fault that follows.
+   */
+  function takeSpeechProviderErrorFrame(
+    stage: TelephoneProviderFailureStage,
+  ): SpeechProviderErrorFrame | undefined {
+    if (stage !== "stt" && stage !== "tts") return undefined;
+    const provider = stage === "tts" ? session.tts : session.stt;
+    return speechProviderErrorFrames(provider)?.takeErrorFrame();
+  }
+
   async function recordProviderFailureAndRecover(
     stage: TelephoneProviderFailureStage,
     error: unknown,
     taskId?: string,
-    recovery: TelephoneProviderFailureRecovery = "retryable",
+    reported: TelephoneProviderFailureRecovery = "retryable",
   ): Promise<void> {
     if (failureEnded) return;
     const occurredAt = new Date().toISOString();
     const deliveryId = stableIdentifier(
       `${stage}:${taskId ?? options.telephoneSessionId}:${occurredAt}`,
     );
+    const frame = takeSpeechProviderErrorFrame(stage);
+    // The provider knows whether its own fault is worth trying again, so its
+    // flag decides the Bounded Provider Retry wherever it sent one; the retry
+    // stays bounded to one either way.
+    const recovery: TelephoneProviderFailureRecovery =
+      frame?.retryable === undefined
+        ? reported
+        : frame.retryable
+          ? "retryable"
+          : "terminal";
     const providerEvent = mapProviderFailureEvent({
       deliveryId,
       error,
@@ -397,7 +428,7 @@ export async function runLiveKitTelephoneSession(
     // Logged before anything durable is written: this fault may end the call,
     // and the Evidence Record deliberately keeps no description of it.
     logProviderFailure({
-      error: describeProviderError(error, stage),
+      error: describeProviderError(error, stage, frame),
       provider: providerEvent.provider,
       recovery,
       stage,
@@ -749,7 +780,7 @@ function createConversationSession(prolongedSilenceMs: number): voice.AgentSessi
       sttConnOptions: boundedProviderConnectOptions("stt"),
       ttsConnOptions: boundedProviderConnectOptions("tts"),
     },
-    stt: new inference.STT({
+    stt: new ObservedSpeechProviderSTT({
       connOptions: boundedProviderConnectOptions("stt"),
       language: "en",
       model: "assemblyai/universal-streaming-multilingual",
@@ -758,7 +789,7 @@ function createConversationSession(prolongedSilenceMs: number): voice.AgentSessi
       },
     }),
     transcriptionTimeout: transcriptionTimeoutMs,
-    tts: new inference.TTS({
+    tts: new ObservedSpeechProviderTTS({
       connOptions: boundedProviderConnectOptions("tts"),
       language: "en",
       model: "inworld/inworld-tts-2",
