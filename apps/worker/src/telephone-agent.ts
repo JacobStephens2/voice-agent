@@ -57,6 +57,11 @@ import {
   telephoneUsageRatesFromEnvironment,
 } from "./telephone-usage-meter.ts";
 import {
+  createBoundedMachineDetector,
+  executeMachineDetection,
+  type BoundedMachineDetector,
+} from "./telephone-machine-detection.ts";
+import {
   recordTelephoneSetupProviderFailure,
   TelephoneSetupProviderError,
 } from "./telephone-setup-provider-failure.ts";
@@ -376,7 +381,7 @@ async function handleOutbound(
   if (warmSession === undefined) return;
   const session = createFixedSpeechSession();
   let callId = dispatch.effectId;
-  let detector: voice.AMD | undefined;
+  let detector: BoundedMachineDetector | undefined;
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
@@ -479,7 +484,7 @@ async function handleOutbound(
           return;
         }
         await session.close();
-        await detector.aclose();
+        await detector.close();
         await runLiveKitTelephoneSession({
           boundaries,
           disconnected: disconnected.promise,
@@ -544,7 +549,7 @@ async function handleOutbound(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await detector?.aclose().catch(() => undefined);
+    await detector?.close();
     await session.close().catch(() => undefined);
     await ctx.deleteRoom().catch(() => undefined);
   }
@@ -575,7 +580,7 @@ async function handleCompletionOutbound(
   });
   if (warmSession === undefined) return;
   const session = createFixedSpeechSession();
-  let detector: voice.AMD | undefined;
+  let detector: BoundedMachineDetector | undefined;
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
@@ -691,7 +696,7 @@ async function handleCompletionOutbound(
       return;
     }
     await session.close();
-    await detector.aclose();
+    await detector.close();
     await runLiveKitTelephoneSession({
       activeTaskId: resume.taskId,
       boundaries,
@@ -753,7 +758,7 @@ async function handleCompletionOutbound(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await detector?.aclose().catch(() => undefined);
+    await detector?.close();
     await session.close().catch(() => undefined);
     if (!handedOffToRecovery) {
       await ctx.deleteRoom().catch(() => undefined);
@@ -1017,31 +1022,6 @@ async function startFixedSpeechSession(
     });
   } catch (error) {
     throw new TelephoneSetupProviderError("setup", error);
-  }
-}
-
-function createBoundedMachineDetector(
-  session: voice.AgentSession,
-  participantIdentity: string,
-): voice.AMD {
-  return new voice.AMD(session, {
-    detectionTimeoutMs: 10_000,
-    interruptOnMachine: true,
-    llm: "openai/gpt-5.4",
-    noSpeechTimeoutMs: 5_000,
-    participantIdentity,
-    stt: "assemblyai/universal-streaming-multilingual",
-    waitUntilFinished: false,
-  });
-}
-
-async function executeMachineDetection(
-  detector: voice.AMD,
-): ReturnType<voice.AMD["execute"]> {
-  try {
-    return await detector.execute();
-  } catch (error) {
-    throw new TelephoneSetupProviderError("coordinator", error);
   }
 }
 
