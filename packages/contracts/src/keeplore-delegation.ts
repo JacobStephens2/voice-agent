@@ -38,6 +38,72 @@ export const keeploreButtonTrialAcceptanceCriteria = [
 export const supersededKeeploreButtonTrialAcceptanceCriterion =
   "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight." as const;
 
+/**
+ * The computed properties authenticated visual verification requires the two
+ * table-view controls to share exactly.
+ *
+ * The restricted runner checks them, the Operations policy checks them again
+ * before a result is accepted, and the model is told them in its prompt — it
+ * never measures the rendered controls itself. Naming them once here keeps the
+ * bar the model is given from drifting away from the bar it is judged against:
+ * a model told only to "match" picks which properties that means, and a rule
+ * that reads as a match — matching padding, matching typography — still fails
+ * on the shadow and the colour it never touched.
+ *
+ * Width is deliberately absent. Both controls are measured for content-based
+ * widths, which requires them to differ.
+ */
+export const keeploreMatchedControlProperties = [
+  "backgroundColor",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "borderRadius",
+  "borderRightWidth",
+  "borderTopWidth",
+  "boxShadow",
+  "color",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "height",
+  "letterSpacing",
+  "lineHeight",
+  "paddingBottom",
+  "paddingTop",
+  "textTransform",
+] as const;
+
+export function describeKeeploreMatchedControlProperties(): string {
+  return keeploreMatchedControlProperties.join(", ");
+}
+
+/**
+ * The one mismatch check both acceptance gates read, or `null` when the two
+ * controls share every matched property.
+ *
+ * The restricted runner checks a candidate before it publishes anything and the
+ * Operations policy checks the accepted result again, so the comparison — and
+ * the sentence an owner and the next round of work read — belongs here rather
+ * than in a copy on each side of that boundary. It names every mismatching
+ * property: a candidate reported as differing in `boxShadow` alone sends the
+ * next attempt after one property while the rest are still wrong.
+ */
+export function describeKeeploreControlMismatch(
+  viewport: "desktop" | "mobile",
+  styles: {
+    getRidOf: KeeploreComputedButtonStyle;
+    remove: KeeploreComputedButtonStyle;
+  },
+): string | null {
+  const mismatched = keeploreMatchedControlProperties.filter(
+    (property) => styles.getRidOf[property] !== styles.remove[property],
+  );
+  if (mismatched.length === 0) {
+    return null;
+  }
+  return `${viewport} Keeplore table controls differ in ${mismatched.join(", ")}`;
+}
+
 export const keeploreDelegationCapabilities = [
   "registered-source.read",
   "delegated-worktree.write",
@@ -302,6 +368,9 @@ export const keeploreDelegationRecordSchema = z
   })
   .strict();
 
+export type KeeploreComputedButtonStyle = z.infer<
+  typeof computedButtonStyleSchema
+>;
 export type KeeploreWorktree = z.infer<typeof keeploreWorktreeSchema>;
 export type KeeploreCandidatePublicationRequest = z.infer<
   typeof keeploreCandidatePublicationRequestSchema

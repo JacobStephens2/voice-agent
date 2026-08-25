@@ -517,3 +517,47 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
     ]),
   );
 });
+
+test("the Keeplore Button Trial runs restricted Codex from the active Release", async () => {
+  const trial = await readFile(
+    join(repositoryRoot, "ops/acceptance/run-keeplore-button-trial.sh"),
+    "utf8",
+  );
+
+  // Codex reads any project configuration it finds from its working directory
+  // upward, and the operator's own home is closed to voice-codex. See the
+  // as_voice_codex comment in the wizard for why that misreads as a lost login.
+  const logicalLines = trial.replace(/\\\n\s*/gu, " ").split("\n");
+  // Every Codex command, not the two subcommands this bug was found through:
+  // an `exec` added later would inherit the operator's directory untested.
+  const codexCommands = logicalLines.filter((line) =>
+    /"\$CODEX"\s+\S/u.test(line),
+  );
+
+  expect(codexCommands.length).toBeGreaterThan(0);
+  for (const command of codexCommands) {
+    expect(command).toContain("as_voice_codex ");
+    expect(command).not.toContain("sudo -u voice-codex");
+  }
+  expect(trial).toContain('cd "$1" || exit 1');
+  expect(trial).toContain("as_voice_codex() {");
+  // The trial now depends on the Release being reachable and unwritable for the
+  // restricted identity, so it proves both before the login check runs.
+  expect(trial).toContain('as_voice_codex /usr/bin/test -r "$RELEASE_ROOT"');
+  expect(trial).toContain('as_voice_codex /usr/bin/test ! -w "$RELEASE_ROOT"');
+});
+
+test("the Keeplore Button Trial says why a Codex login check failed", async () => {
+  const trial = await readFile(
+    join(repositoryRoot, "ops/acceptance/run-keeplore-button-trial.sh"),
+    "utf8",
+  );
+
+  // An unreadable project config and a missing subscription both exit 1 here.
+  // Discarding the reason leaves the operator at a device flow that cannot fix
+  // the first of them, which is the failure this stage was already repaired for
+  // once.
+  expect(trial).toMatch(/CODEX_LOGIN_STATUS=\$\(as_voice_codex/u);
+  expect(trial).toContain('note "$CODEX_LOGIN_STATUS"');
+  expect(trial).not.toMatch(/"\$CODEX" login status >\/dev\/null 2>&1/u);
+});

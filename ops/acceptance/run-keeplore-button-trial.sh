@@ -203,6 +203,19 @@ if ! RELEASE_ROOT=$(readlink -f /opt/voice-agent/current) || \
 fi
 PLAYWRIGHT="$RELEASE_ROOT/node_modules/.bin/playwright"
 
+# as_voice_codex COMMAND... — run a command as the restricted identity from the
+# active Release, the same read-only tree the Subagent unit works from. Codex
+# reads any project configuration it finds from its working directory upward,
+# and the operator's own directory is closed to voice-codex: a Codex command
+# that inherited it would exit on an unreadable configuration file, which reads
+# here as "not logged in" and sends this stage into a needless device flow. Only
+# Codex reads its working directory this way, so the restricted git, curl,
+# Playwright, and X11 commands below are deliberately left as they are.
+as_voice_codex() {
+  sudo -u voice-codex /bin/sh -c 'cd "$1" || exit 1; shift 1; exec "$@"' \
+    as_voice_codex "$RELEASE_ROOT" "$@"
+}
+
 banner "Restricted Codex Keeplore Button Trial"
 
 stage "Verify the restricted Subagent boundary"
@@ -214,6 +227,11 @@ getent group voice-subagent-client >/dev/null
 sudo test "$(sudo stat -c %U /var/lib/voice-codex)" = voice-codex
 sudo test "$(sudo stat -c %a /var/lib/voice-codex)" = 700
 sudo test "$(sudo stat -c %U /var/lib/voice-agent-worktrees/keeplore)" = voice-codex
+# The restricted Codex commands below run from the active Release. Prove that
+# tree is reachable and unwritable for the identity before a later failure to
+# enter it can be mistaken for a missing subscription login.
+as_voice_codex /usr/bin/test -r "$RELEASE_ROOT"
+as_voice_codex /usr/bin/test ! -w "$RELEASE_ROOT"
 sudo systemd-analyze security voice-agent-subagent.service \
   voice-agent-keeplore-publisher.service --no-pager || true
 step "Confirm the Subagent has no sudo capabilities, Docker socket, production directory, production secret source, or Operations Broker access, and that only the pinned publisher holds App publication authority."
@@ -234,12 +252,16 @@ if ! sudo test "$(sudo cat /proc/sys/kernel/apparmor_restrict_unprivileged_usern
   warn "The Bubblewrap AppArmor profile is unavailable; run the attended deployment-authority upgrade from this reviewed Release."
   exit 1
 fi
-if ! sudo -u voice-codex env -i \
+if ! CODEX_LOGIN_STATUS=$(as_voice_codex env -i \
   CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \
   PATH=/usr/local/bin:/usr/bin:/bin \
-  "$CODEX" login status >/dev/null 2>&1; then
+  "$CODEX" login status 2>&1); then
+  # Say what Codex reported before offering the device flow. A configuration
+  # file this identity cannot read exits here exactly as a missing subscription
+  # does, and the flow below cannot repair that one.
+  note "$CODEX_LOGIN_STATUS"
   step "Complete the device flow using the separate eligible Codex subscription designated for this restricted identity."
-  sudo -u voice-codex env -i \
+  as_voice_codex env -i \
     CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \
     PATH=/usr/local/bin:/usr/bin:/bin \
     "$CODEX" login --device-auth
@@ -257,7 +279,7 @@ sudo -u voice-codex -g voice-subagent-client /usr/bin/curl \
   --fail --silent --show-error --max-time 5 \
   --unix-socket "$PUBLISHER_SOCKET" http://localhost/healthz >/dev/null
 say "Proving the installed Codex supports the custom permission profile and that model commands cannot read the subscription credential or reach publication authority."
-if ! sudo -u voice-codex env -i \
+if ! as_voice_codex env -i \
   CODEX_HOME="$CODEX_HOME" PUBLISHER_SOCKET="$PUBLISHER_SOCKET" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-enrollment-check \
@@ -334,7 +356,7 @@ trap - EXIT
 CODEX_XAUTHORITY=
 sudo test -s "$CODEX_BROWSER_STATE"
 sudo chmod 0600 "$CODEX_BROWSER_STATE"
-if ! sudo -u voice-codex env -i \
+if ! as_voice_codex env -i \
   CODEX_BROWSER_STATE="$CODEX_BROWSER_STATE" CODEX_HOME="$CODEX_HOME" \
   HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
   "$CODEX" sandbox --permission-profile keeplore-browser-check \

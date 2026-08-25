@@ -36,6 +36,23 @@ the pinned `voice-agent-keeplore-publisher.service`. Both become active root
 authority only through the attended deployment-authority upgrade above after
 the Release has been Human Merged and promoted.
 
+The trial's own Codex commands — the stage 2 login and enrollment checks and
+the stage 3 browser-state check — run through `as_voice_codex`, from the active
+Release rather than from the operator's own directory. Codex reads any project
+configuration it finds from its working directory upward, and `voice-codex`
+cannot read the operator's home: a Codex command that inherited it exits on an
+unreadable configuration file. That failure looks exactly like a missing login,
+so an enrolled restricted identity would be sent back through the device flow.
+The login check prints whatever Codex reported before it offers the device
+flow, because an unreadable configuration file and a missing subscription both
+exit the same way. If that line reads `Failed to read project config file`, the
+working directory is the fault and the device flow will not repair it.
+
+This applies to the trial's own checks only. A Delegation's model run takes its
+working directory from the Brief's registered Keeplore scope; it must never be
+pointed at the Release, whose `AGENTS.md` is repository instruction the model
+has no business reading.
+
 If Bubblewrap reports `No permissions to create new namespace`, read the
 Subagent unit before the AppArmor profile. A namespace restriction on
 `voice-agent-subagent.service` denies Bubblewrap's `clone` outright and leaves no

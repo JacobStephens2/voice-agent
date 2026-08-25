@@ -1,4 +1,5 @@
 import {
+  describeKeeploreControlMismatch,
   keeploreButtonTrialAcceptanceCriteria,
   keeploreButtonTrialGoal,
   keeploreDelegationBriefSchema,
@@ -57,26 +58,6 @@ export function createKeeploreDelegationBrief(input: {
     worktree,
   };
 }
-
-const matchingComputedProperties = [
-  "backgroundColor",
-  "borderBottomWidth",
-  "borderLeftWidth",
-  "borderRadius",
-  "borderRightWidth",
-  "borderTopWidth",
-  "boxShadow",
-  "color",
-  "fontFamily",
-  "fontSize",
-  "fontWeight",
-  "height",
-  "letterSpacing",
-  "lineHeight",
-  "paddingBottom",
-  "paddingTop",
-  "textTransform",
-] as const;
 
 export function validateKeeploreDelegationResult(
   brief: KeeploreDelegationBrief,
@@ -170,10 +151,9 @@ export function validateKeeploreDelegationResult(
     if (styles === undefined) {
       throw new Error(`${viewport} computed-style evidence is unavailable`);
     }
-    for (const property of matchingComputedProperties) {
-      if (styles.getRidOf[property] !== styles.remove[property]) {
-        throw new Error(`${viewport} table controls differ in ${property}`);
-      }
+    const mismatch = describeKeeploreControlMismatch(viewport, styles);
+    if (mismatch !== null) {
+      throw new Error(mismatch);
     }
     if (
       styles.getRidOf.widthMode !== "content" ||
