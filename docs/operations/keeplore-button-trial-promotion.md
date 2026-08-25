@@ -1,13 +1,7 @@
 # Promoting and verifying the Keeplore Button Trial
 
 Issue #13 ends with a reviewed Keeplore pull request and a preserved Delegated
-Worktree. Issue #14 is everything after the owner accepts it. Run the attended
-procedure on the Agent Host:
-
-```bash
-cd /opt/voice-agent/current
-./ops/acceptance/run-keeplore-button-trial-promotion.sh
-```
+Worktree. Issue #14 is everything after the owner accepts it.
 
 Nothing in this procedure can be started by the Subagent. Pushing the assigned
 branch and opening the pull request are the Administrative Publisher App's whole
@@ -15,6 +9,106 @@ authority; the App cannot merge, and a push, an opened pull request, or a merge
 recorded against a bot is denied with evidence and enqueues no Promotion
 Attempt. Only an authenticated human merging into Keeplore's registered
 production branch authorizes Promotion, and only of that exact merge commit.
+
+## The attended run, in order
+
+Every step below is attended and runs on the Agent Host. Do them in this order:
+the programs that perform the Promotion are reviewed root authority, so they
+reach the host only after the change carrying them has itself been merged,
+promoted, and upgraded through the attended boundary.
+
+**1. Human Merge and promote the Voice Agent change.** Merge the pull request
+that adds production appearance verification, and let the Agent Host Release
+promote as usual (`docs/operations/agent-host-release.md`). Until this lands,
+the host has no production verifier to run.
+
+**2. Upgrade the deployment authority.** The promoter, the shared boundaries it
+sources, and the worktree resolver are root-owned reviewed authority that a
+Release does not install by itself:
+
+```bash
+cd /opt/voice-agent/current
+./ops/upgrade-agent-host-deployment-authority.sh
+```
+
+Use **Create deployment-authority Fresh Passkey proof** inside the root-owned
+five-minute challenge window; a signed-in browser session is not authorization.
+See `docs/operations/keeplore-button-trial.md` for the passkey ceremony.
+
+**3. Give the promoter a browser.** The verifier runs as `voice-agent`, so that
+identity needs its own Chromium and its own Keeplore session — never the
+Subagent's:
+
+```bash
+sudo install -d -o voice-agent -g voice-agent -m 0700 /var/lib/voice-agent/browser
+sudo -u voice-agent env HOME=/var/lib/voice-agent \
+  PLAYWRIGHT_BROWSERS_PATH=/var/lib/voice-agent/.cache/ms-playwright \
+  /opt/voice-agent/current/node_modules/.bin/playwright install chromium
+```
+
+Stage 2 of the wizard enrols the session itself and needs a forwarded display.
+
+**4. Prove rollback before trusting the check.** Run the drill against a
+candidate other than the serving Release. It forces verification to fail,
+restores the retained Release for real, and verifies the restored one:
+
+```bash
+sudo KEEPLORE_VERIFICATION_DRILL=1 \
+  /opt/voice-agent/keeplore/promote-keeplore-release.sh <candidate commit>
+```
+
+Confirm the journal records a `verification-drill` failure with the restored
+Release, and that Keeplore is healthy afterwards.
+
+**5. Activate appearance verification, then verify a Human Merge.** Stage 3 of
+the wizard sets `KEEPLORE_APPEARANCE_VERIFICATION=1` and bumps the contract
+revision. Read the next section before starting it — which merge you verify is
+not a free choice today.
+
+```bash
+cd /opt/voice-agent/current
+./ops/acceptance/run-keeplore-button-trial-promotion.sh
+```
+
+## The trial's own merge has already happened
+
+`JacobStephens2/keeplore#4` was merged at 2026-08-25T11:53Z and `4cc29d1d`
+promoted a minute later — months of trial rounds before appearance verification
+existed. Production already serves the matched controls. That is a good outcome
+and an awkward one: the Human Merge this ticket was written around is in the
+past, and a Promotion cannot verify it retroactively.
+
+`promote-keeplore-main.sh` is idempotent by design. Re-running it against
+`4cc29d1d` prints `Keeplore already serves Release 4cc29d1d` and exits without
+switching, so no baseline is captured and no appearance verdict is produced.
+That guard is correct — it is what makes duplicate webhooks safe — and it means
+the wizard's stage 5 has nothing to verify for that commit.
+
+Do not reach for the obvious workaround. Switching the `current` symlink back to
+the retained Release by hand so the promoter will run again is exactly the
+unrecorded production mutation the whole design refuses; it leaves no Promotion
+Attempt and no Evidence Record.
+
+Two honest ways forward:
+
+**Verify the next Keeplore Human Merge.** Activate appearance verification now
+and let the next real Keeplore change prove it end to end — a genuine baseline
+from the retained Release, a real switch, and a real verdict. The standing claim
+this trial makes is that the controls *stay* matched, so the next merge is the
+natural place to prove it. This is the recommended path. Slice three stays
+unaccepted until then, which is the accurate state.
+
+**Accept a narrower measurement.** A standalone verifier run against the serving
+Release yields real health, real computed styles, and real authenticated
+screenshots at both viewports — but its card-view hash would compare the serving
+Release against itself, which proves nothing. If slice three is closed on that,
+record the card-view result as unmeasured rather than as unchanged. There is no
+supported command for this today.
+
+The gap is that nothing re-verifies a merge already serving. A supported
+re-promotion — switch to the retained Release, promote the merge commit again,
+and record both Promotion Attempts — would close it without any manual symlink
+edit. It is not built.
 
 ## What the Promotion does
 
