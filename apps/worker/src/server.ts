@@ -40,9 +40,13 @@ import {
   reserveTelephoneUsageSlice,
   telephoneUsageRatesFromEnvironment,
 } from "./telephone-usage-meter.ts";
+import { resolveTelephoneWorkerSettings } from "./telephone-worker-settings.ts";
 
-const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
-const socketPath = requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH");
+// This is the process the registered unit runs, so refusing a setting here is
+// what a Promotion Attempt's health verification sees and rolls back.
+const settings = resolveTelephoneWorkerSettings();
+const databasePath = settings.databasePath;
+const socketPath = settings.brokerSocketPath;
 const store = createSqliteDurableTaskStore(databasePath);
 const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
 const callbackRuntime = createCallbackHandshakeRuntime({
@@ -62,10 +66,11 @@ const telephoneBoundaries = createTelephoneBoundaryRuntime({
   },
   nextId: randomUUID,
   now: () => new Date().toISOString(),
+  // The deadline sweep below ends prolonged silence, so it enforces the same
+  // configured bound the Telephone Session itself does.
+  prolongedSilenceMs: settings.prolongedSilenceMs,
   rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
-  rawAudioDebugDirectory:
-    process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
-    "/var/lib/voice-agent/raw-audio-debug",
+  rawAudioDebugDirectory: settings.rawAudioDebugDirectory,
   store: telephoneBoundaryStore,
 });
 const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
@@ -98,30 +103,31 @@ const runtime = createDurableTaskRuntime({
 });
 const keeploreOnboardingStore = createSqliteKeeploreOnboardingStore(databasePath);
 const keeploreRegistration = await keeploreOnboardingStore.findRegistration();
+const keeplore = settings.keeplore;
 const keeploreDelegationStore =
-  keeploreRegistration === undefined || process.env.KEEPLORE_SOURCE_COMMIT === undefined
+  keeploreRegistration === undefined || keeplore === undefined
     ? undefined
     : createSqliteKeeploreDelegationStore(databasePath);
 const keeploreDelegations =
   keeploreRegistration === undefined ||
   keeploreDelegationStore === undefined ||
-  process.env.KEEPLORE_SOURCE_COMMIT === undefined
+  keeplore === undefined
     ? undefined
     : createKeeploreDelegationRuntime({
         nextId: randomUUID,
         now: () => new Date().toISOString(),
         registration: keeploreRegistration,
         runner: createUnixSocketKeeploreSubagentRunner(
-          requireEnvironment("VOICE_AGENT_SUBAGENT_SOCKET_PATH"),
+          keeplore.subagentSocketPath,
         ),
-        sourceCommit: process.env.KEEPLORE_SOURCE_COMMIT,
+        sourceCommit: keeplore.sourceCommit,
         store: keeploreDelegationStore,
       });
 const agentName = "voice-agent-telephone";
 const liveKitConnection = {
-  apiKey: requireEnvironment("LIVEKIT_API_KEY"),
-  apiSecret: requireEnvironment("LIVEKIT_API_SECRET"),
-  url: requireEnvironment("LIVEKIT_URL"),
+  apiKey: settings.liveKitApiKey,
+  apiSecret: settings.liveKitApiSecret,
+  url: settings.liveKitUrl,
 };
 const callbackAdapter = createProductionLiveKitCallbackAdapter({
   agentName,

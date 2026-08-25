@@ -6,6 +6,7 @@ import {
   createLiveKitAgentServer,
   createLiveKitAgentServerOptions,
 } from "../src/livekit-agent-server.ts";
+import { wellFormedTelephoneWorkerEnvironment } from "./telephone-worker-environment.ts";
 
 test("the LiveKit worker initializes its logger before constructing the server", () => {
   expect(() =>
@@ -48,6 +49,12 @@ test("the production TypeScript loader initializes the telephone child", () => {
     ],
     {
       encoding: "utf8",
+      // The child resolves its settings as it starts, so it needs a
+      // configuration the worker accepts.
+      env: {
+        ...wellFormedTelephoneWorkerEnvironment,
+        PATH: process.env.PATH,
+      },
       timeout: 10_000,
     },
   );

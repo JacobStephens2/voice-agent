@@ -65,14 +65,18 @@ import {
   recordTelephoneSetupProviderFailure,
   TelephoneSetupProviderError,
 } from "./telephone-setup-provider-failure.ts";
+import { resolveTelephoneWorkerSettings } from "./telephone-worker-settings.ts";
 
+// Resolved as this process starts, so a setting this worker cannot accept ends
+// it before any job is accepted rather than failing one caller at a time.
+const settings = resolveTelephoneWorkerSettings();
 const agentName = "voice-agent-telephone";
 const dtmfWindowMs = 15_000;
 const completionResumptionParticipantWaitMs = 10_000;
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
-    const databasePath = requireEnvironment("VOICE_AGENT_DATABASE_PATH");
+    const databasePath = settings.databasePath;
     const callbackStore = createSqliteCallbackHandshakeStore(databasePath);
     const runtime = createCallbackHandshakeRuntime({
       nextId: randomUUID,
@@ -90,11 +94,9 @@ export default defineAgent({
       },
       nextId: randomUUID,
       now: () => new Date().toISOString(),
-      prolongedSilenceMs: prolongedSilenceMs(),
+      prolongedSilenceMs: settings.prolongedSilenceMs,
       rawAudioArtifacts: createNodeRawAudioArtifactRemover(),
-      rawAudioDebugDirectory:
-        process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
-        "/var/lib/voice-agent/raw-audio-debug",
+      rawAudioDebugDirectory: settings.rawAudioDebugDirectory,
       store: createSqliteTelephoneBoundaryStore(databasePath),
     });
     const taskStore = createSqliteDurableTaskStore(databasePath);
@@ -112,14 +114,14 @@ export default defineAgent({
       }),
       deferTelephoneOperations: true,
       healthObserver: createUnixSocketBountywellObserver(
-        requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH"),
+        settings.brokerSocketPath,
       ),
       nextId: randomUUID,
       now: () => new Date().toISOString(),
       // A confirmed drill recovery restarts the registered unit from inside the
       // Telephone Session, so this process needs the same service control.
       serviceController: createUnixSocketBountywellController(
-        requireEnvironment("VOICE_AGENT_BROKER_SOCKET_PATH"),
+        settings.brokerSocketPath,
       ),
       store: taskStore,
     });
@@ -127,32 +129,32 @@ export default defineAgent({
       databasePath,
     );
     const keeploreRegistration = await keeploreOnboardingStore.findRegistration();
+    const keeplore = settings.keeplore;
     const keeploreDelegationStore =
-      keeploreRegistration === undefined ||
-      process.env.KEEPLORE_SOURCE_COMMIT === undefined
+      keeploreRegistration === undefined || keeplore === undefined
         ? undefined
         : createSqliteKeeploreDelegationStore(databasePath);
     const keeploreDelegations =
       keeploreRegistration === undefined ||
       keeploreDelegationStore === undefined ||
-      process.env.KEEPLORE_SOURCE_COMMIT === undefined
+      keeplore === undefined
         ? undefined
         : createKeeploreDelegationRuntime({
             nextId: randomUUID,
             now: () => new Date().toISOString(),
             registration: keeploreRegistration,
             runner: createUnixSocketKeeploreSubagentRunner(
-              requireEnvironment("VOICE_AGENT_SUBAGENT_SOCKET_PATH"),
+              keeplore.subagentSocketPath,
             ),
-            sourceCommit: process.env.KEEPLORE_SOURCE_COMMIT,
+            sourceCommit: keeplore.sourceCommit,
             store: keeploreDelegationStore,
           });
     const callbackAdapter = createProductionLiveKitCallbackAdapter({
       agentName,
-      apiKey: requireEnvironment("LIVEKIT_API_KEY"),
-      apiSecret: requireEnvironment("LIVEKIT_API_SECRET"),
+      apiKey: settings.liveKitApiKey,
+      apiSecret: settings.liveKitApiSecret,
       placementClaims: callbackStore,
-      url: requireEnvironment("LIVEKIT_URL"),
+      url: settings.liveKitUrl,
     });
     try {
       const dispatch = parseOutboundDispatch(ctx.job.metadata);
@@ -512,7 +514,7 @@ async function handleOutbound(
             : { keeploreDelegations }),
           tasks,
           telephoneSessionId: record.session.id,
-          prolongedSilenceMs: prolongedSilenceMs(),
+          prolongedSilenceMs: settings.prolongedSilenceMs,
           usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
         });
         return;
@@ -724,7 +726,7 @@ async function handleCompletionOutbound(
       },
       tasks,
       telephoneSessionId: resume.telephoneSessionId,
-      prolongedSilenceMs: prolongedSilenceMs(),
+      prolongedSilenceMs: settings.prolongedSilenceMs,
       usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
   } catch (error) {
@@ -839,7 +841,7 @@ async function handleCompletionResumption(
       ),
       tasks,
       telephoneSessionId: dispatch.telephoneSessionId,
-      prolongedSilenceMs: prolongedSilenceMs(),
+      prolongedSilenceMs: settings.prolongedSilenceMs,
       usageRatesMicrousdPerMinute: telephoneUsageRatesFromEnvironment(),
     });
   } catch {
@@ -1266,26 +1268,6 @@ function requireHandshakeId(roomName: string): string {
     throw new Error("Callback room is missing its durable handshake identity");
   }
   return roomName.slice(prefix.length);
-}
-
-function requireEnvironment(name: string): string {
-  const value = process.env[name];
-  if (value === undefined || value.length === 0) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
-}
-
-function prolongedSilenceMs(): number {
-  const configured = Number(
-    process.env.VOICE_AGENT_PROLONGED_SILENCE_SECONDS ?? "60",
-  );
-  if (!Number.isInteger(configured) || configured < 30 || configured > 900) {
-    throw new Error(
-      "VOICE_AGENT_PROLONGED_SILENCE_SECONDS must be between 30 and 900",
-    );
-  }
-  return configured * 1_000;
 }
 
 function boundaryDenialReason(
