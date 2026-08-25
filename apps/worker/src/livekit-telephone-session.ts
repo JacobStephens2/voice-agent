@@ -46,6 +46,17 @@ const coordinatorTimeoutMs = 8_000;
 const maximumTelephoneSessionMs = 2 * 60 * 60 * 1_000;
 const transcriptionTimeoutMs = 5_000;
 const ttsTimeoutMs = 10_000;
+/**
+ * How long one spoken response may produce no audio at all before the speech
+ * provider is treated as stalled.
+ *
+ * The agents framework already bounds its own synthesis attempt and retries it
+ * once, so a working provider has spoken its first frame well inside this
+ * deadline; anything past it is the outage shape this exists for — a session
+ * the provider accepted and then fed nothing. It bounds only the wait for the
+ * first frame, so a long answer still plays to its end.
+ */
+const ttsFirstAudioTimeoutMs = 2 * ttsTimeoutMs + 1_000;
 const providerFailureAudioPath = fileURLToPath(
   new URL("../assets/provider-failure.pcm", import.meta.url),
 );
@@ -155,6 +166,82 @@ export async function runLiveKitTelephoneSession(
     resolveUsageReady = resolve;
   });
 
+  const audibleSpeech = createAudibleSpeechObserver();
+
+  /**
+   * Speak one response and confirm the caller actually heard it.
+   *
+   * Every spoken response in this session goes through here, so a speech
+   * provider that stops producing audio reaches the Voice Agent's own recovery
+   * seam wherever it stalls rather than passing for a delivered response.
+   */
+  async function speakThroughProvider(
+    text: string,
+    speechOptions: { readonly allowInterruptions: boolean },
+  ): Promise<{ readonly interrupted: boolean }> {
+    const framesBefore = audibleSpeech.frameCount();
+    const speech = session.say(text, {
+      addToChatCtx: false,
+      allowInterruptions: speechOptions.allowInterruptions,
+    });
+    await awaitAudibleSpeech(speech, framesBefore);
+    return { interrupted: speech.interrupted };
+  }
+
+  async function awaitAudibleSpeech(
+    speech: ReturnType<voice.AgentSession["say"]>,
+    framesBefore: number,
+  ): Promise<void> {
+    const playout = speech.waitForPlayout().then(() => "played" as const);
+    try {
+      const outcome = await raceFirstAudioFrame(playout, framesBefore);
+      if (outcome !== "stalled") {
+        if (outcome === "audible") await playout;
+        const reported = abandonedSpeechFailure(speech);
+        if (reported !== undefined) throw reported;
+        if (audibleSpeech.frameCount() > framesBefore || speech.interrupted) {
+          return;
+        }
+      }
+      // The framework can abandon its own speech task without the awaited
+      // playout raising: nothing was thrown, and nothing was heard either.
+      // Reporting that here is what the caller's silence lacked.
+      throw new APITimeoutError({
+        message: "Speech synthesis produced no audio for this response",
+      });
+    } finally {
+      // A stalled playout settles long after this response gave up on it.
+      void playout.catch(() => undefined);
+    }
+  }
+
+  async function raceFirstAudioFrame(
+    playout: Promise<"played">,
+    framesBefore: number,
+  ): Promise<"audible" | "played" | "stalled"> {
+    if (audibleSpeech.frameCount() > framesBefore) return "audible";
+    let stallTimeout: ReturnType<typeof setTimeout> | undefined;
+    let stopObserving: () => void = () => {};
+    const audible = new Promise<"audible">((resolve) => {
+      stopObserving = audibleSpeech.onFrame(() => resolve("audible"));
+    });
+    try {
+      return await Promise.race([
+        audible,
+        playout,
+        new Promise<"stalled">((resolve) => {
+          stallTimeout = setTimeout(
+            () => resolve("stalled"),
+            ttsFirstAudioTimeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      stopObserving();
+      if (stallTimeout !== undefined) clearTimeout(stallTimeout);
+    }
+  }
+
   async function endCallOnce(): Promise<void> {
     if (callEnding) return;
     callEnding = true;
@@ -221,7 +308,7 @@ export async function runLiveKitTelephoneSession(
       lastSpokenAction = action;
     }
     await performConversationAction(
-      session,
+      speakThroughProvider,
       coordinator,
       action,
       playFailureAndEnd,
@@ -274,7 +361,7 @@ export async function runLiveKitTelephoneSession(
       }
       // Recognition cannot be replayed from here, so the caller is asked to
       // repeat into the same pending state rather than left in silence.
-      await speakMarkedResponse(session, unrecognizedSpeechPrompt, {
+      await speakMarkedResponse(speakThroughProvider, unrecognizedSpeechPrompt, {
         allowInterruptions: true,
       });
     } catch (error) {
@@ -414,6 +501,9 @@ export async function runLiveKitTelephoneSession(
         .catch(() => undefined);
     }
   });
+  session.on(voice.AgentSessionEventTypes.AgentStateChanged, (event) => {
+    if (event.newState === "speaking") audibleSpeech.observeFrame();
+  });
   session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (event) => {
     if (failureEnded) return;
     let providerEvent: TelephoneSessionProviderEvent;
@@ -512,12 +602,9 @@ export async function runLiveKitTelephoneSession(
       await options.onStarted?.();
       if (options.openingText !== undefined) {
         try {
-          await session
-            .say(options.openingText, {
-              addToChatCtx: false,
-              allowInterruptions: false,
-            })
-            .waitForPlayout();
+          await speakThroughProvider(options.openingText, {
+            allowInterruptions: false,
+          });
         } catch (error) {
           await recordProviderFailureAndRecover(
             "tts",
@@ -689,8 +776,67 @@ function createConversationSession(prolongedSilenceMs: number): voice.AgentSessi
   });
 }
 
+/**
+ * Whether the audio of a spoken response actually reached the caller.
+ *
+ * The framework moves the agent into speaking on the first synthesized frame
+ * it plays, and back to listening as each speech ends, so one such transition
+ * per response is the only account this session has of audio leaving it. The
+ * responses here are spoken one at a time, which is what makes a transition
+ * that never arrives the failure of the response being awaited.
+ */
+function createAudibleSpeechObserver(): {
+  readonly frameCount: () => number;
+  readonly observeFrame: () => void;
+  /** Registers a listener for the next frame and returns its cancellation. */
+  readonly onFrame: (listener: () => void) => () => void;
+} {
+  let frames = 0;
+  const listeners = new Set<() => void>();
+  return {
+    frameCount: () => frames,
+    observeFrame() {
+      frames += 1;
+      for (const listener of listeners) listener();
+      listeners.clear();
+    },
+    onFrame(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+}
+
+/**
+ * Speak one response through the session and report whether it was interrupted.
+ *
+ * The playback a caller heard, rather than the speech task the framework
+ * accepted: a response that produced no audio raises here instead of returning.
+ */
+type TelephoneSpeaker = (
+  text: string,
+  options: { readonly allowInterruptions: boolean },
+) => Promise<{ readonly interrupted: boolean }>;
+
+/**
+ * The failure the framework recorded against a speech it finished on its own.
+ *
+ * `waitForPlayout` resolves either way, so a speech the framework gave up on
+ * carries its error on the handle rather than raising it, which is how a
+ * provider outage passed for a delivered response.
+ */
+function abandonedSpeechFailure(
+  speech: ReturnType<voice.AgentSession["say"]>,
+): unknown {
+  if (!speech.done()) return undefined;
+  const error = speech.exception();
+  return error === undefined || error === null
+    ? undefined
+    : new ProviderReportedError(error);
+}
+
 async function performConversationAction(
-  session: voice.AgentSession,
+  speak: TelephoneSpeaker,
   coordinator: ReturnType<typeof createTelephoneSessionCoordinator>,
   action: Exclude<TelephoneSessionAction, { kind: "retry-provider-turn" }>,
   playFailureAndEnd: () => Promise<void>,
@@ -719,7 +865,7 @@ async function performConversationAction(
       taskId: action.taskId,
       telephoneSessionId: action.telephoneSessionId,
     });
-    await speakMarkedResponse(session, result.text, {
+    await speakMarkedResponse(speak, result.text, {
       allowInterruptions: false,
     });
     await endCallOnce();
@@ -727,13 +873,11 @@ async function performConversationAction(
   }
 
   const startedAt = Date.now();
-  let speech: ReturnType<voice.AgentSession["say"]>;
+  let playback: { readonly interrupted: boolean };
   try {
-    speech = session.say(action.text, {
-      addToChatCtx: false,
+    playback = await speak(action.text, {
       allowInterruptions: action.interruptible,
     });
-    await speech.waitForPlayout();
   } catch (error) {
     await recordProviderFailureAndRecover(
       "tts",
@@ -759,7 +903,7 @@ async function performConversationAction(
     stage: "tts",
     ...(taskId === undefined ? {} : { taskId }),
   });
-  if (speech.interrupted) {
+  if (playback.interrupted) {
     await coordinator.receiveProviderEvent({
       deliveryId: stableIdentifier(`interruption:${responseId}`),
       durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
@@ -980,14 +1124,12 @@ class TelephoneStageError extends Error {
  * rather than taking the stage of the work that happened to be running.
  */
 async function speakMarkedResponse(
-  session: voice.AgentSession,
+  speak: TelephoneSpeaker,
   text: string,
   options: { readonly allowInterruptions: boolean },
 ): Promise<void> {
   try {
-    await session
-      .say(text, { addToChatCtx: false, ...options })
-      .waitForPlayout();
+    await speak(text, options);
   } catch (error) {
     throw new TelephoneStageError("tts", error);
   }

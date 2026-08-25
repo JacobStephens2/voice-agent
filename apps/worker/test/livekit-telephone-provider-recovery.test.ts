@@ -638,6 +638,393 @@ describe("bounded LiveKit telephone provider recovery", () => {
       await tasks.close();
     }
   });
+
+  test("a stalled provider ends the opening speech through the prerecorded response", async () => {
+    const tasks = await createTasks("tts-opening-stall");
+    const session = new RecoverySessionHarness({
+      stallEverySay: true,
+      withoutCompletedTurn: true,
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => undefined);
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret(): Promise<never> {
+          throw new Error("The stalled opening speech answers no turn");
+        },
+      }),
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            openingText: "Hello, this is your operations agent.",
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-opening-stall",
+          }),
+          endCall,
+        },
+        dependencies,
+      );
+
+      // The provider accepted the opening speech and produced no audio, so the
+      // caller hears the prerecorded response rather than the silence that
+      // preceded three dropped calls.
+      expect(session.stalledSays).toBe(1);
+      expect(session.spokenTexts).toHaveLength(0);
+      expect(session.failurePlaybacks).toBe(1);
+      expect(endCall).toHaveBeenCalledTimes(1);
+      // The opening speech answers no accepted turn, so there is nothing to
+      // replay and the call ends on the first report.
+      expect(recordProviderFailure).toHaveBeenCalledTimes(1);
+      expect(recordProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ recovery: "terminal", stage: "tts" }),
+      );
+      const failures = evidence.filter(
+        (event) => event.kind === "telephone.provider.failure",
+      );
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.details).toMatchObject({
+        provider: "inworld",
+        stage: "tts",
+      });
+      expect(
+        evidence.filter((event) => event.kind === "telephone.provider.retry"),
+      ).toHaveLength(0);
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a stalled provider spends one replay on an answer and then plays the prerecorded response", async () => {
+    const tasks = await createTasks("tts-answer-stall");
+    const session = new RecoverySessionHarness({ stallEverySay: true });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => undefined);
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-answer-stall",
+          }),
+          endCall,
+        },
+        dependencies,
+      );
+
+      // The answer is attempted, replayed once under the turn identity that
+      // failed, and then abandoned for the one prerecorded response.
+      expect(session.stalledSays).toBe(2);
+      expect(session.failurePlaybacks).toBe(1);
+      expect(endCall).toHaveBeenCalledTimes(1);
+      const retries = evidence.filter(
+        (event) => event.kind === "telephone.provider.retry",
+      );
+      expect(retries).toHaveLength(1);
+      expect(retries[0]?.details).toMatchObject({
+        provider: "inworld",
+        stage: "tts",
+        turnId: turnIdentityOf(evidence),
+      });
+      expect(
+        evidence.filter((event) => event.kind === "telephone.provider.failure"),
+      ).toHaveLength(2);
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: {
+            message: "Speech synthesis produced no audio for this response",
+            name: "APITimeoutError",
+          },
+          provider: "inworld",
+          stage: "tts",
+        }),
+      );
+      const summaries = await tasks.listEvidenceRecords();
+      expect(summaries).toHaveLength(1);
+      const record = await tasks.getEvidenceRecord(summaries[0]?.id ?? "");
+      // The accepted Durable Task survives the outage for recovery.
+      expect(record?.task.conclusion).toBe("Bountywell API is healthy.");
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a stalled Completion Callback confirmation is reported against synthesis", async () => {
+    const pendingRecord = {
+      evidence: [],
+      task: {
+        conclusion: "Bountywell inquiry is pending.",
+        createdAt: "2026-08-24T09:00:00.000Z",
+        id: "task-pending-stalled-callback",
+        kind: "bountywell.health.inquiry",
+        question: "Is Bountywell healthy?",
+        status: "pending",
+        updatedAt: "2026-08-24T09:00:00.000Z",
+      },
+    };
+    const session = new RecoverySessionHarness({
+      extraCompletedTurns: [
+        llm.ChatMessage.create({
+          content: "Yes, I confirm.",
+          createdAt: 1_787_000_004_000,
+          id: "recovery-completed-turn-002",
+          role: "user",
+        }),
+      ],
+      stallSaysMatching: "call you back",
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => undefined);
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+      logProviderFailure,
+    };
+
+    await runLiveKitTelephoneSession(
+      {
+        ...sessionOptions({
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks: {
+            async appendTelephoneEvidence() {
+              return pendingRecord;
+            },
+            async submitTelephoneBountywellHealthInquiry() {
+              return pendingRecord;
+            },
+          } as unknown as ReturnType<typeof createDurableTaskRuntime>,
+          telephoneSessionId: "telephone-session-callback-stall",
+        }),
+        endCall,
+        async requestCompletionCallback() {
+          return { text: "I will call you back once the work is done." };
+        },
+      },
+      dependencies,
+    );
+
+    // The Completion Callback was accepted and only its confirmation went
+    // unheard, which is the synthesis provider's stall and not the agent's.
+    expect(logProviderFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: {
+          message: "Speech synthesis produced no audio for this response",
+          name: "APITimeoutError",
+        },
+        provider: "inworld",
+        stage: "tts",
+      }),
+    );
+    expect(recordProviderFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ failureClass: "timeout", stage: "tts" }),
+    );
+    // The stall spends the session's one replay, which speaks the response the
+    // caller last heard rather than composing a second one.
+    expect(
+      evidence.filter((event) => event.kind === "telephone.provider.retry"),
+    ).toHaveLength(1);
+    expect(endCall).not.toHaveBeenCalled();
+  });
+
+  test("an answer that keeps playing past the stall deadline is spoken to its end", async () => {
+    vi.useFakeTimers();
+    const tasks = await createTasks("tts-long-answer");
+    // Longer than the deadline on the first frame, and short of the
+    // prolonged-silence and maximum-duration boundaries.
+    const session = new RecoverySessionHarness({ playoutMs: 40_000 });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => undefined);
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+    };
+
+    try {
+      const running = runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-long-answer",
+          }),
+          endCall,
+        },
+        dependencies,
+      );
+      await vi.advanceTimersByTimeAsync(45_000);
+      await running;
+
+      // The deadline bounds the wait for the first frame alone, so a response
+      // that started speaking is never cut off part-way through.
+      expect(session.spokenTexts[0]).toContain("Bountywell's API is healthy.");
+      expect(session.failurePlaybacks).toBe(0);
+      expect(recordProviderFailure).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      await tasks.close();
+    }
+  });
+
+  test("a speech the framework abandoned is reported with the provider error it kept", async () => {
+    const tasks = await createTasks("tts-abandoned");
+    const session = new RecoverySessionHarness({
+      abandonEverySay: true,
+      withoutCompletedTurn: true,
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => undefined);
+    const logProviderFailure = vi.fn();
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret(): Promise<never> {
+          throw new Error("The abandoned opening speech answers no turn");
+        },
+      }),
+      logProviderFailure,
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            openingText: "Hello, this is your operations agent.",
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-abandoned-speech",
+          }),
+          endCall,
+        },
+        dependencies,
+      );
+
+      expect(session.failurePlaybacks).toBe(1);
+      expect(endCall).toHaveBeenCalledTimes(1);
+      // Synthesis sees only the agent's own text, so the gateway's account of
+      // the outage reaches the operator whole.
+      expect(logProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: {
+            message: "provider returned no audio before the stall deadline",
+            name: "APIStatusError",
+            status: 500,
+          },
+          provider: "inworld",
+          stage: "tts",
+        }),
+      );
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("a speech whose playout never finishes ends the call once its stall deadline passes", async () => {
+    vi.useFakeTimers();
+    const tasks = await createTasks("tts-hanging-playout");
+    const session = new RecoverySessionHarness({
+      hangEverySay: true,
+      withoutCompletedTurn: true,
+    });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => undefined);
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret(): Promise<never> {
+          throw new Error("The stalled opening speech answers no turn");
+        },
+      }),
+    };
+
+    try {
+      const running = runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            openingText: "Hello, this is your operations agent.",
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-hanging-playout",
+          }),
+          endCall,
+        },
+        dependencies,
+      );
+      // Long enough for the framework's own bounded synthesis retry, and short
+      // of the prolonged-silence and maximum-duration boundaries.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await running;
+
+      expect(session.failurePlaybacks).toBe(1);
+      expect(endCall).toHaveBeenCalledTimes(1);
+      expect(recordProviderFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ failureClass: "timeout", stage: "tts" }),
+      );
+    } finally {
+      vi.useRealTimers();
+      await tasks.close();
+    }
+  });
 });
 
 function turnIdentityOf(
@@ -705,6 +1092,7 @@ async function createTasks(
 
 function sessionOptions(input: {
   readonly evidence: TelephoneConversationEvidenceEvent[];
+  readonly openingText?: string;
   readonly recordProviderFailure: () => Promise<{ readonly ended: false }>;
   readonly session: RecoverySessionHarness;
   readonly tasks: ReturnType<typeof createDurableTaskRuntime>;
@@ -750,6 +1138,9 @@ function sessionOptions(input: {
     >[0]["boundaries"],
     disconnected: Promise.resolve(),
     async endCall() {},
+    ...(input.openingText === undefined
+      ? {}
+      : { openingText: input.openingText }),
     room: {} as Room,
     sessionEvidence: {
       async append(event) {
@@ -772,25 +1163,49 @@ function sessionOptions(input: {
 class RecoverySessionHarness {
   attemptedSays = 0;
   failurePlaybacks = 0;
+  stalledSays = 0;
   readonly spokenTexts: string[] = [];
+  readonly #abandonEverySay: boolean;
   readonly #extraCompletedTurns: readonly llm.ChatMessage[];
   readonly #failEverySay: boolean;
   readonly #failSaysMatching: string | undefined;
   readonly #handlers = new Map<string, (event: never) => void>();
+  readonly #hangEverySay: boolean;
+  readonly #playoutMs: number | undefined;
+  readonly #stallEverySay: boolean;
+  readonly #stallSaysMatching: string | undefined;
   readonly #transcriptionTimeout: boolean;
+  readonly #withoutCompletedTurn: boolean;
 
   constructor(
     options: {
+      /** The framework abandons every speech and records its provider error. */
+      readonly abandonEverySay?: boolean;
       readonly extraCompletedTurns?: readonly llm.ChatMessage[];
       readonly failEverySay?: boolean;
       readonly failSaysMatching?: string;
+      /** The playout of every speech never finishes at all. */
+      readonly hangEverySay?: boolean;
+      /** Every speech starts audibly and then plays for this long. */
+      readonly playoutMs?: number;
+      /** The provider accepts every speech and then produces no audio. */
+      readonly stallEverySay?: boolean;
+      readonly stallSaysMatching?: string;
       readonly transcriptionTimeout?: boolean;
+      /** The caller stays silent, so the opening speech is the only speech. */
+      readonly withoutCompletedTurn?: boolean;
     } = {},
   ) {
+    this.#abandonEverySay = options.abandonEverySay ?? false;
     this.#extraCompletedTurns = options.extraCompletedTurns ?? [];
     this.#failEverySay = options.failEverySay ?? false;
     this.#failSaysMatching = options.failSaysMatching;
+    this.#hangEverySay = options.hangEverySay ?? false;
+    this.#playoutMs = options.playoutMs;
+    this.#stallEverySay = options.stallEverySay ?? false;
+    this.#stallSaysMatching = options.stallSaysMatching;
     this.#transcriptionTimeout = options.transcriptionTimeout ?? false;
+    this.#withoutCompletedTurn = options.withoutCompletedTurn ?? false;
   }
 
   asAgentSession(): voice.AgentSession {
@@ -820,10 +1235,65 @@ class RecoverySessionHarness {
         ) {
           throw new APITimeoutError({ message: "Speech synthesis timed out" });
         }
+        if (harness.#abandonEverySay) {
+          harness.stalledSays += 1;
+          // The framework gave up on the speech and kept the provider's error
+          // on the handle instead of failing the awaited playout.
+          return {
+            done: () => true,
+            exception: () =>
+              new APIStatusError({
+                message: "provider returned no audio before the stall deadline",
+                options: { statusCode: 500 },
+              }),
+            interrupted: false,
+            async waitForPlayout() {},
+          };
+        }
+        if (harness.#hangEverySay) {
+          harness.stalledSays += 1;
+          // The synthesis task is still pending, so its playout never finishes.
+          return {
+            done: () => false,
+            exception: () => undefined,
+            interrupted: false,
+            waitForPlayout: () => new Promise<void>(() => {}),
+          };
+        }
+        if (
+          harness.#stallEverySay ||
+          (harness.#stallSaysMatching !== undefined &&
+            text.includes(harness.#stallSaysMatching))
+        ) {
+          harness.stalledSays += 1;
+          // The provider accepted the speech and returned no audio: the
+          // framework abandons the task, and the awaited playout finishes
+          // having said nothing and raised nothing.
+          return {
+            done: () => true,
+            exception: () => undefined,
+            interrupted: false,
+            async waitForPlayout() {},
+          };
+        }
         harness.spokenTexts.push(text);
+        const playoutMs = harness.#playoutMs;
         return {
+          done: () => true,
+          exception: () => undefined,
           interrupted: false,
-          async waitForPlayout() {},
+          async waitForPlayout() {
+            // A working provider plays its first synthesized frame, which is
+            // what moves the agent into speaking, and keeps playing until the
+            // whole response has been spoken.
+            harness.emit(voice.AgentSessionEventTypes.AgentStateChanged, {
+              newState: "speaking",
+            });
+            if (playoutMs === undefined) return;
+            await new Promise<void>((resolve) => {
+              setTimeout(resolve, playoutMs);
+            });
+          },
         };
       },
       async start(input: { agent: voice.Agent }) {
@@ -841,6 +1311,7 @@ class RecoverySessionHarness {
             newState: "speaking",
           });
         }
+        if (harness.#withoutCompletedTurn) return;
         await input.agent.onUserTurnCompleted(
           llm.ChatContext.empty(),
           llm.ChatMessage.create({
