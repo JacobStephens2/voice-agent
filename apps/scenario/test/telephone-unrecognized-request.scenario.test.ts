@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
 
 import type {
   EvidenceRecordProjection,
@@ -26,6 +27,7 @@ function createScenario() {
   const claimed: string[] = [];
   const released: string[] = [];
   const coordinator = createTelephoneSessionCoordinator({
+    recognitionModel: defaultRecognizedSpeechModel,
     interpreter: {
       async interpret() {
         return {

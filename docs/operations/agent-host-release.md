@@ -295,3 +295,57 @@ sudo /usr/local/libexec/voice-agent/deployment-health.sh
 
 Off-host backup remains deliberately deferred by ADR-0031; these same-host
 pre-migration copies are rollback evidence, not disaster-recovery backups.
+
+## Changing the speech recognition model
+
+The Voice Agent recognizes speech with a **Recognized Speech Model**: a model
+this system carries an entry for, bound to the provider identity recorded
+against its stage in evidence and to the options that provider's own gateway
+accepts. `VOICE_AGENT_STT_MODEL` chooses one, and only one of these is accepted:
+
+| Setting | Provider recorded | Notes |
+| --- | --- | --- |
+| `assemblyai/universal-streaming-multilingual` | `assemblyai` | The default. An absent setting selects it. |
+| `deepgram/flux-general-en` | `deepgram` | The fallback designated in `research/2026-08-11-livekit-pipeline-providers.md`. |
+
+Both are reached through LiveKit Inference on the `LIVEKIT_API_KEY` this system
+already holds, so moving between them needs no new credential or billing path.
+The setting reaches both the conversation transcriber and the machine
+detector's, and its model appears on the provider-failure and speech-timing
+evidence for the recognition stage — so a recorded `stage=stt` fault is read
+against the model that actually raised it.
+
+One reading changes when you move off the default. The operational rollup
+enumerates only `assemblyai`, `inworld`, and `openai` and folds anything else
+into `other`, so with the Deepgram entry selected the rollup reports
+`stage="stt"` against `provider="other"`. That is truthful rather than wrong,
+and it needs no schema migration; the entry's own provider and model are still
+named exactly on the provider-failure and speech-timing evidence, which is
+where a fault is read.
+
+The setting is declared in `ops/systemd/voice-agent-worker.service`. Change it
+there, in a pull request:
+
+```
+Environment=VOICE_AGENT_STT_MODEL=deepgram/flux-general-en
+```
+
+That change reaches the Agent Host only through a Human Merge and a Promotion.
+Editing the unit on the host is not a supported path: every Promotion installs
+the unit definitions the pinned manifest carries, so a hand-edit is overwritten
+by the next release. A unit change also takes effect only once the attended
+deployment-authority upgrade above pins it and the Release is re-promoted.
+
+A value naming anything outside the set ends `voice-agent-worker.service` at
+start, before it accepts a job. That is deliberate: the failure then arrives as
+a failed post-Promotion health verification and an automatic rollback rather
+than as a provider error in the middle of a call. ADR-0057 records the
+reasoning. The worker's journal names the setting:
+
+```bash
+sudo journalctl -u voice-agent-worker.service -n 20 | grep VOICE_AGENT_STT_MODEL
+```
+
+Nothing switches provider during a call. A stalled transcriber still spends the
+single Bounded Provider Retry and then ends the call through the prerecorded
+response; moving off it is this attended change plus a Promotion.

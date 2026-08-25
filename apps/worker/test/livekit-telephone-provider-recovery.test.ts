@@ -6,7 +6,11 @@ import {
   voice,
 } from "@livekit/agents";
 import type { Room } from "@livekit/rtc-node";
-import type { TelephoneConversationEvidenceEvent } from "@voice-agent/contracts";
+import {
+  defaultRecognizedSpeechModel,
+  recognizedSpeechModels,
+  type TelephoneConversationEvidenceEvent,
+} from "@voice-agent/contracts";
 import {
   createDurableTaskRuntime,
   TelephoneSessionFault,
@@ -144,6 +148,79 @@ describe("bounded LiveKit telephone provider recovery", () => {
       expect(session.spokenTexts.at(-1)).toContain(
         "Bountywell's API is healthy.",
       );
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("recognition evidence names the configured model, and no other stage's", async () => {
+    const tasks = await createTasks("stt-configured-model");
+    const session = new RecoverySessionHarness({ transcriptionTimeout: true });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-stt-configured-model",
+          }),
+          recognitionModel: recognizedSpeechModels["deepgram/flux-general-en"],
+        },
+        dependencies,
+      );
+
+      // A recorded recognition fault must be readable against the model that
+      // actually raised it, not the one that was hardcoded when it was written.
+      const failures = evidence.filter(
+        (event) =>
+          event.kind === "telephone.provider.failure" &&
+          event.details.stage === "stt",
+      );
+      expect(failures.length).toBeGreaterThan(0);
+      for (const failure of failures) {
+        expect(failure.details).toMatchObject({
+          model: "deepgram/flux-general-en",
+          provider: "deepgram",
+        });
+      }
+
+      const timings = evidence.filter(
+        (event) => event.kind === "telephone.provider.timing",
+      );
+      const recognitionTimings = timings.filter(
+        (event) => event.details.stage === "stt",
+      );
+      expect(recognitionTimings.length).toBeGreaterThan(0);
+      for (const timing of recognitionTimings) {
+        expect(timing.details).toMatchObject({
+          model: "deepgram/flux-general-en",
+          provider: "deepgram",
+        });
+      }
+      // The recognition model says nothing about a fault another stage raised.
+      for (const timing of timings.filter(
+        (event) => event.details.stage !== "stt",
+      )) {
+        expect(timing.details).not.toHaveProperty("model");
+      }
     } finally {
       await tasks.close();
     }
@@ -1334,6 +1411,7 @@ function sessionOptions(input: {
   readonly telephoneSessionId: string;
 }): Parameters<typeof runLiveKitTelephoneSession>[0] {
   return {
+    recognitionModel: defaultRecognizedSpeechModel,
     boundaries: {
       async claimRawAudioCapture() {
         return {

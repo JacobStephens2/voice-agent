@@ -8,6 +8,7 @@ import {
   type EvidenceRecordSummary,
   type FinalizedTelephoneTurn,
   type TelephoneTurnInterpretation,
+  type RecognizedSpeechModel,
 } from "@voice-agent/contracts";
 import type {
   ApplicationRegistry,
@@ -34,6 +35,12 @@ export * from "./keeplore-delegation.ts";
 
 export interface TelephoneBountywellHealthInquiry {
   readonly interpretation: TelephoneTurnInterpretation;
+  /**
+   * The Recognized Speech Model the turn was recognized with, so the task's
+   * copy of the recognition-timing evidence reads the same as the Telephone
+   * Session's. The finalized turn itself carries only its stage's provider.
+   */
+  readonly recognitionModel?: RecognizedSpeechModel;
   readonly sanitizedTranscript: string;
   readonly turn: FinalizedTelephoneTurn;
 }
@@ -252,6 +259,9 @@ export function createDurableTaskRuntime(
       {
         details: {
           durationMs: input.turn.stt.durationMs,
+          ...(input.recognitionModel === undefined
+            ? {}
+            : { model: input.recognitionModel.model }),
           outcome: "completed",
           provider: input.turn.stt.provider,
           stage: "stt",

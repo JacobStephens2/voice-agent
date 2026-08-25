@@ -1,3 +1,10 @@
+import {
+  defaultRecognizedSpeechModelName,
+  recognizedSpeechModel,
+  recognizedSpeechModelNames,
+  type RecognizedSpeechModel,
+} from "@voice-agent/contracts";
+
 /**
  * Every setting the telephone worker cannot accept is refused here, when the
  * process starts, rather than inside the job that first reads it. A worker that
@@ -17,6 +24,8 @@ export interface TelephoneWorkerSettings {
   readonly liveKitUrl: string;
   readonly prolongedSilenceMs: number;
   readonly rawAudioDebugDirectory: string;
+  /** The Recognized Speech Model both transcribers recognize speech with. */
+  readonly recognitionModel: RecognizedSpeechModel;
 }
 
 export interface KeeploreDelegationSettings {
@@ -53,7 +62,27 @@ export function resolveTelephoneWorkerSettings(
     rawAudioDebugDirectory:
       environment.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
       "/var/lib/voice-agent/raw-audio-debug",
+    recognitionModel: resolveRecognitionModel(environment),
   };
+}
+
+/**
+ * A setting naming anything outside the Recognized Speech Model set is refused
+ * here, so a mistyped model ends this process and fails a Promotion Attempt's
+ * health verification rather than arriving as a provider error mid-call.
+ */
+function resolveRecognitionModel(
+  environment: NodeJS.ProcessEnv,
+): RecognizedSpeechModel {
+  const configured =
+    environment.VOICE_AGENT_STT_MODEL ?? defaultRecognizedSpeechModelName;
+  const entry = recognizedSpeechModel(configured);
+  if (entry === undefined) {
+    throw new Error(
+      `VOICE_AGENT_STT_MODEL must name a Recognized Speech Model: ${recognizedSpeechModelNames.join(", ")}`,
+    );
+  }
+  return entry;
 }
 
 function resolveProlongedSilenceMs(environment: NodeJS.ProcessEnv): number {

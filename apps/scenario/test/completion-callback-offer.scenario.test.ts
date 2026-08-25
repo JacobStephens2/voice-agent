@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
 
 import type { EvidenceRecordProjection } from "@voice-agent/contracts";
 import { createTelephoneSessionCoordinator } from "@voice-agent/runtime";
@@ -18,6 +19,7 @@ const pendingRecord: EvidenceRecordProjection = {
 
 test("pending telephone work offers an explicit Completion Callback before disconnect", async () => {
   const coordinator = createTelephoneSessionCoordinator({
+    recognitionModel: defaultRecognizedSpeechModel,
     interpreter: {
       async interpret() {
         return {

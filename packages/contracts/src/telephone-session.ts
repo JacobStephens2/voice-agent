@@ -5,6 +5,12 @@ const deliveryIdentifierSchema = z.string().min(1).max(80);
 const turnIdentifierSchema = z.string().min(1).max(80);
 const timestampSchema = z.iso.datetime();
 const providerNameSchema = z.string().min(1).max(80);
+/**
+ * The Recognized Speech Model in use at a speech stage. Optional because only
+ * the stages this system configures a model for carry one, and because
+ * evidence recorded before the setting existed has none.
+ */
+const speechModelSchema = z.string().min(1).max(120).optional();
 const durationSchema = z.number().int().nonnegative().max(120_000);
 export const telephoneSpeechProviderStages = [
   "stt",
@@ -46,6 +52,7 @@ export const telephoneProviderTimingEvidenceEventSchema = z.object({
   ...telephoneEvidenceFields,
   details: z.object({
     durationMs: durationSchema,
+    model: speechModelSchema,
     outcome: z.literal("completed"),
     provider: providerNameSchema,
     stage: providerStageSchema,
@@ -76,12 +83,14 @@ export const telephoneProviderFailureEvidenceEventSchema = z.object({
   details: z.discriminatedUnion("failure", [
     z.object({
       failure: z.literal("timeout"),
+      model: speechModelSchema,
       provider: providerNameSchema,
       stage: providerFailureStageSchema,
       timeoutMs: durationSchema,
     }),
     z.object({
       failure: z.literal("unavailable"),
+      model: speechModelSchema,
       provider: providerNameSchema,
       stage: providerFailureStageSchema,
     }),

@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -48,6 +49,7 @@ test("the Keeplore readback records telephone evidence under the Delegation's Du
     store: delegationStore,
   });
   const coordinator = createTelephoneSessionCoordinator({
+    recognitionModel: defaultRecognizedSpeechModel,
     interpreter: {
       async interpret(input) {
         return {

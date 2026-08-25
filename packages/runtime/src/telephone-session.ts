@@ -12,6 +12,7 @@ import {
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type TelephoneTurnInterpretation,
+  type RecognizedSpeechModel,
 } from "@voice-agent/contracts";
 import type { TelephoneBoundaryDecision } from "@voice-agent/durable-store";
 
@@ -40,6 +41,7 @@ interface TelephoneBountywellTasks {
   processNextBountywellOutageRecovery?(): Promise<EvidenceRecordProjection | undefined>;
   submitTelephoneBountywellHealthInquiry(input: {
     readonly interpretation: TelephoneTurnInterpretation;
+    readonly recognitionModel?: RecognizedSpeechModel;
     readonly sanitizedTranscript: string;
     readonly turn: FinalizedTelephoneTurn;
   }): Promise<EvidenceRecordProjection>;
@@ -76,6 +78,12 @@ interface TelephoneSessionCoordinatorOptions {
   readonly activeTaskId?: string;
   readonly interpreter: TelephoneTurnInterpreter;
   readonly keeploreDelegations?: TelephoneKeeploreDelegations;
+  /**
+   * The Recognized Speech Model this session recognizes speech with. Its model
+   * identifier is stamped onto recognition-stage evidence, so a recorded
+   * `stage=stt` fault can be read against the model actually in use.
+   */
+  readonly recognitionModel: RecognizedSpeechModel;
   readonly sessionEvidence?: TelephoneSessionEvidenceSink;
   readonly stateChangingTasks?: {
     claim(
@@ -201,6 +209,7 @@ export function createTelephoneSessionCoordinator(
         const evidence = {
           details: {
             durationMs: event.durationMs,
+            ...recognitionModelOf(options, event.stage),
             outcome: "completed" as const,
             provider: event.provider,
             stage: event.stage,
@@ -249,6 +258,18 @@ export function createTelephoneSessionCoordinator(
   };
 }
 
+/**
+ * The configured model identifier, for a recognition-stage event only. Every
+ * other stage's model is that stage's own concern; naming one here would
+ * record the transcriber's model against a fault it did not raise.
+ */
+function recognitionModelOf(
+  options: Pick<TelephoneSessionCoordinatorOptions, "recognitionModel">,
+  stage: TelephoneProviderFailureStage,
+): { readonly model?: string } {
+  return stage === "stt" ? { model: options.recognitionModel.model } : {};
+}
+
 async function handleFinalizedTurn(
   options: TelephoneSessionCoordinatorOptions,
   state: TelephoneSessionCoordinatorState,
@@ -270,6 +291,7 @@ async function handleFinalizedTurn(
   await options.sessionEvidence?.append({
     details: {
       durationMs: turn.stt.durationMs,
+      ...recognitionModelOf(options, "stt"),
       outcome: "completed",
       provider: turn.stt.provider,
       stage: "stt",
@@ -661,6 +683,7 @@ async function handleFinalizedTurn(
   }
   const record = await options.tasks.submitTelephoneBountywellHealthInquiry({
     interpretation,
+    recognitionModel: options.recognitionModel,
     sanitizedTranscript,
     turn,
   });
@@ -818,10 +841,10 @@ async function guidance(
  * cannot replay the prerecorded audio.
  */
 async function recordProviderFailure(
-  options: {
-    readonly sessionEvidence?: TelephoneSessionEvidenceSink;
-    readonly tasks: TelephoneBountywellTasks;
-  },
+  options: Pick<
+    TelephoneSessionCoordinatorOptions,
+    "recognitionModel" | "sessionEvidence" | "tasks"
+  >,
   state: TelephoneSessionCoordinatorState,
   event: {
     readonly deliveryId: string;
@@ -849,7 +872,7 @@ async function recordProviderFailure(
     >,
     "sequence"
   > = {
-    details,
+    details: { ...details, ...recognitionModelOf(options, details.stage) },
     id: `${event.deliveryId}:failure`,
     kind: "telephone.provider.failure",
     occurredAt: event.occurredAt,
