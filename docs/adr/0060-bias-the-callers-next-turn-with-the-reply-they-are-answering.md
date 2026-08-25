@@ -1,0 +1,19 @@
+# Bias the caller's next turn with the reply they are answering
+
+The Recognized Speech Model set ADR-0057 established carries, per entry, the options that entry's own gateway accepts. Every option it carried until now was fixed when the transcriber was built. AssemblyAI's contextual generation adds one that is not: `agent_context`, the Voice Agent's most recent spoken reply, which biases recognition of the caller's answer to it. Its value changes with every reply, so an entry that carries it needs a seam into a running recognition connection rather than a field set once at construction. The agents framework has one — `updateOptions` on an Inference transcriber sends the change over the open socket — so the reply is pushed through it as each response is spoken, and no session is rebuilt per turn.
+
+It is sent as the response starts rather than after it finishes, because barge-in is enabled: the caller's turn can begin before the response ends, and a value sent afterward would arrive after the turn it was meant to bias. An interrupted response therefore still biases the turn that interrupted it, which is the reply that caller was actually answering.
+
+The reply is truncated to 1500 characters, keeping its end. LiveKit's model documentation states a maximum of 1750 and the agents framework's own option documentation states 1500; the lower bound is the one both accept, and 250 characters of a long response is a smaller loss than a rejected option. The end survives a cut because the caller is answering the question the response finished on, and the cut moves to the next word boundary so the gateway is never biased toward a fragment.
+
+An entry whose gateway does not accept the option is never sent it. A gateway ignores an option it does not know without saying so, so sending it anyway would read in this repository as a bias that was applied when nothing was. Conversely, an entry that does carry it and a transcriber that cannot accept it is a wiring fault of this system, raised as a Telephone Session Fault rather than left to run a call without the one thing that entry was selected for — the same instinct as ADR-0057's refusal of an unrecognized model, one seam later.
+
+The model string this entry names, `assemblyai/universal-3-5-pro`, was resolved against LiveKit's live model documentation and recorded in `research/2026-08-11-livekit-pipeline-providers.md`. The agents framework's own option comments attach the contextual options to `assemblyai/u3-rt-pro`, which is not a LiveKit Inference model ID at all; it names the same generation to the direct AssemblyAI plugin, which this system does not use.
+
+## Consequences
+
+The default entry is unchanged, so an absent `VOICE_AGENT_STT_MODEL` still selects the model running in production and no call moves onto this one by merging this decision. Moving production onto it is an attended change plus a Promotion, made after a measured call, and the research note's refusal to stack provider Voice Focus on LiveKit `BVCTelephony` keeps `voice_focus` out of the entry until measurement says otherwise.
+
+The Recognized Speech Model set now describes two kinds of option: the ones a transcriber is built with, which stay in `@voice-agent/contracts`, and the per-turn ones, whose provider spelling stays in the worker because only the worker sees the framework's typed option surface. What the contract carries for the second kind is the capability and its bound, not the spelling — enough for the worker to decide whether to send anything at all, and enough that a new entry must say explicitly whether its gateway accepts a reply.
+
+This entry records `assemblyai`, the same provider as the default, so the operational rollup names it exactly rather than folding it into `other` as it does the Deepgram entry. A recognition fault under this entry is read from the model on the provider-failure and speech-timing evidence, as under every other entry.

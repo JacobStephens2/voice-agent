@@ -102,7 +102,7 @@ describe.each([
   });
 
   test("refuses a recognition model outside the set at start", () => {
-    const result = start({ VOICE_AGENT_STT_MODEL: "assemblyai/universal-3-5-pro" });
+    const result = start({ VOICE_AGENT_STT_MODEL: "assemblyai/u3-rt-pro" });
 
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stderr).toContain("VOICE_AGENT_STT_MODEL");

@@ -39,6 +39,7 @@ import {
   underlyingProviderError,
 } from "./provider-error-description.ts";
 import { recordAuthorizedCallerAudio } from "./raw-audio-debug.ts";
+import { createAgentContextBias } from "./telephone-agent-context.ts";
 import {
   ObservedSpeechProviderSTT,
   ObservedSpeechProviderTTS,
@@ -187,6 +188,12 @@ export async function runLiveKitTelephoneSession(
   });
 
   const audibleSpeech = createAudibleSpeechObserver();
+  /**
+   * Bias the caller's next turn with the reply they are answering, for the
+   * entries whose gateway accepts it. Every other entry gets nothing, and its
+   * call runs exactly as it does today.
+   */
+  const biasNextCallerTurn = createAgentContextBias(recognition, session.stt);
 
   /**
    * Speak one response and confirm the caller actually heard it.
@@ -199,6 +206,9 @@ export async function runLiveKitTelephoneSession(
     text: string,
     speechOptions: { readonly allowInterruptions: boolean },
   ): Promise<{ readonly interrupted: boolean }> {
+    // Sent as the reply starts rather than once it ends, because the caller
+    // may interrupt it: their turn can begin before this speech finishes.
+    biasNextCallerTurn(text);
     const framesBefore = audibleSpeech.frameCount();
     const speech = session.say(text, {
       addToChatCtx: false,

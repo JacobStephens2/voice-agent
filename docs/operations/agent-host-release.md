@@ -306,18 +306,30 @@ accepts. `VOICE_AGENT_STT_MODEL` chooses one, and only one of these is accepted:
 | Setting | Provider recorded | Notes |
 | --- | --- | --- |
 | `assemblyai/universal-streaming-multilingual` | `assemblyai` | The default. An absent setting selects it. |
+| `assemblyai/universal-3-5-pro` | `assemblyai` | The contextual generation designated in `research/2026-08-11-livekit-pipeline-providers.md`. |
 | `deepgram/flux-general-en` | `deepgram` | The fallback designated in `research/2026-08-11-livekit-pipeline-providers.md`. |
 
-Both are reached through LiveKit Inference on the `LIVEKIT_API_KEY` this system
-already holds, so moving between them needs no new credential or billing path.
-The setting reaches both the conversation transcriber and the machine
+All three are reached through LiveKit Inference on the `LIVEKIT_API_KEY` this
+system already holds, so moving between them needs no new credential or billing
+path. The setting reaches both the conversation transcriber and the machine
 detector's, and its model appears on the provider-failure and speech-timing
 evidence for the recognition stage — so a recorded `stage=stt` fault is read
 against the model that actually raised it.
 
-One reading changes when you move off the default. The operational rollup
+Two things change when you select `assemblyai/universal-3-5-pro`, and nothing
+else does. The transcriber is started with AssemblyAI's `mode=balanced`, the
+provider's own voice-agent preset, alongside the same domain keyterms every
+entry carries. And each spoken response is pushed to the running transcriber as
+`agent_context` as it is spoken, so the caller's answer is recognized against
+the question they were just asked; a response longer than the 1500 characters
+that gateway accepts is truncated to its end, which is the part being answered.
+No other entry is sent that option — a gateway ignores an option it does not
+know without saying so, which would read as a bias that was never applied.
+ADR-0060 records the reasoning.
+
+One reading changes if you move to the Deepgram entry. The operational rollup
 enumerates only `assemblyai`, `inworld`, and `openai` and folds anything else
-into `other`, so with the Deepgram entry selected the rollup reports
+into `other`, so with that entry selected the rollup reports
 `stage="stt"` against `provider="other"`. That is truthful rather than wrong,
 and it needs no schema migration; the entry's own provider and model are still
 named exactly on the provider-failure and speech-timing evidence, which is
