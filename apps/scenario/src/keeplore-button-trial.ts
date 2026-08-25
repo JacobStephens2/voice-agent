@@ -1,7 +1,8 @@
-import type {
-  KeeploreDelegationRecord,
-  KeeploreRegistration,
-  TelephoneSessionActionResult,
+import {
+  defaultRecognizedSpeechModel,
+  type KeeploreDelegationRecord,
+  type KeeploreRegistration,
+  type TelephoneSessionActionResult,
 } from "@voice-agent/contracts";
 import {
   createKeeploreDelegationRuntime,
@@ -61,6 +62,7 @@ export async function createKeeploreButtonTrialScenario(
     store,
   });
   const coordinator = createTelephoneSessionCoordinator({
+    recognitionModel: defaultRecognizedSpeechModel,
     interpreter: {
       async interpret(input) {
         return {

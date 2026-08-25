@@ -66,6 +66,7 @@ describe("resolving the telephone worker's settings", () => {
       databasePath: "/var/lib/voice-agent/voice-agent.sqlite",
       prolongedSilenceMs: 60_000,
       rawAudioDebugDirectory: "/var/lib/voice-agent/raw-audio-debug",
+      recognitionModel: { model: "assemblyai/universal-streaming-multilingual" },
     });
   });
 });
@@ -98,6 +99,20 @@ describe.each([
 
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stderr).toContain("VOICE_AGENT_PROLONGED_SILENCE_SECONDS");
+  });
+
+  test("refuses a recognition model outside the set at start", () => {
+    const result = start({ VOICE_AGENT_STT_MODEL: "assemblyai/universal-3-5-pro" });
+
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stderr).toContain("VOICE_AGENT_STT_MODEL");
+  });
+
+  test("refuses a malformed recognition model at start", () => {
+    const result = start({ VOICE_AGENT_STT_MODEL: "assemblyai" });
+
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stderr).toContain("VOICE_AGENT_STT_MODEL");
   });
 
   test("refuses an absent required setting at start", () => {

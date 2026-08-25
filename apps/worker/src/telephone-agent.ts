@@ -396,6 +396,7 @@ async function handleOutbound(
     detector = createBoundedMachineDetector(
       session,
       dispatch.participantIdentity,
+      settings.recognitionModel,
     );
     disconnected = waitForParticipantDisconnect(
       ctx.room,
@@ -492,6 +493,7 @@ async function handleOutbound(
           disconnected: disconnected.promise,
           endCall: () => ctx.deleteRoom(),
           initialUsageScopeId: `prelive:${dispatch.effectId}`,
+          recognitionModel: settings.recognitionModel,
           room: ctx.room,
           requestCompletionCallback: (input) =>
             requestCompletionCallback(runtime, continuity, input),
@@ -597,6 +599,7 @@ async function handleCompletionOutbound(
     detector = createBoundedMachineDetector(
       session,
       dispatch.participantIdentity,
+      settings.recognitionModel,
     );
     disconnected = waitForParticipantDisconnect(
       ctx.room,
@@ -710,6 +713,7 @@ async function handleCompletionOutbound(
         continuity.recordCompletionResumption({
           operationId: resume.effectId,
         }),
+      recognitionModel: settings.recognitionModel,
       requestCompletionCallback: (input) =>
         requestCompletionCallback(callback, continuity, input),
       room: ctx.room,
@@ -827,6 +831,7 @@ async function handleCompletionResumption(
         continuity.recordCompletionResumption({
           operationId: requireResumptionOperationId(dispatch),
         }),
+      recognitionModel: settings.recognitionModel,
       requestCompletionCallback: (input) =>
         requestCompletionCallback(callback, continuity, input),
       room: ctx.room,
@@ -948,6 +953,7 @@ async function recordSetupProviderFailure(input: {
   readonly telephoneSessionId: string;
 }): Promise<void> {
   await recordTelephoneSetupProviderFailure({
+    recognition: settings.recognitionModel,
     append: input.append,
     error: input.error,
     failureEventId: input.failureEventId,

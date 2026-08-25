@@ -16,6 +16,10 @@ Environment=VOICE_AGENT_BROKER_SOCKET_PATH=/run/voice-agent-broker/broker.sock
 Environment=VOICE_AGENT_SUBAGENT_SOCKET_PATH=/run/voice-agent-subagent/runner.sock
 Environment=VOICE_AGENT_WORKER_PORT=3474
 Environment=VOICE_AGENT_TTS_VOICE=Sarah
+# A Recognized Speech Model. The code default already matches this value; it is
+# written out because an operator working an outage reads the unit, not the
+# source. An unrecognized value ends this service at start.
+Environment=VOICE_AGENT_STT_MODEL=assemblyai/universal-streaming-multilingual
 Environment=VOICE_AGENT_PROLONGED_SILENCE_SECONDS=60
 Environment=VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY=/var/lib/voice-agent/raw-audio-debug
 # Conservative budget-accounting rates; provider-specific overrides belong in livekit.env.

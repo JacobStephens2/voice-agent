@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type {
+  RecognizedSpeechModel,
   TelephoneEvidenceEvent,
   TelephoneProviderFailureStage,
 } from "@voice-agent/contracts";
@@ -35,6 +36,12 @@ export async function recordTelephoneSetupProviderFailure(input: {
   /** Defaults to the operator journal; a test supplies its own sink. */
   readonly log?: ProviderFailureLogger;
   readonly occurredAt: string;
+  /**
+   * The Recognized Speech Model in use: the machine detector raises its
+   * recognition faults through this path, so the provider recorded for them
+   * must follow the configured entry too.
+   */
+  readonly recognition: RecognizedSpeechModel;
   readonly recordProviderFailure: (input: {
     readonly failureClass: "timeout" | "unavailable";
     readonly sessionId: string;
@@ -55,10 +62,15 @@ export async function recordTelephoneSetupProviderFailure(input: {
     deliveryId: correlation,
     error: classified.error,
     occurredAt: input.occurredAt,
+    recognition: input.recognition,
     stage: classified.stage,
   });
   const failureClass =
     failure.kind === "provider-timeout" ? "timeout" : "unavailable";
+  // The detector raises its recognition faults here, so this evidence carries
+  // the configured model for the same reason the session's does.
+  const recognitionModel =
+    failure.stage === "stt" ? { model: input.recognition.model } : {};
   // Setup faults end the call before it is answered, so this line is the only
   // description of them that survives.
   (input.log ?? logProviderFailureToStandardError)({
@@ -73,12 +85,14 @@ export async function recordTelephoneSetupProviderFailure(input: {
       failure.kind === "provider-timeout"
         ? {
             failure: "timeout",
+            ...recognitionModel,
             provider: failure.provider,
             stage: failure.stage,
             timeoutMs: failure.timeoutMs,
           }
         : {
             failure: "unavailable",
+            ...recognitionModel,
             provider: failure.provider,
             stage: failure.stage,
           },

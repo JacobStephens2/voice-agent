@@ -3,10 +3,10 @@ import {
   UnexpectedModelBehavior,
   voice,
 } from "@livekit/agents";
+import type { RecognizedSpeechModel } from "@voice-agent/contracts";
 
-import { boundedProviderConnectOptions } from "./livekit-telephone-session.ts";
+import { createDetectionRecognitionSTT } from "./livekit-telephone-session.ts";
 import { ProviderReportedError } from "./provider-error-description.ts";
-import { ObservedSpeechProviderSTT } from "./speech-provider-error-frame.ts";
 import { TelephoneSetupProviderError } from "./telephone-setup-provider-failure.ts";
 
 /**
@@ -34,12 +34,9 @@ export interface BoundedMachineDetector {
 export function createBoundedMachineDetector(
   session: voice.AgentSession,
   participantIdentity: string,
+  recognitionModel: RecognizedSpeechModel,
 ): BoundedMachineDetector {
-  const recognition = new ObservedSpeechProviderSTT({
-    connOptions: boundedProviderConnectOptions("stt"),
-    language: "en",
-    model: "assemblyai/universal-streaming-multilingual",
-  });
+  const recognition = createDetectionRecognitionSTT(recognitionModel);
   let raiseRecognitionFailure: (error: unknown) => void = () => undefined;
   const recognitionFailure = new Promise<never>((_resolve, reject) => {
     raiseRecognitionFailure = reject;

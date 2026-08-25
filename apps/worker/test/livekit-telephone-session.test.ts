@@ -1,4 +1,5 @@
 import { APITimeoutError, llm } from "@livekit/agents";
+import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -12,6 +13,7 @@ describe("LiveKit finalized telephone turns", () => {
   test("rejects a completed turn without a LiveKit turn identity", () => {
     expect(() =>
       mapCompletedTelephoneTurnEvent({
+        recognition: defaultRecognizedSpeechModel,
         createdAt: 1_776_444_000_500,
         itemId: null,
         speechStartedAt: undefined,
@@ -24,6 +26,7 @@ describe("LiveKit finalized telephone turns", () => {
   test("keeps interim and STT-final segments non-authoritative", () => {
     const adapter = new LiveKitTelephoneTurnAdapter(
       "telephone-session-001",
+      defaultRecognizedSpeechModel,
     );
     const interim = adapter.transcription({
       createdAt: 1_776_444_000_250,
@@ -45,6 +48,7 @@ describe("LiveKit finalized telephone turns", () => {
   test("assigns authoritative identity only to completed LiveKit turns", () => {
     const adapter = new LiveKitTelephoneTurnAdapter(
       "telephone-session-001",
+      defaultRecognizedSpeechModel,
     );
     adapter.speechStarted(1_776_444_000_000);
     const first = adapter.completedTurn(
@@ -77,6 +81,7 @@ describe("LiveKit finalized telephone turns", () => {
   test("rejects a completed turn without a speech timing boundary", () => {
     const adapter = new LiveKitTelephoneTurnAdapter(
       "telephone-session-001",
+      defaultRecognizedSpeechModel,
     );
 
     expect(() =>
@@ -94,6 +99,7 @@ describe("LiveKit finalized telephone turns", () => {
   test("keeps a late completed LiveKit turn after the accepted answer non-authoritative", () => {
     const adapter = new LiveKitTelephoneTurnAdapter(
       "telephone-session-001",
+      defaultRecognizedSpeechModel,
     );
     adapter.speechStarted(1_787_026_448_269);
     const first = adapter.completedTurn(
@@ -149,6 +155,7 @@ describe("LiveKit telephone provider failures", () => {
   test("maps an STT timeout to the bounded provider-timeout contract", () => {
     expect(
       mapProviderFailureEvent({
+        recognition: defaultRecognizedSpeechModel,
         deliveryId: "stt-timeout",
         error: new APITimeoutError({ message: "transcription timed out" }),
         occurredAt: "2026-08-17T19:00:00.000Z",
@@ -167,6 +174,7 @@ describe("LiveKit telephone provider failures", () => {
   test("maps sanitized coordinator and task-scoped TTS failures without raw errors", () => {
     expect(
       mapProviderFailureEvent({
+        recognition: defaultRecognizedSpeechModel,
         deliveryId: "coordinator-failure",
         error: new Error("secret provider body"),
         occurredAt: "2026-08-17T19:00:01.000Z",
@@ -182,6 +190,7 @@ describe("LiveKit telephone provider failures", () => {
     });
     expect(
       mapProviderFailureEvent({
+        recognition: defaultRecognizedSpeechModel,
         deliveryId: "tts-timeout",
         error: new APITimeoutError({ message: "secret provider body" }),
         occurredAt: "2026-08-17T19:00:02.000Z",
@@ -199,6 +208,7 @@ describe("LiveKit telephone provider failures", () => {
   test("does not invent a timeout duration for an unclassified setup failure", () => {
     expect(
       mapProviderFailureEvent({
+        recognition: defaultRecognizedSpeechModel,
         deliveryId: "setup-failure",
         error: new APITimeoutError({ message: "unclassified setup timeout" }),
         occurredAt: "2026-08-17T19:00:03.000Z",

@@ -1,4 +1,5 @@
 import { llm, voice } from "@livekit/agents";
+import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
 import type { Room } from "@livekit/rtc-node";
 import {
   createDurableTaskRuntime,
@@ -95,6 +96,7 @@ describe("production-shaped LiveKit telephone turns", () => {
     try {
       await runLiveKitTelephoneSession(
         {
+          recognitionModel: defaultRecognizedSpeechModel,
           boundaries: {
             async claimRawAudioCapture() {
               return {
@@ -263,6 +265,7 @@ describe("production-shaped LiveKit telephone turns", () => {
     try {
       await runLiveKitTelephoneSession(
         {
+          recognitionModel: defaultRecognizedSpeechModel,
           boundaries: {
             async claimRawAudioCapture() {
               return {
@@ -352,6 +355,7 @@ describe("production-shaped LiveKit telephone turns", () => {
 
     await runLiveKitTelephoneSession(
       {
+        recognitionModel: defaultRecognizedSpeechModel,
         boundaries: {
           async claimStateChangingTask() {
             return { decision: "accepted", resource: "state-changing-task" };
@@ -460,6 +464,7 @@ async function expectPostStartProviderFailure(
   try {
     await runLiveKitTelephoneSession(
       {
+        recognitionModel: defaultRecognizedSpeechModel,
         boundaries,
         disconnected,
         endCall,

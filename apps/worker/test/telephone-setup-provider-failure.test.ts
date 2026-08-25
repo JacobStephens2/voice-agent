@@ -1,4 +1,5 @@
 import { APITimeoutError } from "@livekit/agents";
+import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -12,6 +13,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
     const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
 
     await recordTelephoneSetupProviderFailure({
+      recognition: defaultRecognizedSpeechModel,
       append,
       error: new Error("durable application write failed"),
       failureEventId: "unclassified-catch-path-failure",
@@ -30,6 +32,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
     const log = vi.fn();
 
     await recordTelephoneSetupProviderFailure({
+      recognition: defaultRecognizedSpeechModel,
       append,
       error: new TelephoneSetupProviderError(
         "setup",
@@ -55,6 +58,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
     const log = vi.fn();
 
     await recordTelephoneSetupProviderFailure({
+      recognition: defaultRecognizedSpeechModel,
       append: vi.fn(async () => undefined),
       error: new Error("durable application write failed"),
       failureEventId: "unlogged-catch-path-failure",
@@ -72,6 +76,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
     const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
 
     await recordTelephoneSetupProviderFailure({
+      recognition: defaultRecognizedSpeechModel,
       append,
       error: new TelephoneSetupProviderError(
         "setup",
@@ -105,6 +110,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
     const recordProviderFailure = vi.fn(async () => ({ ended: true as const }));
 
     await recordTelephoneSetupProviderFailure({
+      recognition: defaultRecognizedSpeechModel,
       append,
       error: new TelephoneSetupProviderError(
         "tts",

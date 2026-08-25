@@ -9,7 +9,10 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { telephoneSpeechProviderStages } from "@voice-agent/contracts";
+import {
+  telephoneSpeechProviderStages,
+  type RecognizedSpeechModel,
+} from "@voice-agent/contracts";
 import type {
   TelephoneProviderFailureRecovery,
   TelephoneProviderFailureStage,
@@ -75,7 +78,10 @@ interface ClosableTelephoneTurnInterpreter extends TelephoneTurnInterpreter {
 }
 
 export interface LiveKitTelephoneSessionDependencies {
-  createConversationSession(prolongedSilenceMs: number): voice.AgentSession;
+  createConversationSession(
+    prolongedSilenceMs: number,
+    recognition: RecognizedSpeechModel,
+  ): voice.AgentSession;
   createInterpreter(): ClosableTelephoneTurnInterpreter;
   /** Defaults to the operator journal; a test supplies its own sink. */
   logProviderFailure?: ProviderFailureLogger;
@@ -100,6 +106,8 @@ export async function runLiveKitTelephoneSession(
     readonly keeploreDelegations?: KeeploreDelegationRuntime;
     readonly openingText?: string;
     readonly onStarted?: () => Promise<void>;
+    /** The Recognized Speech Model this session recognizes speech with. */
+    readonly recognitionModel: RecognizedSpeechModel;
     readonly requestCompletionCallback?: (input: {
       readonly requestId: string;
       readonly taskId: string;
@@ -122,11 +130,13 @@ export async function runLiveKitTelephoneSession(
   );
   const logProviderFailure =
     dependencies.logProviderFailure ?? logProviderFailureToStandardError;
+  const recognition = options.recognitionModel;
   const coordinator = createTelephoneSessionCoordinator({
     ...(options.activeTaskId === undefined
       ? {}
       : { activeTaskId: options.activeTaskId }),
     interpreter,
+    recognitionModel: recognition,
     ...(options.keeploreDelegations === undefined
       ? {}
       : { keeploreDelegations: options.keeploreDelegations }),
@@ -140,9 +150,13 @@ export async function runLiveKitTelephoneSession(
     tasks: options.tasks,
   });
   const prolongedSilenceMs = options.prolongedSilenceMs ?? 60_000;
-  const session = dependencies.createConversationSession(prolongedSilenceMs);
+  const session = dependencies.createConversationSession(
+    prolongedSilenceMs,
+    recognition,
+  );
   const turnAdapter = new LiveKitTelephoneTurnAdapter(
     options.telephoneSessionId,
+    recognition,
   );
   let processing = Promise.resolve();
   let failureEnded = false;
@@ -421,6 +435,7 @@ export async function runLiveKitTelephoneSession(
       deliveryId,
       error,
       occurredAt,
+      recognition,
       recovery,
       stage,
       ...(taskId === undefined ? {} : { taskId }),
@@ -772,7 +787,40 @@ class LiveKitTelephoneTurnInterpreter implements TelephoneTurnInterpreter {
   }
 }
 
-function createConversationSession(prolongedSilenceMs: number): voice.AgentSession {
+/**
+ * The conversation transcriber for a Recognized Speech Model entry, biased
+ * toward the domain keyterms in that entry's own provider option.
+ */
+export function createConversationRecognitionSTT(
+  recognition: RecognizedSpeechModel,
+): ObservedSpeechProviderSTT<RecognizedSpeechModel["model"]> {
+  return new ObservedSpeechProviderSTT({
+    connOptions: boundedProviderConnectOptions("stt"),
+    language: "en",
+    model: recognition.model,
+    modelOptions: recognition.modelOptions,
+  });
+}
+
+/**
+ * The machine detector's transcriber for the same entry. It recognizes a
+ * voicemail greeting, which carries none of the domain terms, so it is left
+ * unbiased as it has always been; only the model is configured.
+ */
+export function createDetectionRecognitionSTT(
+  recognition: RecognizedSpeechModel,
+): ObservedSpeechProviderSTT<RecognizedSpeechModel["model"]> {
+  return new ObservedSpeechProviderSTT({
+    connOptions: boundedProviderConnectOptions("stt"),
+    language: "en",
+    model: recognition.model,
+  });
+}
+
+function createConversationSession(
+  prolongedSilenceMs: number,
+  recognition: RecognizedSpeechModel,
+): voice.AgentSession {
   return new voice.AgentSession({
     connOptions: {
       llmConnOptions: boundedProviderConnectOptions("coordinator"),
@@ -780,14 +828,7 @@ function createConversationSession(prolongedSilenceMs: number): voice.AgentSessi
       sttConnOptions: boundedProviderConnectOptions("stt"),
       ttsConnOptions: boundedProviderConnectOptions("tts"),
     },
-    stt: new ObservedSpeechProviderSTT({
-      connOptions: boundedProviderConnectOptions("stt"),
-      language: "en",
-      model: "assemblyai/universal-streaming-multilingual",
-      modelOptions: {
-        keyterms_prompt: ["Bountywell", "Keeplore", "Get Rid Of"],
-      },
-    }),
+    stt: createConversationRecognitionSTT(recognition),
     transcriptionTimeout: transcriptionTimeoutMs,
     tts: new ObservedSpeechProviderTTS({
       connOptions: boundedProviderConnectOptions("tts"),
@@ -1019,6 +1060,7 @@ function finalizedDeliveryId(
 export function mapCompletedTelephoneTurnEvent(input: {
   readonly createdAt: number;
   readonly itemId: string | null;
+  readonly recognition: RecognizedSpeechModel;
   readonly speechStartedAt: number | undefined;
   readonly telephoneSessionId: string;
   readonly transcript: string;
@@ -1037,7 +1079,7 @@ export function mapCompletedTelephoneTurnEvent(input: {
     occurredAt: new Date(input.createdAt).toISOString(),
     stt: {
       durationMs: Math.max(0, input.createdAt - input.speechStartedAt),
-      provider: "assemblyai",
+      provider: input.recognition.provider,
     },
     telephoneSessionId: input.telephoneSessionId,
     transcript: input.transcript,
@@ -1056,11 +1098,16 @@ function finalizedTurnId(
 }
 
 export class LiveKitTelephoneTurnAdapter {
+  readonly #recognition: RecognizedSpeechModel;
   readonly #telephoneSessionId: string;
   #acceptedCompletedTurn = false;
   #speechStartedAt: number | undefined;
 
-  constructor(telephoneSessionId: string) {
+  constructor(
+    telephoneSessionId: string,
+    recognition: RecognizedSpeechModel,
+  ) {
+    this.#recognition = recognition;
     this.#telephoneSessionId = telephoneSessionId;
   }
 
@@ -1114,6 +1161,7 @@ export class LiveKitTelephoneTurnAdapter {
     const completedTurn = mapCompletedTelephoneTurnEvent({
       createdAt: message.createdAt,
       itemId: message.id,
+      recognition: this.#recognition,
       speechStartedAt: this.#speechStartedAt,
       telephoneSessionId: this.#telephoneSessionId,
       transcript,
@@ -1206,8 +1254,17 @@ function attributeTurnPipelineFailure(
 
 function providerForStage(
   stage: TelephoneProviderFailureStage,
-): "assemblyai" | "inworld" | "livekit" | "openai" | "voice-agent" {
-  if (stage === "stt") return "assemblyai";
+  recognition: RecognizedSpeechModel,
+):
+  | RecognizedSpeechModel["provider"]
+  | "inworld"
+  | "livekit"
+  | "openai"
+  | "voice-agent" {
+  // Read from the configured entry, not inferred from the stage: an operator
+  // who moves off a stalled gateway must not read `provider=assemblyai`
+  // against a fault a different provider raised.
+  if (stage === "stt") return recognition.provider;
   if (stage === "coordinator") return "openai";
   if (stage === "tts") return "inworld";
   // A fault in the Voice Agent's own turn pipeline has no provider behind it,
@@ -1231,6 +1288,7 @@ export function mapProviderFailureEvent(input: {
   readonly deliveryId: string;
   readonly error: unknown;
   readonly occurredAt: string;
+  readonly recognition: RecognizedSpeechModel;
   readonly recovery?: TelephoneProviderFailureRecovery;
   readonly stage: TelephoneProviderFailureStage;
   readonly taskId?: string;
@@ -1240,7 +1298,7 @@ export function mapProviderFailureEvent(input: {
   const common = {
     deliveryId: input.deliveryId,
     occurredAt: input.occurredAt,
-    provider: providerForStage(input.stage),
+    provider: providerForStage(input.stage, input.recognition),
     ...(input.recovery === undefined ? {} : { recovery: input.recovery }),
     stage: input.stage,
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),

@@ -3,6 +3,10 @@ import {
   initializeLogger,
   voice,
 } from "@livekit/agents";
+import {
+  defaultRecognizedSpeechModel,
+  recognizedSpeechModels,
+} from "@voice-agent/contracts";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -50,6 +54,7 @@ describe("a recognition failure during machine detection", () => {
     const detector = createBoundedMachineDetector(
       stubSession(),
       "sip_detection_probe",
+      defaultRecognizedSpeechModel,
     );
     const outcome = await executeMachineDetection(detector)
       .then((prediction) => ({ kind: "prediction" as const, prediction }))
@@ -72,6 +77,7 @@ describe("a recognition failure during machine detection", () => {
       failureEventId: "detection-recognition-failure",
       log,
       occurredAt: "2026-08-25T18:00:00.000Z",
+      recognition: defaultRecognizedSpeechModel,
       recordProviderFailure,
       telephoneSessionId: "telephone-session-detection",
     });
@@ -87,6 +93,7 @@ describe("a recognition failure during machine detection", () => {
     expect(append).toHaveBeenCalledWith(
       expect.objectContaining({
         details: expect.objectContaining({
+          model: "assemblyai/universal-streaming-multilingual",
           provider: "assemblyai",
           stage: "stt",
         }),
@@ -132,3 +139,95 @@ function detectorRaising(error: unknown): BoundedMachineDetector {
     recognitionFailure,
   };
 }
+
+describe("the machine detector's transcriber", () => {
+  test("recognizes speech with the configured Recognized Speech Model", async () => {
+    const detector = createBoundedMachineDetector(
+      stubSession(),
+      "sip_detection_probe",
+      recognizedSpeechModels["deepgram/flux-general-en"],
+    );
+
+    try {
+      const recognition = (
+        detector.detector as unknown as {
+          readonly stt: {
+            readonly model: string;
+            readonly opts: { readonly modelOptions: Record<string, unknown> };
+          };
+        }
+      ).stt;
+      expect(recognition.model).toBe("deepgram/flux-general-en");
+      // Configured from the same entry, but detection stays unbiased: it never
+      // receives the conversation's domain keyterms in either spelling.
+      expect(recognition.opts.modelOptions).not.toHaveProperty("keyterm");
+      expect(recognition.opts.modelOptions).not.toHaveProperty(
+        "keyterms_prompt",
+      );
+    } finally {
+      await detector.close();
+    }
+  });
+});
+
+describe("a detection-time recognition fault under a configured model", () => {
+  test("records the configured entry's provider and model", async () => {
+    const append = vi.fn(async () => undefined);
+    const log = vi.fn();
+
+    await recordTelephoneSetupProviderFailure({
+      append,
+      error: new TelephoneSetupProviderError(
+        "stt",
+        new APIStatusError({ message: "gateway is unavailable", options: {} }),
+      ),
+      failureEventId: "detection-recognition-configured",
+      log,
+      occurredAt: "2026-08-25T18:00:00.000Z",
+      recognition: recognizedSpeechModels["deepgram/flux-general-en"],
+      recordProviderFailure: vi.fn(async () => ({ ended: true as const })),
+      telephoneSessionId: "telephone-session-detection-configured",
+    });
+
+    // The detector raises its recognition faults through the setup path, so
+    // this evidence must be readable against the model that raised them.
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: expect.objectContaining({
+          model: "deepgram/flux-general-en",
+          provider: "deepgram",
+          stage: "stt",
+        }),
+        kind: "telephone.provider.failure",
+      }),
+    );
+  });
+
+  test("names no model for a stage the recognition setting does not configure", async () => {
+    const appended: { readonly details: Record<string, unknown> }[] = [];
+    const append = async (event: unknown) => {
+      appended.push(event as { readonly details: Record<string, unknown> });
+    };
+
+    await recordTelephoneSetupProviderFailure({
+      append,
+      error: new TelephoneSetupProviderError(
+        "tts",
+        new APIStatusError({ message: "gateway is unavailable", options: {} }),
+      ),
+      failureEventId: "detection-synthesis-configured",
+      log: vi.fn(),
+      occurredAt: "2026-08-25T18:00:00.000Z",
+      recognition: recognizedSpeechModels["deepgram/flux-general-en"],
+      recordProviderFailure: vi.fn(async () => ({ ended: true as const })),
+      telephoneSessionId: "telephone-session-detection-synthesis",
+    });
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.details).not.toHaveProperty("model");
+    expect(appended[0]?.details).toMatchObject({
+      provider: "inworld",
+      stage: "tts",
+    });
+  });
+});
