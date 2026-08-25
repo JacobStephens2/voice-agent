@@ -146,7 +146,7 @@ A speech gateway's own account of a failure it reported — its code, its human-
 _Avoid_: Provider error message, websocket payload, error code
 
 **Recognized Speech Model**:
-A speech model this system will accept a setting for, bound to the provider identity recorded against its stage in evidence and to the options that provider's own gateway accepts; a setting naming anything outside the set is refused before the worker takes a call.
+A speech model this system will accept a setting for, bound to the provider identity recorded against its stage in evidence and to the options that provider's own gateway accepts — including any per-turn option, such as the Voice Agent's most recent spoken reply pushed to the live transcriber to bias the caller's next turn, which only some entries accept and no other entry is ever sent; a setting naming anything outside the set is refused before the worker takes a call.
 _Avoid_: Model string, provider selection, automatic provider failover
 
 **Bounded Excerpt**:

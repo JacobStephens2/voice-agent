@@ -17,6 +17,7 @@ process.env.LIVEKIT_API_KEY ??= "recognition-model-key";
 process.env.LIVEKIT_API_SECRET ??= "recognition-model-secret-recognition";
 process.env.LIVEKIT_URL ??= "ws://127.0.0.1:1";
 
+const contextual = recognizedSpeechModels["assemblyai/universal-3-5-pro"];
 const deepgram = recognizedSpeechModels["deepgram/flux-general-en"];
 
 /** The options the framework was actually constructed with. */
@@ -44,6 +45,19 @@ describe("the transcriber a Recognized Speech Model builds", () => {
       keyterm: ["Bountywell", "Keeplore", "Get Rid Of"],
     });
     expect(modelOptionsOf(stt)).not.toHaveProperty("keyterms_prompt");
+  });
+
+  test("the contextual entry recognizes speech with its own mode and keyterms", () => {
+    const stt = createConversationRecognitionSTT(contextual);
+
+    expect(stt.model).toBe("assemblyai/universal-3-5-pro");
+    expect(modelOptionsOf(stt)).toMatchObject({
+      keyterms_prompt: ["Bountywell", "Keeplore", "Get Rid Of"],
+      mode: "balanced",
+    });
+    // The reply that biases a turn is per-turn, so it is absent until one has
+    // been spoken rather than fixed when the transcriber is built.
+    expect(modelOptionsOf(stt)).not.toHaveProperty("agent_context");
   });
 
   test("the machine detector's transcriber takes the model without the keyterms", () => {
@@ -79,6 +93,31 @@ describe("the provider a recognition-stage fault is recorded against", () => {
         recognition: defaultRecognizedSpeechModel,
         stage: "stt",
       }).provider,
+    ).toBe("assemblyai");
+  });
+
+  test("is assemblyai for the contextual entry", () => {
+    expect(
+      mapProviderFailureEvent({
+        deliveryId: "delivery-recognition-contextual",
+        error: new Error("gateway is unavailable"),
+        occurredAt: "2026-08-25T12:00:00.000Z",
+        recognition: contextual,
+        stage: "stt",
+      }).provider,
+    ).toBe("assemblyai");
+  });
+
+  test("a finalized turn on the contextual entry names its provider", () => {
+    expect(
+      mapCompletedTelephoneTurnEvent({
+        createdAt: 1_787_000_002_000,
+        itemId: "item-recognition-contextual",
+        recognition: contextual,
+        speechStartedAt: 1_787_000_001_000,
+        telephoneSessionId: "telephone-session-recognition-contextual",
+        transcript: "Yes, I confirm.",
+      }).stt.provider,
     ).toBe("assemblyai");
   });
 

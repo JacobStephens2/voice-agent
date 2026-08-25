@@ -38,6 +38,14 @@ If a required provider parameter is missing from LiveKit Inference later, the co
 - The model exposes `voice_focus="near-field"` for handsets/headsets and `far-field` for laptop/conference audio. This is useful as a benchmark alternative, but should **not** be stacked with LiveKit `BVCTelephony` until measurements show that double processing helps rather than damages speech. [LiveKit AssemblyAI parameters](https://docs.livekit.io/agents/models/stt/assemblyai/)
 - AssemblyAI's current direct list price for Universal-3.5 Pro Realtime is $0.45/hour; keyterm prompting is included, while its own Voice Focus is an additional $0.10/hour. LiveKit lists the base model at the equivalent $0.0075/minute. [AssemblyAI pricing](https://www.assemblyai.com/pricing), [LiveKit pricing](https://livekit.com/pricing)
 
+#### Model-string resolution (2026-08-25, #134)
+
+The installed `@livekit/agents` 1.6.4 STT model union names four AssemblyAI models, two of them this contextual generation — `assemblyai/u3-rt-pro` and `assemblyai/universal-3-5-pro` — and its `AssemblyAIOptions` doc comments mark `agent_context`, `mode`, `voice_focus`, and `voice_focus_threshold` as "Only supported with u3-rt-pro". That comment disagrees with this note, and the disagreement decides which string this system may carry an entry for.
+
+LiveKit's live model documentation settles it in favour of this note: its LiveKit Inference table lists exactly three AssemblyAI model IDs — `assemblyai/universal-3-5-pro`, `assemblyai/universal-streaming`, and `assemblyai/universal-streaming-multilingual` — and attaches `agent_context`, `mode`, and `voice_focus` to Universal-3.5 Pro. `u3-rt-pro` appears only as an accepted option of the direct AssemblyAI *plugin*, which this system does not use; it is not an Inference model ID at all. So `assemblyai/universal-3-5-pro` is the string whose gateway accepts the contextual options, and it is the one the Recognized Speech Model set carries. The framework's doc comment is stale, not a second model. [LiveKit AssemblyAI integration](https://docs.livekit.io/agents/models/stt/assemblyai/)
+
+The same documentation states a maximum of 1750 characters for `agent_context`, while the framework's own option comment states 1500. This system truncates to 1500, the length both accept, and keeps the end of the reply — the question the caller is answering.
+
 Suggested starting behavior, not final tuning:
 
 - English only for slice 1.
