@@ -69,6 +69,33 @@ unit_backup=$(mktemp -d /run/voice-agent-unit-backup.XXXXXX)
 rollback_required=false
 switched=false
 promotion_started=true
+admission_paused=false
+database=/var/lib/voice-agent/voice-agent.sqlite
+
+# The Self-Promotion boundary. Call Admission is a durable row in the Voice
+# Agent's own store, so root reaches it as the unprivileged owner of that store
+# rather than through any new authority. The outgoing Release closes the gate
+# and waits; the incoming Release reopens it, and only after health verification
+# has passed.
+self_promotion_cli() {
+  local release_path=$1
+  shift
+  local cli="$release_path/apps/worker/src/self-promotion-cli.ts"
+  if [[ ! -f $cli ]]; then return 2; fi
+  runuser --user voice-agent -- /usr/bin/node --experimental-strip-types \
+    "$cli" "$@" 8>&- 9>&-
+}
+
+reopen_call_admission() {
+  local release_path=$1
+  if [[ $admission_paused == false ]]; then return 0; fi
+  if self_promotion_cli "$release_path" reopen "$database"; then
+    admission_paused=false
+  else
+    printf 'Call Admission could not be reopened from %s; it stays closed.\n' \
+      "$release_path" >&2
+  fi
+}
 
 restore_unit_definitions() {
   local unit
@@ -107,6 +134,10 @@ rollback_failed_promotion() {
         voice-agent-promotion-resume.service || true
     fi
     "$script_directory/deployment-health.sh"
+    # A healthy runtime has now been confirmed, so the callers refused during
+    # the switch may come back. A restored Release that cannot be confirmed
+    # leaves the gate closed: the health check above exits non-zero first.
+    reopen_call_admission "$previous"
     printf 'Restored previous release %s and its service definitions.\n' \
       "$(basename "$previous")" >&2
   elif [[ $switched == true ]]; then
@@ -114,6 +145,10 @@ rollback_failed_promotion() {
     systemctl stop "${installation_units[@]}" || true
     printf 'No previous release existed; stopped the failed first installation.\n' >&2
   fi
+}
+
+abandon_before_switch() {
+  reopen_call_admission "$previous"
 }
 
 cleanup() {
@@ -144,6 +179,26 @@ trap cleanup EXIT
 
 "$script_directory/candidate-preflight.sh" "$release"
 
+# The immutable Release exists and has passed preflight before anything about
+# the running system changes, so a live call is never waited out behind a build
+# that might have failed anyway.
+if [[ -n $previous && -f "$previous/apps/worker/src/self-promotion-cli.ts" ]]; then
+  if ! self_promotion_cli "$previous" pause "$database" "$commit" \
+    "promotion:$commit"; then
+    printf 'Call Admission could not be closed for Self-Promotion of %s.\n' \
+      "$commit" >&2
+    exit 1
+  fi
+  admission_paused=true
+  if ! self_promotion_cli "$previous" await-safe-point "$database" \
+    "${VOICE_AGENT_SAFE_POINT_OBSERVATIONS:-900}"; then
+    printf 'Promotion Safe Point was not reached for %s; the prior Release stays active.\n' \
+      "$commit" >&2
+    abandon_before_switch
+    exit 1
+  fi
+fi
+
 for unit in "${unit_definitions[@]}"; do
   if [[ -f "/etc/systemd/system/$unit" ]]; then
     cp -p "/etc/systemd/system/$unit" "$unit_backup/$unit"
@@ -156,7 +211,6 @@ for unit in "${unit_definitions[@]}"; do
 done
 systemctl daemon-reload
 
-database=/var/lib/voice-agent/voice-agent.sqlite
 backup=/var/lib/voice-agent/migration-backups/pre-"$commit".sqlite
 if [[ -f $database && ! -f $backup ]]; then
   if [[ -n $previous && \
@@ -198,6 +252,13 @@ if [[ $healthy == true ]]; then
   "$script_directory/deployment-health.sh"
   systemctl enable "${enabled_units[@]}"
   rollback_required=false
+  # Confirmed healthy, so the switched Release readmits Telephone Sessions.
+  reopen_call_admission "$release"
+  if [[ $admission_paused == true ]]; then
+    printf 'Release %s is healthy but Call Admission stays closed.\n' \
+      "$commit" >&2
+    exit 1
+  fi
   printf 'Promoted Voice Agent release %s.\n' "$commit"
   exit 0
 fi

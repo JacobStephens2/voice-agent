@@ -45,7 +45,8 @@ Neither service control, metrics, SQLite, nor the broker has a public port.
 Prometheus scrapes `/metrics` directly on the API's localhost-only port. Those
 metrics cover Durable Tasks, Operations, Callback Handshake outcomes and
 attempts, Telephone Sessions, bounded speech-stage/provider timing and failures,
-policy decisions, Silent Notifications, spending, the latest bounded Bountywell
+policy decisions, Silent Notifications, spending, whether a Self-Promotion
+currently holds Call Admission closed, the latest bounded Bountywell
 checks, explicit Voice Agent and Bountywell API probes, SQLite bytes/free-disk
 capacity, and Promotion/circuit-breaker state; Apache does not proxy the
 endpoint. A restricted timer refreshes probe metrics every 30 seconds, and the
@@ -265,6 +266,63 @@ credential source. The pinned helper mints short-lived installation tokens for
 the fixed HTTPS remote; the systemd resume service receives the PEM only through
 `LoadCredential=`. The App must have read-only Contents access and be installed
 only on `JacobStephens2/voice-agent`.
+
+## Self-Promotion safe point
+
+Promoting the Voice Agent's own code replaces the runtime doing the promoting,
+so `promote-release.sh` does not restart the services out from under whoever is
+on the phone. Once the immutable Release exists and its preflight has passed —
+and not before, so a live call is never waited out behind a build that might
+have failed anyway — the promoter closes **Call Admission** and waits for a
+**Promotion Safe Point**.
+
+Call Admission is one durable row in the Voice Agent's own SQLite store, read
+inside the same transaction that reserves a Telephone Session. That is the
+single gate every entry path already passes through, so an inbound Callback
+Handshake, a Completion Callback, and an authenticated resumption all report
+temporary unavailability through the bounded behavior they already have for a
+refused reservation. Nothing new is spoken, and no new failure mode appears.
+It is durable rather than in-process because the process that closes it is the
+one about to restart.
+
+The safe point is reached when no Telephone Session is active and no
+non-interruptible Operation is unsettled. The non-interruptible kinds are the
+ones that mutate Agent Host state — `bountywell.service.restart`,
+`bountywell.service.stop`, `bountywell.recovery-timer.arm`, and
+`bountywell.recovery-timer.remove` — and their declared safe boundary is their
+own settlement. Every other Operation is read-only or idempotent under its own
+durable identity and is carried across the switch for the new runtime to finish.
+
+Waiting is the only instrument. A live call is allowed to end naturally or reach
+an explicit safe handoff; it is never ended to deploy sooner. The promoter
+observes once a second up to `VOICE_AGENT_SAFE_POINT_OBSERVATIONS` (900 by
+default, about fifteen minutes). Exceeding that bound abandons the attempt with
+the prior Release still active and reopens admission, rather than taking the
+call away.
+
+Admission reopens only once a healthy runtime is confirmed: the switched Release
+after its health verification passes, or the restored Release after a rollback
+verifies. If neither can be confirmed the gate stays closed, and callers keep
+meeting the bounded refusal instead of reaching a runtime nobody has verified.
+Read the gate directly when diagnosing a host that is refusing calls:
+
+```bash
+sudo -u voice-agent /usr/bin/node --experimental-strip-types \
+  /opt/voice-agent/current/apps/worker/src/self-promotion-cli.ts \
+  observe /var/lib/voice-agent/voice-agent.sqlite
+```
+
+The same program takes `pause`, `await-safe-point`, and `reopen`. It runs as the
+unprivileged owner of the durable store, so reopening a gate a failed Promotion
+left closed needs no deployment authority — but read the Promotion evidence
+first, because a closed gate after a failed attempt is usually reporting that no
+Release was ever confirmed healthy.
+
+The Promotion Evidence Record carries the merge provenance, the safe-point
+decision and how many observations it took, the disposition of active work
+(including that zero Telephone Sessions were ended for the Promotion), the
+Release, both the contract health reading and the Self-Promotion's own runtime
+checks, any rollback, and the final admission state.
 
 To deliberately return to a retained prior release:
 

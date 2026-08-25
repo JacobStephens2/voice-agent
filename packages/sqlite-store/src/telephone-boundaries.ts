@@ -14,6 +14,8 @@ import type {
   TelephoneUsageSource,
 } from "@voice-agent/durable-store";
 
+import { ensureCallAdmissionSchema } from "./self-promotion.ts";
+
 interface CountRow {
   readonly value: number;
 }
@@ -45,6 +47,7 @@ export function createSqliteTelephoneBoundaryStore(
   database.pragma("foreign_keys = ON");
   database.pragma("journal_mode = WAL");
   createSchema(database);
+  ensureCallAdmissionSchema(database);
 
   const incrementDecision = database.prepare(`
     INSERT INTO telephone_boundary_counters (name, value)
@@ -310,12 +313,25 @@ export function createSqliteTelephoneBoundaryStore(
   const readCounter = database.prepare<[name: string], CountRow>(`
     SELECT value FROM telephone_boundary_counters WHERE name = ?
   `);
+  const readCallAdmission = database.prepare<
+    [],
+    { readonly state: "open" | "paused" }
+  >("SELECT state FROM call_admission WHERE id = 1");
 
   const reserveWarm = database.transaction(
     (input: { readonly reservedAt: string; readonly sessionId: string }) => {
       const existing = findSession.get(input.sessionId);
       if (existing?.state === "warm") {
         return accepted("warm-session");
+      }
+      // A Self-Promotion holds Call Admission closed. Refusing here rather than
+      // at each entry point means every path that could start a Telephone
+      // Session — inbound callback placement, Completion Callback, and
+      // authenticated resumption — reports temporary unavailability through the
+      // bounded behavior it already has for a refused reservation.
+      if (readCallAdmission.get()?.state === "paused") {
+        incrementDecision.run("rejected");
+        return rejected("call-admission", "call-admission-paused");
       }
       if (existing?.state === "active") {
         incrementDecision.run("rejected");
@@ -680,6 +696,8 @@ export function createSqliteTelephoneBoundaryStore(
         },
         resources: {
           activeSessions: countSessions.get("active")?.value ?? 0,
+          callAdmissionPaused:
+            readCallAdmission.get()?.state === "paused" ? 1 : 0,
           queuedStateChangingTasks:
             database
               .prepare<[], CountRow>(`
@@ -805,9 +823,15 @@ function queued(
 }
 
 function rejected(
-  resource: "active-session" | "monthly-spend" | "subagent" | "warm-session",
+  resource:
+    | "active-session"
+    | "call-admission"
+    | "monthly-spend"
+    | "subagent"
+    | "warm-session",
   reason:
     | "active-session-limit"
+    | "call-admission-paused"
     | "duplicate-delegation"
     | "spending-ceiling"
     | "warm-session-limit",

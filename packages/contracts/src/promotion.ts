@@ -1,5 +1,11 @@
 import { z } from "zod";
 
+import {
+  callAdmissionStateSchema,
+  safePointDispositionSchema,
+  selfPromotionVerificationSchema,
+} from "./self-promotion.ts";
+
 const promotionIdentifierSchema = z.string().min(1).max(200);
 const promotionTextSchema = z.string().min(1).max(500);
 const promotionPathSchema = z.string().min(1).max(500).startsWith("/");
@@ -94,6 +100,8 @@ export const promotionEvidenceEventProjectionSchema = z
     details: promotionEvidenceDetailsSchema,
     id: promotionIdentifierSchema,
     kind: z.enum([
+      "admission.paused",
+      "admission.reopened",
       "circuit.changed",
       "delivery.denied",
       "delivery.duplicate",
@@ -106,6 +114,8 @@ export const promotionEvidenceEventProjectionSchema = z
       "release.rolled-back",
       "release.switched",
       "release.verified",
+      "safe-point.reached",
+      "work.disposed",
     ]),
     occurredAt: promotionTimestampSchema,
     sequence: z.number().int().positive(),
@@ -156,6 +166,19 @@ export const promotionEvidenceRecordProjectionSchema = z
     evidence: z.array(promotionEvidenceEventProjectionSchema).max(100),
     promotion: z
       .object({
+        /**
+         * Where a Self-Promotion left Call Admission. Absent for an application
+         * whose Promotion never touches the runtime performing it.
+         */
+        admission: z
+          .object({
+            reopenedAfter: z
+              .enum(["rollback-verified", "verified"])
+              .optional(),
+            state: callAdmissionStateSchema,
+          })
+          .strict()
+          .optional(),
         attempt: z
           .object({
             id: promotionIdentifierSchema,
@@ -183,6 +206,10 @@ export const promotionEvidenceRecordProjectionSchema = z
         merge: promotionMergeProjectionSchema,
         release: promotionReleaseProjectionSchema.optional(),
         rollback: promotionRollbackProjectionSchema,
+        /** How a Self-Promotion reached its Promotion Safe Point. */
+        safePoint: safePointDispositionSchema.optional(),
+        /** The runtime readings a Self-Promotion takes after switching. */
+        selfVerification: selfPromotionVerificationSchema.optional(),
         verification: promotionVerificationProjectionSchema.optional(),
       })
       .strict(),
@@ -208,6 +235,7 @@ export const promotionOperationProjectionSchema = z
       "release.build",
       "release.preflight",
       "release.rollback",
+      "release.safe-point",
       "release.switch",
       "release.verify",
     ]),

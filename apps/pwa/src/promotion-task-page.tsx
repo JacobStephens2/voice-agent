@@ -4,6 +4,8 @@ const eventLabels: Record<
   PromotionEvidenceRecordProjection["evidence"][number]["kind"],
   string
 > = {
+  "admission.paused": "Call Admission paused",
+  "admission.reopened": "Call Admission reopened",
   "circuit.changed": "Circuit state changed",
   "delivery.denied": "Delivery denied",
   "delivery.duplicate": "Duplicate delivery ignored",
@@ -16,6 +18,8 @@ const eventLabels: Record<
   "release.rolled-back": "Prior Release restored",
   "release.switched": "Release switched",
   "release.verified": "Release verified",
+  "safe-point.reached": "Promotion Safe Point reached",
+  "work.disposed": "Active work disposition recorded",
 };
 
 export function PromotionTaskPage({

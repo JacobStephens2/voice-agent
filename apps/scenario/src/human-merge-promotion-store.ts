@@ -1,14 +1,18 @@
 import Database from "better-sqlite3";
 
 import type {
+  CallAdmissionState,
   FixtureCodebaseRegistration,
   FixtureDeploymentContract,
   FixtureGitHubEvent,
   PromotionOperationProjection,
   PromotionEvidenceEventProjection,
   PromotionEvidenceRecordProjection,
+  SafePointDisposition,
+  SelfPromotionVerification,
 } from "@voice-agent/contracts";
 import {
+  callAdmissionStateSchema,
   fixtureCodebaseRegistrationSchema,
   fixtureDeploymentContractSchema,
   promotionEvidenceDetailsSchema,
@@ -18,6 +22,8 @@ import {
   promotionReleaseProjectionSchema,
   promotionRollbackProjectionSchema,
   promotionVerificationProjectionSchema,
+  safePointDispositionSchema,
+  selfPromotionVerificationSchema,
 } from "@voice-agent/contracts";
 
 export const fixtureApplicationId = "fixture-production" as const;
@@ -55,6 +61,32 @@ export const fixturePromotionCodebase: PromotionCodebase = {
   sourceCheckoutRoot: "/fixture/source",
 };
 
+/**
+ * The Voice Agent's own Registered Codebase. It is enrolled through the same
+ * Promotion model as every other application; what differs is that its
+ * Promotion replaces the runtime performing it, which is what the Promotion
+ * Safe Point exists for.
+ */
+export const voiceAgentApplicationId = "voice-agent" as const;
+export const voiceAgentRepository = "JacobStephens2/voice-agent" as const;
+export const voiceAgentInitialProductionCommit =
+  "3131313131313131313131313131313131313131" as const;
+
+export const voiceAgentPromotionCodebase: PromotionCodebase = {
+  applicationId: voiceAgentApplicationId,
+  buildCommand: "pnpm install --frozen-lockfile && pnpm build",
+  // The API's localhost-only readiness probe, which is the same reading the
+  // pinned deployment-health check makes.
+  health: { expectedStatus: 200, path: "/healthz" },
+  initialProductionCommit: voiceAgentInitialProductionCommit,
+  liveCheckoutPath: "/opt/voice-agent/current",
+  preflightCommand: "/usr/local/libexec/voice-agent/candidate-preflight.sh",
+  productionBranch: "main",
+  releaseRoot: "/opt/voice-agent/releases",
+  repository: voiceAgentRepository,
+  sourceCheckoutRoot: "/var/lib/voice-agent-source",
+};
+
 interface RecordRow {
   readonly circuit_state: "closed" | "half-open" | "open";
   readonly conclusion: string;
@@ -72,6 +104,7 @@ interface RecordRow {
 
 interface AttemptRow {
   readonly accepted_sequence: number;
+  readonly admission_json: string | null;
   readonly contract_json: string;
   readonly id: string;
   readonly merge_commit: string;
@@ -80,6 +113,8 @@ interface AttemptRow {
   readonly record_id: string;
   readonly release_json: string | null;
   readonly rollback_json: string;
+  readonly safe_point_json: string | null;
+  readonly self_verification_json: string | null;
   readonly status: "queued" | "rolled-back" | "running" | "succeeded";
   readonly verification_json: string | null;
 }
@@ -144,9 +179,15 @@ export interface PromotionStore {
     readonly release: NonNullable<
       PromotionEvidenceRecordProjection["promotion"]["release"]
     >;
-    readonly verification: NonNullable<
-      PromotionEvidenceRecordProjection["promotion"]["verification"]
-    >;
+    /**
+     * False when the attempt never reached the atomic switch, so there was
+     * nothing to restore: the prior Release stayed active throughout.
+     */
+    readonly rollbackPerformed?: boolean;
+    /** Absent when the attempt failed before any verification reading. */
+    readonly verification?:
+      | NonNullable<PromotionEvidenceRecordProjection["promotion"]["verification"]>
+      | undefined;
   }): PromotionEvidenceRecordProjection;
   findActiveContract(): FixtureDeploymentContract;
   findRecord(taskId: string): PromotionEvidenceRecordProjection | undefined;
@@ -163,6 +204,21 @@ export interface PromotionStore {
       PromotionEvidenceRecordProjection["promotion"]["release"]
     >;
   }): PromotionOperationProjection;
+  /**
+   * Record what a Self-Promotion did to the runtime it was replacing: where it
+   * left Call Admission, how it reached its Promotion Safe Point, and the
+   * post-switch readings it took. These are written before the attempt settles
+   * so a failed attempt keeps them too.
+   */
+  recordSelfPromotion(input: {
+    readonly admission?: {
+      readonly reopenedAfter?: "rollback-verified" | "verified";
+      readonly state: CallAdmissionState;
+    };
+    readonly attemptId: string;
+    readonly safePoint?: SafePointDisposition;
+    readonly selfVerification?: SelfPromotionVerification;
+  }): void;
   persistAccepted(input: {
     readonly attemptId: string;
     readonly contract: FixtureDeploymentContract;
@@ -269,7 +325,8 @@ export function createPromotionStore(
       .prepare(`
         SELECT id, record_id, merge_commit, accepted_sequence, queue_sequence, status,
           contract_json, release_json, verification_json, rollback_json,
-          previous_release_json
+          previous_release_json, admission_json, safe_point_json,
+          self_verification_json
         FROM promotion_attempts
         WHERE record_id = ?
       `)
@@ -281,7 +338,8 @@ export function createPromotionStore(
       .prepare(`
         SELECT id, record_id, merge_commit, accepted_sequence, queue_sequence, status,
           contract_json, release_json, verification_json, rollback_json,
-          previous_release_json
+          previous_release_json, admission_json, safe_point_json,
+          self_verification_json
         FROM promotion_attempts
         WHERE id = ?
       `)
@@ -301,6 +359,9 @@ export function createPromotionStore(
           promotion_attempts.verification_json,
           promotion_attempts.rollback_json,
           promotion_attempts.previous_release_json,
+          promotion_attempts.admission_json,
+          promotion_attempts.safe_point_json,
+          promotion_attempts.self_verification_json,
           promotion_records.merge_json
         FROM promotion_attempts
         JOIN promotion_records
@@ -351,6 +412,25 @@ export function createPromotionStore(
       attempt?.rollback_json ?? row.rollback_json,
       promotionRollbackProjectionSchema,
     );
+    const admission =
+      attempt?.admission_json === null || attempt?.admission_json === undefined
+        ? undefined
+        : (JSON.parse(attempt.admission_json) as {
+            readonly reopenedAfter?: "rollback-verified" | "verified";
+            readonly state: CallAdmissionState;
+          });
+    const safePoint =
+      attempt?.safe_point_json === null || attempt?.safe_point_json === undefined
+        ? undefined
+        : parseStored(attempt.safe_point_json, safePointDispositionSchema);
+    const selfVerification =
+      attempt?.self_verification_json === null ||
+      attempt?.self_verification_json === undefined
+        ? undefined
+        : parseStored(
+            attempt.self_verification_json,
+            selfPromotionVerificationSchema,
+          );
     return promotionEvidenceRecordProjectionSchema.parse({
       evidence: evidence.map((event) => ({
         details: parseStored(
@@ -364,6 +444,16 @@ export function createPromotionStore(
         summary: event.summary,
       })),
       promotion: {
+        ...(admission === undefined
+          ? {}
+          : {
+              admission: {
+                ...(admission.reopenedAfter === undefined
+                  ? {}
+                  : { reopenedAfter: admission.reopenedAfter }),
+                state: callAdmissionStateSchema.parse(admission.state),
+              },
+            }),
         ...(attempt === undefined
           ? {}
           : {
@@ -391,6 +481,8 @@ export function createPromotionStore(
         merge,
         ...(release === undefined ? {} : { release }),
         rollback,
+        ...(safePoint === undefined ? {} : { safePoint }),
+        ...(selfVerification === undefined ? {} : { selfVerification }),
         ...(verification === undefined ? {} : { verification }),
       },
       task: {
@@ -998,9 +1090,12 @@ export function createPromotionStore(
       readonly release: NonNullable<
         PromotionEvidenceRecordProjection["promotion"]["release"]
       >;
-      readonly verification: NonNullable<
-        PromotionEvidenceRecordProjection["promotion"]["verification"]
-      >;
+      readonly rollbackPerformed?: boolean;
+      readonly verification?:
+        | NonNullable<
+            PromotionEvidenceRecordProjection["promotion"]["verification"]
+          >
+        | undefined;
     }): PromotionEvidenceRecordProjection => {
       const attempt = findAttempt(input.attemptId);
       const applicationState = readApplicationState();
@@ -1020,10 +1115,11 @@ export function createPromotionStore(
               attempt.previous_release_json,
               promotionReleaseProjectionSchema,
             );
+      const rollbackPerformed = input.rollbackPerformed !== false;
       const rollback: PromotionEvidenceRecordProjection["promotion"]["rollback"] = {
         attemptedReleaseId: input.release.id,
-        performed: true,
-        ...(restoredRelease === undefined
+        performed: rollbackPerformed,
+        ...(restoredRelease === undefined || !rollbackPerformed
           ? {}
           : { restoredReleaseId: restoredRelease.id }),
       };
@@ -1036,7 +1132,9 @@ export function createPromotionStore(
         `)
         .run(
           JSON.stringify(input.release),
-          JSON.stringify(input.verification),
+          input.verification === undefined
+            ? null
+            : JSON.stringify(input.verification),
           JSON.stringify(rollback),
           input.attemptId,
         );
@@ -1232,6 +1330,37 @@ export function createPromotionStore(
     hasDelivery,
     inspect,
     performOperation,
+    recordSelfPromotion(input) {
+      if (input.admission !== undefined) {
+        database
+          .prepare(
+            "UPDATE promotion_attempts SET admission_json = ? WHERE id = ?",
+          )
+          .run(JSON.stringify(input.admission), input.attemptId);
+      }
+      if (input.safePoint !== undefined) {
+        database
+          .prepare(
+            "UPDATE promotion_attempts SET safe_point_json = ? WHERE id = ?",
+          )
+          .run(
+            JSON.stringify(safePointDispositionSchema.parse(input.safePoint)),
+            input.attemptId,
+          );
+      }
+      if (input.selfVerification !== undefined) {
+        database
+          .prepare(
+            "UPDATE promotion_attempts SET self_verification_json = ? WHERE id = ?",
+          )
+          .run(
+            JSON.stringify(
+              selfPromotionVerificationSchema.parse(input.selfVerification),
+            ),
+            input.attemptId,
+          );
+      }
+    },
     persistAccepted(input) {
       return persistAcceptedTransaction.immediate(input);
     },
@@ -1369,6 +1498,9 @@ function createPromotionSchema(database: Database.Database): void {
       verification_json TEXT,
       rollback_json TEXT NOT NULL,
       previous_release_json TEXT,
+      admission_json TEXT,
+      safe_point_json TEXT,
+      self_verification_json TEXT,
       UNIQUE (application_id, merge_commit)
     );
 
