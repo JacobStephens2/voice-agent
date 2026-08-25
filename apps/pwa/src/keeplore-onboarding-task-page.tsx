@@ -1,22 +1,6 @@
 import type { KeeploreOnboardingEvidenceRecordProjection } from "@voice-agent/contracts";
 
-const eventLabels: Record<
-  KeeploreOnboardingEvidenceRecordProjection["evidence"][number]["kind"],
-  string
-> = {
-  "circuit.changed": "Circuit state changed",
-  "delivery.denied": "Delivery denied",
-  "delivery.duplicate": "Duplicate delivery ignored",
-  "merge.accepted": "Human Merge accepted",
-  "promotion.queued": "Promotion Attempt queued",
-  "promotion.reordered": "Promotion Attempt reordered",
-  "reconciliation.discovered": "Missed Human Merge discovered",
-  "release.built": "Release built",
-  "release.preflighted": "Preflight completed",
-  "release.rolled-back": "Prior Release restored",
-  "release.switched": "Release switched",
-  "release.verified": "Release verified",
-};
+import { promotionEventLabels } from "./promotion-event-labels.ts";
 
 function assessmentSummary(
   label: string,
@@ -127,7 +111,7 @@ export function KeeploreOnboardingTaskPage({
           {record.evidence.map((event) => (
             <li key={event.id}>
               <div className="event-heading">
-                <h3>{eventLabels[event.kind]}</h3>
+                <h3>{promotionEventLabels[event.kind]}</h3>
                 <time dateTime={event.occurredAt}>{event.occurredAt}</time>
               </div>
               <p>{event.summary}</p>

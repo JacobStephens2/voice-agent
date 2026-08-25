@@ -98,6 +98,7 @@ describe("Telephone fail-closed boundaries", () => {
       });
       expect(metrics.resources).toEqual({
         activeSessions: 1,
+        callAdmissionPaused: 0,
         queuedStateChangingTasks: 0,
         queuedSubagents: 0,
         runningSubagents: 0,

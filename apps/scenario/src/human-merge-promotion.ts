@@ -1,13 +1,20 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import type {
+  CallAdmissionRecord,
   FixtureCodebaseRegistration,
   FixtureDeploymentContract,
   FixtureGitHubEvent,
   PromotionOperationProjection,
   PromotionEvidenceRecordProjection,
+  SelfPromotionVerification,
+  SelfPromotionVerificationCheck,
 } from "@voice-agent/contracts";
-import { fixtureDeploymentContractSchema } from "@voice-agent/contracts";
+import {
+  fixtureDeploymentContractSchema,
+  selfPromotionVerificationChecks,
+} from "@voice-agent/contracts";
+import { createSelfPromotionRuntime } from "@voice-agent/runtime";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import { renderEvidenceRecordPage } from "@voice-agent/pwa/server";
 import {
@@ -16,6 +23,10 @@ import {
   type PromotionCodebase,
   type PromotionStoreInspection,
 } from "./human-merge-promotion-store.ts";
+import {
+  createSelfPromotionWorld,
+  type SelfPromotionWorld,
+} from "./self-promotion-world.ts";
 
 export type { FixtureGitHubEvent } from "@voice-agent/contracts";
 
@@ -39,7 +50,34 @@ export interface HumanMergePromotionScenarioOptions {
     | undefined;
   /** Seed Deployment Contract revision 1 from the codebase descriptor. */
   readonly seedDeploymentContract?: boolean | undefined;
+  /**
+   * Promote into the runtime performing the Promotion. Present only for the
+   * Voice Agent's own Registered Codebase.
+   */
+  readonly selfPromotion?: SelfPromotionScenarioOptions | undefined;
   readonly webhookSecret: string;
+}
+
+export interface SelfPromotionScenarioOptions {
+  /**
+   * Readings a commit's Release fails after the switch, by check. Each is an
+   * independent reading of the switched runtime, so a Release whose health path
+   * answers can still be refused by, say, a durable store it cannot read.
+   */
+  readonly failedChecksByCommit?:
+    | Readonly<Record<string, readonly SelfPromotionVerificationCheck[]>>
+    | undefined;
+  /**
+   * Overrides the safe-point bound the Deployment Contract declares, so a
+   * scenario need not spend the enrolled number of observations.
+   */
+  readonly maximumSafePointObservations?: number | undefined;
+  /**
+   * Invoked between safe-point observations, in place of waiting on a clock. A
+   * scenario advances its world here — ending a call, settling an Operation —
+   * so the Promotion observes exactly what the Agent Host would.
+   */
+  readonly onSafePointWait?: (() => Promise<void>) | undefined;
 }
 
 export interface PromotionDeliveryResult {
@@ -50,6 +88,12 @@ export interface PromotionDeliveryResult {
 export type HumanMergePromotionInspection = PromotionStoreInspection;
 
 export interface HumanMergePromotionScenario {
+  /**
+   * The live runtime a Self-Promotion waits for. Absent unless the scenario
+   * promotes the Voice Agent's own Registered Codebase.
+   */
+  readonly world?: SelfPromotionWorld;
+  readCallAdmission(): Promise<CallAdmissionRecord | undefined>;
   activateContract(input: {
     readonly buildCommand: string;
     readonly health: FixtureDeploymentContract["health"];
@@ -101,6 +145,26 @@ export async function createHumanMergePromotionScenario(
     },
   });
   let processLossAfterOperation = options.processLossAfterOperation;
+  const selfPromotionOptions = options.selfPromotion;
+  const world =
+    selfPromotionOptions === undefined
+      ? undefined
+      : createSelfPromotionWorld({
+          databasePath: options.databasePath,
+          now: () => options.now,
+        });
+  const selfPromotion =
+    world === undefined
+      ? undefined
+      : createSelfPromotionRuntime({
+          // A scenario advances its own world between observations instead of
+          // spending wall-clock time.
+          delay: async () => {
+            await selfPromotionOptions?.onSafePointWait?.();
+          },
+          now: () => options.now,
+          store: world.store,
+        });
 
   function nextId(label: string): string {
     const id = ids.shift();
@@ -141,6 +205,7 @@ export async function createHumanMergePromotionScenario(
     },
     async close() {
       await api.close();
+      await world?.close();
       store.close();
     },
     async deliver(input) {
@@ -206,6 +271,10 @@ export async function createHumanMergePromotionScenario(
     async getActiveContract() {
       return store.findActiveContract();
     },
+    async readCallAdmission() {
+      return world?.readCallAdmission();
+    },
+    ...(world === undefined ? {} : { world }),
     async getRecord(taskId) {
       return store.findRecord(taskId);
     },
@@ -268,6 +337,108 @@ export async function createHumanMergePromotionScenario(
         { command: contract.preflightCommand, outcome: "passed" },
       );
 
+      // The Release exists and has passed preflight before anything about the
+      // running system changes. Only now does a Self-Promotion begin closing
+      // Call Admission, so a wait for a live call never happens behind a build
+      // that might have failed anyway.
+      let safePointDeadlineExceeded = false;
+      if (selfPromotion !== undefined) {
+        await selfPromotion.pauseCallAdmission({
+          commit: attempt.merge_commit,
+          promotionId: attempt.id,
+        });
+        store.recordSelfPromotion({
+          admission: { state: "paused" },
+          attemptId: attempt.id,
+        });
+        store.appendEvidence(
+          attempt.record_id,
+          `${attempt.id}:admission-paused`,
+          "admission.paused",
+          options.now,
+          "Call Admission closed for Self-Promotion; new Telephone Sessions are refused.",
+          { commit: attempt.merge_commit, reason: "self-promotion" },
+        );
+        // The enrolled contract declares the bound; a scenario may shorten it.
+        const maximumObservations =
+          selfPromotionOptions?.maximumSafePointObservations ??
+          contract.selfPromotion?.safePointObservations;
+        const safePoint = await selfPromotion.awaitSafePoint({
+          ...(maximumObservations === undefined ? {} : { maximumObservations }),
+        });
+        const resumable = await selfPromotion.readResumableWork();
+        store.recordSelfPromotion({ attemptId: attempt.id, safePoint });
+        store.appendEvidence(
+          attempt.record_id,
+          `${attempt.id}:work-disposed`,
+          "work.disposed",
+          options.now,
+          `Active work at the safe point: ${safePoint.activeTelephoneSessionsAtRequest} Telephone Session(s) allowed to end, ${safePoint.warmTelephoneSessionsAtRequest} reserved session(s) allowed to clear, ${safePoint.nonInterruptibleOperationsAtRequest} non-interruptible Operation(s) allowed to settle, ${resumable.length} resumable Operation(s) carried across the switch.`,
+          {
+            activeTelephoneSessions: safePoint.activeTelephoneSessionsAtRequest,
+            endedForPromotion: safePoint.endedForPromotion,
+            nonInterruptibleOperations:
+              safePoint.nonInterruptibleOperationsAtRequest,
+            resumableOperations: resumable.length,
+            warmTelephoneSessions: safePoint.warmTelephoneSessionsAtRequest,
+          },
+        );
+        const safePointOperation = store.performOperation({
+          actualHealthStatus,
+          attempt,
+          contract,
+          kind: "release.safe-point",
+          release,
+        });
+        simulateProcessLossAfterOperation(safePointOperation.kind);
+        store.appendEvidence(
+          attempt.record_id,
+          `${safePointOperation.operationId}:evidence`,
+          "safe-point.reached",
+          options.now,
+          `Promotion Safe Point ${safePoint.disposition} after ${safePoint.observations} observation(s).`,
+          {
+            disposition: safePoint.disposition,
+            observations: safePoint.observations,
+          },
+        );
+        safePointDeadlineExceeded = safePoint.disposition === "deadline-exceeded";
+      }
+      if (safePointDeadlineExceeded && selfPromotion !== undefined) {
+        // Nothing switched, so the prior Release is still the active one and
+        // there was never anything to restore. It still has to be confirmed
+        // healthy in its own right before the gate reopens — "untouched" is not
+        // the same reading as "healthy".
+        const active = store.findActiveRelease();
+        const activeHealthy =
+          active !== undefined &&
+          (options.healthStatusByCommit?.[active.commit] ??
+            contract.health.expectedStatus) === contract.health.expectedStatus;
+        if (activeHealthy) {
+          await selfPromotion.reopenCallAdmission();
+          store.recordSelfPromotion({
+            admission: {
+              reopenedAfter: "abandoned-before-switch",
+              state: "open",
+            },
+            attemptId: attempt.id,
+          });
+          store.appendEvidence(
+            attempt.record_id,
+            `${attempt.id}:admission-reopened`,
+            "admission.reopened",
+            options.now,
+            `Call Admission reopened against unchanged Release ${active.id}; the Promotion never switched.`,
+            { reopenedAfter: "abandoned-before-switch" },
+          );
+        }
+        return store.completeUnhealthy({
+          attemptId: attempt.id,
+          now: options.now,
+          release,
+          rollbackPerformed: false,
+        });
+      }
       const switched = store.performOperation({
         actualHealthStatus,
         attempt,
@@ -315,7 +486,70 @@ export async function createHumanMergePromotionScenario(
           path: verification.path,
         },
       );
-      if (verification.outcome !== "healthy") {
+      // A Self-Promotion reads more than the contract's health path: the
+      // switch replaced the runtime taking the reading, so it also proves the
+      // services restarted, the worker is ready, the new Release can read the
+      // durable store the old one wrote, and this attempt still owns the
+      // closed admission gate it is about to reopen.
+      let selfVerification: SelfPromotionVerification | undefined;
+      if (selfPromotion !== undefined) {
+        const admission = await selfPromotion.readCallAdmission();
+        const healthy = verification.outcome === "healthy";
+        const active = store.findActiveRelease();
+        const failed =
+          selfPromotionOptions?.failedChecksByCommit?.[attempt.merge_commit] ??
+          [];
+        const passes = (
+          check: SelfPromotionVerificationCheck,
+          reading: boolean,
+        ) => reading && !failed.includes(check);
+        const outcomes: Readonly<
+          Record<SelfPromotionVerificationCheck, boolean>
+        > = {
+          "api-health": passes("api-health", healthy),
+          "atomic-switch": passes("atomic-switch", active?.id === release.id),
+          // The gate is still held by this Promotion Attempt, so reopening it
+          // readmits Telephone Sessions against the Release just verified.
+          "call-admission": passes(
+            "call-admission",
+            admission.state === "paused" &&
+              admission.promotionId === attempt.id,
+          ),
+          "durable-store-compatibility": passes(
+            "durable-store-compatibility",
+            true,
+          ),
+          "public-health": passes("public-health", healthy),
+          "service-restart": passes("service-restart", healthy),
+          "worker-readiness": passes("worker-readiness", healthy),
+        };
+        selfVerification = {
+          checks: selfPromotionVerificationChecks.map((check) => ({
+            check,
+            outcome: outcomes[check] ? ("passed" as const) : ("failed" as const),
+          })),
+          outcome: selfPromotionVerificationChecks.every(
+            (check) => outcomes[check],
+          )
+            ? ("healthy" as const)
+            : ("unhealthy" as const),
+        };
+        store.recordSelfPromotion({ attemptId: attempt.id, selfVerification });
+        store.appendEvidence(
+          attempt.record_id,
+          `${attempt.id}:self-verified`,
+          "release.verified",
+          options.now,
+          `Self-Promotion runtime verification was ${selfVerification.outcome}.`,
+          Object.fromEntries(
+            selfVerification.checks.map((check) => [check.check, check.outcome]),
+          ),
+        );
+      }
+      const promotionHealthy =
+        verification.outcome === "healthy" &&
+        (selfVerification === undefined || selfVerification.outcome === "healthy");
+      if (!promotionHealthy) {
         const rollback = store.performOperation({
           actualHealthStatus,
           attempt,
@@ -337,12 +571,52 @@ export async function createHumanMergePromotionScenario(
             restoredReleaseId: rollback.restoredReleaseId ?? null,
           },
         );
+        if (selfPromotion !== undefined) {
+          // Admission reopens only against a runtime confirmed healthy. If the
+          // restored Release cannot be confirmed either, the gate stays closed
+          // rather than readmitting callers to a runtime nobody has verified.
+          const restored = store.findPreviousRelease(attempt.id);
+          const restoredHealthy =
+            restored !== undefined &&
+            (options.healthStatusByCommit?.[restored.commit] ??
+              contract.health.expectedStatus) === contract.health.expectedStatus;
+          if (restoredHealthy) {
+            await selfPromotion.reopenCallAdmission();
+            store.recordSelfPromotion({
+              admission: { reopenedAfter: "rollback-verified", state: "open" },
+              attemptId: attempt.id,
+            });
+            store.appendEvidence(
+              attempt.record_id,
+              `${attempt.id}:admission-reopened`,
+              "admission.reopened",
+              options.now,
+              `Call Admission reopened after ${rollback.restoredReleaseId ?? "the prior Release"} was restored and confirmed healthy.`,
+              { reopenedAfter: "rollback-verified" },
+            );
+          }
+        }
         return store.completeUnhealthy({
           attemptId: attempt.id,
           now: options.now,
           release,
           verification,
         });
+      }
+      if (selfPromotion !== undefined) {
+        await selfPromotion.reopenCallAdmission();
+        store.recordSelfPromotion({
+          admission: { reopenedAfter: "verified", state: "open" },
+          attemptId: attempt.id,
+        });
+        store.appendEvidence(
+          attempt.record_id,
+          `${attempt.id}:admission-reopened`,
+          "admission.reopened",
+          options.now,
+          `Call Admission reopened against verified Release ${release.id}.`,
+          { reopenedAfter: "verified" },
+        );
       }
       return store.completeHealthy({
         attemptId: attempt.id,
