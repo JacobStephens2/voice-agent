@@ -284,6 +284,9 @@ note "The Administrative Publisher App cannot merge; pushing the branch or openi
 open_url "$PULL_REQUEST"
 step "Review the branch, single commit, changed path, checks, and screenshots."
 step "Merge it yourself with your own authenticated GitHub account."
+note "Already merged? A Promotion cannot verify a merge already serving. Read"
+note "\"The trial's own merge has already happened\" in"
+note "docs/operations/keeplore-button-trial-promotion.md before continuing."
 pause "Press Enter after the merge completes."
 ask MERGE_COMMIT "40-character merge commit produced by the Human Merge"
 if [[ ! $MERGE_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
@@ -300,6 +303,16 @@ sudo -u voice-agent /usr/bin/node --experimental-strip-types \
 stage "Promote and verify the exact merge commit"
 say "The Promotion builds an immutable Release outside the live checkout, preflights it, switches atomically, then verifies health and appearance."
 note "A failed verification restores the retained Release; nothing here treats that as complete."
+# A Promotion of the Release already serving is a no-op by design, so it
+# captures no baseline and produces no verdict. Say so here rather than letting
+# stage 6 report a mysteriously empty verification.
+if [[ $(sudo readlink -f /opt/keeplore/current 2>/dev/null | xargs -r basename) \
+  == "$MERGE_COMMIT" ]]; then
+  warn "Keeplore already serves $MERGE_COMMIT, so this Promotion would verify nothing."
+  warn "See \"The trial's own merge has already happened\" in"
+  warn "docs/operations/keeplore-button-trial-promotion.md."
+  exit 1
+fi
 PROMOTION_STATUS=0
 sudo "$KEEPLORE_TOOLS/promote-keeplore-main.sh" "$MERGE_COMMIT" || PROMOTION_STATUS=$?
 sudo tail -n 3 "$PROMOTION_JOURNAL" | jq -c '.'
