@@ -217,6 +217,18 @@ _Avoid_: Live checkout, mutable build, branch
 One serial, auditable attempt to make a Release active, including preflight checks, any authorized migration, atomic switching, post-Promotion health verification, and automatic rollback on failure.
 _Avoid_: Deployment job, release build
 
+**Self-Promotion**:
+The Promotion of the Voice Agent's own Registered Codebase by the runtime it replaces, enrolled through the same Fresh Passkey Action, Human Merge, immutable Release, verification, and rollback boundaries as every other application; repository source may propose a Deployment Contract or policy revision but merging it never activates authority, alters credentials, or expands capabilities.
+_Avoid_: Self-update, agent redeploy, self-authorization
+
+**Call Admission**:
+Whether the runtime will accept a new Telephone Session, held in durable state rather than in the process that decides it, so a Self-Promotion's closure survives the restart and reopens only once a healthy runtime has been confirmed; a refused reservation reaches the caller through the bounded behavior each entry path already has.
+_Avoid_: Rate limit, maintenance mode, busy signal
+
+**Promotion Safe Point**:
+The state a Self-Promotion waits for before switching: Call Admission closed, no Telephone Session live or reserved, and every non-interruptible Operation settled at its declared safe boundary, while resumable work is carried across the switch under its own durable identity. It is reached by waiting within the bound the Deployment Contract enrols, never by ending a live call to deploy sooner.
+_Avoid_: Drain timeout, graceful shutdown, quiesce window
+
 **Deployment Circuit Breaker**:
 The per-application guard that pauses automatic Promotion after three consecutive failed Promotion Attempts and permits one half-open recovery attempt after a new Human Merge or authenticated human reset.
 _Avoid_: Deployment failure, manual pause

@@ -69,6 +69,57 @@ unit_backup=$(mktemp -d /run/voice-agent-unit-backup.XXXXXX)
 rollback_required=false
 switched=false
 promotion_started=true
+admission_paused=false
+database=/var/lib/voice-agent/voice-agent.sqlite
+
+# The Self-Promotion boundary. Call Admission is a durable row in the Voice
+# Agent's own store, so root reaches it as the unprivileged owner of that store
+# rather than through any new authority. The outgoing Release closes the gate
+# and waits; the incoming Release reopens it, and only after health verification
+# has passed.
+self_promotion_cli() {
+  local release_path=$1
+  shift
+  local cli="$release_path/apps/worker/src/self-promotion-cli.ts"
+  if [[ ! -f $cli ]]; then return 2; fi
+  runuser --user voice-agent -- /usr/bin/node --experimental-strip-types \
+    "$cli" "$@" 8>&- 9>&-
+}
+
+# The gate is one row, so any Release carrying the program can open it. Rolling
+# back to a Release predating this boundary would otherwise leave admission
+# closed with nothing on the host able to reopen it, so the Release that closed
+# the gate is the fallback: it carries the program by construction.
+reopen_call_admission() {
+  local release_path
+  if [[ $admission_paused == false ]]; then return 0; fi
+  for release_path in "$@"; do
+    if [[ -n $release_path ]] && \
+      self_promotion_cli "$release_path" reopen "$database"; then
+      admission_paused=false
+      return 0
+    fi
+  done
+  printf 'Call Admission could not be reopened; it stays closed.\n' >&2
+}
+
+# Every exit between closing the gate and the end of the attempt passes through
+# the cleanup trap, including a failure before the switch — a unit-definition
+# install, a daemon-reload, or the migration-backup integrity check. Reopening
+# from one place there, rather than at each success path, is what keeps a failed
+# attempt from leaving the prior, healthy Release serving with every caller
+# refused. The gate still reopens only against a runtime confirmed healthy now,
+# whichever Release that turns out to be.
+confirm_healthy_runtime_and_reopen() {
+  if [[ $admission_paused == false ]]; then return 0; fi
+  if ! "$script_directory/deployment-health.sh" >/dev/null 2>&1; then
+    printf 'No healthy runtime was confirmed; Call Admission stays closed.\n' >&2
+    return 1
+  fi
+  reopen_call_admission "$(readlink -f /opt/voice-agent/current 2>/dev/null)" \
+    "$previous" "$release"
+  [[ $admission_paused == false ]]
+}
 
 restore_unit_definitions() {
   local unit
@@ -116,12 +167,14 @@ rollback_failed_promotion() {
   fi
 }
 
+
 cleanup() {
   local status=$?
   trap - EXIT
   if [[ $rollback_required == true ]]; then
     rollback_failed_promotion || true
   fi
+  if ! confirm_healthy_runtime_and_reopen; then status=1; fi
   if [[ $promotion_started == true ]]; then
     attempt_stage=promotion
     if [[ ${VOICE_AGENT_FRESH_PASSKEY_RESUME:-0} == 1 ]]; then
@@ -144,6 +197,34 @@ trap cleanup EXIT
 
 "$script_directory/candidate-preflight.sh" "$release"
 
+# The immutable Release exists and has passed preflight before anything about
+# the running system changes, so a live call is never waited out behind a build
+# that might have failed anyway.
+if [[ -n $previous ]]; then
+  pause_status=0
+  self_promotion_cli "$previous" pause "$database" "$commit" \
+    "promotion:$commit" || pause_status=$?
+  if [[ $pause_status -eq 2 ]]; then
+    # A prior Release built before this boundary existed carries no program to
+    # close the gate with. Promoting it forward is how the host acquires one.
+    printf 'Prior Release %s predates the Self-Promotion boundary; promoting without it.\n' \
+      "$(basename "$previous")" >&2
+  elif [[ $pause_status -ne 0 ]]; then
+    printf 'Call Admission could not be closed for Self-Promotion of %s.\n' \
+      "$commit" >&2
+    exit 1
+  else
+    admission_paused=true
+    # Unset lets the program's own bound apply, so the number lives in one place.
+    if ! self_promotion_cli "$previous" await-safe-point "$database" \
+      ${VOICE_AGENT_SAFE_POINT_OBSERVATIONS:+"$VOICE_AGENT_SAFE_POINT_OBSERVATIONS"}; then
+      printf 'Promotion Safe Point was not reached for %s; the prior Release stays active.\n' \
+        "$commit" >&2
+      exit 1
+    fi
+  fi
+fi
+
 for unit in "${unit_definitions[@]}"; do
   if [[ -f "/etc/systemd/system/$unit" ]]; then
     cp -p "/etc/systemd/system/$unit" "$unit_backup/$unit"
@@ -156,7 +237,6 @@ for unit in "${unit_definitions[@]}"; do
 done
 systemctl daemon-reload
 
-database=/var/lib/voice-agent/voice-agent.sqlite
 backup=/var/lib/voice-agent/migration-backups/pre-"$commit".sqlite
 if [[ -f $database && ! -f $backup ]]; then
   if [[ -n $previous && \

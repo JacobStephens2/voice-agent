@@ -22,6 +22,8 @@ import {
 } from "@voice-agent/contracts";
 
 export * from "./human-merge-promotion.ts";
+export * from "./human-merge-promotion-store.ts";
+export * from "./self-promotion-world.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";

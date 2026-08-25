@@ -13,6 +13,7 @@ export type {
 
 export type TelephoneBoundaryResource =
   | "active-session"
+  | "call-admission"
   | "monthly-spend"
   | "state-changing-task"
   | "subagent"
@@ -32,11 +33,16 @@ export type TelephoneBoundaryDecision =
       readonly decision: "rejected";
       readonly reason:
         | "active-session-limit"
+        // Call Admission is closed while a Self-Promotion waits for its
+        // Promotion Safe Point, and stays closed across the switch until a
+        // healthy runtime is confirmed.
+        | "call-admission-paused"
         | "duplicate-delegation"
         | "spending-ceiling"
         | "warm-session-limit";
       readonly resource:
         | "active-session"
+        | "call-admission"
         | "monthly-spend"
         | "subagent"
         | "warm-session";
@@ -61,6 +67,8 @@ export interface TelephoneBoundaryMetrics {
   };
   readonly resources: {
     readonly activeSessions: number;
+    /** 1 while a Self-Promotion holds Call Admission closed. */
+    readonly callAdmissionPaused: number;
     readonly queuedStateChangingTasks: number;
     readonly queuedSubagents: number;
     readonly runningSubagents: number;

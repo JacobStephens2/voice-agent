@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  callAdmissionReopenReasonSchema,
+  callAdmissionStateSchema,
+  safePointDispositionSchema,
+  selfPromotionVerificationSchema,
+} from "./self-promotion.ts";
+
 const promotionIdentifierSchema = z.string().min(1).max(200);
 const promotionTextSchema = z.string().min(1).max(500);
 const promotionPathSchema = z.string().min(1).max(500).startsWith("/");
@@ -62,6 +69,16 @@ export const deploymentContractSchema = z
     preflightCommand: promotionTextSchema,
     releaseRoot: promotionPathSchema,
     revision: z.number().int().positive(),
+    /**
+     * The self-Promotion boundary, present only for a codebase whose Promotion
+     * replaces the runtime performing it. It is part of the authenticated
+     * contract rather than the promoter's code, so changing how long a
+     * Promotion may wait for a live call is a Fresh Passkey Action.
+     */
+    selfPromotion: z
+      .object({ safePointObservations: z.number().int().min(1).max(10_000) })
+      .strict()
+      .optional(),
     source: z.literal("voice-agent-policy"),
   })
   .strict();
@@ -94,6 +111,8 @@ export const promotionEvidenceEventProjectionSchema = z
     details: promotionEvidenceDetailsSchema,
     id: promotionIdentifierSchema,
     kind: z.enum([
+      "admission.paused",
+      "admission.reopened",
       "circuit.changed",
       "delivery.denied",
       "delivery.duplicate",
@@ -106,6 +125,8 @@ export const promotionEvidenceEventProjectionSchema = z
       "release.rolled-back",
       "release.switched",
       "release.verified",
+      "safe-point.reached",
+      "work.disposed",
     ]),
     occurredAt: promotionTimestampSchema,
     sequence: z.number().int().positive(),
@@ -156,6 +177,17 @@ export const promotionEvidenceRecordProjectionSchema = z
     evidence: z.array(promotionEvidenceEventProjectionSchema).max(100),
     promotion: z
       .object({
+        /**
+         * Where a Self-Promotion left Call Admission. Absent for an application
+         * whose Promotion never touches the runtime performing it.
+         */
+        admission: z
+          .object({
+            reopenedAfter: callAdmissionReopenReasonSchema.optional(),
+            state: callAdmissionStateSchema,
+          })
+          .strict()
+          .optional(),
         attempt: z
           .object({
             id: promotionIdentifierSchema,
@@ -183,6 +215,10 @@ export const promotionEvidenceRecordProjectionSchema = z
         merge: promotionMergeProjectionSchema,
         release: promotionReleaseProjectionSchema.optional(),
         rollback: promotionRollbackProjectionSchema,
+        /** How a Self-Promotion reached its Promotion Safe Point. */
+        safePoint: safePointDispositionSchema.optional(),
+        /** The runtime readings a Self-Promotion takes after switching. */
+        selfVerification: selfPromotionVerificationSchema.optional(),
         verification: promotionVerificationProjectionSchema.optional(),
       })
       .strict(),
@@ -208,6 +244,7 @@ export const promotionOperationProjectionSchema = z
       "release.build",
       "release.preflight",
       "release.rollback",
+      "release.safe-point",
       "release.switch",
       "release.verify",
     ]),

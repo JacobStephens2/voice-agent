@@ -35,6 +35,7 @@ export {
 } from "./keeplore-onboarding.ts";
 export { createSqliteKeeploreDelegationStore } from "./keeplore-delegation.ts";
 export { createSqliteCallbackHandshakeStore } from "./callback-handshake.ts";
+export { createSqliteSelfPromotionStore } from "./self-promotion.ts";
 export { createSqliteTelephoneBoundaryStore } from "./telephone-boundaries.ts";
 export { createSqliteTaskContinuityStore } from "./task-continuity.ts";
 export {
