@@ -214,3 +214,90 @@ describe("sanitized provider error description", () => {
     });
   });
 });
+
+describe("a gateway error frame in the description", () => {
+  test("the provider's reason replaces the message the framework could not name", () => {
+    // The frame is what the gateway sent; the framework's schema kept none of
+    // it, which is why this error says `undefined`.
+    expect(
+      describeProviderError(
+        new ProviderReportedError(
+          new Error("LiveKit TTS returned error: undefined"),
+        ),
+        "tts",
+        {
+          code: "upstream_error",
+          fault: "upstream",
+          reason: "inworld: upstream request timed out",
+          retryable: true,
+        },
+      ),
+    ).toStrictEqual({
+      code: "upstream_error",
+      fault: "upstream",
+      message: "inworld: upstream request timed out",
+      name: "Error",
+      retryable: true,
+    });
+  });
+
+  test("a misconfiguration is told apart from a provider outage", () => {
+    expect(
+      describeProviderError(new Error("LiveKit TTS returned error: undefined"), "tts", {
+        code: "insufficient_quota",
+        fault: "quota",
+        reason: "monthly character quota exhausted",
+        retryable: false,
+      }),
+    ).toMatchObject({ fault: "quota", retryable: false });
+  });
+
+  test("a frame carrying no reason still names its fault class", () => {
+    expect(
+      describeProviderError(new Error("LiveKit TTS returned error: undefined"), "tts", {
+        fault: "unknown",
+      }),
+    ).toStrictEqual({
+      fault: "unknown",
+      message: "LiveKit TTS returned error: undefined",
+      name: "Error",
+    });
+  });
+
+  test("a recognition frame keeps its code and class while its reason is withheld", () => {
+    // The recognition gateway is handed the caller's audio, so its free text
+    // is withheld under ADR-0052 while the enumerated fields still name why.
+    expect(
+      describeProviderError(
+        new ProviderReportedError(new Error("could not transcribe")),
+        "stt",
+        {
+          code: "unauthenticated",
+          fault: "credential",
+          reason: "invalid api key for project restart-the-bountywell-api",
+          retryable: false,
+        },
+      ),
+    ).toStrictEqual({
+      code: "unauthenticated",
+      fault: "credential",
+      name: "Error",
+      retryable: false,
+    });
+  });
+
+  test("a frame describes a thrown value that is not an Error at all", () => {
+    expect(
+      describeProviderError(undefined, "tts", {
+        code: "upstream_error",
+        fault: "upstream",
+        reason: "upstream stalled",
+      }),
+    ).toStrictEqual({
+      code: "upstream_error",
+      fault: "upstream",
+      message: "upstream stalled",
+      name: "undefined",
+    });
+  });
+});

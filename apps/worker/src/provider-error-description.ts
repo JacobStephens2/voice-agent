@@ -9,6 +9,10 @@ import {
   sanitizeErrorMessage,
   writeOperatorLogLine,
 } from "./error-description.ts";
+import type {
+  SpeechProviderErrorFrame,
+  SpeechProviderFaultClass,
+} from "./speech-provider-error-frame.ts";
 
 const maximumMessageLength = 200;
 
@@ -23,8 +27,12 @@ const maximumMessageLength = 200;
  */
 export interface ProviderErrorDescription {
   readonly code?: string;
+  /** Which kind of fault the provider reported, when it said so. */
+  readonly fault?: SpeechProviderFaultClass;
   readonly message?: string;
   readonly name: string;
+  /** Whether the provider called the fault retryable, when it said so. */
+  readonly retryable?: boolean;
   readonly status?: number;
 }
 
@@ -68,9 +76,13 @@ export function underlyingProviderError(error: unknown): unknown {
 export function describeProviderError(
   reported: unknown,
   stage: TelephoneProviderFailureStage,
+  frame?: SpeechProviderErrorFrame,
 ): ProviderErrorDescription {
   const error = underlyingProviderError(reported);
-  if (!(error instanceof Error)) return { name: describeErrorName(error) };
+  const gateway = describeErrorFrame(frame, stage);
+  if (!(error instanceof Error)) {
+    return { ...gateway, name: describeErrorName(error) };
+  }
   const carrier = error as unknown as Record<string, unknown>;
   const code = typeof carrier.code === "string" ? carrier.code : undefined;
   const status = describeStatus(carrier);
@@ -84,8 +96,31 @@ export function describeProviderError(
   return {
     ...(code === undefined ? {} : { code }),
     ...(message === undefined ? {} : { message }),
+    ...gateway,
     name: describeErrorName(error),
     ...(status === undefined ? {} : { status }),
+  };
+}
+
+/**
+ * What the provider's own error frame adds to the description.
+ *
+ * The gateway's code, fault class, and retryable flag are enumerated tokens it
+ * wrote about itself, so they are kept at every stage; its free-text reason is
+ * withheld under the same rule as any other provider message, since the stages
+ * that see the caller's speech could have it quoted back to them.
+ */
+function describeErrorFrame(
+  frame: SpeechProviderErrorFrame | undefined,
+  stage: TelephoneProviderFailureStage,
+): Partial<ProviderErrorDescription> {
+  if (frame === undefined) return {};
+  const reason = stageSeesCallerSpeech(stage) ? undefined : frame.reason;
+  return {
+    ...(frame.code === undefined ? {} : { code: frame.code }),
+    fault: frame.fault,
+    ...(reason === undefined ? {} : { message: reason }),
+    ...(frame.retryable === undefined ? {} : { retryable: frame.retryable }),
   };
 }
 
