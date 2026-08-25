@@ -975,6 +975,52 @@ test("visual evidence outside the Delegation evidence directory is quarantined",
   });
 });
 
+test("a candidate that misses several matched properties is told all of them", async () => {
+  const scenario = await createScenario({
+    async execute({ brief, worktree }) {
+      const result = successfulResult(brief, worktree);
+      return {
+        ...result,
+        verification: {
+          ...result.verification,
+          // The shape a real Delegation produced: padding and typography that
+          // read as a match but compute differently, and a shadow and colour
+          // the candidate never touched.
+          computedStyles: result.verification.computedStyles.map((entry) => ({
+            ...entry,
+            getRidOf: {
+              ...entry.getRidOf,
+              boxShadow: "rgba(25, 28, 30, 0.06) 0px 12px 32px 0px",
+              fontSize: "13.6px",
+              height: "51.1875px",
+              paddingBottom: "6.4px",
+              paddingTop: "6.4px",
+            },
+          })),
+        },
+      };
+    },
+  });
+  await confirmTrial(scenario, "several-mismatched-properties");
+
+  const failed = await scenario.processNextDelegation();
+
+  // Naming only the alphabetically first mismatch sent a real diagnosis after
+  // boxShadow while five other properties were also wrong.
+  expect(failed).toMatchObject({
+    delegation: {
+      result: {
+        pullRequest: { state: "none", url: null },
+        risks: [
+          "desktop table controls differ in boxShadow, fontSize, height, paddingBottom, paddingTop",
+        ],
+        status: "failed",
+      },
+    },
+    task: { status: "failed" },
+  });
+});
+
 async function createScenario(
   runner: Parameters<typeof createKeeploreButtonTrialScenario>[0]["runner"],
 ): Promise<KeeploreButtonTrialScenario> {

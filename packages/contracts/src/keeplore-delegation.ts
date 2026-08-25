@@ -38,6 +38,45 @@ export const keeploreButtonTrialAcceptanceCriteria = [
 export const supersededKeeploreButtonTrialAcceptanceCriterion =
   "Table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight." as const;
 
+/**
+ * The computed properties authenticated visual verification requires the two
+ * table-view controls to share exactly.
+ *
+ * The restricted runner checks them, the Operations policy checks them again
+ * before a result is accepted, and the model is told them in its prompt — it
+ * never measures the rendered controls itself. Naming them once here keeps the
+ * bar the model is given from drifting away from the bar it is judged against:
+ * a model told only to "match" picks which properties that means, and a rule
+ * that reads as a match — matching padding, matching typography — still fails
+ * on the shadow and the colour it never touched.
+ *
+ * Width is deliberately absent. Both controls are measured for content-based
+ * widths, which requires them to differ.
+ */
+export const keeploreMatchedControlProperties = [
+  "backgroundColor",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "borderRadius",
+  "borderRightWidth",
+  "borderTopWidth",
+  "boxShadow",
+  "color",
+  "fontFamily",
+  "fontSize",
+  "fontWeight",
+  "height",
+  "letterSpacing",
+  "lineHeight",
+  "paddingBottom",
+  "paddingTop",
+  "textTransform",
+] as const;
+
+export function describeKeeploreMatchedControlProperties(): string {
+  return keeploreMatchedControlProperties.join(", ");
+}
+
 export const keeploreDelegationCapabilities = [
   "registered-source.read",
   "delegated-worktree.write",

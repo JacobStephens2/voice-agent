@@ -3,6 +3,7 @@ import {
   keeploreButtonTrialGoal,
   keeploreDelegationBriefSchema,
   keeploreDelegationCapabilities,
+  keeploreMatchedControlProperties,
   type KeeploreDelegationBrief,
   type KeeploreDelegationResult,
   type KeeploreRegistration,
@@ -57,26 +58,6 @@ export function createKeeploreDelegationBrief(input: {
     worktree,
   };
 }
-
-const matchingComputedProperties = [
-  "backgroundColor",
-  "borderBottomWidth",
-  "borderLeftWidth",
-  "borderRadius",
-  "borderRightWidth",
-  "borderTopWidth",
-  "boxShadow",
-  "color",
-  "fontFamily",
-  "fontSize",
-  "fontWeight",
-  "height",
-  "letterSpacing",
-  "lineHeight",
-  "paddingBottom",
-  "paddingTop",
-  "textTransform",
-] as const;
 
 export function validateKeeploreDelegationResult(
   brief: KeeploreDelegationBrief,
@@ -170,10 +151,16 @@ export function validateKeeploreDelegationResult(
     if (styles === undefined) {
       throw new Error(`${viewport} computed-style evidence is unavailable`);
     }
-    for (const property of matchingComputedProperties) {
-      if (styles.getRidOf[property] !== styles.remove[property]) {
-        throw new Error(`${viewport} table controls differ in ${property}`);
-      }
+    const mismatched = keeploreMatchedControlProperties.filter(
+      (property) => styles.getRidOf[property] !== styles.remove[property],
+    );
+    // Every mismatch, not just the alphabetically first: a candidate reported
+    // as differing in boxShadow alone sends the next round of work after one
+    // property while the rest are still wrong.
+    if (mismatched.length > 0) {
+      throw new Error(
+        `${viewport} table controls differ in ${mismatched.join(", ")}`,
+      );
     }
     if (
       styles.getRidOf.widthMode !== "content" ||
