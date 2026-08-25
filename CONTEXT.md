@@ -145,6 +145,10 @@ _Avoid_: Provider failure, provider outage, speech error
 A speech gateway's own account of a failure it reported — its code, its human-readable reason, and its retryable flag — read off the raw frame before the agents framework narrows it away, and carried into the operator's report of the fault as a named fault class: an upstream provider outage, or a credential, entitlement, or quota fault of this system's own account. Its retryable flag, not an inference of this system's, decides the Bounded Provider Retry.
 _Avoid_: Provider error message, websocket payload, error code
 
+**Recognized Speech Model**:
+A speech model this system will accept a setting for, bound to the provider identity recorded against its stage in evidence and to the options that provider's own gateway accepts; a setting naming anything outside the set is refused before the worker takes a call.
+_Avoid_: Model string, provider selection, automatic provider failover
+
 **Bounded Excerpt**:
 An explicitly requested, code-filtered subset of server data that may be shared with a hosted model provider.
 _Avoid_: Raw payload, unrestricted context
