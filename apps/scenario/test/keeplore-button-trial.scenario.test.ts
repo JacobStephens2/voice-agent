@@ -1012,7 +1012,7 @@ test("a candidate that misses several matched properties is told all of them", a
       result: {
         pullRequest: { state: "none", url: null },
         risks: [
-          "desktop table controls differ in boxShadow, fontSize, height, paddingBottom, paddingTop",
+          "desktop Keeplore table controls differ in boxShadow, fontSize, height, paddingBottom, paddingTop",
         ],
         status: "failed",
       },

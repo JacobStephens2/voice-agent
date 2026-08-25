@@ -221,7 +221,7 @@ function mobileHeightFailure(
         `/var/lib/voice-agent-evidence/${brief.delegationId}/restricted-runner-failure.json`,
       ],
       kind: "delegation-execution",
-      message: "mobile Keeplore controls differ in height",
+      message: "mobile Keeplore table controls differ in height",
       name: "RestrictedRunFailure",
     },
     pullRequest: { state: "none", url: null },

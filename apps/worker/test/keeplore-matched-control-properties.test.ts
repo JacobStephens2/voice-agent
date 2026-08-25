@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 import {
+  describeKeeploreControlMismatch,
   describeKeeploreMatchedControlProperties,
   keeploreMatchedControlProperties,
+  type KeeploreComputedButtonStyle,
 } from "@voice-agent/contracts";
 
 test("the matched properties name every computed value the controls must share", () => {
@@ -49,10 +51,58 @@ test("the prompt and both acceptance checks read one property list", async () =>
   // the check came to be met on desktop one run and missed by six properties
   // the next.
   expect(executor).toContain("describeKeeploreMatchedControlProperties()");
-  expect(executor).toContain("keeploreMatchedControlProperties");
-  expect(executor).not.toContain("const matchingProperties = [");
-  // The Operations policy checks the same properties again before accepting a
-  // result, and used to carry its own copy of the list.
-  expect(policy).toContain("keeploreMatchedControlProperties");
-  expect(policy).not.toContain("const matchingComputedProperties = [");
+  // The runner and the Operations policy each used to carry their own copy of
+  // the list and their own wording for a mismatch; both now call one check.
+  for (const source of [executor, policy]) {
+    expect(source).toContain("describeKeeploreControlMismatch(");
+    expect(source).not.toMatch(/controls differ in \$\{/u);
+  }
 });
+
+test("one check names every mismatching property, in one wording", () => {
+  const remove = matchedStyle();
+
+  expect(
+    describeKeeploreControlMismatch("desktop", {
+      getRidOf: { ...remove, boxShadow: "none", paddingTop: "6.4px" },
+      remove,
+    }),
+  ).toBe("desktop Keeplore table controls differ in boxShadow, paddingTop");
+});
+
+test("controls that share every matched property leave nothing to report", () => {
+  const remove = matchedStyle();
+
+  // Width is the one measured value the two controls are required to differ
+  // on, so a mismatch check that read it would fail every accepted candidate.
+  expect(
+    describeKeeploreControlMismatch("mobile", {
+      getRidOf: { ...remove, width: "104.5px" },
+      remove,
+    }),
+  ).toBeNull();
+});
+
+function matchedStyle(): KeeploreComputedButtonStyle {
+  return {
+    backgroundColor: "rgb(25, 28, 30)",
+    borderBottomWidth: "0px",
+    borderLeftWidth: "0px",
+    borderRadius: "6px",
+    borderRightWidth: "0px",
+    borderTopWidth: "0px",
+    boxShadow: "rgba(25, 28, 30, 0.06) 0px 1px 2px 0px",
+    color: "rgb(255, 255, 255)",
+    fontFamily: "Inter, sans-serif",
+    fontSize: "14px",
+    fontWeight: "600",
+    height: "32px",
+    letterSpacing: "normal",
+    lineHeight: "20.8px",
+    paddingBottom: "5.6px",
+    paddingTop: "5.6px",
+    textTransform: "none",
+    width: "76.171875px",
+    widthMode: "content",
+  };
+}

@@ -43,8 +43,10 @@ configuration it finds from its working directory upward, and `voice-codex`
 cannot read the operator's home: a Codex command that inherited it exits on an
 unreadable configuration file. That failure looks exactly like a missing login,
 so an enrolled restricted identity would be sent back through the device flow.
-If `codex login status` ever reports `Failed to read project config file`, the
-working directory is the fault, not the subscription.
+The login check prints whatever Codex reported before it offers the device
+flow, because an unreadable configuration file and a missing subscription both
+exit the same way. If that line reads `Failed to read project config file`, the
+working directory is the fault and the device flow will not repair it.
 
 This applies to the trial's own checks only. A Delegation's model run takes its
 working directory from the Brief's registered Keeplore scope; it must never be

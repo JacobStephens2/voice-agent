@@ -252,10 +252,14 @@ if ! sudo test "$(sudo cat /proc/sys/kernel/apparmor_restrict_unprivileged_usern
   warn "The Bubblewrap AppArmor profile is unavailable; run the attended deployment-authority upgrade from this reviewed Release."
   exit 1
 fi
-if ! as_voice_codex env -i \
+if ! CODEX_LOGIN_STATUS=$(as_voice_codex env -i \
   CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \
   PATH=/usr/local/bin:/usr/bin:/bin \
-  "$CODEX" login status >/dev/null 2>&1; then
+  "$CODEX" login status 2>&1); then
+  # Say what Codex reported before offering the device flow. A configuration
+  # file this identity cannot read exits here exactly as a missing subscription
+  # does, and the flow below cannot repair that one.
+  note "$CODEX_LOGIN_STATUS"
   step "Complete the device flow using the separate eligible Codex subscription designated for this restricted identity."
   as_voice_codex env -i \
     CODEX_HOME="$CODEX_HOME" HOME=/var/lib/voice-codex \

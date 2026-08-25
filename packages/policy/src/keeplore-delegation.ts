@@ -1,9 +1,9 @@
 import {
+  describeKeeploreControlMismatch,
   keeploreButtonTrialAcceptanceCriteria,
   keeploreButtonTrialGoal,
   keeploreDelegationBriefSchema,
   keeploreDelegationCapabilities,
-  keeploreMatchedControlProperties,
   type KeeploreDelegationBrief,
   type KeeploreDelegationResult,
   type KeeploreRegistration,
@@ -151,16 +151,9 @@ export function validateKeeploreDelegationResult(
     if (styles === undefined) {
       throw new Error(`${viewport} computed-style evidence is unavailable`);
     }
-    const mismatched = keeploreMatchedControlProperties.filter(
-      (property) => styles.getRidOf[property] !== styles.remove[property],
-    );
-    // Every mismatch, not just the alphabetically first: a candidate reported
-    // as differing in boxShadow alone sends the next round of work after one
-    // property while the rest are still wrong.
-    if (mismatched.length > 0) {
-      throw new Error(
-        `${viewport} table controls differ in ${mismatched.join(", ")}`,
-      );
+    const mismatch = describeKeeploreControlMismatch(viewport, styles);
+    if (mismatch !== null) {
+      throw new Error(mismatch);
     }
     if (
       styles.getRidOf.widthMode !== "content" ||

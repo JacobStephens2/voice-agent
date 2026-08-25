@@ -77,6 +77,33 @@ export function describeKeeploreMatchedControlProperties(): string {
   return keeploreMatchedControlProperties.join(", ");
 }
 
+/**
+ * The one mismatch check both acceptance gates read, or `null` when the two
+ * controls share every matched property.
+ *
+ * The restricted runner checks a candidate before it publishes anything and the
+ * Operations policy checks the accepted result again, so the comparison — and
+ * the sentence an owner and the next round of work read — belongs here rather
+ * than in a copy on each side of that boundary. It names every mismatching
+ * property: a candidate reported as differing in `boxShadow` alone sends the
+ * next attempt after one property while the rest are still wrong.
+ */
+export function describeKeeploreControlMismatch(
+  viewport: "desktop" | "mobile",
+  styles: {
+    getRidOf: KeeploreComputedButtonStyle;
+    remove: KeeploreComputedButtonStyle;
+  },
+): string | null {
+  const mismatched = keeploreMatchedControlProperties.filter(
+    (property) => styles.getRidOf[property] !== styles.remove[property],
+  );
+  if (mismatched.length === 0) {
+    return null;
+  }
+  return `${viewport} Keeplore table controls differ in ${mismatched.join(", ")}`;
+}
+
 export const keeploreDelegationCapabilities = [
   "registered-source.read",
   "delegated-worktree.write",
@@ -341,6 +368,9 @@ export const keeploreDelegationRecordSchema = z
   })
   .strict();
 
+export type KeeploreComputedButtonStyle = z.infer<
+  typeof computedButtonStyleSchema
+>;
 export type KeeploreWorktree = z.infer<typeof keeploreWorktreeSchema>;
 export type KeeploreCandidatePublicationRequest = z.infer<
   typeof keeploreCandidatePublicationRequestSchema
