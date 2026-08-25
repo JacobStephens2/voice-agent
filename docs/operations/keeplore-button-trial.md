@@ -207,6 +207,16 @@ publisher reads those copies only when publication is requested.
 `hosts.yml` after confirmation and proves the model sandbox cannot reach the
 publisher socket.
 
+The publisher and the two Keeplore programs that write the journal it reads —
+`collect-keeplore-repository-policy.sh` and
+`record-keeplore-bypass-attestation.sh` — are installed together by the attended
+deployment-authority upgrade. They were not always: a host once carried a
+publisher that required `appId`, `installationId`, and `appSlug` on the
+`github-app` observation and a collector that predated all three, and every
+publication was refused with a bare 422 after a call and a full Codex run had
+already succeeded. Stage 2 now reads that observation back and stops there
+instead.
+
 If publication reports `publication-refused`, do not add a user login or copy a
 token into the worktree. Check `voice-agent-keeplore-publisher.service`, run the
 Keeplore repository-policy collector, and, if the owner attestation is stale,

@@ -547,6 +547,22 @@ test("the Keeplore Button Trial runs restricted Codex from the active Release", 
   expect(trial).toContain('as_voice_codex /usr/bin/test ! -w "$RELEASE_ROOT"');
 });
 
+test("the Keeplore Button Trial proves the policy journal carries the publisher's fields", async () => {
+  const trial = await readFile(
+    join(repositoryRoot, "ops/acceptance/run-keeplore-button-trial.sh"),
+    "utf8",
+  );
+
+  // The publisher requires these three on the github-app observation and
+  // refuses publication without them, saying only 422. A host whose collector
+  // predates them spends a whole attended call and a full Codex run before it
+  // finds out, so the wizard reads the journal it just wrote.
+  for (const field of ["appId", "appSlug", "installationId"]) {
+    expect(trial).toContain(field);
+  }
+  expect(trial).toMatch(/keeplore-repository-policy\.service/u);
+});
+
 test("the Keeplore Button Trial says why a Codex login check failed", async () => {
   const trial = await readFile(
     join(repositoryRoot, "ops/acceptance/run-keeplore-button-trial.sh"),

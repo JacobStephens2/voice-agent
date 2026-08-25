@@ -93,6 +93,56 @@ test("release immutability accepts internal package symlinks but rejects mutable
   expect(helper).toContain('voice_agent_release_tree_is_immutable "$release"');
 });
 
+test("an attended upgrade installs the Keeplore policy tools the pinned publisher reads", async () => {
+  const fixture = await deploymentAuthorityFixture();
+
+  await execFileAsync(fixture.upgrader, ["--activate", fixture.commit], {
+    env: {
+      ...process.env,
+      VOICE_AGENT_AUTHORITY_TEST_ROOT: fixture.root,
+    },
+  });
+
+  // The publisher re-derives its authority from the journal these two write.
+  // A host that upgraded the publisher while leaving them behind refused every
+  // publication with an unlogged 422 for three days.
+  for (const tool of [
+    "collect-keeplore-repository-policy.sh",
+    "record-keeplore-bypass-attestation.sh",
+  ]) {
+    await expect(
+      readFile(join(fixture.keeploreTools, tool), "utf8"),
+    ).resolves.toContain(`reviewed ${tool}`);
+  }
+});
+
+test("a failed attended upgrade restores the previous Keeplore policy tools", async () => {
+  const fixture = await deploymentAuthorityFixture();
+  const collector = join(
+    fixture.keeploreTools,
+    "collect-keeplore-repository-policy.sh",
+  );
+  await mkdir(fixture.keeploreTools, { recursive: true });
+  await writeFile(collector, "#!/usr/bin/env bash\nprintf 'pinned\\n'\n");
+  // The reviewed promoter runs after the tools are installed; failing it is how
+  // this fixture reaches the rollback path with everything already swapped.
+  await writeFile(
+    join(fixture.root, "opt/voice-agent/releases", fixture.commit, "ops/release/promote-release.sh"),
+    "#!/usr/bin/env bash\nexit 1\n",
+  );
+
+  await expect(
+    execFileAsync(fixture.upgrader, ["--activate", fixture.commit], {
+      env: {
+        ...process.env,
+        VOICE_AGENT_AUTHORITY_TEST_ROOT: fixture.root,
+      },
+    }),
+  ).rejects.toThrow();
+
+  await expect(readFile(collector, "utf8")).resolves.toContain("pinned");
+});
+
 test("an attended upgrade activates reviewed Subagent authority from existing pre-Subagent pins", async () => {
   const fixture = await deploymentAuthorityFixture();
 
@@ -570,6 +620,7 @@ async function deploymentAuthorityFixture(options?: {
   readonly authorityState: string;
   readonly authorizationRequest: string;
   readonly commit: string;
+  readonly keeploreTools: string;
   readonly oldPromoter: string;
   readonly previousCommit: string;
   readonly reviewedBwrapProfile: string;
@@ -599,6 +650,7 @@ async function deploymentAuthorityFixture(options?: {
       releaseAppArmor,
       join(release, "ops/prometheus"),
       join(release, "ops/grafana"),
+      join(release, "ops/keeplore"),
       join(root, "opt/voice-agent"),
       join(root, "etc/voice-agent"),
       join(root, "etc/apparmor.d"),
@@ -660,6 +712,15 @@ process.stdout.write("{}\\n");
     join(releaseScripts, "keeplore-github-app-publisher.ts"),
     "export {};\n",
   );
+  for (const tool of [
+    "collect-keeplore-repository-policy.sh",
+    "record-keeplore-bypass-attestation.sh",
+  ]) {
+    await writeExecutable(
+      join(release, "ops/keeplore", tool),
+      `#!/usr/bin/env bash\nprintf 'reviewed ${tool}\\n'\n`,
+    );
+  }
   await symlink(release, join(root, "opt/voice-agent/current"));
   await writeFile(
     join(promotionState, "state.tsv"),
@@ -788,6 +849,7 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     authorityState,
     authorizationRequest,
     commit,
+    keeploreTools: join(root, "usr/local/libexec/keeplore"),
     oldPromoter,
     previousCommit,
     reviewedBwrapProfile,
