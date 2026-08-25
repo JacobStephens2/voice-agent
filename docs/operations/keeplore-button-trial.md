@@ -217,7 +217,23 @@ publication was refused with a bare 422 after a call and a full Codex run had
 already succeeded. Stage 2 now reads that observation back and stops there
 instead.
 
-If publication reports `publication-refused`, do not add a user login or copy a
+If publication reports `publication-refused`, read the reason from the
+publisher's own journal before changing anything:
+
+```bash
+sudo journalctl -u voice-agent-keeplore-publisher.service \
+  --since "-30 min" --no-pager | grep 'keeplore publication refused'
+```
+
+Each refusal writes one line naming the Delegation, the phase that refused, and
+the check's own reason — `Keeplore publication policy is absent or stale`,
+`Keeplore production rules do not preserve Human Merge`, and the rest. The
+Delegation Result carries the phase alone (`request`, `candidate`, `policy`, or
+`publication`), because the reasons describe production branch rules and App
+grants the Subagent must not read. A `policy` refusal is the boundary around the
+candidate, not the candidate itself.
+
+Whatever the line names, do not respond by adding a user login or copying a
 token into the worktree. Check `voice-agent-keeplore-publisher.service`, run the
 Keeplore repository-policy collector, and, if the owner attestation is stale,
 repeat `record-keeplore-bypass-attestation.sh` with the authenticated owner
