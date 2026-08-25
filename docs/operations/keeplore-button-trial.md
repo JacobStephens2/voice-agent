@@ -82,14 +82,28 @@ upgrade again from that new Release.
 
 ## Confirmation and Durable Task
 
-Only an authenticated Telephone Session can reach the coordinator. A request
-that names Keeplore, Get Rid Of, Remove, and table view receives this exact
-state-changing readback:
+Only an authenticated Telephone Session can reach the coordinator. The trial is
+matched on both control labels, verbatim and in either order: the request must
+contain **get rid of** and **remove**. Nothing else is required — not the word
+Keeplore, not table view — and nothing else is sufficient. Say both labels
+aloud, and say them again if recognition drops one.
+
+A matched request receives this exact state-changing readback:
 
 > Please confirm this state-changing task: Keeplore production — make
 > table-view Get Rid Of and Remove controls match in height, vertical padding,
 > typography, and visual weight, while retaining content-based widths and
 > leaving card view unchanged.
+
+A request the system matched to no Registered Codebase is never read back under
+one. It receives this instead, and no Task Confirmation is left pending:
+
+> I did not understand that request. Please say again what you want changed,
+> and in which registered codebase.
+
+Hearing that means the trial did not match — most often because recognition
+truncated the turn and dropped a control label. Say the request again with both
+labels. An affirmative spoken after it confirms nothing.
 
 No Delegation exists before an affirmative reply. Confirmation creates one
 Durable Task and a strict Delegation Brief containing the registered Keeplore

@@ -96,7 +96,7 @@ interface TelephoneSessionCoordinatorState {
   pendingCompletionOfferKind: "background-inquiry" | "delegation" | undefined;
   pendingCompletionOfferTaskId: string | undefined;
   pendingStateChangingDiscussionId: string | undefined;
-  pendingStateChangingKind: "keeplore-button-trial" | "outage" | "other" | undefined;
+  pendingStateChangingKind: "keeplore-button-trial" | "outage" | undefined;
   providerRetryUsed: boolean;
   terminalFailureIssued: boolean;
 }
@@ -576,6 +576,20 @@ async function handleFinalizedTurn(
     const taskDescription = /[.!?]$/u.test(sanitizedTranscript)
       ? sanitizedTranscript
       : `${sanitizedTranscript}.`;
+    const requestKind = transcriptRequestsKeeploreButtonTrial(
+      sanitizedTranscript,
+    )
+      ? "keeplore-button-trial"
+      : transcriptReportsBountywellOutage(sanitizedTranscript)
+        ? "outage"
+        : undefined;
+    if (requestKind === undefined) {
+      // A Task Confirmation is the one place this system states what it is
+      // about to change, so it may only name a Registered Codebase the request
+      // was actually matched to. An unmatched request is asked for again
+      // instead of being read back under a codebase the owner never said.
+      return guidance(options, turn, unrecognizedStateChangingRequestText);
+    }
     const confirmationId = `${turn.turnId}:confirmation`;
     const boundaryDecision = await options.stateChangingTasks?.claim(
       turn.telephoneSessionId,
@@ -597,18 +611,13 @@ async function handleFinalizedTurn(
     }
     if (boundaryDecision?.decision === "accepted") {
       state.pendingStateChangingDiscussionId = confirmationId;
-      state.pendingStateChangingKind = transcriptRequestsKeeploreButtonTrial(
-        sanitizedTranscript,
-      )
-        ? "keeplore-button-trial"
-        : transcriptReportsBountywellOutage(sanitizedTranscript)
-          ? "outage"
-          : "other";
+      state.pendingStateChangingKind = requestKind;
     }
-    const text = transcriptRequestsKeeploreButtonTrial(sanitizedTranscript)
-      ? "Please confirm this state-changing task: Keeplore production — make table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight, while retaining content-based widths and leaving card view unchanged."
-      : `Please confirm this state-changing task: ` +
-        `Bountywell production — ${taskDescription}`;
+    const text =
+      requestKind === "keeplore-button-trial"
+        ? "Please confirm this state-changing task: Keeplore production — make table-view Get Rid Of and Remove controls match in height, vertical padding, typography, and visual weight, while retaining content-based widths and leaving card view unchanged."
+        : `Please confirm this state-changing task: ` +
+          `Bountywell production — ${taskDescription}`;
     await options.sessionEvidence?.append({
       details: { responseId: confirmationId, text },
       id: confirmationId,
@@ -760,6 +769,18 @@ function keeploreStatusResponse(
     ],
   });
 }
+
+/**
+ * What the Voice Agent says to a state-changing request it could not match to a
+ * Registered Codebase. It names no codebase, because naming the wrong one would
+ * make the Task Confirmation assert a misunderstanding rather than catch it.
+ *
+ * Exported so a test asserts the words the caller hears rather than its own
+ * copy of them.
+ */
+export const unrecognizedStateChangingRequestText =
+  "I did not understand that request. Please say again what you want " +
+  "changed, and in which registered codebase.";
 
 async function guidance(
   options: { readonly sessionEvidence?: TelephoneSessionEvidenceSink },

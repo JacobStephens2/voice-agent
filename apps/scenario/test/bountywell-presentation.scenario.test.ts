@@ -1,7 +1,10 @@
 import { describe, expect, test } from "vitest";
 
 import type { EvidenceRecordProjection } from "@voice-agent/contracts";
-import { createTelephoneSessionCoordinator } from "@voice-agent/runtime";
+import {
+  createTelephoneSessionCoordinator,
+  unrecognizedStateChangingRequestText,
+} from "@voice-agent/runtime";
 
 const recovered: EvidenceRecordProjection = {
   evidence: [
@@ -154,14 +157,26 @@ describe("the presented drill is the only outage an affirmative confirmation rec
     expect(calls).toEqual({ presented: 1, recovered: 0 });
   });
 
-  test("confirming an unrelated state-changing task recovers nothing", async () => {
+  test("a request matched to no outage is never read back, so nothing recovers", async () => {
     const { calls, coordinator } = createCoordinator();
-
-    await speak(
-      coordinator,
-      "Restart Bountywell production so the API becomes healthy",
-      "unrelated",
-    );
+    await expect(
+      speak(
+        coordinator,
+        "Restart production so the API becomes healthy",
+        "unrelated",
+      ),
+    ).resolves.toEqual({
+      actions: [
+        {
+          interruptible: true,
+          kind: "speak-guidance",
+          responseId: "unrelated:guidance",
+          text: unrecognizedStateChangingRequestText,
+        },
+      ],
+    });
+    // No Task Confirmation was prepared, so the affirmative that follows
+    // confirms nothing and the presented drill stays where it was.
     await expect(
       speak(coordinator, "Yes, please", "unrelated-confirmation"),
     ).resolves.toEqual({
@@ -170,7 +185,7 @@ describe("the presented drill is the only outage an affirmative confirmation rec
           interruptible: true,
           kind: "speak-guidance",
           responseId: "unrelated-confirmation:guidance",
-          text: "Task confirmation recorded. Use the secure app to authorize execution.",
+          text: unrecognizedStateChangingRequestText,
         },
       ],
     });
