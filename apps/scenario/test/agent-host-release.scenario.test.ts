@@ -517,3 +517,30 @@ test("slice-one observability installs explicit probes and a same-host Grafana d
     ]),
   );
 });
+
+test("the Keeplore Button Trial runs restricted Codex from the active Release", async () => {
+  const trial = await readFile(
+    join(repositoryRoot, "ops/acceptance/run-keeplore-button-trial.sh"),
+    "utf8",
+  );
+
+  // Codex reads any project configuration it finds from its working directory
+  // upward, and the operator's own home is closed to voice-codex. See the
+  // as_voice_codex comment in the wizard for why that misreads as a lost login.
+  const logicalLines = trial.replace(/\\\n\s*/gu, " ").split("\n");
+  const codexCommands = logicalLines.filter((line) =>
+    /"\$CODEX"\s+(?:login|sandbox)\b/u.test(line),
+  );
+
+  expect(codexCommands.length).toBeGreaterThan(0);
+  for (const command of codexCommands) {
+    expect(command).toContain("as_voice_codex ");
+    expect(command).not.toContain("sudo -u voice-codex");
+  }
+  expect(trial).toContain('cd "$1" || exit 1');
+  expect(trial).toContain("as_voice_codex() {");
+  // The trial now depends on the Release being reachable and unwritable for the
+  // restricted identity, so it proves both before the login check runs.
+  expect(trial).toContain('as_voice_codex /usr/bin/test -r "$RELEASE_ROOT"');
+  expect(trial).toContain('as_voice_codex /usr/bin/test ! -w "$RELEASE_ROOT"');
+});
