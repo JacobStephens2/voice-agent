@@ -1,11 +1,17 @@
 import { generateKeyPairSync } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { expect, test } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { createServer, request as requestHttp, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, test } from "vitest";
 
 import {
   createKeeploreCandidatePublisher,
+  handleKeeplorePublisherRequest,
   type KeeploreCandidatePublisherDependencies,
+  type KeeplorePublisherJournalEntry,
 } from "../../../ops/release/keeplore-github-app-publisher.ts";
 
 const now = "2026-08-23T14:00:00.000Z";
@@ -16,6 +22,26 @@ const branch = `codex/keeplore-button-${delegationId}`;
 const worktreePath =
   `/var/lib/voice-agent-worktrees/keeplore/${delegationId}`;
 const installationToken = "ghs_fixture-installation-token";
+const temporaryDirectories: string[] = [];
+const servers: Server[] = [];
+
+afterEach(async () => {
+  await Promise.all(
+    servers.splice(0).map(
+      (server) =>
+        new Promise<void>((resolve) => {
+          server.close(() => {
+            resolve();
+          });
+        }),
+    ),
+  );
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { force: true, recursive: true })),
+  );
+});
 
 test("the privileged publisher scopes one token and observes the App-authored pull request", async () => {
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -807,4 +833,159 @@ function observedGit(args: readonly string[], observedHead: string) {
     return { exitCode: 0, stderr: "", stdout: "ui/style.css\0" };
   }
   throw new Error(`Unexpected Git inspection: ${command}`);
+}
+
+test("a refused publication keeps its reason in the host journal and returns only a code", async () => {
+  const cases: Array<{
+    readonly reason: string;
+    readonly refusal: string;
+    readonly request: unknown;
+    readonly journal?: string;
+    readonly delegation?: unknown;
+  }> = [
+    {
+      reason: "Keeplore publication operation is not registered",
+      refusal: "request",
+      request: { ...(publicationRequest() as object), operation: "merge-pull-request" },
+    },
+    {
+      delegation: registeredDelegation({ branch: "main" }),
+      reason: "Delegated Worktree is outside its registered assignment",
+      refusal: "candidate",
+      request: publicationRequest(),
+    },
+    {
+      journal: policyJournal({ observedAt: "2026-08-01T13:00:00.000Z" }),
+      reason: "Keeplore publication policy is absent or stale",
+      refusal: "policy",
+      request: publicationRequest(),
+    },
+  ];
+
+  for (const refusedCase of cases) {
+    const journalled: Array<KeeplorePublisherJournalEntry> = [];
+    const socketPath = await servePublisher({
+      journal: (entry) => journalled.push(entry),
+      publisher: createKeeploreCandidatePublisher(
+        boundaryDependencies({
+          ...(refusedCase.delegation === undefined
+            ? {}
+            : { delegation: refusedCase.delegation }),
+          ...(refusedCase.journal === undefined
+            ? {}
+            : { journal: refusedCase.journal }),
+        }),
+      ),
+    });
+
+    const response = await postPublication(socketPath, refusedCase.request);
+
+    expect(response.statusCode).toBe(422);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "publication-refused",
+      refusal: refusedCase.refusal,
+    });
+    expect(response.body).not.toContain(refusedCase.reason);
+    expect(journalled).toHaveLength(1);
+    expect(journalled[0]).toMatchObject({
+      delegationId,
+      msg: "keeplore publication refused",
+      reason: refusedCase.reason,
+      refusal: refusedCase.refusal,
+    });
+  }
+});
+
+test("a request the publisher could not even read is refused as a request", async () => {
+  const journalled: Array<KeeplorePublisherJournalEntry> = [];
+  const socketPath = await servePublisher({
+    journal: (entry) => journalled.push(entry),
+    publisher: createKeeploreCandidatePublisher(boundaryDependencies()),
+  });
+
+  const response = await postPublication(
+    socketPath,
+    '{"delegationId": "secret-the-parser-would-quote"',
+  );
+
+  expect(JSON.parse(response.body)).toEqual({
+    error: "publication-refused",
+    refusal: "request",
+  });
+  expect(journalled).toHaveLength(1);
+  expect(JSON.stringify(journalled[0])).not.toContain(
+    "secret-the-parser-would-quote",
+  );
+});
+
+test("the refusal journal names no Delegation the request did not safely name", async () => {
+  const journalled: Array<KeeplorePublisherJournalEntry> = [];
+  const socketPath = await servePublisher({
+    journal: (entry) => journalled.push(entry),
+    publisher: createKeeploreCandidatePublisher(boundaryDependencies()),
+  });
+
+  const response = await postPublication(socketPath, {
+    ...(publicationRequest() as object),
+    delegationId: "delegation\n{\"msg\":\"forged\"}",
+  });
+
+  expect(response.statusCode).toBe(422);
+  expect(journalled).toHaveLength(1);
+  expect(journalled[0]).not.toHaveProperty("delegationId");
+  expect(JSON.stringify(journalled[0])).not.toContain("forged");
+});
+
+async function servePublisher(input: {
+  readonly journal: (entry: KeeplorePublisherJournalEntry) => void;
+  readonly publisher: ReturnType<typeof createKeeploreCandidatePublisher>;
+}): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-publisher-"));
+  temporaryDirectories.push(directory);
+  const socketPath = join(directory, "publisher.sock");
+  const server = createServer((request, response) => {
+    void handleKeeplorePublisherRequest({
+      journal: input.journal,
+      publisher: input.publisher,
+      request,
+      response,
+    });
+  });
+  servers.push(server);
+  await new Promise<void>((resolve) => {
+    server.listen(socketPath, resolve);
+  });
+  return socketPath;
+}
+
+function postPublication(
+  socketPath: string,
+  body: unknown,
+): Promise<{ readonly body: string; readonly statusCode: number }> {
+  const serialized = typeof body === "string" ? body : JSON.stringify(body);
+  return new Promise((resolve, reject) => {
+    const request = requestHttp(
+      {
+        headers: {
+          "content-length": Buffer.byteLength(serialized),
+          "content-type": "application/json",
+        },
+        method: "POST",
+        path: "/publish",
+        socketPath,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("end", () => {
+          resolve({
+            body: Buffer.concat(chunks).toString("utf8"),
+            statusCode: response.statusCode ?? 0,
+          });
+        });
+      },
+    );
+    request.once("error", reject);
+    request.end(serialized);
+  });
 }

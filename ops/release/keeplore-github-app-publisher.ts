@@ -24,6 +24,7 @@ const publisherRuntimeDirectory = "/run/voice-agent-keeplore-publisher";
 const policyLifetimeMilliseconds = 7 * 24 * 60 * 60 * 1_000;
 const maximumClockSkewMilliseconds = 5 * 60 * 1_000;
 const maximumResponseBytes = 1_000_000;
+const maximumRefusalReasonLength = 300;
 const apiVersion = "2026-03-10";
 
 export interface KeeplorePublicationRequest {
@@ -117,6 +118,68 @@ interface PullRequestObservation {
 
 class InstallationAuthenticationError extends Error {}
 
+/**
+ * The one word about a refusal the caller may know.
+ *
+ * The publisher re-derives everything it trusts, so its refusals describe
+ * production branch rules, App grants, and a Delegation's registered
+ * assignment — state the Subagent that asked to publish must not learn. The
+ * check that refused is named by the phase it belongs to, which says whether
+ * the candidate or the boundary around it was at fault without saying what
+ * either was observed to be:
+ *
+ * - `request` — the publication request was not in its registered shape.
+ * - `candidate` — the Delegation, its Delegated Worktree, or the commit it
+ *   offered was not the clean verified assignment.
+ * - `policy` — the Repository Policy Observation or the GitHub App grant did
+ *   not establish the boundary this publication must be made within.
+ * - `publication` — a check on the push, the token, or the observed pull
+ *   request refused.
+ * - `unattributed` — the publisher itself failed without reaching a check, so
+ *   a fault here is a defect in this service rather than a refusal.
+ */
+export type KeeplorePublicationRefusalCode =
+  | "candidate"
+  | "policy"
+  | "publication"
+  | "request"
+  | "unattributed";
+
+/** A refusal that knows which phase raised it, keeping its own reason. */
+class PublicationRefusal extends Error {
+  readonly code: KeeplorePublicationRefusalCode;
+
+  constructor(code: KeeplorePublicationRefusalCode, reason: string) {
+    super(reason);
+    this.code = code;
+  }
+}
+
+/** One line of the publisher's own account of itself. */
+export interface KeeplorePublisherJournalEntry {
+  readonly level: number;
+  readonly msg: string;
+  readonly [field: string]: unknown;
+}
+
+/**
+ * Run one phase of a publication, attributing whatever it refuses to itself.
+ *
+ * A refusal already attributed keeps its phase: an inner phase names the check
+ * more precisely than the phase that contains it.
+ */
+async function refusing<Result>(
+  code: KeeplorePublicationRefusalCode,
+  phase: () => Promise<Result>,
+): Promise<Result> {
+  try {
+    return await phase();
+  } catch (error) {
+    if (error instanceof PublicationRefusal) throw error;
+    throw new PublicationRefusal(code, describeRefusal(error));
+  }
+}
+
 export function createKeeploreCandidatePublisher(
   dependencies: KeeploreCandidatePublisherDependencies,
 ): {
@@ -124,78 +187,91 @@ export function createKeeploreCandidatePublisher(
 } {
   return {
     async publish(untrustedRequest) {
-      const request = parsePublicationRequest(untrustedRequest);
-      const delegation = parseRegisteredDelegation(
-        await dependencies.readRegisteredDelegation(request.delegationId),
-        request.delegationId,
+      const request = await refusing("request", async () =>
+        parsePublicationRequest(untrustedRequest),
       );
-      const credentials = await dependencies.readAppCredentials();
-      const appSlug = authorizeRepositoryPolicy({
-        appId: credentials.appId,
-        installationId: credentials.installationId,
-        journal: await dependencies.readPolicyJournal(),
-        now: dependencies.now(),
+      const delegation = await refusing("candidate", async () =>
+        parseRegisteredDelegation(
+          await dependencies.readRegisteredDelegation(request.delegationId),
+          request.delegationId,
+        ),
+      );
+      const { appSlug, credentials } = await refusing("policy", async () => {
+        const readCredentials = await dependencies.readAppCredentials();
+        return {
+          appSlug: authorizeRepositoryPolicy({
+            appId: readCredentials.appId,
+            installationId: readCredentials.installationId,
+            journal: await dependencies.readPolicyJournal(),
+            now: dependencies.now(),
+          }),
+          credentials: readCredentials,
+        };
       });
-      const resolvedWorktree = await (
-        dependencies.resolvePath?.(delegation.worktreePath) ??
-        Promise.resolve(delegation.worktreePath)
-      );
-      if (
-        resolvedWorktree !== delegation.worktreePath ||
-        !resolvedWorktree.startsWith(`${worktreeRoot}/`)
-      ) {
-        throw new Error("Registered Delegated Worktree escaped its root");
-      }
-      await inspectCandidate(
-        dependencies,
-        delegation,
-        request.candidate.headCommit,
-      );
-
-      const pushRepository = await dependencies.createIsolatedPushRepository();
-      try {
+      await refusing("candidate", async () => {
+        const resolvedWorktree = await (
+          dependencies.resolvePath?.(delegation.worktreePath) ??
+          Promise.resolve(delegation.worktreePath)
+        );
         if (
-          !pushRepository.directory.startsWith(
-            `${publisherRuntimeDirectory}/git-`,
-          )
+          resolvedWorktree !== delegation.worktreePath ||
+          !resolvedWorktree.startsWith(`${worktreeRoot}/`)
         ) {
-          throw new Error("Keeplore push repository is outside its runtime boundary");
+          throw new Error("Registered Delegated Worktree escaped its root");
         }
-        let lastAuthenticationError: InstallationAuthenticationError | undefined;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          await assertDelegationStillActive(dependencies, delegation);
-          const token = await mintInstallationToken(dependencies, credentials);
-          try {
-            const pullRequest = await publishWithToken({
-              appSlug,
-              delegation,
-              dependencies,
-              headCommit: request.candidate.headCommit,
-              pushRepository: pushRepository.directory,
-              token,
-            });
-            return {
-              headCommit: request.candidate.headCommit,
-              pullRequest: {
-                baseBranch: keeploreProductionBranch,
-                headBranch: delegation.branch,
-                headCommit: request.candidate.headCommit,
-                state: "open",
-                url: pullRequest.url,
-              },
-              repository: keeploreRepository,
-            };
-          } catch (error) {
-            if (!(error instanceof InstallationAuthenticationError)) throw error;
-            lastAuthenticationError = error;
-          } finally {
-            await revokeInstallationToken(dependencies, token);
+        await inspectCandidate(
+          dependencies,
+          delegation,
+          request.candidate.headCommit,
+        );
+      });
+
+      return refusing("publication", async () => {
+        const pushRepository = await dependencies.createIsolatedPushRepository();
+        try {
+          if (
+            !pushRepository.directory.startsWith(
+              `${publisherRuntimeDirectory}/git-`,
+            )
+          ) {
+            throw new Error("Keeplore push repository is outside its runtime boundary");
           }
+          let lastAuthenticationError: InstallationAuthenticationError | undefined;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            await assertDelegationStillActive(dependencies, delegation);
+            const token = await mintInstallationToken(dependencies, credentials);
+            try {
+              const pullRequest = await publishWithToken({
+                appSlug,
+                delegation,
+                dependencies,
+                headCommit: request.candidate.headCommit,
+                pushRepository: pushRepository.directory,
+                token,
+              });
+              return {
+                headCommit: request.candidate.headCommit,
+                pullRequest: {
+                  baseBranch: keeploreProductionBranch,
+                  headBranch: delegation.branch,
+                  headCommit: request.candidate.headCommit,
+                  state: "open",
+                  url: pullRequest.url,
+                },
+                repository: keeploreRepository,
+              };
+            } catch (error) {
+              if (!(error instanceof InstallationAuthenticationError)) throw error;
+              lastAuthenticationError = error;
+            } finally {
+              await revokeInstallationToken(dependencies, token);
+            }
+          }
+          throw lastAuthenticationError ?? new Error("Keeplore publication failed");
+        } finally {
+          await pushRepository.dispose();
         }
-        throw lastAuthenticationError ?? new Error("Keeplore publication failed");
-      } finally {
-        await pushRepository.dispose();
-      }
+      });
     },
   };
 }
@@ -991,7 +1067,7 @@ async function startProductionServer(): Promise<void> {
     if (!isMissingFile(error)) throw error;
   });
   const server = createServer((request, response) => {
-    void handlePublisherRequest(publisher, request, response);
+    void handleKeeplorePublisherRequest({ publisher, request, response });
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -1028,24 +1104,104 @@ async function createProductionIsolatedPushRepository(): Promise<IsolatedPushRep
   };
 }
 
-async function handlePublisherRequest(
-  publisher: ReturnType<typeof createKeeploreCandidatePublisher>,
-  request: IncomingMessage,
-  response: ServerResponse,
-): Promise<void> {
-  try {
-    if (request.method === "GET" && request.url === "/healthz") {
-      sendJson(response, 200, { status: "ok" });
-      return;
-    }
-    if (request.method !== "POST" || request.url !== "/publish") {
-      sendJson(response, 404, { error: "not-found" });
-      return;
-    }
-    sendJson(response, 200, await publisher.publish(await readJson(request)));
-  } catch {
-    sendJson(response, 422, { error: "publication-refused" });
+/**
+ * Answer one request, keeping every refusal reason on this host.
+ *
+ * A refusal arrives after a telephone call, a model run, PHPUnit, and
+ * screenshot capture have all already succeeded, so the reason it happened is
+ * worth more than any other line this service writes. It is written here,
+ * beside the service that derived it, because the reasons describe production
+ * branch rules and App grants: the response, the Delegation Result, and
+ * everything else the Subagent can read carry the refusal code alone.
+ */
+export async function handleKeeplorePublisherRequest(input: {
+  readonly journal?: (entry: KeeplorePublisherJournalEntry) => void;
+  readonly publisher: {
+    publish(request: unknown): Promise<KeeplorePublicationResult>;
+  };
+  readonly request: IncomingMessage;
+  readonly response: ServerResponse;
+}): Promise<void> {
+  const { publisher, request, response } = input;
+  const journal = input.journal ?? writeJournalLine;
+  if (request.method === "GET" && request.url === "/healthz") {
+    sendJson(response, 200, { status: "ok" });
+    return;
   }
+  if (request.method !== "POST" || request.url !== "/publish") {
+    sendJson(response, 404, { error: "not-found" });
+    return;
+  }
+  let delegationId: string | undefined;
+  let published: KeeplorePublicationResult | undefined;
+  try {
+    const untrustedRequest = await refusing("request", () => readJson(request));
+    delegationId = safelyNamedDelegation(untrustedRequest);
+    // The published result is sent outside the catch: a fault while answering
+    // is not a refusal, and its 422 would be written to a sent response.
+    published = await publisher.publish(untrustedRequest);
+  } catch (error) {
+    const code =
+      error instanceof PublicationRefusal ? error.code : "unattributed";
+    journal({
+      level: 50,
+      msg: "keeplore publication refused",
+      ...(delegationId === undefined ? {} : { delegationId }),
+      reason: describeRefusal(error),
+      refusal: code,
+    });
+    sendJson(response, 422, { error: "publication-refused", refusal: code });
+    return;
+  }
+  sendJson(response, 200, published);
+}
+
+/**
+ * The Delegation the request named, when it named one this may be written.
+ *
+ * The identity is read before the publisher has judged the request, so it is
+ * accepted only in the registered shape. Anything else is a request that names
+ * no Delegation this journal will repeat.
+ */
+function safelyNamedDelegation(untrustedRequest: unknown): string | undefined {
+  if (!isRecord(untrustedRequest)) return undefined;
+  const delegationId = untrustedRequest.delegationId;
+  if (
+    typeof delegationId !== "string" ||
+    !/^[A-Za-z0-9_-]{1,120}$/u.test(delegationId)
+  ) {
+    return undefined;
+  }
+  return delegationId;
+}
+
+/**
+ * Reduce a refusal to one bounded log-safe line.
+ *
+ * Every message described here is authored in this file or by a command it
+ * spawned, never by the caller, and control characters are collapsed so one
+ * refusal cannot become several journal lines.
+ */
+function describeRefusal(error: unknown): string {
+  const message =
+    error instanceof Error
+      ? error.message.replaceAll(/[\p{Cc}\p{Cf}\s]+/gu, " ").trim()
+      : "";
+  if (message === "") return "Keeplore publication was refused without a reason";
+  return message.length > maximumRefusalReasonLength
+    ? `${message.slice(0, maximumRefusalReasonLength - 1)}…`
+    : message;
+}
+
+/**
+ * The publisher's own journal line.
+ *
+ * This service is installed as one file and started directly by systemd, so it
+ * shares no logging module with the worker; the envelope is kept identical to
+ * `writeOperatorLogLine` so both land in one journal in one shape.
+ */
+function writeJournalLine(entry: KeeplorePublisherJournalEntry): void {
+  process.stderr.write(`${JSON.stringify({ time: Date.now(), ...entry })}\n`);
 }
 
 async function productionGitHubRequest(
@@ -1145,7 +1301,12 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
     }
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    // The parser quotes the body it rejected, and this reason is journalled.
+    throw new Error("Keeplore publication request is not JSON");
+  }
 }
 
 function sendJson(

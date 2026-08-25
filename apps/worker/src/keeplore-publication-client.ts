@@ -1,6 +1,7 @@
 import { request as requestHttp } from "node:http";
 
 import {
+  keeploreCandidatePublicationRefusalSchema,
   keeploreCandidatePublicationRequestSchema,
   keeploreCandidatePublicationResultSchema,
   type KeeploreCandidatePublicationRequest,
@@ -69,7 +70,10 @@ function postJson(
           if (response.statusCode !== 200) {
             reject(
               new Error(
-                `Keeplore publisher refused the request (${response.statusCode ?? 0})`,
+                `Keeplore publisher refused the request (${describeRefusalResponse(
+                  response.statusCode ?? 0,
+                  chunks,
+                )})`,
               ),
             );
             return;
@@ -85,4 +89,31 @@ function postJson(
     request.once("error", reject);
     request.end(serialized);
   });
+}
+
+/**
+ * Say what the publisher refused, in the only terms it discloses.
+ *
+ * The publisher keeps every reason it derived in its own journal on the Agent
+ * Host, because those reasons describe production branch rules and App grants.
+ * What crosses the socket is the phase that refused, which separates a
+ * boundary refusal from a rejected candidate in this Delegation's own failure
+ * without naming either. A response carrying no registered code is reported by
+ * its status alone rather than by whatever else it said.
+ */
+function describeRefusalResponse(statusCode: number, chunks: readonly Buffer[]): string {
+  const refusal = keeploreCandidatePublicationRefusalSchema.safeParse(
+    parseJson(Buffer.concat(chunks).toString("utf8")),
+  );
+  return refusal.success
+    ? `${statusCode}: ${refusal.data.refusal}`
+    : `${statusCode}`;
+}
+
+function parseJson(body: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
 }

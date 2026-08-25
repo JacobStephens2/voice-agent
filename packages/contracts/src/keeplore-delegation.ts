@@ -142,6 +142,30 @@ export const keeploreCandidatePublicationResultSchema = z
   })
   .strict();
 
+/**
+ * All the publisher will say about a refusal outside the Agent Host.
+ *
+ * The publisher re-derives production branch rules, App grants, and a
+ * Delegation's registered assignment, so its reasons describe host state a
+ * Subagent must not learn. The code names the phase that refused — enough for
+ * the runner to report a boundary refusal rather than a rejected candidate —
+ * and the reason itself stays in the publisher's journal. `unattributed` is
+ * the publisher failing before it reached a check, which is a defect in that
+ * service rather than a refusal of this candidate.
+ */
+export const keeploreCandidatePublicationRefusalSchema = z
+  .object({
+    error: z.literal("publication-refused"),
+    refusal: z.enum([
+      "candidate",
+      "policy",
+      "publication",
+      "request",
+      "unattributed",
+    ]),
+  })
+  .strict();
+
 export const keeploreWorktreeSchema = z
   .object({
     baseCommit: commitSchema,
@@ -377,6 +401,9 @@ export type KeeploreCandidatePublicationRequest = z.infer<
 >;
 export type KeeploreCandidatePublicationResult = z.infer<
   typeof keeploreCandidatePublicationResultSchema
+>;
+export type KeeploreCandidatePublicationRefusal = z.infer<
+  typeof keeploreCandidatePublicationRefusalSchema
 >;
 export type KeeploreDelegationBrief = z.infer<
   typeof keeploreDelegationBriefSchema
