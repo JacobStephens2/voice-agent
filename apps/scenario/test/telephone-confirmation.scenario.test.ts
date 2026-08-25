@@ -81,7 +81,7 @@ test.each([
       occurredAt: "2026-08-24T10:00:00.000Z",
       stt: { durationMs: 100, provider: "deterministic-scenario-stt" },
       telephoneSessionId: "telephone-session-confirmation-language",
-      transcript: "Restart Bountywell production",
+      transcript: "Bountywell is unavailable, restart it",
       turnId: "confirmation-request",
     });
     expect(requested.actions).toMatchObject([
@@ -155,7 +155,7 @@ test("a Task Confirmation held through unclear speech is accepted by a later aff
     occurredAt: "2026-08-24T10:00:00.000Z",
     stt: { durationMs: 100, provider: "deterministic-scenario-stt" },
     telephoneSessionId: "telephone-session-held",
-    transcript: "Restart Bountywell production",
+    transcript: "Bountywell is unavailable, restart it",
     turnId: "held-request",
   });
   for (const [index, unclear] of ["Sorry?", "Hmm, what was that"].entries()) {

@@ -596,7 +596,7 @@ describe("Telephone Bountywell health inquiry", () => {
           occurredAt: "2026-08-17T17:00:00.500Z",
           stt: { durationMs: 330, provider: "assemblyai" },
           telephoneSessionId: "telephone-session-confirmation",
-          transcript: "Restart Bountywell production so the API becomes healthy",
+          transcript: "Bountywell production is unavailable, please restart it",
           turnId: "confirmation-delivery-001",
         }),
       ).resolves.toEqual({
@@ -606,7 +606,7 @@ describe("Telephone Bountywell health inquiry", () => {
             interruptible: true,
             kind: "request-task-confirmation",
             text:
-              "Please confirm this state-changing task: Bountywell production — Restart Bountywell production so the API becomes healthy.",
+              "Please confirm this state-changing task: Bountywell production — Bountywell production is unavailable, please restart it.",
           },
         ],
       });
@@ -638,7 +638,7 @@ describe("Telephone Bountywell health inquiry", () => {
           occurredAt: "2026-08-17T17:00:02.500Z",
           stt: { durationMs: 280, provider: "assemblyai" },
           telephoneSessionId: "telephone-session-confirmation",
-          transcript: "Deploy the Bountywell fix now",
+          transcript: "Bountywell is still unavailable, restart it again",
           turnId: "confirmation-delivery-003",
         }),
       ).resolves.toMatchObject({
