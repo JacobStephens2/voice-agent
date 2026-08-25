@@ -39,6 +39,25 @@ export function isNonInterruptibleOperationKind(
 export const callAdmissionStateSchema = z.enum(["open", "paused"]);
 export type CallAdmissionState = z.infer<typeof callAdmissionStateSchema>;
 
+/**
+ * The runtime a reopened gate was confirmed against. Every value names a
+ * healthy runtime someone actually read; there is no value for reopening
+ * without one, because that never happens.
+ */
+export const callAdmissionReopenReasonSchema = z.enum([
+  /**
+   * The attempt stopped before the atomic switch, so the prior Release was
+   * never replaced and nothing was restored. It is confirmed healthy in its own
+   * right before the gate reopens.
+   */
+  "abandoned-before-switch",
+  "rollback-verified",
+  "verified",
+]);
+export type CallAdmissionReopenReason = z.infer<
+  typeof callAdmissionReopenReasonSchema
+>;
+
 export const callAdmissionPauseReasonSchema = z.enum(["self-promotion"]);
 export type CallAdmissionPauseReason = z.infer<
   typeof callAdmissionPauseReasonSchema
@@ -71,6 +90,13 @@ export const safePointObservationSchema = z
     /** Unsettled work that survives the switch under its own identity. */
     resumableOperations: z.number().int().nonnegative(),
     reached: z.boolean(),
+    /**
+     * Sessions reserved before admission closed and not yet live. They must
+     * clear too: a warm session is an admission already granted, and letting
+     * one activate after the safe point was read would switch the runtime out
+     * from under a call that had just begun.
+     */
+    warmTelephoneSessions: z.number().int().nonnegative(),
   })
   .strict();
 export type SafePointObservation = z.infer<typeof safePointObservationSchema>;
@@ -87,6 +113,7 @@ export const safePointDispositionSchema = z
     nonInterruptibleOperationsAtRequest: z.number().int().nonnegative(),
     observations: z.number().int().positive(),
     resumableOperationsAtRequest: z.number().int().nonnegative(),
+    warmTelephoneSessionsAtRequest: z.number().int().nonnegative(),
   })
   .strict();
 export type SafePointDisposition = z.infer<typeof safePointDispositionSchema>;
@@ -98,7 +125,10 @@ export type SafePointDisposition = z.infer<typeof safePointDispositionSchema>;
  */
 export const selfPromotionVerificationChecks = [
   "api-health",
-  "callback-admission",
+  /** The active Release is the one this attempt switched to. */
+  "atomic-switch",
+  /** This attempt still holds the closed gate it is about to reopen. */
+  "call-admission",
   "durable-store-compatibility",
   "public-health",
   "service-restart",

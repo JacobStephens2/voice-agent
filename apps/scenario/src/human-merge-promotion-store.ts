@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 
 import type {
+  CallAdmissionReopenReason,
   CallAdmissionState,
   FixtureCodebaseRegistration,
   FixtureDeploymentContract,
@@ -39,6 +40,11 @@ export interface PromotionCodebase {
   readonly applicationId: string;
   readonly buildCommand: string;
   readonly health: FixtureDeploymentContract["health"];
+  /**
+   * The self-Promotion boundary this codebase enrols, present only when its
+   * Promotion replaces the runtime performing it.
+   */
+  readonly selfPromotion?: FixtureDeploymentContract["selfPromotion"];
   readonly initialProductionCommit: string;
   readonly liveCheckoutPath: string;
   readonly preflightCommand: string;
@@ -72,6 +78,13 @@ export const voiceAgentRepository = "JacobStephens2/voice-agent" as const;
 export const voiceAgentInitialProductionCommit =
   "3131313131313131313131313131313131313131" as const;
 
+/**
+ * The safe-point bound the Voice Agent's Deployment Contract declares: how many
+ * one-second observations a Self-Promotion may spend waiting for a live call to
+ * end before abandoning the attempt. Roughly fifteen minutes.
+ */
+export const voiceAgentSafePointObservations = 900;
+
 export const voiceAgentPromotionCodebase: PromotionCodebase = {
   applicationId: voiceAgentApplicationId,
   buildCommand: "pnpm install --frozen-lockfile && pnpm build",
@@ -84,6 +97,7 @@ export const voiceAgentPromotionCodebase: PromotionCodebase = {
   productionBranch: "main",
   releaseRoot: "/opt/voice-agent/releases",
   repository: voiceAgentRepository,
+  selfPromotion: { safePointObservations: voiceAgentSafePointObservations },
   sourceCheckoutRoot: "/var/lib/voice-agent-source",
 };
 
@@ -189,7 +203,16 @@ export interface PromotionStore {
       | NonNullable<PromotionEvidenceRecordProjection["promotion"]["verification"]>
       | undefined;
   }): PromotionEvidenceRecordProjection;
+  /** The Release production is serving right now. */
+  findActiveRelease(): PromotionEvidenceRecordProjection["promotion"]["release"];
   findActiveContract(): FixtureDeploymentContract;
+  /**
+   * The Release that was active when this attempt switched, read from the
+   * attempt rather than recovered from a Release identifier's shape.
+   */
+  findPreviousRelease(
+    attemptId: string,
+  ): PromotionEvidenceRecordProjection["promotion"]["release"];
   findRecord(taskId: string): PromotionEvidenceRecordProjection | undefined;
   findRegistration(): FixtureCodebaseRegistration;
   hasAttempt(commit: string): boolean;
@@ -212,7 +235,7 @@ export interface PromotionStore {
    */
   recordSelfPromotion(input: {
     readonly admission?: {
-      readonly reopenedAfter?: "rollback-verified" | "verified";
+      readonly reopenedAfter?: CallAdmissionReopenReason;
       readonly state: CallAdmissionState;
     };
     readonly attemptId: string;
@@ -416,7 +439,7 @@ export function createPromotionStore(
       attempt?.admission_json === null || attempt?.admission_json === undefined
         ? undefined
         : (JSON.parse(attempt.admission_json) as {
-            readonly reopenedAfter?: "rollback-verified" | "verified";
+            readonly reopenedAfter?: CallAdmissionReopenReason;
             readonly state: CallAdmissionState;
           });
     const safePoint =
@@ -575,6 +598,9 @@ export function createPromotionStore(
       preflightCommand: codebase.preflightCommand,
       releaseRoot: codebase.releaseRoot,
       revision: 1,
+      ...(codebase.selfPromotion === undefined
+        ? {}
+        : { selfPromotion: codebase.selfPromotion }),
       source: "voice-agent-policy",
     };
     database
@@ -1324,6 +1350,28 @@ export function createPromotionStore(
       return completeUnhealthyTransaction.immediate(input);
     },
     findActiveContract,
+    findActiveRelease() {
+      const environment = database
+        .prepare(`
+          SELECT active_release_json FROM promotion_environment
+          WHERE application_id = ?
+        `)
+        .get(codebase.applicationId) as
+        | { readonly active_release_json: string | null }
+        | undefined;
+      return environment?.active_release_json == null
+        ? undefined
+        : parseStored(
+            environment.active_release_json,
+            promotionReleaseProjectionSchema,
+          );
+    },
+    findPreviousRelease(attemptId) {
+      const previous = findAttempt(attemptId).previous_release_json;
+      return previous === null
+        ? undefined
+        : parseStored(previous, promotionReleaseProjectionSchema);
+    },
     findRecord,
     findRegistration,
     hasAttempt,

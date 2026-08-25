@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  callAdmissionReopenReasonSchema,
   callAdmissionStateSchema,
   safePointDispositionSchema,
   selfPromotionVerificationSchema,
@@ -68,6 +69,16 @@ export const deploymentContractSchema = z
     preflightCommand: promotionTextSchema,
     releaseRoot: promotionPathSchema,
     revision: z.number().int().positive(),
+    /**
+     * The self-Promotion boundary, present only for a codebase whose Promotion
+     * replaces the runtime performing it. It is part of the authenticated
+     * contract rather than the promoter's code, so changing how long a
+     * Promotion may wait for a live call is a Fresh Passkey Action.
+     */
+    selfPromotion: z
+      .object({ safePointObservations: z.number().int().min(1).max(10_000) })
+      .strict()
+      .optional(),
     source: z.literal("voice-agent-policy"),
   })
   .strict();
@@ -172,9 +183,7 @@ export const promotionEvidenceRecordProjectionSchema = z
          */
         admission: z
           .object({
-            reopenedAfter: z
-              .enum(["rollback-verified", "verified"])
-              .optional(),
+            reopenedAfter: callAdmissionReopenReasonSchema.optional(),
             state: callAdmissionStateSchema,
           })
           .strict()

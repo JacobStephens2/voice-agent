@@ -86,15 +86,39 @@ self_promotion_cli() {
     "$cli" "$@" 8>&- 9>&-
 }
 
+# The gate is one row, so any Release carrying the program can open it. Rolling
+# back to a Release predating this boundary would otherwise leave admission
+# closed with nothing on the host able to reopen it, so the Release that closed
+# the gate is the fallback: it carries the program by construction.
 reopen_call_admission() {
-  local release_path=$1
+  local release_path
   if [[ $admission_paused == false ]]; then return 0; fi
-  if self_promotion_cli "$release_path" reopen "$database"; then
-    admission_paused=false
-  else
-    printf 'Call Admission could not be reopened from %s; it stays closed.\n' \
-      "$release_path" >&2
+  for release_path in "$@"; do
+    if [[ -n $release_path ]] && \
+      self_promotion_cli "$release_path" reopen "$database"; then
+      admission_paused=false
+      return 0
+    fi
+  done
+  printf 'Call Admission could not be reopened; it stays closed.\n' >&2
+}
+
+# Every exit between closing the gate and the end of the attempt passes through
+# the cleanup trap, including a failure before the switch — a unit-definition
+# install, a daemon-reload, or the migration-backup integrity check. Reopening
+# from one place there, rather than at each success path, is what keeps a failed
+# attempt from leaving the prior, healthy Release serving with every caller
+# refused. The gate still reopens only against a runtime confirmed healthy now,
+# whichever Release that turns out to be.
+confirm_healthy_runtime_and_reopen() {
+  if [[ $admission_paused == false ]]; then return 0; fi
+  if ! "$script_directory/deployment-health.sh" >/dev/null 2>&1; then
+    printf 'No healthy runtime was confirmed; Call Admission stays closed.\n' >&2
+    return 1
   fi
+  reopen_call_admission "$(readlink -f /opt/voice-agent/current 2>/dev/null)" \
+    "$previous" "$release"
+  [[ $admission_paused == false ]]
 }
 
 restore_unit_definitions() {
@@ -134,10 +158,6 @@ rollback_failed_promotion() {
         voice-agent-promotion-resume.service || true
     fi
     "$script_directory/deployment-health.sh"
-    # A healthy runtime has now been confirmed, so the callers refused during
-    # the switch may come back. A restored Release that cannot be confirmed
-    # leaves the gate closed: the health check above exits non-zero first.
-    reopen_call_admission "$previous"
     printf 'Restored previous release %s and its service definitions.\n' \
       "$(basename "$previous")" >&2
   elif [[ $switched == true ]]; then
@@ -147,9 +167,6 @@ rollback_failed_promotion() {
   fi
 }
 
-abandon_before_switch() {
-  reopen_call_admission "$previous"
-}
 
 cleanup() {
   local status=$?
@@ -157,6 +174,7 @@ cleanup() {
   if [[ $rollback_required == true ]]; then
     rollback_failed_promotion || true
   fi
+  if ! confirm_healthy_runtime_and_reopen; then status=1; fi
   if [[ $promotion_started == true ]]; then
     attempt_stage=promotion
     if [[ ${VOICE_AGENT_FRESH_PASSKEY_RESUME:-0} == 1 ]]; then
@@ -182,20 +200,28 @@ trap cleanup EXIT
 # The immutable Release exists and has passed preflight before anything about
 # the running system changes, so a live call is never waited out behind a build
 # that might have failed anyway.
-if [[ -n $previous && -f "$previous/apps/worker/src/self-promotion-cli.ts" ]]; then
-  if ! self_promotion_cli "$previous" pause "$database" "$commit" \
-    "promotion:$commit"; then
+if [[ -n $previous ]]; then
+  pause_status=0
+  self_promotion_cli "$previous" pause "$database" "$commit" \
+    "promotion:$commit" || pause_status=$?
+  if [[ $pause_status -eq 2 ]]; then
+    # A prior Release built before this boundary existed carries no program to
+    # close the gate with. Promoting it forward is how the host acquires one.
+    printf 'Prior Release %s predates the Self-Promotion boundary; promoting without it.\n' \
+      "$(basename "$previous")" >&2
+  elif [[ $pause_status -ne 0 ]]; then
     printf 'Call Admission could not be closed for Self-Promotion of %s.\n' \
       "$commit" >&2
     exit 1
-  fi
-  admission_paused=true
-  if ! self_promotion_cli "$previous" await-safe-point "$database" \
-    "${VOICE_AGENT_SAFE_POINT_OBSERVATIONS:-900}"; then
-    printf 'Promotion Safe Point was not reached for %s; the prior Release stays active.\n' \
-      "$commit" >&2
-    abandon_before_switch
-    exit 1
+  else
+    admission_paused=true
+    # Unset lets the program's own bound apply, so the number lives in one place.
+    if ! self_promotion_cli "$previous" await-safe-point "$database" \
+      ${VOICE_AGENT_SAFE_POINT_OBSERVATIONS:+"$VOICE_AGENT_SAFE_POINT_OBSERVATIONS"}; then
+      printf 'Promotion Safe Point was not reached for %s; the prior Release stays active.\n' \
+        "$commit" >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -252,13 +278,6 @@ if [[ $healthy == true ]]; then
   "$script_directory/deployment-health.sh"
   systemctl enable "${enabled_units[@]}"
   rollback_required=false
-  # Confirmed healthy, so the switched Release readmits Telephone Sessions.
-  reopen_call_admission "$release"
-  if [[ $admission_paused == true ]]; then
-    printf 'Release %s is healthy but Call Admission stays closed.\n' \
-      "$commit" >&2
-    exit 1
-  fi
   printf 'Promoted Voice Agent release %s.\n' "$commit"
   exit 0
 fi

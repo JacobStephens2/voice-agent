@@ -37,12 +37,19 @@ try {
   } else if (command === "await-safe-point") {
     // One observation a second, bounded so a promoter can never wait forever on
     // a call that will not end. Exceeding the bound abandons the attempt with
-    // the prior Release still active rather than ending the call.
-    const maximumObservations = Number.parseInt(first ?? "900", 10);
-    if (!Number.isInteger(maximumObservations) || maximumObservations < 1) {
+    // the prior Release still active rather than ending the call. An absent
+    // bound takes the runtime's own default, so the number lives in one place.
+    const maximumObservations =
+      first === undefined ? undefined : Number.parseInt(first, 10);
+    if (
+      maximumObservations !== undefined &&
+      (!Number.isInteger(maximumObservations) || maximumObservations < 1)
+    ) {
       throw new Error("The safe-point bound is a positive number of observations");
     }
-    const disposition = await runtime.awaitSafePoint({ maximumObservations });
+    const disposition = await runtime.awaitSafePoint(
+      maximumObservations === undefined ? {} : { maximumObservations },
+    );
     const resumable = await runtime.readResumableWork();
     process.stdout.write(
       `${JSON.stringify({ ...disposition, resumableOperations: resumable.length })}\n`,

@@ -60,12 +60,17 @@ export interface HumanMergePromotionScenarioOptions {
 
 export interface SelfPromotionScenarioOptions {
   /**
-   * Commits whose Release cannot read the durable store the active Release
-   * wrote. Verification fails on `durable-store-compatibility`, which is a
-   * different failure from an unhealthy health path and rolls back the same way.
+   * Readings a commit's Release fails after the switch, by check. Each is an
+   * independent reading of the switched runtime, so a Release whose health path
+   * answers can still be refused by, say, a durable store it cannot read.
    */
-  readonly incompatibleDurableStoreCommits?: readonly string[] | undefined;
-  /** Bounds the safe-point wait so a scenario cannot hang. */
+  readonly failedChecksByCommit?:
+    | Readonly<Record<string, readonly SelfPromotionVerificationCheck[]>>
+    | undefined;
+  /**
+   * Overrides the safe-point bound the Deployment Contract declares, so a
+   * scenario need not spend the enrolled number of observations.
+   */
   readonly maximumSafePointObservations?: number | undefined;
   /**
    * Invoked between safe-point observations, in place of waiting on a clock. A
@@ -354,13 +359,12 @@ export async function createHumanMergePromotionScenario(
           "Call Admission closed for Self-Promotion; new Telephone Sessions are refused.",
           { commit: attempt.merge_commit, reason: "self-promotion" },
         );
+        // The enrolled contract declares the bound; a scenario may shorten it.
+        const maximumObservations =
+          selfPromotionOptions?.maximumSafePointObservations ??
+          contract.selfPromotion?.safePointObservations;
         const safePoint = await selfPromotion.awaitSafePoint({
-          ...(selfPromotionOptions?.maximumSafePointObservations === undefined
-            ? {}
-            : {
-                maximumObservations:
-                  selfPromotionOptions.maximumSafePointObservations,
-              }),
+          ...(maximumObservations === undefined ? {} : { maximumObservations }),
         });
         const resumable = await selfPromotion.readResumableWork();
         store.recordSelfPromotion({ attemptId: attempt.id, safePoint });
@@ -369,13 +373,14 @@ export async function createHumanMergePromotionScenario(
           `${attempt.id}:work-disposed`,
           "work.disposed",
           options.now,
-          `Active work at the safe point: ${safePoint.activeTelephoneSessionsAtRequest} Telephone Session(s) allowed to end, ${safePoint.nonInterruptibleOperationsAtRequest} non-interruptible Operation(s) allowed to settle, ${resumable.length} resumable Operation(s) carried across the switch.`,
+          `Active work at the safe point: ${safePoint.activeTelephoneSessionsAtRequest} Telephone Session(s) allowed to end, ${safePoint.warmTelephoneSessionsAtRequest} reserved session(s) allowed to clear, ${safePoint.nonInterruptibleOperationsAtRequest} non-interruptible Operation(s) allowed to settle, ${resumable.length} resumable Operation(s) carried across the switch.`,
           {
             activeTelephoneSessions: safePoint.activeTelephoneSessionsAtRequest,
             endedForPromotion: safePoint.endedForPromotion,
             nonInterruptibleOperations:
               safePoint.nonInterruptibleOperationsAtRequest,
             resumableOperations: resumable.length,
+            warmTelephoneSessions: safePoint.warmTelephoneSessionsAtRequest,
           },
         );
         const safePointOperation = store.performOperation({
@@ -401,21 +406,32 @@ export async function createHumanMergePromotionScenario(
       }
       if (safePointDeadlineExceeded && selfPromotion !== undefined) {
         // Nothing switched, so the prior Release is still the active one and
-        // there is nothing to restore. Admission reopens against that runtime,
-        // which was healthy when the attempt started.
-        await selfPromotion.reopenCallAdmission();
-        store.recordSelfPromotion({
-          admission: { reopenedAfter: "rollback-verified", state: "open" },
-          attemptId: attempt.id,
-        });
-        store.appendEvidence(
-          attempt.record_id,
-          `${attempt.id}:admission-reopened`,
-          "admission.reopened",
-          options.now,
-          "Call Admission reopened against the unchanged prior Release; the Promotion never switched.",
-          { reopenedAfter: "rollback-verified" },
-        );
+        // there was never anything to restore. It still has to be confirmed
+        // healthy in its own right before the gate reopens — "untouched" is not
+        // the same reading as "healthy".
+        const active = store.findActiveRelease();
+        const activeHealthy =
+          active !== undefined &&
+          (options.healthStatusByCommit?.[active.commit] ??
+            contract.health.expectedStatus) === contract.health.expectedStatus;
+        if (activeHealthy) {
+          await selfPromotion.reopenCallAdmission();
+          store.recordSelfPromotion({
+            admission: {
+              reopenedAfter: "abandoned-before-switch",
+              state: "open",
+            },
+            attemptId: attempt.id,
+          });
+          store.appendEvidence(
+            attempt.record_id,
+            `${attempt.id}:admission-reopened`,
+            "admission.reopened",
+            options.now,
+            `Call Admission reopened against unchanged Release ${active.id}; the Promotion never switched.`,
+            { reopenedAfter: "abandoned-before-switch" },
+          );
+        }
         return store.completeUnhealthy({
           attemptId: attempt.id,
           now: options.now,
@@ -479,21 +495,33 @@ export async function createHumanMergePromotionScenario(
       if (selfPromotion !== undefined) {
         const admission = await selfPromotion.readCallAdmission();
         const healthy = verification.outcome === "healthy";
-        const compatible = !(
-          selfPromotionOptions?.incompatibleDurableStoreCommits ?? []
-        ).includes(attempt.merge_commit);
+        const active = store.findActiveRelease();
+        const failed =
+          selfPromotionOptions?.failedChecksByCommit?.[attempt.merge_commit] ??
+          [];
+        const passes = (
+          check: SelfPromotionVerificationCheck,
+          reading: boolean,
+        ) => reading && !failed.includes(check);
         const outcomes: Readonly<
           Record<SelfPromotionVerificationCheck, boolean>
         > = {
-          "api-health": healthy,
+          "api-health": passes("api-health", healthy),
+          "atomic-switch": passes("atomic-switch", active?.id === release.id),
           // The gate is still held by this Promotion Attempt, so reopening it
-          // readmits callbacks against the Release just verified.
-          "callback-admission":
-            admission.state === "paused" && admission.promotionId === attempt.id,
-          "durable-store-compatibility": compatible,
-          "public-health": healthy,
-          "service-restart": healthy,
-          "worker-readiness": healthy,
+          // readmits Telephone Sessions against the Release just verified.
+          "call-admission": passes(
+            "call-admission",
+            admission.state === "paused" &&
+              admission.promotionId === attempt.id,
+          ),
+          "durable-store-compatibility": passes(
+            "durable-store-compatibility",
+            true,
+          ),
+          "public-health": passes("public-health", healthy),
+          "service-restart": passes("service-restart", healthy),
+          "worker-readiness": passes("worker-readiness", healthy),
         };
         selfVerification = {
           checks: selfPromotionVerificationChecks.map((check) => ({
@@ -547,10 +575,10 @@ export async function createHumanMergePromotionScenario(
           // Admission reopens only against a runtime confirmed healthy. If the
           // restored Release cannot be confirmed either, the gate stays closed
           // rather than readmitting callers to a runtime nobody has verified.
-          const restoredCommit = restoredReleaseCommit(rollback, attempt);
+          const restored = store.findPreviousRelease(attempt.id);
           const restoredHealthy =
-            restoredCommit !== undefined &&
-            (options.healthStatusByCommit?.[restoredCommit] ??
+            restored !== undefined &&
+            (options.healthStatusByCommit?.[restored.commit] ??
               contract.health.expectedStatus) === contract.health.expectedStatus;
           if (restoredHealthy) {
             await selfPromotion.reopenCallAdmission();
@@ -657,20 +685,6 @@ export async function createHumanMergePromotionScenario(
       };
     },
   };
-}
-
-/**
- * The commit of the Release a rollback restored, which is the runtime whose
- * health decides whether Call Admission may reopen.
- */
-function restoredReleaseCommit(
-  rollback: PromotionOperationProjection,
-  attempt: { readonly merge_commit: string },
-): string | undefined {
-  const restored = rollback.restoredReleaseId;
-  if (restored === undefined) return undefined;
-  const commit = restored.slice(restored.lastIndexOf("-") + 1);
-  return commit === attempt.merge_commit ? undefined : commit;
 }
 
 export function signHumanMergeWebhook(

@@ -55,6 +55,14 @@ export interface SelfPromotionRuntime {
   reopenCallAdmission(): Promise<CallAdmissionRecord>;
 }
 
+/**
+ * One observation a second for roughly fifteen minutes — long enough for a
+ * Telephone Session to end on its own, short enough that a Promotion Attempt
+ * cannot wait indefinitely. A Deployment Contract may enrol its own bound;
+ * this is what applies when none is declared.
+ */
+export const defaultSafePointObservations = 900;
+
 export interface SelfPromotionRuntimeOptions {
   /** Waited between safe-point observations. */
   readonly delay?: (durationMs: number) => Promise<void>;
@@ -68,7 +76,8 @@ export function createSelfPromotionRuntime(
   options: SelfPromotionRuntimeOptions,
 ): SelfPromotionRuntime {
   const observationIntervalMs = options.observationIntervalMs ?? 1_000;
-  const defaultMaximumObservations = options.maximumObservations ?? 900;
+  const defaultMaximumObservations =
+    options.maximumObservations ?? defaultSafePointObservations;
   const delay =
     options.delay ??
     ((durationMs: number) =>
@@ -77,11 +86,13 @@ export function createSelfPromotionRuntime(
       }));
 
   async function observeSafePoint(): Promise<SafePointObservation> {
-    const [admission, activeSessions, unsettled] = await Promise.all([
-      options.store.readCallAdmission(),
-      options.store.findActiveTelephoneSessionIds(),
-      options.store.findUnsettledOperations(),
-    ]);
+    const [admission, activeSessions, warmSessions, unsettled] =
+      await Promise.all([
+        options.store.readCallAdmission(),
+        options.store.findActiveTelephoneSessionIds(),
+        options.store.findWarmTelephoneSessionIds(),
+        options.store.findUnsettledOperations(),
+      ]);
     const nonInterruptible = unsettled.filter((operation) =>
       isNonInterruptibleOperationKind(operation.kind),
     );
@@ -90,12 +101,17 @@ export function createSelfPromotionRuntime(
       admission: admission.state,
       nonInterruptibleOperations: nonInterruptible.length,
       // A safe point requires admission already closed: reaching it with
-      // admission open would only mean no call had arrived yet.
+      // admission open would only mean no call had arrived yet. Warm sessions
+      // count as well — one reserved before the gate closed can still become a
+      // live call, and switching after reading a clear safe point would then
+      // interrupt it.
       reached:
         admission.state === "paused" &&
         activeSessions.length === 0 &&
+        warmSessions.length === 0 &&
         nonInterruptible.length === 0,
       resumableOperations: unsettled.length - nonInterruptible.length,
+      warmTelephoneSessions: warmSessions.length,
     };
   }
 
@@ -122,6 +138,7 @@ export function createSelfPromotionRuntime(
         nonInterruptibleOperationsAtRequest: first.nonInterruptibleOperations,
         observations,
         resumableOperationsAtRequest: first.resumableOperations,
+        warmTelephoneSessionsAtRequest: first.warmTelephoneSessions,
       };
     },
     observeSafePoint,

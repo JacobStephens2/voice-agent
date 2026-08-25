@@ -226,7 +226,7 @@ Whether the runtime will accept a new Telephone Session, held in durable state r
 _Avoid_: Rate limit, maintenance mode, busy signal
 
 **Promotion Safe Point**:
-The state a Self-Promotion waits for before switching: Call Admission closed, no active Telephone Session, and every non-interruptible Operation settled at its declared safe boundary, while resumable work is carried across the switch under its own durable identity. It is reached by waiting, never by ending a live call to deploy sooner.
+The state a Self-Promotion waits for before switching: Call Admission closed, no Telephone Session live or reserved, and every non-interruptible Operation settled at its declared safe boundary, while resumable work is carried across the switch under its own durable identity. It is reached by waiting within the bound the Deployment Contract enrols, never by ending a live call to deploy sooner.
 _Avoid_: Drain timeout, graceful shutdown, quiesce window
 
 **Deployment Circuit Breaker**:

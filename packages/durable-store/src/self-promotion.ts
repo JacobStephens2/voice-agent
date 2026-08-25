@@ -31,6 +31,12 @@ export interface SelfPromotionStore {
   close(): Promise<void>;
   findActiveTelephoneSessionIds(): Promise<readonly string[]>;
   findUnsettledOperations(): Promise<readonly UnsettledOperation[]>;
+  /**
+   * Sessions reserved but not yet live. An admission granted before the gate
+   * closed is still an admission, so the safe point waits for these too rather
+   * than letting one activate into a call the switch would then interrupt.
+   */
+  findWarmTelephoneSessionIds(): Promise<readonly string[]>;
   pauseCallAdmission(input: {
     readonly changedAt: string;
     readonly commit: string;

@@ -86,15 +86,23 @@ export function createSqliteSelfPromotionStore(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
   );
   // These two tables belong to other stores on the same database. A Promotion
-  // may run before either has ever been created, so the statements are prepared
-  // on first use rather than at construction.
-  const findActiveSessionIds = () =>
-    database.prepare<[], { readonly session_id: string }>(`
+  // may run before either has ever been created, so these statements are
+  // prepared on first use and then kept, rather than at construction.
+  const prepared = new Map<string, Database.Statement>();
+  const prepare = <Row>(sql: string) => {
+    const existing = prepared.get(sql);
+    if (existing !== undefined) return existing as Database.Statement<[], Row>;
+    const statement = database.prepare<[], Row>(sql);
+    prepared.set(sql, statement);
+    return statement;
+  };
+  const sessionIdsInState = (state: "active" | "warm") =>
+    prepare<{ readonly session_id: string }>(`
       SELECT session_id FROM telephone_boundary_sessions
-      WHERE state = 'active' ORDER BY activated_at, session_id
+      WHERE state = '${state}' ORDER BY reserved_at, session_id
     `);
-  const findUnsettledOperations = () =>
-    database.prepare<[], OperationRow>(`
+  const unsettledOperations = () =>
+    prepare<OperationRow>(`
       SELECT id, task_id, kind, status FROM operations
       WHERE status IN ('accepted', 'running') ORDER BY created_at, id
     `);
@@ -107,11 +115,11 @@ export function createSqliteSelfPromotionStore(
       // A Promotion may run before the telephone path has ever been used, so an
       // absent table means no live call rather than an unreadable safe point.
       if (hasTable.get("telephone_boundary_sessions") === undefined) return [];
-      return findActiveSessionIds().all().map((row) => row.session_id);
+      return sessionIdsInState("active").all().map((row) => row.session_id);
     },
     async findUnsettledOperations() {
       if (hasTable.get("operations") === undefined) return [];
-      return findUnsettledOperations().all().map(
+      return unsettledOperations().all().map(
         (row): UnsettledOperation => ({
           id: row.id,
           kind: row.kind,
@@ -119,6 +127,10 @@ export function createSqliteSelfPromotionStore(
           taskId: row.task_id,
         }),
       );
+    },
+    async findWarmTelephoneSessionIds() {
+      if (hasTable.get("telephone_boundary_sessions") === undefined) return [];
+      return sessionIdsInState("warm").all().map((row) => row.session_id);
     },
     async pauseCallAdmission(input) {
       pauseAdmission.run(

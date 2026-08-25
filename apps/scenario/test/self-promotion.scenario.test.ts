@@ -65,11 +65,13 @@ test("an idle Self-Promotion closes admission, switches, and reopens against the
     nonInterruptibleOperationsAtRequest: 0,
     observations: 1,
     resumableOperationsAtRequest: 0,
+    warmTelephoneSessionsAtRequest: 0,
   });
   expect(record?.promotion.selfVerification).toEqual({
     checks: [
       { check: "api-health", outcome: "passed" },
-      { check: "callback-admission", outcome: "passed" },
+      { check: "atomic-switch", outcome: "passed" },
+      { check: "call-admission", outcome: "passed" },
       { check: "durable-store-compatibility", outcome: "passed" },
       { check: "public-health", outcome: "passed" },
       { check: "service-restart", outcome: "passed" },
@@ -166,6 +168,91 @@ test("a new Telephone Session is refused while admission is closed and admitted 
   await expect(
     scenario.world?.admitTelephoneSession("later-caller"),
   ).resolves.toEqual({ decision: "accepted", resource: "warm-session" });
+  await scenario.close();
+});
+
+test("a session reserved before the gate closed is not switched out from under", async () => {
+  const activations: string[] = [];
+  let waits = 0;
+  const scenario = await createSelfPromotionScenario({
+    ids: ["task-warm", "attempt-warm"],
+    selfPromotion: {
+      async onSafePointWait() {
+        waits += 1;
+        // The reservation granted before the pause becomes a live call, exactly
+        // the race the safe point exists to lose: the switch must not happen
+        // between reading a clear safe point and this activation.
+        if (waits === 1) {
+          const activated =
+            await scenario.world?.activateTelephoneSession("warm-caller");
+          activations.push(activated?.decision ?? "unavailable");
+        }
+        if (waits === 3) await scenario.world?.endTelephoneSession("warm-caller");
+      },
+    },
+  });
+  await expect(
+    scenario.world?.admitTelephoneSession("warm-caller"),
+  ).resolves.toEqual({ decision: "accepted", resource: "warm-session" });
+
+  await deliverSigned(scenario, "delivery-warm", merge(upgradeCommit));
+  const record = await scenario.processNext();
+
+  expect(activations).toEqual(["accepted"]);
+  expect(record?.promotion.safePoint).toMatchObject({
+    // The reservation was warm, not yet live, when the gate closed.
+    activeTelephoneSessionsAtRequest: 0,
+    disposition: "waited",
+    endedForPromotion: 0,
+    warmTelephoneSessionsAtRequest: 1,
+  });
+  expect(record?.promotion.attempt?.status).toBe("succeeded");
+  await scenario.close();
+});
+
+test("a call that never ends abandons the attempt rather than being deployed away", async () => {
+  const scenario = await createSelfPromotionScenario({
+    ids: ["task-first", "attempt-first", "task-stuck", "attempt-stuck"],
+    selfPromotion: { maximumSafePointObservations: 3 },
+  });
+  await deliverSigned(scenario, "delivery-first", merge(upgradeCommit));
+  await scenario.processNext();
+  await scenario.world?.beginTelephoneSession("endless-call");
+
+  await deliverSigned(
+    scenario,
+    "delivery-stuck",
+    merge(secondUpgradeCommit, upgradeCommit),
+  );
+  const record = await scenario.processNext();
+
+  expect(record?.promotion.safePoint).toMatchObject({
+    disposition: "deadline-exceeded",
+    endedForPromotion: 0,
+    observations: 3,
+  });
+  // Nothing switched, so there was never anything to restore, and the call is
+  // still up.
+  expect(record?.promotion.attempt?.status).toBe("rolled-back");
+  expect(record?.promotion.rollback).toEqual({
+    attemptedReleaseId: `voice-agent-${secondUpgradeCommit}`,
+    performed: false,
+  });
+  expect(record?.promotion.verification).toBeUndefined();
+  expect(kinds(record)).not.toContain("release.switched");
+  // The prior Release was never replaced, so the Evidence Record says exactly
+  // that rather than claiming a rollback was verified.
+  expect(record?.promotion.admission).toEqual({
+    reopenedAfter: "abandoned-before-switch",
+    state: "open",
+  });
+  // The call is still up, and admission is open again for the next caller.
+  await expect(
+    scenario.world?.listActiveTelephoneSessionIds(),
+  ).resolves.toEqual(["endless-call"]);
+  await expect(scenario.readCallAdmission()).resolves.toMatchObject({
+    state: "open",
+  });
   await scenario.close();
 });
 
@@ -289,7 +376,9 @@ test("a Release that cannot read the durable store rolls back although its healt
       "attempt-incompatible",
     ],
     selfPromotion: {
-      incompatibleDurableStoreCommits: [incompatibleCommit],
+      failedChecksByCommit: {
+        [incompatibleCommit]: ["durable-store-compatibility"],
+      },
     },
   });
 

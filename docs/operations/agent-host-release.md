@@ -293,17 +293,29 @@ ones that mutate Agent Host state — `bountywell.service.restart`,
 own settlement. Every other Operation is read-only or idempotent under its own
 durable identity and is carried across the switch for the new runtime to finish.
 
+A session reserved but not yet live counts too. An admission granted before the
+gate closed can still become a call, and switching between reading a clear safe
+point and that activation would interrupt a call that had just begun.
+
 Waiting is the only instrument. A live call is allowed to end naturally or reach
 an explicit safe handoff; it is never ended to deploy sooner. The promoter
-observes once a second up to `VOICE_AGENT_SAFE_POINT_OBSERVATIONS` (900 by
-default, about fifteen minutes). Exceeding that bound abandons the attempt with
-the prior Release still active and reopens admission, rather than taking the
-call away.
+observes once a second up to the bound the Deployment Contract enrols — 900
+observations, about fifteen minutes — which `VOICE_AGENT_SAFE_POINT_OBSERVATIONS`
+overrides for one run. Exceeding the bound abandons the attempt: nothing is
+switched, the prior Release keeps serving, and admission reopens against it once
+that runtime is confirmed healthy. The call is not taken away.
 
-Admission reopens only once a healthy runtime is confirmed: the switched Release
-after its health verification passes, or the restored Release after a rollback
-verifies. If neither can be confirmed the gate stays closed, and callers keep
-meeting the bounded refusal instead of reaching a runtime nobody has verified.
+Admission reopens only once a healthy runtime is confirmed — the switched
+Release, or whatever is serving after a failed attempt has restored or abandoned
+its way back. That decision is made in one place, the promoter's cleanup path,
+so a failure anywhere between closing the gate and the end of the attempt still
+reopens it: a unit-definition install, a `daemon-reload`, or the migration-backup
+integrity check would otherwise leave the prior healthy Release serving with
+every caller refused. The gate reopens only after `deployment-health.sh` passes
+against whatever is active at that moment. If nothing healthy can be confirmed
+the gate stays closed, and callers keep meeting the bounded refusal instead of
+reaching a runtime nobody has verified.
+
 Read the gate directly when diagnosing a host that is refusing calls:
 
 ```bash

@@ -66,17 +66,22 @@ curl --fail --silent --show-error --max-time 5 \
 # Release the edge cannot serve must fail here rather than after admission has
 # already reopened.
 systemctl is-active --quiet apache2
-curl --fail --silent --show-error --max-time 5 --insecure \
+# `--resolve` pins the connection to the loopback while curl still validates the
+# certificate against the real name, so an expired or wrong certificate fails
+# here rather than passing an unverified probe.
+curl --fail --silent --show-error --max-time 5 \
   --resolve voice.stephens.page:443:127.0.0.1 \
   https://voice.stephens.page/ >/dev/null
 # Apache proxies only `/api/`, so the proxy is proven by the authentication
 # boundary answering: an unauthenticated task request must be refused, not
 # unreachable. A `000` or `502` here is a dead edge, which is the failure this
 # reading exists to catch.
-edge_api_status=$(curl --silent --show-error --max-time 5 --insecure \
+# `|| true` keeps a dead edge reaching the comparison below: without it the
+# non-zero curl exit would abort under `set -e` before the status is read.
+edge_api_status=$(curl --silent --max-time 5 \
   --resolve voice.stephens.page:443:127.0.0.1 \
   --output /dev/null --write-out '%{http_code}' \
-  https://voice.stephens.page/api/tasks)
+  https://voice.stephens.page/api/tasks || true)
 if [[ $edge_api_status != 401 ]]; then
   printf 'Public edge returned %s for an unauthenticated task request.\n' \
     "$edge_api_status" >&2

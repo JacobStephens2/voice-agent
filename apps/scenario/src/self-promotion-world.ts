@@ -26,6 +26,11 @@ export interface SelfPromotionWorld {
    */
   admitTelephoneSession(sessionId: string): Promise<TelephoneBoundaryDecision>;
   beginTelephoneSession(sessionId: string): Promise<void>;
+  /**
+   * Turn a session reserved before the gate closed into a live call, as a
+   * Callback Handshake that was already in flight would.
+   */
+  activateTelephoneSession(sessionId: string): Promise<TelephoneBoundaryDecision>;
   /** Start an unsettled Operation of the given kind. */
   beginOperation(input: {
     readonly kind: string;
@@ -34,6 +39,7 @@ export interface SelfPromotionWorld {
   }): Promise<void>;
   close(): Promise<void>;
   endTelephoneSession(sessionId: string): Promise<void>;
+  listActiveTelephoneSessionIds(): Promise<readonly string[]>;
   listUnsettledOperations(): Promise<readonly UnsettledOperation[]>;
   readCallAdmission(): Promise<CallAdmissionRecord>;
   /** Let a non-interruptible Operation reach its declared safe boundary. */
@@ -71,6 +77,12 @@ export function createSelfPromotionWorld(input: {
   `);
 
   return {
+    async activateTelephoneSession(sessionId) {
+      return boundaries.activateSession({
+        activatedAt: input.now(),
+        sessionId,
+      });
+    },
     async admitTelephoneSession(sessionId) {
       return boundaries.reserveWarmSession({
         reservedAt: input.now(),
@@ -113,12 +125,17 @@ export function createSelfPromotionWorld(input: {
       await selfPromotion.close();
     },
     async endTelephoneSession(sessionId) {
+      // A warm session that never became a call is released rather than ended.
+      await boundaries.releaseWarmSession(sessionId);
       await boundaries.endSession({
         durationMs: 1_000,
         endedAt: input.now(),
         reason: "completed",
         sessionId,
       });
+    },
+    async listActiveTelephoneSessionIds() {
+      return selfPromotion.findActiveTelephoneSessionIds();
     },
     async listUnsettledOperations() {
       return selfPromotion.findUnsettledOperations();
