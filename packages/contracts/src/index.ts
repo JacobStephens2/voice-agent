@@ -48,6 +48,7 @@ import {
 import { keeploreButtonTrialTaskSchema } from "./keeplore-delegation.ts";
 
 export * from "./promotion.ts";
+export * from "./self-promotion.ts";
 export * from "./callback-handshake.ts";
 export * from "./telephone-session.ts";
 export * from "./telephone-boundaries.ts";

@@ -8,6 +8,7 @@ import type {
 export * from "./callback-handshake.ts";
 export * from "./keeplore-onboarding.ts";
 export * from "./keeplore-delegation.ts";
+export * from "./self-promotion.ts";
 export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
 

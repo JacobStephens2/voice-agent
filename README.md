@@ -44,6 +44,7 @@ The selected modular voice pipeline begins with AssemblyAI speech-to-text, an Op
 - Subagents work under separate restricted identities in isolated non-production branches and worktrees.
 - A Subagent may prepare a verified candidate; a typed least-privilege publisher may push only its assigned non-production branch and open its pull request, never write `main` or merge.
 - Every Human Merge triggers a serial, verified Promotion with rollback and a circuit breaker.
+- Promoting the agent's own code closes Call Admission and waits for a Promotion Safe Point; a live call is never ended to deploy sooner, and admission reopens only once a healthy runtime is confirmed.
 - Unattended changes must be recoverable, scoped, auditable, and automatically verified.
 - Durable Tasks and idempotent Operations remain authoritative across calls, callbacks, PWA sessions, and process restarts.
 - Evidence is derived from append-only events; raw telephone audio is not retained during ordinary use.
@@ -69,7 +70,7 @@ pnpm scenario:callback
 pnpm scenario:telephone
 ```
 
-The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. The telephone and continuity scenarios cover paraphrases, background-work callback consent, authenticated resumption, call and process loss, safe cancellation, provider failures, generic notification fallback, idempotent replay, and the authenticated 90-day Evidence lifecycle policy. They persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
+The scenarios need no credentials or network services. The Bountywell scenario sends the normalized health inquiry through the policy and orchestration path. The Callback Handshake scenario covers inbound admission, the fixed no-command notice, stored callback routing, answering-machine detection, DTMF authorization, one delayed retry, duplicate and reordered delivery, and fail-closed voicemail behavior. The Self-Promotion scenarios cover an idle upgrade, a live call the Promotion waits for, resumable and non-interruptible work, an incompatible Release, a failed health check, rollback, duplicate merge and reconciliation events, and a merged source attempting to activate its own Deployment Contract revision. The telephone and continuity scenarios cover paraphrases, background-work callback consent, authenticated resumption, call and process loss, safe cancellation, provider failures, generic notification fallback, idempotent replay, and the authenticated 90-day Evidence lifecycle policy. They persist durable state and append-only Evidence Events in temporary SQLite WAL databases and exercise the authenticated Fastify/React Evidence Record surface.
 
 After an exact Human Merge has been promoted, the attended slice-one campaign is
 run with:
@@ -183,4 +184,5 @@ repository-scoped, read-only GitHub App PEM and LiveKit credentials into
 separate root-only sources; it never accepts key contents through command
 arguments. Telnyx SIP credentials remain in the provider configurations. See
 [`docs/operations/agent-host-release.md`](docs/operations/agent-host-release.md)
-for the service boundary, health checks, and automatic/manual rollback path.
+for the service boundary, health checks, the Self-Promotion safe point, and the
+automatic/manual rollback path.
