@@ -275,6 +275,25 @@ sudo test "$(sudo stat -c %U /etc/voice-agent/keeplore-github-app.conf)" = root
 sudo test "$(sudo stat -c %U /etc/voice-agent/keeplore-github-app-private-key.pem)" = root
 sudo -u voice-codex test ! -r /etc/voice-agent/keeplore-github-app-private-key.pem
 sudo systemctl start keeplore-repository-policy.service
+# The pinned publisher re-derives its authority from the observation that
+# collector just appended, and refuses publication with a bare 422 when the
+# github-app record is missing a field it requires. That refusal arrives only
+# after a call, a model run, PHPUnit, and screenshot capture have all succeeded,
+# so read the journal here instead and stop while it is cheap.
+if ! sudo cat /var/lib/keeplore-promotions/repository-policy.jsonl \
+  | /usr/bin/jq -e -s '
+      [.[] | select(.kind == "github-app")]
+      | sort_by(.observedAt)
+      | last
+      | select(
+          (.appId | type) == "number" and
+          (.installationId | type) == "number" and
+          (.appSlug | type) == "string"
+        )
+    ' >/dev/null; then
+  warn "The recorded Keeplore github-app observation is missing the appId, installationId, or appSlug the pinned publisher requires; the installed collector predates the publisher. Run the attended deployment-authority upgrade from this reviewed Release, which now installs the Keeplore policy tools, then restart this trial."
+  exit 1
+fi
 sudo -u voice-codex -g voice-subagent-client /usr/bin/curl \
   --fail --silent --show-error --max-time 5 \
   --unix-socket "$PUBLISHER_SOCKET" http://localhost/healthz >/dev/null

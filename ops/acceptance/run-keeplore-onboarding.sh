@@ -254,6 +254,11 @@ KEEPLORE_GITHUB_APP_KEY_PATH=/etc/voice-agent/keeplore-github-app-private-key.pe
 CONFIGURATION
 sudo chown root:root "$KEEPLORE_CONFIGURATION"
 sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
+# This bootstraps a new host. Two of these — collect-keeplore-repository-policy.sh
+# and record-keeplore-bypass-attestation.sh — write the journal the pinned
+# publisher reads, so from here on the attended deployment-authority upgrade
+# keeps them current alongside that publisher; see
+# voice_agent_authority_keeplore_tools in ops/release/deployment-authority-manifest.sh.
 for script in keeplore-config.sh inspect-keeplore.sh install-keeplore-release.sh \
   keeplore-health.sh promote-keeplore-main.sh promote-keeplore-release.sh \
   prune-keeplore-releases.sh reconcile-keeplore-merges.sh \

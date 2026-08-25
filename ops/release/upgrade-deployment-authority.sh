@@ -40,6 +40,7 @@ current=$(host_path /opt/voice-agent/current)
 authority=$(host_path /usr/local/libexec/voice-agent)
 authority_parent=$(dirname "$authority")
 apparmor_directory=$(host_path /etc/apparmor.d)
+keeplore_tools_directory=$(host_path /usr/local/libexec/keeplore)
 repository_registration=$(host_path /etc/voice-agent/promotion-repository)
 promotion_state=$(host_path /var/lib/voice-agent-promotions/state.tsv)
 verified_merges=$(host_path \
@@ -167,6 +168,14 @@ for mapping in "${voice_agent_authority_programs[@]}"; do
     exit 1
   fi
   "$node_bin" --experimental-strip-types --check "$release/$source_path"
+done
+for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
+  source_path=${mapping%%:*}
+  if [[ ! -f $release/$source_path ]]; then
+    printf 'Reviewed deployment authority is missing %s.\n' "$source_path" >&2
+    exit 1
+  fi
+  bash -n "$release/$source_path"
 done
 for mapping in "${voice_agent_authority_extras[@]}"; do
   source_path=${mapping%%:*}
@@ -306,6 +315,24 @@ current_tmp=
 authorization_registry_stage=
 apparmor_previous=
 apparmor_changed=false
+keeplore_tools_previous=
+keeplore_tools_changed=false
+
+restore_keeplore_tools() {
+  local mapping tool target_path backup_path
+  if [[ $keeplore_tools_changed != true ]]; then return 0; fi
+  for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
+    tool=${mapping#*:}
+    target_path="$keeplore_tools_directory/$tool"
+    backup_path="$keeplore_tools_previous/$tool"
+    if [[ -f $backup_path ]]; then
+      install_reviewed_file 0755 "$backup_path" "$target_path"
+    else
+      rm -f -- "$target_path"
+    fi
+  done
+  keeplore_tools_changed=false
+}
 
 restore_apparmor_profiles() {
   local mapping profile target_path backup_path
@@ -344,6 +371,7 @@ restore_current_projection() {
 restore_previous_authority() {
   local failed="$authority_parent/.voice-agent.failed.$$"
   if [[ $switched == true && -d $previous ]]; then
+    restore_keeplore_tools
     restore_apparmor_profiles
     if [[ -d $authority ]]; then
       mv "$authority" "$failed"
@@ -403,6 +431,9 @@ cleanup() {
   fi
   if [[ -n $apparmor_previous && -d $apparmor_previous ]]; then
     rm -rf -- "$apparmor_previous"
+  fi
+  if [[ -n $keeplore_tools_previous && -d $keeplore_tools_previous ]]; then
+    rm -rf -- "$keeplore_tools_previous"
   fi
   if [[ -n $processing_request ]]; then rm -f -- "$processing_request"; fi
   rm -f -- "$authorization_challenge" "$authorization_candidates"
@@ -464,7 +495,7 @@ else
   current_backup=
 fi
 
-mkdir -p "$stage/systemd" "$stage/apparmor"
+mkdir -p "$stage/systemd" "$stage/apparmor" "$stage/keeplore"
 
 install_reviewed_file() {
   local mode=$1 source_path=$2 target_path=$3
@@ -493,6 +524,12 @@ for mapping in "${voice_agent_authority_programs[@]}"; do
   target_path=${mapping#*:}
   install_reviewed_file 0644 "$release/$source_path" "$stage/$target_path"
 done
+for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  install_reviewed_file 0755 "$release/$source_path" \
+    "$stage/keeplore/$target_path"
+done
 for mapping in "${voice_agent_authority_extras[@]}"; do
   source_path=${mapping%%:*}
   target_path=${mapping#*:}
@@ -510,6 +547,26 @@ backup=$(mktemp -d \
   "$authority_state/backups/before-$commit-$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")
 rmdir "$backup"
 cp -a "$previous" "$backup"
+
+keeplore_tools_previous=$(mktemp -d \
+  "$authority_parent/.voice-agent.keeplore.previous.XXXXXX")
+mkdir -p "$keeplore_tools_directory" "$backup/keeplore-tools"
+for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
+  tool=${mapping#*:}
+  target_path="$keeplore_tools_directory/$tool"
+  if [[ -f $target_path ]]; then
+    cp -p "$target_path" "$keeplore_tools_previous/$tool"
+    cp -p "$target_path" "$backup/keeplore-tools/$tool"
+  else
+    touch "$backup/keeplore-tools/.absent-$tool"
+  fi
+done
+keeplore_tools_changed=true
+for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
+  tool=${mapping#*:}
+  install_reviewed_file 0755 "$authority/keeplore/$tool" \
+    "$keeplore_tools_directory/$tool"
+done
 
 apparmor_previous=$(mktemp -d \
   "$authority_parent/.voice-agent.apparmor.previous.XXXXXX")
@@ -563,9 +620,12 @@ fi
 committed=true
 switched=false
 apparmor_changed=false
+keeplore_tools_changed=false
 rm -rf -- "$previous"
 rm -rf -- "$apparmor_previous"
 apparmor_previous=
+rm -rf -- "$keeplore_tools_previous"
+keeplore_tools_previous=
 rm -f -- "$processing_request"
 rm -f -- "$authorization_challenge"
 if [[ -n $current_backup ]]; then rm -f -- "$current_backup"; fi

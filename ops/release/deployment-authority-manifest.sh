@@ -39,6 +39,16 @@ voice_agent_authority_programs=(
   "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts"
 )
 
+# The Keeplore programs that write the repository-policy journal the pinned
+# publisher re-reads before it will publish anything. The publisher is reviewed
+# authority installed above; these must travel with it, because a host carrying
+# a newer publisher and an older writer refuses every publication over a field
+# one side stopped writing and the other still requires.
+voice_agent_authority_keeplore_tools=(
+  "ops/keeplore/collect-keeplore-repository-policy.sh:collect-keeplore-repository-policy.sh"
+  "ops/keeplore/record-keeplore-bypass-attestation.sh:record-keeplore-bypass-attestation.sh"
+)
+
 voice_agent_authority_extras=(
   "ops/prometheus/install-scrape.sh:install-prometheus-scrape.sh"
   "ops/grafana/install-dashboard.sh:install-grafana-dashboard.sh"
