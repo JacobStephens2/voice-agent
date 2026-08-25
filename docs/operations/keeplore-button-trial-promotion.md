@@ -108,7 +108,8 @@ supported command for this today.
 The gap is that nothing re-verifies a merge already serving. A supported
 re-promotion — switch to the retained Release, promote the merge commit again,
 and record both Promotion Attempts — would close it without any manual symlink
-edit. It is not built.
+edit. It is not built; it is #143, and it is worth building only if slice three
+needs closing against the existing merge rather than the next one.
 
 ## What the Promotion does
 
