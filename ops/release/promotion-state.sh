@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+# The Deployment Authority Drift a Promotion Attempt records is rendered here,
+# so the vocabulary for it is sourced rather than restated. Anything that
+# sources this file can record an attempt without knowing that.
+# shellcheck source=deployment-authority-drift.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deployment-authority-drift.sh"
+
 promotion_state_initialize() {
   getent group voice-agent >/dev/null || groupadd --system voice-agent
   promotion_state_directory=/var/lib/voice-agent-promotions
@@ -63,15 +69,62 @@ promotion_state_apply_result() {
   fi
 }
 
+# promotion_state_render_attempt — the journal line one Promotion Attempt adds.
+# promotion_state_render_metrics — the Prometheus projection an owner reads
+# through the API without root.
+#
+# Both write to standard output and touch no file, so what a Promotion reports
+# can be verified without root or the live state directory.
+#
+# drift_json is the Deployment Authority Drift observation rendered by
+# deployment-authority-drift.sh. It is reported, never judged: it reaches
+# neither promotion_state_apply_result nor the result argument, so a Release
+# whose reviewed content is still waiting on the attended upgrade cannot fail an
+# attempt, inflate the consecutive-failure count, or open the Deployment Circuit
+# Breaker.
+promotion_state_render_attempt() {
+  local attempted_at=$1 commit=$2 previous=$3 result=$4 stage=$5 \
+    drift_json=${6:-$voice_agent_authority_drift_none}
+  printf '{"attemptedAt":"%s","commit":"%s","previous":"%s","result":"%s","stage":"%s","consecutiveFailures":%s,"circuitState":"%s","authorityDrift":%s}\n' \
+    "$attempted_at" "$commit" "$previous" "$result" "$stage" \
+    "$consecutive_failures" "$circuit_state" "$drift_json"
+}
+
+promotion_state_render_metrics() {
+  local result=$1 drift_paths=${2:-0} circuit_open=0 drift=0 success_value=0
+  if [[ $circuit_state == open ]]; then circuit_open=1; fi
+  if (( drift_paths > 0 )); then drift=1; fi
+  if [[ $result == succeeded ]]; then success_value=1; fi
+  printf '# HELP voice_agent_promotion_consecutive_failures Consecutive failed Promotion Attempts.\n'
+  printf '# TYPE voice_agent_promotion_consecutive_failures gauge\n'
+  printf 'voice_agent_promotion_consecutive_failures %s\n' "$consecutive_failures"
+  printf '# HELP voice_agent_promotion_circuit_open Whether the Deployment Circuit Breaker is open.\n'
+  printf '# TYPE voice_agent_promotion_circuit_open gauge\n'
+  printf 'voice_agent_promotion_circuit_open %s\n' "$circuit_open"
+  printf '# HELP voice_agent_promotion_last_attempt_success Whether the latest Promotion Attempt succeeded.\n'
+  printf '# TYPE voice_agent_promotion_last_attempt_success gauge\n'
+  printf 'voice_agent_promotion_last_attempt_success %s\n' "$success_value"
+  printf '# HELP voice_agent_promotion_authority_drift Whether the active Release diverges from the pinned deployment authority.\n'
+  printf '# TYPE voice_agent_promotion_authority_drift gauge\n'
+  printf 'voice_agent_promotion_authority_drift %s\n' "$drift"
+  printf '# HELP voice_agent_promotion_authority_drift_paths Reviewed paths the attended deployment-authority upgrade would apply.\n'
+  printf '# TYPE voice_agent_promotion_authority_drift_paths gauge\n'
+  printf 'voice_agent_promotion_authority_drift_paths %s\n' "$drift_paths"
+}
+
 promotion_state_record() {
   local commit=$1 previous=$2 result=$3 stage=$4 manual_rollback=${5:-0} \
-    counted=${6:-1}
-  local attempted_at metric_tmp state_tmp success_value
+    counted=${6:-1} drift_json=${7:-} drift_paths=${8:-0}
+  local attempted_at metric_tmp state_tmp
   if [[ ! $commit =~ ^[0-9a-f]{40}$ ]] || \
     [[ $result != succeeded && $result != failed ]] || \
     [[ ! $stage =~ ^[a-z-]+$ ]]; then
     printf 'Promotion Attempt evidence is invalid.\n' >&2
     return 1
+  fi
+  if [[ ! $drift_paths =~ ^[0-9]+$ ]]; then drift_paths=0; fi
+  if [[ -z $drift_json ]]; then
+    drift_json=$voice_agent_authority_drift_none
   fi
 
   attempted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -86,27 +139,13 @@ promotion_state_record() {
   chmod 0640 "$state_tmp"
   mv -f "$state_tmp" "$promotion_state"
 
-  printf '{"attemptedAt":"%s","commit":"%s","previous":"%s","result":"%s","stage":"%s","consecutiveFailures":%s,"circuitState":"%s"}\n' \
-    "$attempted_at" "$commit" "$previous" "$result" "$stage" \
-    "$consecutive_failures" "$circuit_state" >> "$promotion_attempts"
+  promotion_state_render_attempt "$attempted_at" "$commit" "$previous" \
+    "$result" "$stage" "$drift_json" >> "$promotion_attempts"
   chown root:voice-agent "$promotion_attempts"
   chmod 0640 "$promotion_attempts"
 
-  if [[ $result == succeeded ]]; then success_value=1; else success_value=0; fi
   metric_tmp=$(mktemp "$promotion_state_directory/.metrics.XXXXXX")
-  printf '# HELP voice_agent_promotion_consecutive_failures Consecutive failed Promotion Attempts.\n' > "$metric_tmp"
-  printf '# TYPE voice_agent_promotion_consecutive_failures gauge\n' >> "$metric_tmp"
-  printf 'voice_agent_promotion_consecutive_failures %s\n' "$consecutive_failures" >> "$metric_tmp"
-  printf '# HELP voice_agent_promotion_circuit_open Whether the Deployment Circuit Breaker is open.\n' >> "$metric_tmp"
-  printf '# TYPE voice_agent_promotion_circuit_open gauge\n' >> "$metric_tmp"
-  if [[ $circuit_state == open ]]; then
-    printf 'voice_agent_promotion_circuit_open 1\n' >> "$metric_tmp"
-  else
-    printf 'voice_agent_promotion_circuit_open 0\n' >> "$metric_tmp"
-  fi
-  printf '# HELP voice_agent_promotion_last_attempt_success Whether the latest Promotion Attempt succeeded.\n' >> "$metric_tmp"
-  printf '# TYPE voice_agent_promotion_last_attempt_success gauge\n' >> "$metric_tmp"
-  printf 'voice_agent_promotion_last_attempt_success %s\n' "$success_value" >> "$metric_tmp"
+  promotion_state_render_metrics "$result" "$drift_paths" > "$metric_tmp"
   chown root:voice-agent "$metric_tmp"
   chmod 0640 "$metric_tmp"
   mv -f "$metric_tmp" "$promotion_metrics"

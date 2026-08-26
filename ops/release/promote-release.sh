@@ -16,6 +16,8 @@ release="/opt/voice-agent/releases/$commit"
 script_directory=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=deployment-authority-manifest.sh
 source "$script_directory/deployment-authority-manifest.sh"
+# shellcheck source=deployment-authority-drift.sh
+source "$script_directory/deployment-authority-drift.sh"
 # The installed set is the pinned set. A narrower list here would strand a
 # reviewed unit change in the pinned authority: promoted, pinned, and never
 # delivered to /etc/systemd/system.
@@ -66,6 +68,8 @@ elif [[ -e /opt/voice-agent/current ]]; then
 fi
 
 unit_backup=$(mktemp -d /run/voice-agent-unit-backup.XXXXXX)
+voice_agent_authority_drift_paths_found=()
+voice_agent_authority_drift_record=$voice_agent_authority_drift_none
 rollback_required=false
 switched=false
 promotion_started=true
@@ -168,6 +172,30 @@ rollback_failed_promotion() {
 }
 
 
+# Deployment Authority Drift is an observation this attempt reports, not a
+# verdict it reaches. Automatic Promotion never replaces the pinned, root-owned
+# authority it is executing from, so a Release carrying reviewed changes under
+# `ops/release/` or `ops/systemd/` leaves them dormant until the attended
+# upgrade applies them. Naming them here is what keeps "live" and "live except
+# for the root-pinned parts" from reading the same. The comparison cannot fail
+# the attempt: every failure inside it leaves the observation empty.
+observe_authority_drift() {
+  local active
+  voice_agent_authority_drift_paths_found=()
+  voice_agent_authority_drift_record=$voice_agent_authority_drift_none
+  # A first installation that failed before switching leaves nothing serving,
+  # and a candidate that never became active has no dormant reviewed content to
+  # report. Silence there is the honest reading.
+  active=$(readlink -f /opt/voice-agent/current 2>/dev/null) || active=""
+  if [[ -z $active || ! -d $active ]]; then return 0; fi
+  voice_agent_authority_drift_observe "$active" "$script_directory"
+  if [[ ${#voice_agent_authority_drift_paths_found[@]} -eq 0 ]]; then return 0; fi
+  printf 'Release %s diverges from the pinned deployment authority at: %s\n' \
+    "$(basename "$active")" "${voice_agent_authority_drift_paths_found[*]}" >&2
+  printf 'Apply the reviewed changes with the attended %s; the Promotion itself is unaffected.\n' \
+    "$voice_agent_authority_drift_action" >&2
+}
+
 cleanup() {
   local status=$?
   trap - EXIT
@@ -182,12 +210,17 @@ cleanup() {
     elif [[ ${VOICE_AGENT_DEPLOYMENT_AUTHORITY_UPGRADE:-0} == 1 ]]; then
       attempt_stage=deployment-authority-upgrade
     fi
+    observe_authority_drift || true
     if [[ $status -eq 0 ]]; then
       promotion_state_record "$commit" "${previous:--}" succeeded \
-        "$attempt_stage" "${VOICE_AGENT_MANUAL_ROLLBACK:-0}"
+        "$attempt_stage" "${VOICE_AGENT_MANUAL_ROLLBACK:-0}" 1 \
+        "$voice_agent_authority_drift_record" \
+        "${#voice_agent_authority_drift_paths_found[@]}"
     else
       promotion_state_record "$commit" "${previous:--}" failed \
-        "$attempt_stage" "${VOICE_AGENT_MANUAL_ROLLBACK:-0}"
+        "$attempt_stage" "${VOICE_AGENT_MANUAL_ROLLBACK:-0}" 1 \
+        "$voice_agent_authority_drift_record" \
+        "${#voice_agent_authority_drift_paths_found[@]}"
     fi
   fi
   rm -rf -- "$unit_backup"

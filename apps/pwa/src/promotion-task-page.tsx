@@ -76,6 +76,20 @@ export function PromotionTaskPage({
           </dd>
           <dt>Deployment Circuit Breaker</dt>
           <dd>Circuit {record.promotion.circuit.state}</dd>
+          {record.promotion.authorityDrift === undefined ? null : (
+            <>
+              <dt>Pinned Deployment Authority</dt>
+              <dd>
+                {record.promotion.authorityDrift.diverged
+                  ? `This Release diverges at ${record.promotion.authorityDrift.paths.join(
+                      ", ",
+                    )}. Apply the reviewed changes with the attended ${
+                      record.promotion.authorityDrift.action
+                    }.`
+                  : "This Release matches the Pinned Deployment Authority"}
+              </dd>
+            </>
+          )}
         </dl>
       </section>
 

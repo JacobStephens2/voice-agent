@@ -31,9 +31,20 @@ import {
 export type { FixtureGitHubEvent } from "@voice-agent/contracts";
 
 const trustedSessionToken = "scenario-trusted-session";
+const authorityDriftAction =
+  "./ops/upgrade-agent-host-deployment-authority.sh" as const;
 const commitPattern = /^[0-9a-f]{40}$/u;
 
 export interface HumanMergePromotionScenarioOptions {
+  /**
+   * The Deployment Authority Drift the Agent Host would observe for a Release,
+   * by commit: the pinned-relative paths whose reviewed content the pinned,
+   * root-owned authority is not yet running. Automatic Promotion never applies
+   * these, so the host reports them and leaves them to the attended upgrade.
+   */
+  readonly authorityDriftByCommit?:
+    | Readonly<Record<string, readonly string[]>>
+    | undefined;
   /** The Registered Codebase this Promotion queue serves. */
   readonly codebase?: PromotionCodebase | undefined;
   readonly contractActivationAuthority?:
@@ -299,6 +310,43 @@ export async function createHumanMergePromotionScenario(
         options.healthStatusByCommit?.[attempt.merge_commit] ??
         contract.health.expectedStatus;
 
+      /**
+       * Report what the Release left serving carries that the pinned,
+       * root-owned deployment authority is not running. It is observed against
+       * the Release actually serving when the attempt settles — the promoted
+       * one, or the prior one a rollback restored — because that is the
+       * question an owner is asking. Drift settles nothing: the attempt's
+       * result and the Deployment Circuit Breaker are decided before this runs
+       * and never read it.
+       */
+      const observeAuthorityDrift = (activeCommit: string | undefined) => {
+        const paths =
+          activeCommit === undefined
+            ? []
+            : (options.authorityDriftByCommit?.[activeCommit] ?? []);
+        if (paths.length === 0) {
+          store.recordAuthorityDrift({
+            attemptId: attempt.id,
+            drift: { diverged: false, paths: [] },
+          });
+          return;
+        }
+        store.recordAuthorityDrift({
+          attemptId: attempt.id,
+          drift: { action: authorityDriftAction, diverged: true, paths: [...paths] },
+        });
+        store.appendEvidence(
+          attempt.record_id,
+          `${attempt.id}:authority-drift`,
+          "authority.drift-observed",
+          options.now,
+          `Release ${activeCommit} diverges from the pinned deployment authority at ${paths.join(
+            ", ",
+          )}; the attended ${authorityDriftAction} applies it.`,
+          { action: authorityDriftAction, paths: paths.join(" ") },
+        );
+      };
+
       const build = store.performOperation({
         actualHealthStatus,
         attempt,
@@ -432,6 +480,11 @@ export async function createHumanMergePromotionScenario(
             { reopenedAfter: "abandoned-before-switch" },
           );
         }
+        // Nothing switched, so the Release still serving is the prior one, and
+        // what it carries that the pinned authority is not running is as true
+        // here as on any other settle path. Skipping the observation would make
+        // "no drift" and "nobody looked" read the same.
+        observeAuthorityDrift(store.findActiveRelease()?.commit);
         return store.completeUnhealthy({
           attemptId: attempt.id,
           now: options.now,
@@ -596,6 +649,7 @@ export async function createHumanMergePromotionScenario(
             );
           }
         }
+        observeAuthorityDrift(store.findActiveRelease()?.commit);
         return store.completeUnhealthy({
           attemptId: attempt.id,
           now: options.now,
@@ -618,6 +672,7 @@ export async function createHumanMergePromotionScenario(
           { reopenedAfter: "verified" },
         );
       }
+      observeAuthorityDrift(store.findActiveRelease()?.commit);
       return store.completeHealthy({
         attemptId: attempt.id,
         now: options.now,

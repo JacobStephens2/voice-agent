@@ -12,6 +12,7 @@ export const promotionEventLabels: Record<
 > = {
   "admission.paused": "Call Admission paused",
   "admission.reopened": "Call Admission reopened",
+  "authority.drift-observed": "Pinned Deployment Authority diverges",
   "circuit.changed": "Circuit state changed",
   "delivery.denied": "Delivery denied",
   "delivery.duplicate": "Duplicate delivery ignored",
