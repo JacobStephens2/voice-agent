@@ -24,6 +24,8 @@ import { promisify } from "node:util";
 
 import { afterEach, expect, test } from "vitest";
 
+import { readDeploymentAuthorityDrift } from "@voice-agent/scenario";
+
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 const temporaryDirectories: string[] = [];
@@ -126,6 +128,41 @@ test("an attended upgrade installs the Keeplore policy tools the pinned publishe
       readFile(join(fixture.keeploreTools, tool), "utf8"),
     ).resolves.toContain(`reviewed ${tool}`);
   }
+});
+
+test("the attended upgrade clears the drift it reported for the Keeplore tools", async () => {
+  const fixture = await deploymentAuthorityFixture();
+  const release = join(
+    fixture.root,
+    "opt/voice-agent/releases",
+    fixture.commit,
+  );
+  const drift = async (): Promise<readonly string[]> =>
+    readDeploymentAuthorityDrift({
+      pinnedRoot: fixture.authority,
+      releaseRoot: release,
+    });
+  // One pinned Keeplore tool holds stale reviewed bytes and the rest are not
+  // pinned at all. Both are drift, and both have to survive the comparison.
+  await mkdir(join(fixture.authority, "keeplore"), { recursive: true });
+  await writeExecutable(
+    join(fixture.authority, "keeplore/keeplore-config.sh"),
+    "#!/usr/bin/env bash\nprintf 'stale keeplore-config.sh\\n'\n",
+  );
+
+  expect(await drift()).toContain("keeplore/keeplore-config.sh");
+  expect(await drift()).toContain("keeplore/resolve-keeplore-worktree.sh");
+
+  await execFileAsync(fixture.upgrader, ["--activate", fixture.commit], {
+    env: {
+      ...process.env,
+      VOICE_AGENT_AUTHORITY_TEST_ROOT: fixture.root,
+    },
+  });
+
+  // Afterwards nothing reviewed is dormant. Reporting drift a run of the
+  // attended upgrade cannot clear trains an owner to ignore the field.
+  expect(await drift()).toEqual([]);
 });
 
 test("a failed attended upgrade restores the previous Keeplore policy tools", async () => {
