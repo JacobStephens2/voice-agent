@@ -187,7 +187,7 @@ finish() {
 
 TOTAL_STAGES=6
 KEEPLORE_CONFIGURATION=/etc/voice-agent/keeplore.conf
-KEEPLORE_TOOLS=/opt/voice-agent/keeplore
+KEEPLORE_TOOLS=/usr/local/libexec/keeplore
 PRODUCTION_BROWSER_STATE=/var/lib/voice-agent/browser/keeplore-production.json
 PROMOTION_JOURNAL=/var/lib/keeplore-promotions/attempts.jsonl
 ACCEPTANCE_RECORD=/var/lib/voice-agent/acceptance/slice-three.json
@@ -309,8 +309,12 @@ note "A failed verification restores the retained Release; nothing here treats t
 if [[ $(sudo readlink -f /opt/keeplore/current 2>/dev/null | xargs -r basename) \
   == "$MERGE_COMMIT" ]]; then
   warn "Keeplore already serves $MERGE_COMMIT, so this Promotion would verify nothing."
-  warn "See \"The trial's own merge has already happened\" in"
-  warn "docs/operations/keeplore-button-trial-promotion.md."
+  warn "Either verify the next Keeplore Human Merge — the recommended path — or"
+  warn "re-promote this one through the recorded path, which steps production"
+  warn "back to the retained Release for a bounded window:"
+  warn "  sudo $KEEPLORE_TOOLS/repromote-keeplore-merge.sh $MERGE_COMMIT"
+  warn "Read \"Re-promoting a merge already serving\" in"
+  warn "docs/operations/keeplore-button-trial-promotion.md first."
   exit 1
 fi
 PROMOTION_STATUS=0

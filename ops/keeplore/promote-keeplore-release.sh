@@ -7,6 +7,19 @@
 # KEEPLORE_VERIFICATION_DRILL=1 forces the candidate's verification to fail so
 # the owner can prove rollback. The restored Release is still verified for real,
 # and no registration or health configuration is mutated.
+#
+# KEEPLORE_SWITCH_DEADLINE is a Unix time after which this attempt must not
+# switch production. It is read once, immediately before the switch, and a
+# passed deadline is recorded as a failed attempt that changed nothing. It
+# never interrupts an attempt already past the switch: a Promotion killed
+# between switching and recording would leave production somewhere the journal
+# does not know about, which is the one thing worse than overrunning.
+#
+# KEEPLORE_REPROMOTION_KIND and KEEPLORE_REPROMOTION_MERGE_COMMIT are set only
+# by repromote-keeplore-merge.sh. They label this attempt as one move of a
+# re-promotion — `step-back`, `candidate`, or `restore` — and name the Human
+# Merge being re-verified, so the journal tells a re-promotion apart from a
+# first Promotion of the same commit.
 
 set -euo pipefail
 
@@ -18,9 +31,33 @@ keeplore_require_commit "${1:-}"
 keeplore_load_configuration
 
 commit=$1
+# Only a re-promotion sets these. They label the attempts it makes, so the
+# journal tells a bounded step back and a restore apart from a first Promotion
+# of the same commit, and they name the merge each move is in service of.
+repromotion_kind=${KEEPLORE_REPROMOTION_KIND:-}
+repromotion_merge_commit=${KEEPLORE_REPROMOTION_MERGE_COMMIT:-}
+if [[ -n $repromotion_kind ]]; then
+  case "$repromotion_kind" in
+    candidate|restore|step-back) ;;
+    *) printf 'Unknown Keeplore re-promotion kind %s.\n' "$repromotion_kind" >&2
+       exit 1 ;;
+  esac
+  if [[ ! $repromotion_merge_commit =~ ^[0-9a-f]{40}$ ]]; then
+    printf 'A re-promotion attempt must name the merge commit it re-verifies.\n' >&2
+    exit 1
+  fi
+fi
+# Stepping back to the retained Release, and restoring the merge commit after a
+# failed candidate, both move production onto a Release that was already
+# promoted once. Holding either to the merge's own acceptance bar would measure
+# the wrong Release and roll production somewhere nobody asked for, so those two
+# moves are health-verified only. The candidate is verified in full.
+verify_appearance=$keeplore_appearance_verification
+if [[ $repromotion_kind == step-back || $repromotion_kind == restore ]]; then
+  verify_appearance=0
+fi
 release="$keeplore_release_root/$commit"
-if [[ ! -f "$release/.keeplore-release" ]] || \
-  [[ $(<"$release/.keeplore-release") != "$commit" ]]; then
+if ! keeplore_immutable_release "$commit"; then
   printf 'Immutable Keeplore Release %s is unavailable.\n' "$commit" >&2
   exit 1
 fi
@@ -29,7 +66,7 @@ exec 9>/run/keeplore-promotion.lock
 flock -x 9
 state_directory=/var/lib/keeplore-promotions
 install -d -o root -g voice-agent -m 0750 "$state_directory"
-attempts="$state_directory/attempts.jsonl"
+attempts=$(keeplore_promotion_attempt_journal)
 
 previous=""
 if [[ -L $keeplore_current_link ]]; then
@@ -65,6 +102,10 @@ record_attempt() {
       printf ',"merge":{"actor":"%s","mergedAt":"%s","source":"%s"}' \
         "$KEEPLORE_MERGE_ACTOR" "$KEEPLORE_MERGED_AT" \
         "${KEEPLORE_MERGE_SOURCE:-webhook}"
+    fi
+    if [[ -n $repromotion_kind ]]; then
+      printf ',"repromotion":{"kind":"%s","mergeCommit":"%s"}' \
+        "$repromotion_kind" "$repromotion_merge_commit"
     fi
     if [[ -n ${health_actual_status:-} ]]; then
       printf ',"verification":{"actualStatus":%s' "$health_actual_status"
@@ -108,7 +149,7 @@ fi
 
 # The retained Release is the only honest baseline for "card view is
 # unchanged": measuring the candidate against itself proves nothing.
-if [[ $keeplore_appearance_verification == 1 ]]; then
+if [[ $verify_appearance == 1 ]]; then
   if [[ -z $previous || ! -d $previous ]]; then
     record_attempt failed appearance-baseline
     printf 'Appearance verification needs a serving Release to compare against.\n' >&2
@@ -121,6 +162,19 @@ if [[ $keeplore_appearance_verification == 1 ]]; then
     exit 1
   fi
   baseline_card_hash=$(jq -er '.cardHash' <<<"$appearance_baseline")
+fi
+
+if [[ -n ${KEEPLORE_SWITCH_DEADLINE:-} ]]; then
+  if [[ ! $KEEPLORE_SWITCH_DEADLINE =~ ^[0-9]+$ ]]; then
+    printf 'The declared switch deadline is not a Unix time.\n' >&2
+    exit 1
+  fi
+  if (( $(date +%s) >= KEEPLORE_SWITCH_DEADLINE )); then
+    record_attempt failed switch-deadline
+    printf 'Release %s reached its declared switch deadline before switching; production is unchanged.\n' \
+      "$commit" >&2
+    exit 1
+  fi
 fi
 
 switch_to "$release"
@@ -144,7 +198,7 @@ if [[ $healthy == true ]]; then
   # A Release can answer 200 while serving the stylesheet it was meant to
   # change, so health alone never completes a Promotion that asked for
   # appearance verification.
-  if [[ $keeplore_appearance_verification == 1 ]]; then
+  if [[ $verify_appearance == 1 ]]; then
     evidence_directory=$(keeplore_production_evidence_directory "$commit")
     # The verifier writes its screenshots here as voice-agent, so the directory
     # is owned by the identity that fills it rather than by the promoter.

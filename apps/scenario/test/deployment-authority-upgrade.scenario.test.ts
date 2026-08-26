@@ -47,6 +47,7 @@ const keeploreAuthorityTools = [
   "keeplore-config.sh",
   "promote-keeplore-release.sh",
   "record-keeplore-bypass-attestation.sh",
+  "repromote-keeplore-merge.sh",
   "resolve-keeplore-worktree.sh",
 ] as const;
 

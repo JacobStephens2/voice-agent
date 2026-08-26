@@ -161,7 +161,9 @@ const trialEvidenceEventSchema = z
       "merge.accepted",
       "notice.delivered",
       "release.built",
+      "release.restored",
       "release.rolled-back",
+      "release.stepped-back",
       "release.verified",
       "request.confirmed",
       "trial.concluded",
@@ -217,7 +219,7 @@ export const keeploreButtonTrialEvidenceRecordSchema = z
             commit: commitSchema,
             mergedAt: timestampSchema,
             repository: z.literal(keeploreRepository),
-            source: z.enum(["reconciliation", "webhook"]),
+            source: z.enum(["attended", "reconciliation", "webhook"]),
           })
           .strict()
           .optional(),

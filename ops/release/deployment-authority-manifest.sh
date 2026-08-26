@@ -47,13 +47,20 @@ voice_agent_authority_programs=(
 # The promoter and the shared boundaries it sources travel together for the
 # same reason: post-Promotion appearance verification is declared in the
 # registration and read by the promoter, and a host carrying one half of that
-# pair either verifies nothing or reads a setting nobody writes.
+# pair either verifies nothing or reads a setting nobody writes. The
+# re-promoter belongs to the same pair — it labels the attempts it makes, and a
+# host whose promoter did not yet understand those labels would appearance-
+# verify the retained Release it stepped back to and roll production onto it.
 voice_agent_authority_keeplore_tools=(
   "ops/keeplore/collect-keeplore-repository-policy.sh:collect-keeplore-repository-policy.sh"
   "ops/keeplore/keeplore-config.sh:keeplore-config.sh"
   "ops/keeplore/promote-keeplore-release.sh:promote-keeplore-release.sh"
   "ops/keeplore/record-keeplore-bypass-attestation.sh:record-keeplore-bypass-attestation.sh"
+  "ops/keeplore/repromote-keeplore-merge.sh:repromote-keeplore-merge.sh"
   "ops/keeplore/resolve-keeplore-worktree.sh:resolve-keeplore-worktree.sh"
+  # The Keeplore tools resolve the Human Merge verifier beside themselves, so a
+  # re-promotion can refuse an unverified commit before it moves production.
+  "ops/release/verify-human-merge.sh:verify-human-merge.sh"
 )
 
 voice_agent_authority_extras=(

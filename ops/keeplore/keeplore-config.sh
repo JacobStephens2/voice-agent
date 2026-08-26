@@ -37,6 +37,7 @@ keeplore_load_configuration() {
   keeplore_appearance_verification=
   keeplore_contract_revision=
   keeplore_required_check=
+  keeplore_repromotion_window_seconds=
   while IFS='=' read -r key value; do
     case "$key" in
       KEEPLORE_REPOSITORY) keeplore_repository=$value ;;
@@ -61,6 +62,7 @@ keeplore_load_configuration() {
       KEEPLORE_APPEARANCE_VERIFICATION) keeplore_appearance_verification=$value ;;
       KEEPLORE_CONTRACT_REVISION) keeplore_contract_revision=$value ;;
       KEEPLORE_REQUIRED_CHECK) keeplore_required_check=$value ;;
+      KEEPLORE_REPROMOTION_WINDOW_SECONDS) keeplore_repromotion_window_seconds=$value ;;
       *) ;;
     esac
   done < "$keeplore_configuration"
@@ -84,6 +86,11 @@ keeplore_load_configuration() {
   keeplore_contract_revision=${keeplore_contract_revision:-1}
   keeplore_required_check=${keeplore_required_check:-keeplore-verification}
   keeplore_production_branch=${keeplore_production_branch:-main}
+  # The longest production may serve the retained Release while a merge already
+  # serving is re-verified. Only a re-promotion reads it, and only a
+  # re-promotion refuses over it: a window nobody is using is no reason to fail
+  # every Promotion, health check, and prune run on this host.
+  keeplore_repromotion_window_seconds=${keeplore_repromotion_window_seconds:-900}
 
   if [[ ! $keeplore_repository =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || \
     [[ $keeplore_live_checkout != /* ]] || \
@@ -212,4 +219,56 @@ keeplore_require_commit() {
     printf 'A 40-character merge commit is required.\n' >&2
     return 1
   fi
+}
+
+# Whether a commit names an immutable Keeplore Release the promoter would
+# accept. Asked before a re-promotion moves production as well as by the
+# promoter itself, so the two cannot disagree about what is promotable.
+keeplore_immutable_release() {
+  local commit=$1 marker="$keeplore_release_root/$1/.keeplore-release"
+  [[ -f $marker ]] && [[ $(<"$marker") == "$commit" ]]
+}
+
+# The Agent Host's append-only Promotion Attempt journal. Named once so the
+# promoter and every reader agree where an attempt is recorded.
+keeplore_promotion_attempt_journal() {
+  printf '%s' /var/lib/keeplore-promotions/attempts.jsonl
+}
+
+# The Release production served immediately before a merge commit was promoted.
+#
+# It is read from the journal rather than guessed from the Release root: the
+# newest other Release on disk is not necessarily the one that merge replaced,
+# and a re-promotion that stepped back to the wrong Release would measure the
+# merge against a baseline nobody promised. A re-promotion's own step back and
+# restore are skipped, so their moves can never be read back as the Release a
+# merge replaced.
+keeplore_retained_release_commit() {
+  local commit=$1 journal=${2:-}
+  [[ -n $journal ]] || journal=$(keeplore_promotion_attempt_journal)
+  [[ -f $journal ]] || return 0
+  jq -rRs --arg commit "$commit" '
+    [ splits("\n")
+      | select(length > 0)
+      | (try fromjson catch empty)
+      | select(.application == "keeplore-production"
+          and .commit == $commit
+          and .result == "succeeded"
+          and .stage == "promotion"
+          and (.repromotion == null or .repromotion.kind == "candidate"))
+      | .previous // ""
+      | select(test("^[0-9a-f]{40}$"))
+    ] | last // ""' "$journal"
+}
+
+# Whether a commit is a verified Human Merge into the registered production
+# branch. The verifier travels with the release orchestrator on some hosts and
+# beside these tools on others, so it is resolved the same way the credential
+# helpers are rather than assumed into one layout.
+keeplore_verify_human_merge() {
+  local commit=$1 script_directory verifier
+  script_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  verifier="$script_directory/verify-human-merge.sh"
+  [[ -x $verifier ]] || verifier="$script_directory/../release/verify-human-merge.sh"
+  GH_TOKEN=$(keeplore_github_token) "$verifier" "$keeplore_repository" "$commit"
 }
