@@ -187,7 +187,7 @@ finish() {
 
 TOTAL_STAGES=6
 KEEPLORE_CONFIGURATION=/etc/voice-agent/keeplore.conf
-KEEPLORE_TOOLS=/opt/voice-agent/keeplore
+KEEPLORE_TOOLS=/usr/local/libexec/keeplore
 PRODUCTION_BROWSER_STATE=/var/lib/voice-agent/browser/keeplore-production.json
 PROMOTION_JOURNAL=/var/lib/keeplore-promotions/attempts.jsonl
 ACCEPTANCE_RECORD=/var/lib/voice-agent/acceptance/slice-three.json
@@ -284,6 +284,9 @@ note "The Administrative Publisher App cannot merge; pushing the branch or openi
 open_url "$PULL_REQUEST"
 step "Review the branch, single commit, changed path, checks, and screenshots."
 step "Merge it yourself with your own authenticated GitHub account."
+note "Already merged? A Promotion cannot verify a merge already serving. Read"
+note "\"The trial's own merge has already happened\" in"
+note "docs/operations/keeplore-button-trial-promotion.md before continuing."
 pause "Press Enter after the merge completes."
 ask MERGE_COMMIT "40-character merge commit produced by the Human Merge"
 if [[ ! $MERGE_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
@@ -300,6 +303,20 @@ sudo -u voice-agent /usr/bin/node --experimental-strip-types \
 stage "Promote and verify the exact merge commit"
 say "The Promotion builds an immutable Release outside the live checkout, preflights it, switches atomically, then verifies health and appearance."
 note "A failed verification restores the retained Release; nothing here treats that as complete."
+# A Promotion of the Release already serving is a no-op by design, so it
+# captures no baseline and produces no verdict. Say so here rather than letting
+# stage 6 report a mysteriously empty verification.
+if [[ $(sudo readlink -f /opt/keeplore/current 2>/dev/null | xargs -r basename) \
+  == "$MERGE_COMMIT" ]]; then
+  warn "Keeplore already serves $MERGE_COMMIT, so this Promotion would verify nothing."
+  warn "Either verify the next Keeplore Human Merge — the recommended path — or"
+  warn "re-promote this one through the recorded path, which steps production"
+  warn "back to the retained Release for a bounded window:"
+  warn "  sudo $KEEPLORE_TOOLS/repromote-keeplore-merge.sh $MERGE_COMMIT"
+  warn "Read \"Re-promoting a merge already serving\" in"
+  warn "docs/operations/keeplore-button-trial-promotion.md first."
+  exit 1
+fi
 PROMOTION_STATUS=0
 sudo "$KEEPLORE_TOOLS/promote-keeplore-main.sh" "$MERGE_COMMIT" || PROMOTION_STATUS=$?
 sudo tail -n 3 "$PROMOTION_JOURNAL" | jq -c '.'

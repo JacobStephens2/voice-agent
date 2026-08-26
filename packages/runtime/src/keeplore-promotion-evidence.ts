@@ -49,11 +49,30 @@ interface EvidenceEvent {
     | "release.built"
     | "release.preflighted"
     | "release.rolled-back"
+    | "release.switched"
     | "release.verified";
   readonly summary: string;
 }
 
 function describeAttempt(attempt: KeeplorePromotionAttemptRecord): EvidenceEvent {
+  // A re-promotion moves production off and back onto a Release deliberately.
+  // Neither move is a Promotion of the Release it switched to, so neither is
+  // described as one: the retained Release was already promoted once, and the
+  // merge being re-verified is named instead.
+  if (attempt.repromotion !== undefined && attempt.result === "succeeded") {
+    return {
+      details: {
+        commit: attempt.commit,
+        mergeCommit: attempt.repromotion.mergeCommit,
+        repromotion: attempt.repromotion.kind,
+      },
+      kind: "release.switched",
+      summary:
+        attempt.repromotion.kind === "step-back"
+          ? `Production stepped back to retained Release ${attempt.commit} so ${attempt.repromotion.mergeCommit} could be re-verified.`
+          : `Production was restored to Release ${attempt.commit} after re-verifying ${attempt.repromotion.mergeCommit} failed.`,
+    };
+  }
   if (attempt.result === "succeeded") {
     return {
       details: {
@@ -130,7 +149,10 @@ export async function projectKeeplorePromotionEvidence(options: {
     if (first === undefined || last === undefined) continue;
     const merge = ordered.find((attempt) => attempt.merge !== undefined)?.merge;
     const promoted = ordered.some(
-      (attempt) => attempt.result === "succeeded" && attempt.stage === "promotion",
+      (attempt) =>
+        attempt.result === "succeeded" &&
+        attempt.stage === "promotion" &&
+        attempt.repromotion === undefined,
     );
     const rolledBack = ordered.some(
       (attempt) =>

@@ -264,6 +264,7 @@ sudo chmod 0644 "$KEEPLORE_CONFIGURATION"
 # voice_agent_authority_keeplore_tools in ops/release/deployment-authority-manifest.sh.
 for script in keeplore-config.sh inspect-keeplore.sh install-keeplore-release.sh \
   keeplore-health.sh promote-keeplore-main.sh promote-keeplore-release.sh \
+  repromote-keeplore-merge.sh \
   prune-keeplore-releases.sh reconcile-keeplore-merges.sh \
   collect-keeplore-repository-policy.sh record-keeplore-bypass-attestation.sh \
   resolve-keeplore-worktree.sh repoint-keeplore-vhosts.sh; do
@@ -273,7 +274,7 @@ done
 # The Keeplore tools authenticate as the GitHub App themselves, so the App
 # credentials helpers sit beside them rather than being resolved out of the
 # release orchestrator's directory.
-for script in github-app-jwt.sh github-source-token.sh; do
+for script in github-app-jwt.sh github-source-token.sh verify-human-merge.sh; do
   sudo install -o root -g root -m 0755 \
     "$REPOSITORY_ROOT/ops/release/$script" "$KEEPLORE_TOOLS/$script"
 done

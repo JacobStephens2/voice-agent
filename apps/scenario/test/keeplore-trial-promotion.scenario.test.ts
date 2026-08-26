@@ -253,6 +253,111 @@ test("a fixed-width production control is named rather than swallowed", () => {
   });
 });
 
+test("a re-promotion verifies the original Human Merge rather than recording a second merge", async () => {
+  const delegation = await deliveredDelegation();
+
+  // The merge was promoted before appearance verification existed, so its own
+  // Promotion produced no verdict. The re-promotion steps production back to
+  // the retained Release and promotes the same merge commit again.
+  const record = projectKeeploreButtonTrialEvidenceRecord({
+    appearance: productionAppearance(),
+    attempts: [
+      unverifiedPromotedAttempt(),
+      steppedBackAttempt(),
+      repromotedAttempt(),
+    ],
+    delegation,
+    mergeCommit,
+  });
+
+  expect(record.task).toMatchObject({
+    conclusion: "Keeplore Button Trial is complete and verified in production.",
+    status: "completed",
+  });
+  // One merge, at the time the human actually merged, from the original
+  // Promotion rather than from the attended re-promotion that verified it.
+  expect(record.trial.merge).toMatchObject({
+    commit: mergeCommit,
+    mergedAt: "2026-08-25T15:00:00.000Z",
+    source: "webhook",
+  });
+  expect(
+    record.evidence.filter((event) => event.kind === "merge.accepted"),
+  ).toHaveLength(1);
+  // The Release the record names is the merge's, never the one production
+  // served for the bounded window in between.
+  expect(record.trial.release).toEqual({
+    commit: mergeCommit,
+    id: `keeplore-production-${mergeCommit}`,
+    path: `/opt/keeplore/releases/${mergeCommit}`,
+  });
+  expect(record.trial.rollback).toEqual({ performed: false });
+  const steppedBack = record.evidence.find(
+    (event) => event.kind === "release.stepped-back",
+  );
+  expect(steppedBack?.details).toMatchObject({
+    mergeCommit,
+    retainedReleaseCommit: previousCommit,
+  });
+});
+
+test("a re-promotion whose candidate fails restores the merge commit and stays incomplete", async () => {
+  const delegation = await deliveredDelegation();
+
+  const record = projectKeeploreButtonTrialEvidenceRecord({
+    appearance: {
+      ...productionAppearance(),
+      cardView: {
+        afterHash: "card-view-regressed",
+        beforeHash: "card-view-baseline",
+        unchanged: false,
+      },
+    },
+    attempts: [
+      unverifiedPromotedAttempt(),
+      steppedBackAttempt(),
+      {
+        ...repromotedAttempt(),
+        restored: previousCommit,
+        result: "failed",
+        stage: "appearance-verification",
+        verification: {
+          actualStatus: 200,
+          appearance: {
+            failures: ["Card view regressed against the retained Release"],
+            outcome: "failed",
+          },
+          expectedStatus: 200,
+        },
+      },
+      restoredAttempt(),
+    ],
+    delegation,
+    mergeCommit,
+  });
+
+  // The restore switched production back to the merge commit and succeeded at
+  // the promotion stage; that must never read as the merge having been
+  // verified.
+  expect(record.task).toMatchObject({
+    conclusion:
+      "Keeplore Button Trial was promoted and rolled back; production is unchanged.",
+    status: "failed",
+  });
+  expect(record.trial.rollback).toEqual({
+    attemptedReleaseCommit: mergeCommit,
+    performed: true,
+    restoredReleaseCommit: previousCommit,
+  });
+  expect(record.evidence.map((event) => event.kind)).toContain(
+    "release.restored",
+  );
+  const restored = record.evidence.find(
+    (event) => event.kind === "release.restored",
+  );
+  expect(restored?.details).toMatchObject({ restoredReleaseCommit: mergeCommit });
+});
+
 test("an unpromoted merge is pending rather than complete", async () => {
   const delegation = await deliveredDelegation();
 
@@ -495,6 +600,61 @@ function promotedAttempt(): KeeplorePromotionAttemptRecord {
       appearance: { failures: [], outcome: "passed" },
       expectedStatus: 200,
     },
+  };
+}
+
+/**
+ * The trial's own merge as it was actually promoted: before appearance
+ * verification existed, so health passed and no verdict was ever produced.
+ */
+function unverifiedPromotedAttempt(): KeeplorePromotionAttemptRecord {
+  return {
+    ...promotedAttempt(),
+    contractRevision: 1,
+    verification: { actualStatus: 200, expectedStatus: 200 },
+  };
+}
+
+function steppedBackAttempt(): KeeplorePromotionAttemptRecord {
+  return {
+    application: "keeplore-production",
+    attemptedAt: "2026-08-25T16:00:00.000Z",
+    commit: previousCommit,
+    contractRevision: 2,
+    previous: mergeCommit,
+    release: {
+      id: `keeplore-production-${previousCommit}`,
+      path: `/opt/keeplore/releases/${previousCommit}`,
+    },
+    repromotion: { kind: "step-back", mergeCommit },
+    restored: "",
+    result: "succeeded",
+    stage: "promotion",
+    verification: { actualStatus: 200, expectedStatus: 200 },
+  };
+}
+
+function repromotedAttempt(): KeeplorePromotionAttemptRecord {
+  return {
+    ...promotedAttempt(),
+    attemptedAt: "2026-08-25T16:04:00.000Z",
+    merge: {
+      actor: "JacobStephens2",
+      mergedAt: "2026-08-25T15:00:00.000Z",
+      source: "attended",
+    },
+    repromotion: { kind: "candidate", mergeCommit },
+  };
+}
+
+function restoredAttempt(): KeeplorePromotionAttemptRecord {
+  return {
+    ...promotedAttempt(),
+    attemptedAt: "2026-08-25T16:09:00.000Z",
+    merge: undefined,
+    previous: previousCommit,
+    repromotion: { kind: "restore", mergeCommit },
+    verification: { actualStatus: 200, expectedStatus: 200 },
   };
 }
 

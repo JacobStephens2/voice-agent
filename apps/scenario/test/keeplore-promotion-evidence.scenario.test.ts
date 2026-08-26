@@ -137,6 +137,43 @@ test("the host's journal becomes an Evidence Record for each merge commit", asyn
   );
 });
 
+test("a bounded step back is not a fresh Promotion of the retained Release", async () => {
+  const store = await createStore();
+  await store.saveRegistration(registration());
+  await store.saveContract(contract());
+  const journal = JSON.stringify({
+    application: "keeplore-production",
+    attemptedAt: "2026-08-25T16:00:00Z",
+    commit: retainedCommit,
+    previous: promotedCommit,
+    release: {
+      id: `keeplore-production-${retainedCommit}`,
+      path: `/opt/keeplore/releases/${retainedCommit}`,
+    },
+    repromotion: { kind: "step-back", mergeCommit: promotedCommit },
+    result: "succeeded",
+    stage: "promotion",
+    verification: { actualStatus: 200, expectedStatus: 200 },
+  });
+
+  const records = await projectKeeplorePromotionEvidence({
+    journal: { async read() { return journal; } },
+    store,
+  });
+  const steppedBack = records.find(
+    (record) => record.task.id === `keeplore-promotion:${retainedCommit}`,
+  );
+
+  // Serving the retained Release for a bounded window is not that Release's
+  // own onboarding being confirmed all over again.
+  expect(steppedBack?.evidence[0]?.kind).toBe("release.switched");
+  expect(steppedBack?.evidence[0]?.summary).toContain("stepped back");
+  expect(steppedBack?.onboarding.promotionAttempt?.status).toBe("queued");
+  expect(steppedBack?.task.conclusion).toBe(
+    "Keeplore onboarding could not be confirmed.",
+  );
+});
+
 async function createStore() {
   const directory = await mkdtemp(join(tmpdir(), "keeplore-evidence-"));
   temporaryDirectories.push(directory);

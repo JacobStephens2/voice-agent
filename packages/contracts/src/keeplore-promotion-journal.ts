@@ -32,7 +32,10 @@ export const keeplorePromotionAttemptRecordSchema = z
       .object({
         actor: z.string().min(1).max(120),
         mergedAt: timestampSchema,
-        source: z.enum(["reconciliation", "webhook"]),
+        // `attended` is an operator-run re-promotion of a merge already
+        // serving. The merge itself is still the original Human Merge; only
+        // the way this attempt reached the promoter differs.
+        source: z.enum(["attended", "reconciliation", "webhook"]),
       })
       .strict()
       .optional(),
@@ -41,6 +44,25 @@ export const keeplorePromotionAttemptRecordSchema = z
       .object({
         id: z.string().min(1).max(200),
         path: z.string().min(1).max(500).startsWith("/"),
+      })
+      .strict()
+      .optional(),
+    /**
+     * Present only on the attempts a re-promotion makes, which is what keeps a
+     * re-promotion distinguishable from a first Promotion of the same commit.
+     *
+     * `step-back` switches production to the retained Release so the merge has
+     * a genuinely different baseline to be measured against; `candidate`
+     * promotes the merge commit again and is the attempt that carries the
+     * appearance verdict; `restore` returns production to the merge commit
+     * after a failed or timed-out `candidate`, so no run ends on the retained
+     * Release. `mergeCommit` is the merge being re-verified, which is what ties
+     * a `step-back` attempt of some other Release to this one.
+     */
+    repromotion: z
+      .object({
+        kind: z.enum(["candidate", "restore", "step-back"]),
+        mergeCommit: commitSchema,
       })
       .strict()
       .optional(),

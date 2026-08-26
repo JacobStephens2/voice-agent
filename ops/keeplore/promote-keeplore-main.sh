@@ -22,9 +22,7 @@ chmod 0640 "$verified_human_merges"
 exec 8>/run/keeplore-main-promotion-queue.lock
 flock -x 8
 
-if ! GH_TOKEN=$(keeplore_github_token) \
-  "$script_directory/../release/verify-human-merge.sh" \
-  "$keeplore_repository" "$commit"; then
+if ! keeplore_verify_human_merge "$commit"; then
   printf 'Commit %s is not a verified Human Merge into main of %s.\n' \
     "$commit" "$keeplore_repository" >&2
   exit 1

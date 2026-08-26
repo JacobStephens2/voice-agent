@@ -57,24 +57,41 @@ export function projectKeeploreButtonTrialEvidenceRecord(
       ? undefined
       : keeploreProductionAppearanceObservationSchema.parse(input.appearance);
   const ordered = [...input.attempts]
-    .filter((attempt) => input.mergeCommit === undefined || attempt.commit === input.mergeCommit)
+    .filter(
+      (attempt) =>
+        input.mergeCommit === undefined ||
+        attempt.commit === input.mergeCommit ||
+        attempt.repromotion?.mergeCommit === input.mergeCommit,
+    )
     .sort((left, right) => left.attemptedAt.localeCompare(right.attemptedAt));
-  const merge = ordered.find((attempt) => attempt.merge !== undefined);
-  const release = ordered.find((attempt) => attempt.release !== undefined)?.release;
-  const promoted = ordered.some(
+  // A re-promotion makes two attempts that are about the merge without being a
+  // Promotion of it: the bounded step back to the retained Release, and the
+  // restore that returns production to the merge commit when the candidate
+  // failed. Both belong in the history and neither may decide what the trial
+  // concluded — a succeeded restore is production made safe again, not a
+  // verified merge.
+  const promotions = ordered.filter(
+    (attempt) =>
+      attempt.repromotion === undefined || attempt.repromotion.kind === "candidate",
+  );
+  const merge = promotions.find((attempt) => attempt.merge !== undefined);
+  const release = promotions.find((attempt) => attempt.release !== undefined)?.release;
+  const promoted = promotions.some(
     (attempt) => attempt.result === "succeeded" && attempt.stage === "promotion",
   );
   // The host writes `restored: ""` on every failed attempt, including ones that
   // failed before anything switched. Only a named restored Release is a
   // rollback; a preflight or baseline failure left production untouched.
-  const rolledBackAttempt = ordered.find(
+  const rolledBackAttempt = promotions.find(
     (attempt) =>
       attempt.result === "failed" &&
       attempt.restored !== undefined &&
       attempt.restored !== "",
   );
-  const health = ordered.find((attempt) => attempt.verification !== undefined)?.verification;
-  const built = ordered.find((attempt) => attempt.contractRevision !== undefined);
+  const health = promotions.find(
+    (attempt) => attempt.verification !== undefined,
+  )?.verification;
+  const built = promotions.find((attempt) => attempt.contractRevision !== undefined);
   const verdict = appearance === undefined ? undefined : evaluateKeeploreProductionAppearance(appearance);
 
   const events: {
@@ -131,6 +148,28 @@ export function projectKeeploreButtonTrialEvidenceRecord(
     });
   }
   for (const attempt of ordered) {
+    if (attempt.repromotion === undefined || attempt.result !== "succeeded") continue;
+    if (attempt.repromotion.kind === "step-back") {
+      events.push({
+        details: {
+          mergeCommit: attempt.repromotion.mergeCommit,
+          retainedReleaseCommit: attempt.commit,
+        },
+        kind: "release.stepped-back",
+        occurredAt: attempt.attemptedAt,
+        summary: `Production stepped back to retained Release ${attempt.commit} so ${attempt.repromotion.mergeCommit} could be measured against a different Release.`,
+      });
+    }
+    if (attempt.repromotion.kind === "restore") {
+      events.push({
+        details: { restoredReleaseCommit: attempt.commit },
+        kind: "release.restored",
+        occurredAt: attempt.attemptedAt,
+        summary: `Production was restored to Release ${attempt.commit} after the re-promotion failed to verify it.`,
+      });
+    }
+  }
+  for (const attempt of promotions) {
     if (attempt.release === undefined) continue;
     events.push({
       details: { commit: attempt.commit, releaseId: attempt.release.id },

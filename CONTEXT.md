@@ -221,6 +221,10 @@ _Avoid_: Deployment job, release build
 The post-Promotion observation, taken by the trusted promoter's own root-owned browser against the authenticated production view, that decides whether the Release now serving actually renders what its Human Merge was for; a Delegation's measurement of its own candidate is never accepted in its place, and a failed verdict restores the retained Release.
 _Avoid_: Health check, screenshot review, candidate verification
 
+**Re-promotion**:
+The attended operation that verifies a Human Merge production is already serving, by stepping production back to the retained Release its Promotion replaced within a stated bounded window and promoting the merge commit again, recording both moves as Promotion Attempts; ordinary Promotion stays idempotent, a successful run leaves production on the merge commit, and a failed one restores it through the same recorded path rather than by editing the serving link.
+_Avoid_: Redeploy, rollback, manual symlink switch
+
 **Self-Promotion**:
 The Promotion of the Voice Agent's own Registered Codebase by the runtime it replaces, enrolled through the same Fresh Passkey Action, Human Merge, immutable Release, verification, and rollback boundaries as every other application; repository source may propose a Deployment Contract or policy revision but merging it never activates authority, alters credentials, or expands capabilities.
 _Avoid_: Self-update, agent redeploy, self-authorization
