@@ -106,6 +106,37 @@ export const promotionEvidenceDetailsSchema = z
     message: "Promotion evidence detail is bounded",
   });
 
+/**
+ * Deployment Authority Drift — what the active Release carries under
+ * `ops/release/` and `ops/systemd/` that the pinned, root-owned deployment
+ * authority is not yet running.
+ *
+ * A Promotion reports it and never judges it. Drift is a normal state: the pin
+ * is what stops a merged commit from expanding root authority, so a reviewed
+ * change to pinned content stays dormant until the attended upgrade named by
+ * `action` applies it. The observation is recorded even when nothing diverges,
+ * which is what lets an owner tell "fully live" from "live except for the
+ * root-pinned parts" instead of reading silence as either.
+ */
+export const promotionAuthorityDriftProjectionSchema = z.discriminatedUnion(
+  "diverged",
+  [
+    z
+      .object({
+        diverged: z.literal(false),
+        paths: z.array(z.string()).length(0),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("./ops/upgrade-agent-host-deployment-authority.sh"),
+        diverged: z.literal(true),
+        paths: z.array(z.string().min(1).max(200)).min(1).max(60),
+      })
+      .strict(),
+  ],
+);
+
 export const promotionEvidenceEventProjectionSchema = z
   .object({
     details: promotionEvidenceDetailsSchema,
@@ -113,6 +144,7 @@ export const promotionEvidenceEventProjectionSchema = z
     kind: z.enum([
       "admission.paused",
       "admission.reopened",
+      "authority.drift-observed",
       "circuit.changed",
       "delivery.denied",
       "delivery.duplicate",
@@ -197,6 +229,7 @@ export const promotionEvidenceRecordProjectionSchema = z
           })
           .strict()
           .optional(),
+        authorityDrift: promotionAuthorityDriftProjectionSchema.optional(),
         circuit: z
           .object({
             consecutiveFailures: z.number().int().nonnegative(),
@@ -263,6 +296,9 @@ export type DeploymentContract = z.infer<typeof deploymentContractSchema>;
 export type FixtureDeploymentContract = DeploymentContract;
 export type PromotionAttemptStatus = z.infer<
   typeof promotionAttemptStatusSchema
+>;
+export type PromotionAuthorityDriftProjection = z.infer<
+  typeof promotionAuthorityDriftProjectionSchema
 >;
 export type PromotionEvidenceEventProjection = z.infer<
   typeof promotionEvidenceEventProjectionSchema

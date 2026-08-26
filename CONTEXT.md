@@ -241,6 +241,14 @@ _Avoid_: Drain timeout, graceful shutdown, quiesce window
 The per-application guard that pauses automatic Promotion after three consecutive failed Promotion Attempts and permits one half-open recovery attempt after a new Human Merge or authenticated human reset.
 _Avoid_: Deployment failure, manual pause
 
+**Pinned Deployment Authority**:
+The reviewed orchestration scripts, verifiers, systemd unit definitions, and AppArmor profiles held root-owned on the Agent Host and executed by every automatic Promotion; a Human Merge can propose changes to them but only an attended upgrade authorized by a Fresh Passkey Action installs them.
+_Avoid_: Deploy scripts, release tooling, pinned copies
+
+**Deployment Authority Drift**:
+The named difference between what the Release left serving carries under `ops/release/` and `ops/systemd/` and what the Pinned Deployment Authority is running; a Promotion Attempt reports it as an ordinary observation that never fails the attempt, counts as a failure, or opens the Deployment Circuit Breaker.
+_Avoid_: Deployment failure, stale release, unapplied change
+
 **Deployment Contract**:
 An authenticated, versioned policy record defining how a Human Merge is built into a Release, migrated, promoted, health-verified, and rolled back.
 _Avoid_: Deploy script, generic deployment

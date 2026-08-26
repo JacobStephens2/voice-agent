@@ -6,6 +6,7 @@ import type {
   FixtureCodebaseRegistration,
   FixtureDeploymentContract,
   FixtureGitHubEvent,
+  PromotionAuthorityDriftProjection,
   PromotionOperationProjection,
   PromotionEvidenceEventProjection,
   PromotionEvidenceRecordProjection,
@@ -16,6 +17,7 @@ import {
   callAdmissionStateSchema,
   fixtureCodebaseRegistrationSchema,
   fixtureDeploymentContractSchema,
+  promotionAuthorityDriftProjectionSchema,
   promotionEvidenceDetailsSchema,
   promotionEvidenceRecordProjectionSchema,
   promotionMergeProjectionSchema,
@@ -119,6 +121,7 @@ interface RecordRow {
 interface AttemptRow {
   readonly accepted_sequence: number;
   readonly admission_json: string | null;
+  readonly authority_drift_json: string | null;
   readonly contract_json: string;
   readonly id: string;
   readonly merge_commit: string;
@@ -227,6 +230,16 @@ export interface PromotionStore {
       PromotionEvidenceRecordProjection["promotion"]["release"]
     >;
   }): PromotionOperationProjection;
+  /**
+   * Record what the Promotion saw of the Deployment Authority Drift between the
+   * Release left serving and the Pinned Deployment Authority. It settles no
+   * outcome: the attempt's result and the Deployment Circuit Breaker are
+   * decided elsewhere and never read this.
+   */
+  recordAuthorityDrift(input: {
+    readonly attemptId: string;
+    readonly drift: PromotionAuthorityDriftProjection;
+  }): void;
   /**
    * Record what a Self-Promotion did to the runtime it was replacing: where it
    * left Call Admission, how it reached its Promotion Safe Point, and the
@@ -349,7 +362,7 @@ export function createPromotionStore(
         SELECT id, record_id, merge_commit, accepted_sequence, queue_sequence, status,
           contract_json, release_json, verification_json, rollback_json,
           previous_release_json, admission_json, safe_point_json,
-          self_verification_json
+          self_verification_json, authority_drift_json
         FROM promotion_attempts
         WHERE record_id = ?
       `)
@@ -362,7 +375,7 @@ export function createPromotionStore(
         SELECT id, record_id, merge_commit, accepted_sequence, queue_sequence, status,
           contract_json, release_json, verification_json, rollback_json,
           previous_release_json, admission_json, safe_point_json,
-          self_verification_json
+          self_verification_json, authority_drift_json
         FROM promotion_attempts
         WHERE id = ?
       `)
@@ -384,6 +397,7 @@ export function createPromotionStore(
           promotion_attempts.previous_release_json,
           promotion_attempts.admission_json,
           promotion_attempts.safe_point_json,
+          promotion_attempts.authority_drift_json,
           promotion_attempts.self_verification_json,
           promotion_records.merge_json
         FROM promotion_attempts
@@ -446,6 +460,14 @@ export function createPromotionStore(
       attempt?.safe_point_json === null || attempt?.safe_point_json === undefined
         ? undefined
         : parseStored(attempt.safe_point_json, safePointDispositionSchema);
+    const authorityDrift =
+      attempt?.authority_drift_json === null ||
+      attempt?.authority_drift_json === undefined
+        ? undefined
+        : parseStored(
+            attempt.authority_drift_json,
+            promotionAuthorityDriftProjectionSchema,
+          );
     const selfVerification =
       attempt?.self_verification_json === null ||
       attempt?.self_verification_json === undefined
@@ -487,6 +509,7 @@ export function createPromotionStore(
                 status: attempt.status,
               },
             }),
+        ...(authorityDrift === undefined ? {} : { authorityDrift }),
         circuit: {
           consecutiveFailures: row.consecutive_failures,
           state: row.circuit_state,
@@ -1378,6 +1401,18 @@ export function createPromotionStore(
     hasDelivery,
     inspect,
     performOperation,
+    recordAuthorityDrift(input) {
+      database
+        .prepare(
+          "UPDATE promotion_attempts SET authority_drift_json = ? WHERE id = ?",
+        )
+        .run(
+          JSON.stringify(
+            promotionAuthorityDriftProjectionSchema.parse(input.drift),
+          ),
+          input.attemptId,
+        );
+    },
     recordSelfPromotion(input) {
       if (input.admission !== undefined) {
         database
@@ -1549,6 +1584,7 @@ function createPromotionSchema(database: Database.Database): void {
       admission_json TEXT,
       safe_point_json TEXT,
       self_verification_json TEXT,
+      authority_drift_json TEXT,
       UNIQUE (application_id, merge_commit)
     );
 

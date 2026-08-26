@@ -33,7 +33,22 @@ flock -x 9
 script_directory=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=promotion-state.sh
 source "$script_directory/promotion-state.sh"
+# shellcheck source=deployment-authority-drift.sh
+source "$script_directory/deployment-authority-drift.sh"
 promotion_state_initialize
-promotion_state_record "$commit" "$previous" failed "$stage" 0 "$counted"
+# A failure recorded before any candidate exists still leaves a Release
+# serving, and what it carries that the pinned authority is not running does not
+# stop being true because this attempt failed. Reporting it here keeps the
+# metrics describing the live host rather than resetting to "no drift" on every
+# pre-candidate failure. The comparison decides nothing: it cannot change the
+# recorded result or reach the Deployment Circuit Breaker.
+voice_agent_authority_drift_paths_found=()
+voice_agent_authority_drift_record=$voice_agent_authority_drift_none
+if [[ $previous != - ]]; then
+  voice_agent_authority_drift_observe "$previous" "$script_directory"
+fi
+promotion_state_record "$commit" "$previous" failed "$stage" 0 "$counted" \
+  "$voice_agent_authority_drift_record" \
+  "${#voice_agent_authority_drift_paths_found[@]}"
 printf 'Recorded failed Promotion Attempt for %s at stage %s.\n' \
   "$commit" "$stage" >&2

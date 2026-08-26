@@ -244,6 +244,22 @@ attempt as `fresh-passkey-resume`, and drains later verified Human Merges after
 a successful retry. The API can read only the sanitized Prometheus projection
 of promotion state.
 
+Every Promotion Attempt reports its Deployment Authority Drift: the pinned paths
+at which the Release left serving differs from what the Pinned Deployment
+Authority under `/usr/local/libexec/voice-agent` is actually running, compared
+over the whole reviewed manifest — the `ops/release/` scripts, the pinned Human Merge and
+authorization verifiers, the `ops/systemd/` unit definitions, the AppArmor
+profile, and the Keeplore tools — by content rather than by presence. Drift is
+a normal state and settles nothing: it never fails the attempt, never counts
+toward the consecutive-failure total, and never opens the Deployment Circuit
+Breaker. It appears in the attempt's `attempts.jsonl` line as `authorityDrift`,
+in the Promotion's Evidence Record, and in the sanitized Prometheus projection
+as `voice_agent_promotion_authority_drift` and
+`voice_agent_promotion_authority_drift_paths` beside
+`voice_agent_promotion_circuit_open`, so a merged change still waiting on the
+attended ceremony is visible without a root terminal. The action that applies it
+is `./ops/upgrade-agent-host-deployment-authority.sh`.
+
 Deployment authority is not loaded from a candidate Release. The setup wizard
 pins reviewed orchestration and service definitions under root-owned
 `/usr/local/libexec/voice-agent`; automatic Promotions execute only those

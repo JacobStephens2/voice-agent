@@ -743,6 +743,7 @@ process.stdout.write("{}\\n");
 
   const scripts = [
     "candidate-preflight.sh",
+    "deployment-authority-drift.sh",
     "deployment-authority-manifest.sh",
     "deployment-health.sh",
     "git-credential-github-app.sh",

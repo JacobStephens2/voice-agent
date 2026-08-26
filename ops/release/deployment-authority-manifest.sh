@@ -2,6 +2,7 @@
 
 voice_agent_authority_scripts=(
   candidate-preflight.sh
+  deployment-authority-drift.sh
   deployment-authority-manifest.sh
   deployment-health.sh
   git-credential-github-app.sh
