@@ -15,6 +15,7 @@ import type {
   CallbackAction,
   CallbackActionResult,
   CallbackProviderEvent,
+  RecognizedSpeechModel,
   TelephoneEvidenceEvent,
 } from "@voice-agent/contracts";
 import {
@@ -352,7 +353,35 @@ async function handleInbound(
   }
 }
 
-async function handleOutbound(
+/**
+ * The collaborators an outbound authentication call is driven through.
+ *
+ * Authentication reaches its live conversation by handing the room to
+ * `runTelephoneSession`, and what that handoff leaves behind is only visible
+ * from above it. Naming these gives a test that seam without a speech
+ * provider, a transcriber, or a real room.
+ */
+export interface OutboundCallDependencies {
+  createMachineDetector(
+    session: voice.AgentSession,
+    participantIdentity: string,
+    recognitionModel: RecognizedSpeechModel,
+  ): BoundedMachineDetector;
+  createSpeechSession(): voice.AgentSession;
+  detectMachine(
+    detector: BoundedMachineDetector,
+  ): ReturnType<voice.AMD["execute"]>;
+  runTelephoneSession: typeof runLiveKitTelephoneSession;
+}
+
+const productionOutboundCall: OutboundCallDependencies = {
+  createMachineDetector: createBoundedMachineDetector,
+  createSpeechSession: createFixedSpeechSession,
+  detectMachine: executeMachineDetection,
+  runTelephoneSession: runLiveKitTelephoneSession,
+};
+
+export async function handleOutbound(
   ctx: JobContext,
   runtime: CallbackRuntime,
   tasks: TaskRuntime,
@@ -360,6 +389,7 @@ async function handleOutbound(
   boundaries: BoundaryRuntime,
   keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: AuthenticationCallbackDispatch,
+  dependencies: OutboundCallDependencies = productionOutboundCall,
 ): Promise<void> {
   const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
   if (pendingRecord === undefined) {
@@ -381,19 +411,21 @@ async function handleOutbound(
     telephoneSessionId,
   });
   if (warmSession === undefined) return;
-  const session = createFixedSpeechSession();
+  const session = dependencies.createSpeechSession();
   let callId = dispatch.effectId;
   let detector: BoundedMachineDetector | undefined;
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
+  let handedOffToLiveSession = false;
+  let liveSessionEndedCall = false;
   try {
     await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
     callId = providerCallId(participant);
-    detector = createBoundedMachineDetector(
+    detector = dependencies.createMachineDetector(
       session,
       dispatch.participantIdentity,
       settings.recognitionModel,
@@ -403,7 +435,7 @@ async function handleOutbound(
       participant.identity,
     );
     const detection = await Promise.race([
-      executeMachineDetection(detector).then((prediction) => ({
+      dependencies.detectMachine(detector).then((prediction) => ({
         kind: "prediction" as const,
         prediction,
       })),
@@ -488,10 +520,14 @@ async function handleOutbound(
         }
         await session.close();
         await detector.close();
-        await runLiveKitTelephoneSession({
+        handedOffToLiveSession = true;
+        await dependencies.runTelephoneSession({
           boundaries,
           disconnected: disconnected.promise,
-          endCall: () => ctx.deleteRoom(),
+          endCall: async () => {
+            liveSessionEndedCall = true;
+            await ctx.deleteRoom();
+          },
           initialUsageScopeId: `prelive:${dispatch.effectId}`,
           recognitionModel: settings.recognitionModel,
           room: ctx.room,
@@ -553,9 +589,19 @@ async function handleOutbound(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await detector?.close();
-    await session.close().catch(() => undefined);
-    await ctx.deleteRoom().catch(() => undefined);
+    // Authentication closes its own session and detector as it hands the room
+    // over, so closing them here again would be the second close of one
+    // session. The room is a separate fact: it is deleted here unless the live
+    // Telephone Session already deleted it, because deleting a room that is
+    // already gone reaches a caller whose call is ending as a second terminal
+    // response over the first.
+    if (!handedOffToLiveSession) {
+      await detector?.close();
+      await session.close().catch(() => undefined);
+    }
+    if (!liveSessionEndedCall) {
+      await ctx.deleteRoom().catch(() => undefined);
+    }
   }
 }
 
@@ -590,6 +636,8 @@ async function handleCompletionOutbound(
     | undefined;
   let outcomeRecorded = false;
   let authenticated = false;
+  let handedOffToLiveSession = false;
+  let liveSessionEndedCall = false;
   let handedOffToRecovery = false;
   try {
     await startFixedSpeechSession(session, ctx.room);
@@ -702,11 +750,15 @@ async function handleCompletionOutbound(
     }
     await session.close();
     await detector.close();
+    handedOffToLiveSession = true;
     await runLiveKitTelephoneSession({
       activeTaskId: resume.taskId,
       boundaries,
       disconnected: disconnected.promise,
-      endCall: () => ctx.deleteRoom(),
+      endCall: async () => {
+        liveSessionEndedCall = true;
+        await ctx.deleteRoom();
+      },
       initialUsageScopeId: `prelive:${dispatch.operationId}`,
       openingText: `Your task concluded: ${record.task.conclusion}`,
       onStarted: () =>
@@ -764,9 +816,14 @@ async function handleCompletionOutbound(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await detector?.close();
-    await session.close().catch(() => undefined);
-    if (!handedOffToRecovery) {
+    // Closed here unless the resumed Telephone Session already took them over.
+    if (!handedOffToLiveSession) {
+      await detector?.close();
+      await session.close().catch(() => undefined);
+    }
+    // The room belongs to whoever took it: the live session that already ended
+    // the call, or the separate recovery job this handler stood down for.
+    if (!liveSessionEndedCall && !handedOffToRecovery) {
       await ctx.deleteRoom().catch(() => undefined);
     }
   }
@@ -799,6 +856,7 @@ async function handleCompletionResumption(
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
+  let liveSessionEndedCall = false;
   try {
     await ctx.connect();
     const participant = await waitForParticipantOrTimeout(
@@ -825,7 +883,10 @@ async function handleCompletionResumption(
       activeTaskId: dispatch.taskId,
       boundaries,
       disconnected: disconnected.promise,
-      endCall: () => ctx.deleteRoom(),
+      endCall: async () => {
+        liveSessionEndedCall = true;
+        await ctx.deleteRoom();
+      },
       openingText: `Your task concluded: ${record.task.conclusion}`,
       onStarted: () =>
         continuity.recordCompletionResumption({
@@ -860,7 +921,9 @@ async function handleCompletionResumption(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await ctx.deleteRoom().catch(() => undefined);
+    if (!liveSessionEndedCall) {
+      await ctx.deleteRoom().catch(() => undefined);
+    }
   }
 }
 
