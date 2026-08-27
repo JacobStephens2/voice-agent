@@ -1,10 +1,13 @@
 import { expect, test } from "vitest";
 
-import { assertTableOnlyCandidate } from "../src/keeplore-table-only-candidate.ts";
+import {
+  assertTableOnlyCandidate,
+  readTrailingTableOnlyRule,
+  registeredTableOnlySelector,
+} from "../src/keeplore-table-only-candidate.ts";
 
 const baselineCss = "button.untrack-btn {\n  min-height: 2rem;\n}\n";
-const tableOnlySelector =
-  "table#useBy:not(.cards-view) td.get-rid-of button.get-rid-of-btn";
+const tableOnlySelector = registeredTableOnlySelector;
 
 function candidate(declarations: string): string {
   return `${baselineCss}${tableOnlySelector} {\n${declarations}\n}\n`;
@@ -88,9 +91,47 @@ test("a candidate that sets width instead of retaining a content-based width is 
 
 test("a candidate that appends nothing measurable is rejected", () => {
   expect(() => assertTableOnlyCandidate(baselineCss, baselineCss)).toThrow(
-    "absent or too large",
+    "appended no CSS",
   );
   expect(() => assertTableOnlyCandidate(baselineCss, candidate("  "))).toThrow(
     "no measurable declarations",
   );
 });
+
+test("an absent addition and an oversized one are reported as different failures", () => {
+  const absent = String(
+    catchError(() => assertTableOnlyCandidate(baselineCss, baselineCss)),
+  );
+  const oversized = String(
+    catchError(() =>
+      assertTableOnlyCandidate(
+        baselineCss,
+        candidate(`  padding: 0.35rem 0.7rem;${" ".repeat(4_000)}`),
+      ),
+    ),
+  );
+  expect(absent).toContain("appended no CSS");
+  expect(absent).not.toContain("too large");
+  expect(oversized).toContain("exceeds the registered");
+  expect(oversized).not.toContain("absent");
+});
+
+test("a stylesheet that already ends with the registered rule is recognized", () => {
+  const rule = `${tableOnlySelector} {\n  white-space: nowrap;\n}`;
+  expect(readTrailingTableOnlyRule(`${baselineCss}${rule}\n`)).toBe(rule);
+  expect(readTrailingTableOnlyRule(baselineCss)).toBeNull();
+  expect(
+    readTrailingTableOnlyRule(
+      `${baselineCss}button.get-rid-of-btn { white-space: nowrap; }\n`,
+    ),
+  ).toBeNull();
+});
+
+function catchError(run: () => void): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("expected a rejection");
+}

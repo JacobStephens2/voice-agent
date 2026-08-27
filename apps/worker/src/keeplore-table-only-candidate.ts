@@ -9,7 +9,7 @@
  * scope and is refused before the candidate reaches the Delegated Worktree.
  */
 
-const tableOnlySelector =
+export const registeredTableOnlySelector =
   "table#useBy:not(.cards-view) td.get-rid-of button.get-rid-of-btn";
 const maximumAdditionBytes = 4_000;
 
@@ -57,8 +57,15 @@ export function assertTableOnlyCandidate(
     );
   }
   const suffix = candidateCss.slice(baselineCss.length);
-  if (suffix.length === 0 || suffix.length > maximumAdditionBytes) {
-    throw new Error("Keeplore table-only CSS addition is absent or too large");
+  if (suffix.length === 0) {
+    throw new Error(
+      "Keeplore candidate appended no CSS to the registered stylesheet",
+    );
+  }
+  if (suffix.length > maximumAdditionBytes) {
+    throw new Error(
+      `Keeplore table-only CSS addition exceeds the registered ${maximumAdditionBytes}-byte limit`,
+    );
   }
   const withoutComments = suffix.replaceAll(/\/\*[\s\S]*?\*\//gu, "").trim();
   const rule = withoutComments.match(/^([^{}]+)\{([^{}]+)\}$/u);
@@ -68,7 +75,7 @@ export function assertTableOnlyCandidate(
     );
   }
   const selector = rule[1]?.trim().replaceAll(/\s+/gu, " ");
-  if (selector !== tableOnlySelector) {
+  if (selector !== registeredTableOnlySelector) {
     throw new Error(
       "Keeplore candidate selector is outside the registered table-only control",
     );
@@ -101,4 +108,33 @@ export function assertTableOnlyCandidate(
 function isRegisteredValue(property: string, value: string): boolean {
   const registered = allowedPropertyValues.get(property);
   return registered === undefined || registered.has(value.trim());
+}
+
+/**
+ * The registered table-only rule a stylesheet already ends with, or `null`.
+ *
+ * It asks of an untouched stylesheet the same question
+ * `assertTableOnlyCandidate` asks of a model's candidate: is the last rule in
+ * this file already the one rule the Brief asks restricted Codex to append?
+ * Sharing that acceptance test is the point - a registered source commit is
+ * refused as already satisfied only for a rule the trial would have accepted.
+ *
+ * The split reads back from the last two braces, so a stylesheet ending in a
+ * nested block reports `null` rather than a rule. That is the safe direction:
+ * an unrecognized ending leaves the trial to run, and the registered rule
+ * itself is an ordinary rule the candidate guard would reject if nested.
+ */
+export function readTrailingTableOnlyRule(styleSheet: string): string | null {
+  const close = styleSheet.lastIndexOf("}");
+  if (close === -1) return null;
+  const baseline = styleSheet.slice(
+    0,
+    styleSheet.lastIndexOf("}", close - 1) + 1,
+  );
+  try {
+    assertTableOnlyCandidate(baseline, styleSheet);
+  } catch {
+    return null;
+  }
+  return styleSheet.slice(baseline.length).trim();
 }
