@@ -137,7 +137,20 @@ Release installation grants only the named `voice-codex` identity read and
 traverse ACLs, including defaults for objects added by later root-owned
 fetches. The shared Subagent socket group and telephone worker receive no source
 mirror access. Before accepting a source revision, the attended trial proves
-that `voice-codex` can read that exact commit.
+that `voice-codex` can read that exact commit, and reads that commit's
+`ui/style.css` to prove the trial can still be won there.
+
+A registered source commit whose stylesheet already ends with the rule the
+Brief asks restricted Codex to append leaves the model nothing to add, and the
+candidate guard refuses the empty addition only after a telephone call, a Codex
+run, and an operator's review.
+`apps/worker/src/keeplore-source-commit-inspect.ts` decides that from the
+stylesheet alone before the wizard asks for the call: it names the commit,
+prints the rule it already carries, and points at the newest first-parent
+ancestor whose `ui/style.css` does not end with it. The wizard still offers
+`refs/remotes/origin/main` as its default, and that default is now refused
+rather than run: Keeplore PR #4 merged the rule into it. Nothing about a source
+commit that genuinely lacks the rule changes.
 
 The runner does not mark the root-owned mirror as a Git `safe.directory` or
 clone it directly across the ownership boundary. Fixed host code exports its

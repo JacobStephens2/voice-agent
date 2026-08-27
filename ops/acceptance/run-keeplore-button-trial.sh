@@ -408,6 +408,22 @@ if ! sudo -u voice-codex -g voice-subagent-client /usr/bin/git \
   warn "The restricted Subagent cannot read the registered Keeplore source commit."
   exit 1
 fi
+# A source commit whose ui/style.css already ends with the Brief's rule leaves
+# restricted Codex nothing to append, and the candidate guard refuses the empty
+# addition only after the call, the model run, and the operator's review. Read
+# the stylesheet here and refuse while it is still free.
+if ! SOURCE_COMMIT_REFUSAL=$(sudo -u voice-codex -g voice-subagent-client \
+  env KEEPLORE_SOURCE_MIRROR="$SOURCE_MIRROR" \
+  KEEPLORE_SOURCE_COMMIT="$KEEPLORE_SOURCE_COMMIT" \
+  HOME=/var/lib/voice-codex PATH=/usr/local/bin:/usr/bin:/bin \
+  /usr/bin/node --experimental-strip-types \
+  "$RELEASE_ROOT/apps/worker/src/keeplore-source-commit-inspect.ts" 2>&1); then
+  warn "This registered source commit cannot exercise the trial."
+  while IFS= read -r refusal_line; do
+    note "$refusal_line"
+  done <<<"$SOURCE_COMMIT_REFUSAL"
+  exit 1
+fi
 delegation_environment=$(mktemp)
 printf 'KEEPLORE_SOURCE_COMMIT=%s\n' "$KEEPLORE_SOURCE_COMMIT" \
   > "$delegation_environment"
