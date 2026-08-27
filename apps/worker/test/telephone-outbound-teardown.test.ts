@@ -14,11 +14,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import type {
-  handleOutbound as handleOutboundSignature,
-  OutboundCallDependencies,
-} from "../src/telephone-agent.ts";
+import type { CallbackHandshakeDependencies } from "../src/telephone-agent.ts";
 import { wellFormedTelephoneWorkerEnvironment } from "./telephone-worker-environment.ts";
+
+// The worker resolves its settings as it loads, so they are in place before
+// this module imports it, and one load then serves every test here.
+for (const [name, value] of Object.entries(
+  wellFormedTelephoneWorkerEnvironment,
+)) {
+  process.env[name] = value;
+}
+const { handleOutbound } = await import("../src/telephone-agent.ts");
 
 const temporaryDirectories: string[] = [];
 
@@ -46,6 +52,17 @@ describe("what an authenticated call leaves behind", () => {
     expect(call.closes).toBe(1);
   });
 
+  test("a delete the provider refused is tried again as the call unwinds", async () => {
+    let refusals = 1;
+    const call = await runAuthenticatedCall("refused-delete", {}, async () => {
+      if (refusals-- > 0) throw new Error("the room could not be deleted");
+    });
+
+    // The first delete never happened, so the room is still this handler's to
+    // delete: recording the intent instead of the deletion would leak it.
+    expect(call.deleteRoom).toHaveBeenCalledTimes(2);
+  });
+
   test("a live session that fails before ending the call leaves no room behind", async () => {
     const call = await runAuthenticatedCall("failed-handoff", {
       async runTelephoneSession() {
@@ -65,25 +82,17 @@ describe("what an authenticated call leaves behind", () => {
  */
 async function runAuthenticatedCall(
   suffix: string,
-  overrides: Partial<OutboundCallDependencies> = {},
+  overrides: Partial<CallbackHandshakeDependencies> = {},
+  onDeleteRoom: () => Promise<void> = async () => undefined,
 ): Promise<{
   readonly closes: number;
   readonly deleteRoom: ReturnType<typeof vi.fn>;
 }> {
   const directory = await mkdtemp(join(tmpdir(), `voice-agent-${suffix}-`));
   temporaryDirectories.push(directory);
+  // Every store this call reads is built here and passed in, so the databases
+  // stay one per test however the worker's own settings were resolved.
   const databasePath = join(directory, "voice-agent.sqlite");
-  for (const [name, value] of Object.entries(
-    wellFormedTelephoneWorkerEnvironment,
-  )) {
-    process.env[name] = value;
-  }
-  process.env.VOICE_AGENT_DATABASE_PATH = databasePath;
-  process.env.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY = join(directory, "audio");
-  // Resolved as the module loads, so the settings above must be in place first.
-  const { handleOutbound } = (await import("../src/telephone-agent.ts")) as {
-    handleOutbound: typeof handleOutboundSignature;
-  };
 
   let identifier = 0;
   const nextId = (): string => `${suffix}-${(identifier += 1)}`;
@@ -128,12 +137,12 @@ async function runAuthenticatedCall(
       identity: placement.participantIdentity,
       sid: `${suffix}-participant-sid`,
     } as unknown as RemoteParticipant;
-    const deleteRoom = vi.fn(async () => undefined);
+    const deleteRoom = vi.fn(onDeleteRoom);
     let closes = 0;
     const session = fixedSpeechSessionDouble(() => {
       closes += 1;
     });
-    const dependencies: OutboundCallDependencies = {
+    const dependencies: CallbackHandshakeDependencies = {
       createMachineDetector: () => ({
         async close() {},
         detector: {} as voice.AMD,
@@ -174,8 +183,8 @@ async function runAuthenticatedCall(
         waitForParticipant: async () => participant,
       } as never,
       runtime,
-      undefined as never,
-      undefined as never,
+      untouchedOnThisPath,
+      untouchedOnThisPath,
       boundaries,
       undefined,
       {
@@ -194,6 +203,12 @@ async function runAuthenticatedCall(
     await runtime.close();
   }
 }
+
+/**
+ * The Durable Task and continuity runtimes, which only a live Telephone Session
+ * reaches. The session is a double here, so nothing in this call touches them.
+ */
+const untouchedOnThisPath = undefined as never;
 
 /** A speech session that plays fixed text without a provider behind it. */
 function fixedSpeechSessionDouble(onClose: () => void): voice.AgentSession {
