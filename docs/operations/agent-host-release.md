@@ -249,7 +249,9 @@ at which the Release left serving differs from what the Pinned Deployment
 Authority under `/usr/local/libexec/voice-agent` is actually running, compared
 over the whole reviewed manifest — the `ops/release/` scripts, the pinned Human Merge and
 authorization verifiers, the `ops/systemd/` unit definitions, the AppArmor
-profile, and the Keeplore tools — by content rather than by presence. Drift is
+profile, and the Keeplore tools — by content rather than by presence. Each path
+is reported where the attended upgrade installs it, so the Keeplore tools appear
+under `keeplore/` rather than at the authority root. Drift is
 a normal state and settles nothing: it never fails the attempt, never counts
 toward the consecutive-failure total, and never opens the Deployment Circuit
 Breaker. It appears in the attempt's `attempts.jsonl` line as `authorityDrift`,

@@ -68,3 +68,35 @@ voice_agent_authority_extras=(
   "ops/prometheus/install-scrape.sh:install-prometheus-scrape.sh"
   "ops/grafana/install-dashboard.sh:install-grafana-dashboard.sh"
 )
+
+# voice_agent_authority_pinned_paths
+#
+# Print, one per line in manifest order, the reviewed file's Release-relative
+# source path and the pinned-relative path the attended upgrade installs it at,
+# separated by a tab. The pinned layout is decided here rather than at each
+# reader, so a comparison of what a host is running cannot look for a path no
+# upgrade has ever written.
+voice_agent_authority_pinned_paths() {
+  local entry mapping
+  for entry in "${voice_agent_authority_scripts[@]}"; do
+    printf 'ops/release/%s\t%s\n' "$entry" "$entry"
+  done
+  for entry in "${voice_agent_authority_units[@]}"; do
+    printf 'ops/systemd/%s\tsystemd/%s\n' "$entry" "$entry"
+  done
+  for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+    printf '%s\tapparmor/%s\n' "${mapping%%:*}" "${mapping#*:}"
+  done
+  for mapping in "${voice_agent_authority_programs[@]}"; do
+    printf '%s\t%s\n' "${mapping%%:*}" "${mapping#*:}"
+  done
+  # The Keeplore tools are staged in their own subdirectory of the authority
+  # root by `upgrade-deployment-authority.sh`, which reads the bare right-hand
+  # sides above to install a second copy under `/usr/local/libexec/keeplore/`.
+  for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
+    printf '%s\tkeeplore/%s\n' "${mapping%%:*}" "${mapping#*:}"
+  done
+  for mapping in "${voice_agent_authority_extras[@]}"; do
+    printf '%s\t%s\n' "${mapping%%:*}" "${mapping#*:}"
+  done
+}

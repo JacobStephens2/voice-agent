@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 
-# Deployment Authority Drift — what a promoted Release carries under
-# `ops/release/` and `ops/systemd/` that the pinned, root-owned authority under
-# `/usr/local/libexec/voice-agent` is not yet running.
+# Deployment Authority Drift — what a promoted Release carries across the
+# reviewed manifest that the pinned, root-owned authority under
+# `/usr/local/libexec/voice-agent` is not yet running. Every reviewed file is
+# compared at the pinned path the attended upgrade installs it at, which
+# `voice_agent_authority_pinned_paths` decides for this reader and for the
+# upgrade alike.
 #
 # Automatic Promotion never replaces pinned authority, and that boundary is what
 # stops a merged commit from expanding root authority on the Agent Host. The
@@ -29,39 +32,24 @@ voice_agent_authority_drift_none='{"diverged":false,"paths":[]}'
 # missing from either side diverges as surely as one whose bytes changed.
 voice_agent_authority_drift_paths() {
   local release_root=$1 pinned_root=$2
-  local drift_manifest_directory mapping pinned_path reported source_path
+  local drift_manifest_directory pinned_path reported source_path
   drift_manifest_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   # shellcheck source=deployment-authority-manifest.sh
   source "$drift_manifest_directory/deployment-authority-manifest.sh"
 
-  local -a reviewed=()
-  for source_path in "${voice_agent_authority_scripts[@]}"; do
-    reviewed+=("ops/release/$source_path:$source_path")
-  done
-  for source_path in "${voice_agent_authority_units[@]}"; do
-    reviewed+=("ops/systemd/$source_path:systemd/$source_path")
-  done
-  for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
-    reviewed+=("${mapping%%:*}:apparmor/${mapping#*:}")
-  done
-  for mapping in "${voice_agent_authority_programs[@]}" \
-    "${voice_agent_authority_keeplore_tools[@]}" \
-    "${voice_agent_authority_extras[@]}"; do
-    reviewed+=("$mapping")
-  done
-
   # One reviewed file can be pinned for two reasons — the Human Merge verifier
-  # is both promotion authority and a Keeplore tool — and it diverges once.
+  # is both promotion authority and a Keeplore tool — but at two pinned paths,
+  # so each copy is compared on its own merits. This guard keeps a manifest that
+  # later reached one pinned path twice from reporting it twice.
   reported=" "
-  for mapping in "${reviewed[@]}"; do
-    source_path=${mapping%%:*}
-    pinned_path=${mapping#*:}
+  while IFS=$'\t' read -r source_path pinned_path; do
+    if [[ -z $pinned_path ]]; then continue; fi
     if [[ $reported == *" $pinned_path "* ]]; then continue; fi
     reported+="$pinned_path "
     if ! cmp -s "$release_root/$source_path" "$pinned_root/$pinned_path"; then
       printf '%s\n' "$pinned_path"
     fi
-  done
+  done < <(voice_agent_authority_pinned_paths)
 }
 
 # voice_agent_authority_drift_json [diverging-path...]

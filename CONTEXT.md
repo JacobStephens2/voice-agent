@@ -246,7 +246,7 @@ The reviewed orchestration scripts, verifiers, systemd unit definitions, and App
 _Avoid_: Deploy scripts, release tooling, pinned copies
 
 **Deployment Authority Drift**:
-The named difference between what the Release left serving carries under `ops/release/` and `ops/systemd/` and what the Pinned Deployment Authority is running; a Promotion Attempt reports it as an ordinary observation that never fails the attempt, counts as a failure, or opens the Deployment Circuit Breaker.
+The named difference between what the Release left serving carries across the reviewed manifest - the `ops/release/` scripts and verifiers, the `ops/systemd/` unit definitions, the AppArmor profile, the Keeplore tools, and the monitoring installers - and what the Pinned Deployment Authority is running at each of those pinned paths; a Promotion Attempt reports it as an ordinary observation that never fails the attempt, counts as a failure, or opens the Deployment Circuit Breaker.
 _Avoid_: Deployment failure, stale release, unapplied change
 
 **Deployment Contract**:

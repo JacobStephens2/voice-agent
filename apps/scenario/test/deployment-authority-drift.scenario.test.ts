@@ -15,6 +15,8 @@ import { afterEach, expect, test } from "vitest";
 
 import {
   createHumanMergePromotionScenario,
+  readDeploymentAuthorityDrift,
+  readPinnedAuthorityPaths,
   signHumanMergeWebhook,
   type FixtureGitHubEvent,
 } from "@voice-agent/scenario";
@@ -45,6 +47,10 @@ async function writeFileAt(path: string, content: string): Promise<void> {
  * against. Both are ordinary directories owned by the test user, which is the
  * point: the comparison that decides what a Promotion reports must be
  * exercisable without root and without `/usr/local/libexec/voice-agent`.
+ *
+ * The pinned layout comes from `voice_agent_authority_pinned_paths`, the same
+ * expansion the comparison and the attended upgrade read, so this fixture
+ * cannot quietly agree with a reader that looks at the wrong path.
  */
 async function buildAuthorityPair(): Promise<{
   readonly pinnedRoot: string;
@@ -54,34 +60,12 @@ async function buildAuthorityPair(): Promise<{
   temporaryDirectories.push(root);
   const releaseRoot = join(root, "release");
   const pinnedRoot = join(root, "pinned");
-  const { stdout } = await execFileAsync("bash", [
-    "-c",
-    `set -euo pipefail
-source "$1"
-for script in "\${voice_agent_authority_scripts[@]}"; do
-  printf 'ops/release/%s\\t%s\\n' "$script" "$script"
-done
-for unit in "\${voice_agent_authority_units[@]}"; do
-  printf 'ops/systemd/%s\\tsystemd/%s\\n' "$unit" "$unit"
-done
-for mapping in "\${voice_agent_authority_apparmor_profiles[@]}"; do
-  printf '%s\\tapparmor/%s\\n' "\${mapping%%:*}" "\${mapping#*:}"
-done
-for mapping in "\${voice_agent_authority_programs[@]}" \\
-  "\${voice_agent_authority_keeplore_tools[@]}" \\
-  "\${voice_agent_authority_extras[@]}"; do
-  printf '%s\\t%s\\n' "\${mapping%%:*}" "\${mapping#*:}"
-done`,
-    "authority-manifest-test",
-    join(repositoryRoot, "ops/release/deployment-authority-manifest.sh"),
-  ]);
-  const entries = stdout
-    .trim()
-    .split("\n")
-    .map((line) => line.split("\t") as [string, string]);
-  for (const [sourcePath, pinnedPath] of entries) {
-    await writeFileAt(join(releaseRoot, sourcePath), `${pinnedPath} reviewed\n`);
-    await writeFileAt(join(pinnedRoot, pinnedPath), `${pinnedPath} reviewed\n`);
+  // Content is keyed by the Release path, not the pinned path: the Human Merge
+  // verifier is one reviewed file pinned in two places, and both pinned copies
+  // carry the bytes of that single source.
+  for (const { pinnedPath, sourcePath } of await readPinnedAuthorityPaths()) {
+    await writeFileAt(join(releaseRoot, sourcePath), `${sourcePath} reviewed\n`);
+    await writeFileAt(join(pinnedRoot, pinnedPath), `${sourcePath} reviewed\n`);
   }
   return { pinnedRoot, releaseRoot };
 }
@@ -90,15 +74,7 @@ async function driftPaths(
   releaseRoot: string,
   pinnedRoot: string,
 ): Promise<readonly string[]> {
-  const { stdout } = await execFileAsync("bash", [
-    "-c",
-    'set -euo pipefail\nsource "$1"\nvoice_agent_authority_drift_paths "$2" "$3"',
-    "authority-drift-test",
-    driftHelper,
-    releaseRoot,
-    pinnedRoot,
-  ]);
-  return stdout.length === 0 ? [] : stdout.trimEnd().split("\n");
+  return readDeploymentAuthorityDrift({ pinnedRoot, releaseRoot });
 }
 
 test("a Release matching the pinned deployment authority reports no drift", async () => {
@@ -142,13 +118,62 @@ test("the comparison covers the pinned verifier and the Keeplore tools that trav
     "deployment-authority-authorization-verifier.mjs stale\n",
   );
   await writeFile(
-    join(pinnedRoot, "promote-keeplore-release.sh"),
+    join(pinnedRoot, "keeplore/promote-keeplore-release.sh"),
     "promote-keeplore-release.sh stale\n",
   );
 
   await expect(driftPaths(releaseRoot, pinnedRoot)).resolves.toEqual([
     "deployment-authority-authorization-verifier.mjs",
-    "promote-keeplore-release.sh",
+    "keeplore/promote-keeplore-release.sh",
+  ]);
+});
+
+test("a Keeplore tool is compared where the upgrade installs it, not at the authority root", async () => {
+  const { pinnedRoot, releaseRoot } = await buildAuthorityPair();
+  // The bare name at the authority root is a path the upgrade has never
+  // written. Reading it there reported every Keeplore tool as diverged on a
+  // host that was already carrying the reviewed bytes.
+  await writeFile(
+    join(pinnedRoot, "keeplore-config.sh"),
+    "keeplore-config.sh at a path no upgrade writes\n",
+  );
+
+  await expect(driftPaths(releaseRoot, pinnedRoot)).resolves.toEqual([]);
+});
+
+test("a Keeplore tool that genuinely differs from the Release still diverges", async () => {
+  const { pinnedRoot, releaseRoot } = await buildAuthorityPair();
+  await writeFile(
+    join(pinnedRoot, "keeplore/keeplore-config.sh"),
+    "keeplore-config.sh stale\n",
+  );
+  await rm(join(pinnedRoot, "keeplore/resolve-keeplore-worktree.sh"));
+
+  await expect(driftPaths(releaseRoot, pinnedRoot)).resolves.toEqual([
+    "keeplore/keeplore-config.sh",
+    "keeplore/resolve-keeplore-worktree.sh",
+  ]);
+});
+
+test("the Human Merge verifier diverges at whichever pinned copy is stale", async () => {
+  const beside = await buildAuthorityPair();
+  await writeFile(
+    join(beside.pinnedRoot, "keeplore/verify-human-merge.sh"),
+    "verify-human-merge.sh stale beside the Keeplore tools\n",
+  );
+
+  await expect(
+    driftPaths(beside.releaseRoot, beside.pinnedRoot),
+  ).resolves.toEqual(["keeplore/verify-human-merge.sh"]);
+
+  const root = await buildAuthorityPair();
+  await writeFile(
+    join(root.pinnedRoot, "verify-human-merge.sh"),
+    "verify-human-merge.sh stale at the authority root\n",
+  );
+
+  await expect(driftPaths(root.releaseRoot, root.pinnedRoot)).resolves.toEqual([
+    "verify-human-merge.sh",
   ]);
 });
 
