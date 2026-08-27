@@ -15,6 +15,7 @@ import type {
   CallbackAction,
   CallbackActionResult,
   CallbackProviderEvent,
+  RecognizedSpeechModel,
   TelephoneEvidenceEvent,
 } from "@voice-agent/contracts";
 import {
@@ -243,6 +244,30 @@ interface WarmSessionLease {
   release(): Promise<void>;
 }
 
+/**
+ * The room's one deletion, wherever the call actually ends.
+ *
+ * A handler that hands the room to a live Telephone Session no longer decides
+ * when the call ends, but it is still answerable for a room that session never
+ * deleted. Recording the delete that happened, rather than the intent to
+ * delete, is what keeps a failed delete retryable when the handler unwinds.
+ */
+function roomDeletedOnce(ctx: JobContext): {
+  readonly deleteRoom: () => Promise<void>;
+} {
+  let deleted = false;
+  return {
+    async deleteRoom() {
+      if (deleted) return;
+      await ctx.deleteRoom();
+      deleted = true;
+    },
+  };
+}
+
+/** Who owes the teardown of a call this handler may have handed on. */
+type TeardownOwner = "handler" | "live-session" | "recovery";
+
 async function acquireWarmSessionLease(options: {
   readonly boundaries: BoundaryRuntime;
   readonly onRejected: (
@@ -352,7 +377,35 @@ async function handleInbound(
   }
 }
 
-async function handleOutbound(
+/**
+ * The collaborators a Callback Handshake is driven through.
+ *
+ * The handshake reaches its Telephone Session by handing the room over, and
+ * what that handoff leaves behind is only visible from above it. Naming these
+ * gives a test that seam without a speech provider, a transcriber, or a real
+ * room.
+ */
+export interface CallbackHandshakeDependencies {
+  createMachineDetector(
+    session: voice.AgentSession,
+    participantIdentity: string,
+    recognitionModel: RecognizedSpeechModel,
+  ): BoundedMachineDetector;
+  createSpeechSession(): voice.AgentSession;
+  detectMachine(
+    detector: BoundedMachineDetector,
+  ): ReturnType<voice.AMD["execute"]>;
+  runTelephoneSession: typeof runLiveKitTelephoneSession;
+}
+
+const productionCallbackHandshake: CallbackHandshakeDependencies = {
+  createMachineDetector: createBoundedMachineDetector,
+  createSpeechSession: createFixedSpeechSession,
+  detectMachine: executeMachineDetection,
+  runTelephoneSession: runLiveKitTelephoneSession,
+};
+
+export async function handleOutbound(
   ctx: JobContext,
   runtime: CallbackRuntime,
   tasks: TaskRuntime,
@@ -360,12 +413,14 @@ async function handleOutbound(
   boundaries: BoundaryRuntime,
   keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: AuthenticationCallbackDispatch,
+  dependencies: CallbackHandshakeDependencies = productionCallbackHandshake,
 ): Promise<void> {
   const pendingRecord = await runtime.readEvidenceRecord(dispatch.handshakeId);
   if (pendingRecord === undefined) {
     throw new Error("Callback Handshake Evidence Record is unavailable");
   }
   const telephoneSessionId = pendingRecord.session.id;
+  const room = roomDeletedOnce(ctx);
   const warmSession = await acquireWarmSessionLease({
     boundaries,
     onRejected: async (decision) => {
@@ -376,24 +431,25 @@ async function handleOutbound(
           occurredAt: new Date().toISOString(),
         },
       );
-      await ctx.deleteRoom().catch(() => undefined);
+      await room.deleteRoom().catch(() => undefined);
     },
     telephoneSessionId,
   });
   if (warmSession === undefined) return;
-  const session = createFixedSpeechSession();
+  const session = dependencies.createSpeechSession();
   let callId = dispatch.effectId;
   let detector: BoundedMachineDetector | undefined;
   let disconnected:
     | ReturnType<typeof waitForParticipantDisconnect>
     | undefined;
+  let teardown: TeardownOwner = "handler";
   try {
     await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
       dispatch.participantIdentity,
     );
     callId = providerCallId(participant);
-    detector = createBoundedMachineDetector(
+    detector = dependencies.createMachineDetector(
       session,
       dispatch.participantIdentity,
       settings.recognitionModel,
@@ -403,7 +459,7 @@ async function handleOutbound(
       participant.identity,
     );
     const detection = await Promise.race([
-      executeMachineDetection(detector).then((prediction) => ({
+      dependencies.detectMachine(detector).then((prediction) => ({
         kind: "prediction" as const,
         prediction,
       })),
@@ -488,10 +544,11 @@ async function handleOutbound(
         }
         await session.close();
         await detector.close();
-        await runLiveKitTelephoneSession({
+        teardown = "live-session";
+        await dependencies.runTelephoneSession({
           boundaries,
           disconnected: disconnected.promise,
-          endCall: () => ctx.deleteRoom(),
+          endCall: room.deleteRoom,
           initialUsageScopeId: `prelive:${dispatch.effectId}`,
           recognitionModel: settings.recognitionModel,
           room: ctx.room,
@@ -553,9 +610,16 @@ async function handleOutbound(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await detector?.close();
-    await session.close().catch(() => undefined);
-    await ctx.deleteRoom().catch(() => undefined);
+    // The handshake closes its own session and detector as it hands the room
+    // over, so closing them here too would be the second close of one session.
+    if (teardown !== "live-session") {
+      await detector?.close();
+      await session.close().catch(() => undefined);
+    }
+    // Deleting a room that is already gone reaches a caller whose call is
+    // ending as a second terminal response over the first, so this deletes
+    // only a room nothing has deleted yet.
+    await room.deleteRoom().catch(() => undefined);
   }
 }
 
@@ -568,6 +632,7 @@ async function handleCompletionOutbound(
   keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
+  const room = roomDeletedOnce(ctx);
   const warmSession = await acquireWarmSessionLease({
     boundaries,
     onRejected: async (decision) => {
@@ -578,7 +643,7 @@ async function handleCompletionOutbound(
           occurredAt: new Date().toISOString(),
         })
         .catch(() => undefined);
-      await ctx.deleteRoom().catch(() => undefined);
+      await room.deleteRoom().catch(() => undefined);
     },
     telephoneSessionId: dispatch.telephoneSessionId,
   });
@@ -590,7 +655,7 @@ async function handleCompletionOutbound(
     | undefined;
   let outcomeRecorded = false;
   let authenticated = false;
-  let handedOffToRecovery = false;
+  let teardown: TeardownOwner = "handler";
   try {
     await startFixedSpeechSession(session, ctx.room);
     const participant = await ctx.waitForParticipant(
@@ -677,7 +742,7 @@ async function handleCompletionOutbound(
         taskId: resume.taskId,
       }))
     ) {
-      handedOffToRecovery = true;
+      teardown = "recovery";
       return;
     }
     const record = await tasks.getEvidenceRecord(resume.taskId);
@@ -702,11 +767,12 @@ async function handleCompletionOutbound(
     }
     await session.close();
     await detector.close();
+    teardown = "live-session";
     await runLiveKitTelephoneSession({
       activeTaskId: resume.taskId,
       boundaries,
       disconnected: disconnected.promise,
-      endCall: () => ctx.deleteRoom(),
+      endCall: room.deleteRoom,
       initialUsageScopeId: `prelive:${dispatch.operationId}`,
       openingText: `Your task concluded: ${record.task.conclusion}`,
       onStarted: () =>
@@ -764,10 +830,15 @@ async function handleCompletionOutbound(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await detector?.close();
-    await session.close().catch(() => undefined);
-    if (!handedOffToRecovery) {
-      await ctx.deleteRoom().catch(() => undefined);
+    // Closed here unless the resumed Telephone Session already took them over.
+    if (teardown !== "live-session") {
+      await detector?.close();
+      await session.close().catch(() => undefined);
+    }
+    // A recovery job owns the room this handler stood down for, and holds the
+    // call open for it; every other path deletes a room nothing deleted yet.
+    if (teardown !== "recovery") {
+      await room.deleteRoom().catch(() => undefined);
     }
   }
 }
@@ -781,6 +852,7 @@ async function handleCompletionResumption(
   keeploreDelegations: KeeploreRuntime | undefined,
   dispatch: CompletionCallbackDispatch,
 ): Promise<void> {
+  const room = roomDeletedOnce(ctx);
   const warmSession = await acquireWarmSessionLease({
     boundaries,
     onRejected: async (decision) => {
@@ -791,7 +863,7 @@ async function handleCompletionResumption(
           occurredAt: new Date().toISOString(),
         })
         .catch(() => undefined);
-      await ctx.deleteRoom().catch(() => undefined);
+      await room.deleteRoom().catch(() => undefined);
     },
     telephoneSessionId: dispatch.telephoneSessionId,
   });
@@ -825,7 +897,7 @@ async function handleCompletionResumption(
       activeTaskId: dispatch.taskId,
       boundaries,
       disconnected: disconnected.promise,
-      endCall: () => ctx.deleteRoom(),
+      endCall: room.deleteRoom,
       openingText: `Your task concluded: ${record.task.conclusion}`,
       onStarted: () =>
         continuity.recordCompletionResumption({
@@ -860,7 +932,7 @@ async function handleCompletionResumption(
   } finally {
     await warmSession.release();
     disconnected?.cancel();
-    await ctx.deleteRoom().catch(() => undefined);
+    await room.deleteRoom().catch(() => undefined);
   }
 }
 
