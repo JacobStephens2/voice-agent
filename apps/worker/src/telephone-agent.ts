@@ -520,7 +520,7 @@ export async function handleOutbound(
           providerCallId: callId,
         },
       );
-      await performMediaActions(session, dtmfResult);
+      const media = await performMediaActions(session, dtmfResult);
       if (
         dtmfResult.actions.some(
           (action) => action.kind === "play-confirmation",
@@ -547,6 +547,9 @@ export async function handleOutbound(
         teardown = "live-session";
         await dependencies.runTelephoneSession({
           boundaries,
+          ...(media.callerSpokeDuringConfirmation
+            ? { callerSpokeDuringHandoff: true }
+            : {}),
           disconnected: disconnected.promise,
           endCall: room.deleteRoom,
           initialUsageScopeId: `prelive:${dispatch.effectId}`,
@@ -749,7 +752,7 @@ async function handleCompletionOutbound(
     if (record === undefined) {
       throw new Error("Resumed Durable Task is unavailable");
     }
-    await playFixedText(
+    const callerSpokeDuringHandoff = await playFixedTextObservingCallerSpeech(
       session,
       "Telephone confirmed. Resuming your Voice Agent task.",
     );
@@ -771,6 +774,9 @@ async function handleCompletionOutbound(
     await runLiveKitTelephoneSession({
       activeTaskId: resume.taskId,
       boundaries,
+      ...(callerSpokeDuringHandoff
+        ? { callerSpokeDuringHandoff: true }
+        : {}),
       disconnected: disconnected.promise,
       endCall: room.deleteRoom,
       initialUsageScopeId: `prelive:${dispatch.operationId}`,
@@ -1115,7 +1121,8 @@ function fixedSpeechAgent(): voice.Agent {
 async function performMediaActions(
   session: voice.AgentSession,
   result: CallbackActionResult,
-): Promise<void> {
+): Promise<{ readonly callerSpokeDuringConfirmation: boolean }> {
+  let callerSpokeDuringConfirmation = false;
   for (const action of result.actions) {
     if (
       action.kind !== "prompt-for-dtmf" &&
@@ -1123,7 +1130,44 @@ async function performMediaActions(
     ) {
       continue;
     }
-    await playFixedText(session, action.text);
+    if (action.kind === "play-confirmation") {
+      callerSpokeDuringConfirmation =
+        (await playFixedTextObservingCallerSpeech(session, action.text)) ||
+        callerSpokeDuringConfirmation;
+    } else {
+      await playFixedText(session, action.text);
+    }
+  }
+  return { callerSpokeDuringConfirmation };
+}
+
+/**
+ * Keep the authentication sentence protected while carrying its one useful
+ * overlap signal across the fixed-session handoff. The fixed session has no
+ * coordinator or transcript to replay, but its VAD still reports that the
+ * caller spoke; the conversational session turns that signal into one retry
+ * prompt after this playback finishes.
+ */
+async function playFixedTextObservingCallerSpeech(
+  session: voice.AgentSession,
+  text: string,
+): Promise<boolean> {
+  let callerSpoke = session.userState === "speaking";
+  const observeCallerSpeech = (event: voice.UserStateChangedEvent): void => {
+    if (event.newState === "speaking") callerSpoke = true;
+  };
+  session.on(
+    voice.AgentSessionEventTypes.UserStateChanged,
+    observeCallerSpeech,
+  );
+  try {
+    await playFixedText(session, text);
+    return callerSpoke;
+  } finally {
+    session.off(
+      voice.AgentSessionEventTypes.UserStateChanged,
+      observeCallerSpeech,
+    );
   }
 }
 

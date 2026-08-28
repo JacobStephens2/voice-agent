@@ -25,6 +25,9 @@ for (const [name, value] of Object.entries(
   process.env[name] = value;
 }
 const { handleOutbound } = await import("../src/telephone-agent.ts");
+const { runLiveKitTelephoneSession } = await import(
+  "../src/livekit-telephone-session.ts"
+);
 
 const temporaryDirectories: string[] = [];
 
@@ -37,6 +40,80 @@ afterEach(async () => {
 });
 
 describe("what an authenticated call leaves behind", () => {
+  test("speech overlapping the non-interruptible confirmation receives one retry prompt after handoff", async () => {
+    const liveSession = new LiveTelephoneSessionDouble();
+
+    const call = await runAuthenticatedCall(
+      "confirmation-overlap",
+      {
+        runTelephoneSession: async (options) =>
+          runLiveKitTelephoneSession(
+            { ...options, disconnected: Promise.resolve() },
+            {
+              createConversationSession: () => liveSession.asAgentSession(),
+              createInterpreter: () => ({
+                async close() {},
+                async interpret() {
+                  throw new Error(
+                    "An untranscribed authentication overlap must not be interpreted",
+                  );
+                },
+              }),
+            },
+          ),
+      },
+      async () => undefined,
+      true,
+    );
+
+    expect(liveSession.spokenTexts).toStrictEqual([
+      "Sorry, I did not catch that. Please say that again.",
+    ]);
+    expect(liveSession.allowInterruptions).toStrictEqual([true]);
+    expect(call.fixedSpeechAllowInterruptions).not.toHaveLength(0);
+    expect(call.fixedSpeechAllowInterruptions.every((value) => !value)).toBe(
+      true,
+    );
+  });
+
+  test("completion handoff finishes its protected opening before asking for the overlapped turn again", async () => {
+    const liveSession = new LiveTelephoneSessionDouble();
+    const openingText = "Your task concluded: The requested work is complete.";
+
+    await runAuthenticatedCall(
+      "completion-confirmation-overlap",
+      {
+        runTelephoneSession: async (options) =>
+          runLiveKitTelephoneSession(
+            {
+              ...options,
+              disconnected: Promise.resolve(),
+              openingText,
+            },
+            {
+              createConversationSession: () => liveSession.asAgentSession(),
+              createInterpreter: () => ({
+                async close() {},
+                async interpret() {
+                  throw new Error(
+                    "An untranscribed completion overlap must not be interpreted",
+                  );
+                },
+              }),
+            },
+          ),
+      },
+      async () => undefined,
+      true,
+    );
+
+    expect(liveSession.spokenTexts).toStrictEqual([
+      openingText,
+      "Sorry, I did not catch that. Please say that again.",
+    ]);
+    expect(liveSession.allowInterruptions).toStrictEqual([false, true]);
+  });
+
   test("the room the live session already ended is not deleted a second time", async () => {
     const call = await runAuthenticatedCall("single-teardown");
 
@@ -84,9 +161,11 @@ async function runAuthenticatedCall(
   suffix: string,
   overrides: Partial<CallbackHandshakeDependencies> = {},
   onDeleteRoom: () => Promise<void> = async () => undefined,
+  overlapConfirmation = false,
 ): Promise<{
   readonly closes: number;
   readonly deleteRoom: ReturnType<typeof vi.fn>;
+  readonly fixedSpeechAllowInterruptions: readonly boolean[];
 }> {
   const directory = await mkdtemp(join(tmpdir(), `voice-agent-${suffix}-`));
   temporaryDirectories.push(directory);
@@ -139,9 +218,14 @@ async function runAuthenticatedCall(
     } as unknown as RemoteParticipant;
     const deleteRoom = vi.fn(onDeleteRoom);
     let closes = 0;
-    const session = fixedSpeechSessionDouble(() => {
-      closes += 1;
-    });
+    const fixedSpeechAllowInterruptions: boolean[] = [];
+    const session = fixedSpeechSessionDouble(
+      () => {
+        closes += 1;
+      },
+      overlapConfirmation,
+      fixedSpeechAllowInterruptions,
+    );
     const dependencies: CallbackHandshakeDependencies = {
       createMachineDetector: () => ({
         async close() {},
@@ -197,7 +281,7 @@ async function runAuthenticatedCall(
       dependencies,
     );
 
-    return { closes, deleteRoom };
+    return { closes, deleteRoom, fixedSpeechAllowInterruptions };
   } finally {
     await boundaries.close();
     await runtime.close();
@@ -211,14 +295,85 @@ async function runAuthenticatedCall(
 const untouchedOnThisPath = undefined as never;
 
 /** A speech session that plays fixed text without a provider behind it. */
-function fixedSpeechSessionDouble(onClose: () => void): voice.AgentSession {
-  return {
+function fixedSpeechSessionDouble(
+  onClose: () => void,
+  overlapConfirmation = false,
+  allowInterruptions: boolean[] = [],
+): voice.AgentSession {
+  const handlers = new Map<string, (event: never) => void>();
+  const session = {
     async close() {
       onClose();
     },
-    say: () => ({ async waitForPlayout() {} }),
+    off(eventType: string, handler: (event: never) => void) {
+      if (handlers.get(eventType) === handler) handlers.delete(eventType);
+      return session;
+    },
+    on(eventType: string, handler: (event: never) => void) {
+      handlers.set(eventType, handler);
+      return session;
+    },
+    say: (
+      _text: string,
+      options?: { readonly allowInterruptions?: boolean },
+    ) => ({
+      async waitForPlayout() {
+        allowInterruptions.push(options?.allowInterruptions ?? true);
+        if (!overlapConfirmation) return;
+        for (const createdAt of [1_777_238_119_000, 1_777_238_119_100]) {
+          handlers.get(voice.AgentSessionEventTypes.UserStateChanged)?.({
+            createdAt,
+            newState: "speaking",
+          } as never);
+        }
+      },
+    }),
     async start() {},
-  } as unknown as voice.AgentSession;
+  };
+  return session as unknown as voice.AgentSession;
+}
+
+/** The conversational side of the handoff, with real worker event wiring. */
+class LiveTelephoneSessionDouble {
+  readonly allowInterruptions: boolean[] = [];
+  readonly spokenTexts: string[] = [];
+  readonly #handlers = new Map<string, (event: never) => void>();
+
+  asAgentSession(): voice.AgentSession {
+    const harness = this;
+    return {
+      async close() {},
+      on(eventType: string, handler: (event: never) => void) {
+        harness.#handlers.set(eventType, handler);
+        return this;
+      },
+      output: {
+        audio: {
+          async captureFrame() {},
+          flush() {},
+          async waitForPlayout() {},
+        },
+      },
+      say(
+        text: string,
+        options?: { readonly allowInterruptions?: boolean },
+      ) {
+        harness.spokenTexts.push(text);
+        harness.allowInterruptions.push(options?.allowInterruptions ?? true);
+        return {
+          done: () => true,
+          exception: () => undefined,
+          interrupted: false,
+          async waitForPlayout() {
+            harness.#handlers.get(
+              voice.AgentSessionEventTypes.AgentStateChanged,
+            )?.({ newState: "speaking" } as never);
+          },
+        };
+      },
+      async start() {},
+    } as unknown as voice.AgentSession;
+  }
 }
 
 /** The detector's recognition fault, which this call never raises. */
