@@ -698,6 +698,51 @@ describe("bounded LiveKit telephone provider recovery", () => {
     }
   });
 
+  test("a terminal provider failure closes the conversation session once", async () => {
+    const tasks = await createTasks("single-session-close");
+    const session = new RecoverySessionHarness({ failEverySay: true });
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const endCall = vi.fn(async () => {
+      // Deleting the room makes LiveKit report the linked SIP participant as
+      // disconnected before this call's own cleanup runs.
+      session.participantDisconnected();
+    });
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        sessionOptions({
+          disconnected: new Promise<void>(() => {}),
+          endCall,
+          evidence,
+          recordProviderFailure,
+          session,
+          tasks,
+          telephoneSessionId: "telephone-session-single-close",
+        }),
+        dependencies,
+      );
+
+      expect(session.closeReasons).toEqual([voice.CloseReason.USER_INITIATED]);
+      expect(endCall).toHaveBeenCalledTimes(1);
+    } finally {
+      await tasks.close();
+    }
+  });
+
   test("a synthesis fault speaking the Completion Callback confirmation is reported against synthesis", async () => {
     const pendingRecord = {
       evidence: [],
@@ -1403,6 +1448,8 @@ async function createTasks(
 }
 
 function sessionOptions(input: {
+  readonly disconnected?: Promise<void>;
+  readonly endCall?: () => Promise<void>;
   readonly evidence: TelephoneConversationEvidenceEvent[];
   readonly openingText?: string;
   readonly recordProviderFailure: () => Promise<{ readonly ended: false }>;
@@ -1449,8 +1496,8 @@ function sessionOptions(input: {
     } as unknown as Parameters<
       typeof runLiveKitTelephoneSession
     >[0]["boundaries"],
-    disconnected: Promise.resolve(),
-    async endCall() {},
+    disconnected: input.disconnected ?? Promise.resolve(),
+    endCall: input.endCall ?? (async () => undefined),
     ...(input.openingText === undefined
       ? {}
       : { openingText: input.openingText }),
@@ -1475,6 +1522,7 @@ function sessionOptions(input: {
 
 class RecoverySessionHarness {
   attemptedSays = 0;
+  readonly closeReasons: voice.CloseReason[] = [];
   failurePlaybacks = 0;
   stalledSays = 0;
   readonly spokenTexts: string[] = [];
@@ -1491,6 +1539,7 @@ class RecoverySessionHarness {
   readonly #stallSaysMatching: string | undefined;
   readonly #transcriptionTimeout: boolean;
   readonly #withoutCompletedTurn: boolean;
+  #closeOnParticipantDisconnect = true;
 
   constructor(
     options: {
@@ -1532,7 +1581,9 @@ class RecoverySessionHarness {
   asAgentSession(): voice.AgentSession {
     const harness = this;
     return {
-      async close() {},
+      async close() {
+        harness.closeReasons.push(voice.CloseReason.USER_INITIATED);
+      },
       async interrupt() {},
       on(eventType: string, handler: (event: never) => void) {
         harness.#handlers.set(eventType, handler);
@@ -1626,7 +1677,9 @@ class RecoverySessionHarness {
           },
         };
       },
-      async start(input: { agent: voice.Agent }) {
+      async start(input: Parameters<voice.AgentSession["start"]>[0]) {
+        harness.#closeOnParticipantDisconnect =
+          input.inputOptions?.closeOnDisconnect ?? true;
         harness.emit(voice.AgentSessionEventTypes.UserStateChanged, {
           createdAt: 1_787_000_000_000,
           newState: "speaking",
@@ -1660,6 +1713,12 @@ class RecoverySessionHarness {
         }
       },
     } as unknown as voice.AgentSession;
+  }
+
+  participantDisconnected(): void {
+    if (this.#closeOnParticipantDisconnect) {
+      this.closeReasons.push(voice.CloseReason.PARTICIPANT_DISCONNECTED);
+    }
   }
 
   private emit(eventType: string, event: unknown): void {

@@ -608,6 +608,11 @@ export async function runLiveKitTelephoneSession(
     try {
       await session.start({
         agent,
+        // The Telephone Session already observes the participant through its
+        // durable disconnect boundary and awaits this session's close in one
+        // finally block. Letting RoomIO close it too races a
+        // participant_disconnected close against our user_initiated close.
+        inputOptions: { closeOnDisconnect: false },
         record: false,
         room: options.room,
       });
