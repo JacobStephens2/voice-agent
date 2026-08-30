@@ -101,6 +101,8 @@ export async function runLiveKitTelephoneSession(
       | "releaseStateChangingTask"
       | "reserveUsageSlice"
     >;
+    /** Caller speech detected during the fixed authentication-to-conversation handoff. */
+    readonly callerSpokeDuringHandoff?: boolean;
     readonly disconnected: Promise<void>;
     readonly endCall: () => Promise<void>;
     readonly initialUsageScopeId?: string;
@@ -665,6 +667,20 @@ export async function runLiveKitTelephoneSession(
         try {
           await speakThroughProvider(options.openingText, {
             allowInterruptions: false,
+          });
+        } catch (error) {
+          await recordProviderFailureAndRecover(
+            "tts",
+            error,
+            options.activeTaskId,
+            "terminal",
+          );
+        }
+      }
+      if (!callEnding && options.callerSpokeDuringHandoff === true) {
+        try {
+          await speakThroughProvider(unrecognizedSpeechPrompt, {
+            allowInterruptions: true,
           });
         } catch (error) {
           await recordProviderFailureAndRecover(
