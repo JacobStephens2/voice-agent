@@ -15,6 +15,11 @@ Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
 Environment=VOICE_AGENT_BROKER_SOCKET_PATH=/run/voice-agent-broker/broker.sock
 Environment=VOICE_AGENT_SUBAGENT_SOCKET_PATH=/run/voice-agent-subagent/runner.sock
 Environment=VOICE_AGENT_WORKER_PORT=3474
+# A Recognized Synthesis Model and the voice it speaks in. The code defaults
+# already match these values; they are written out because an operator working
+# an outage reads the unit, not the source. An unrecognized model, or a model
+# left with no voice, ends this service at start.
+Environment=VOICE_AGENT_TTS_MODEL=inworld/inworld-tts-2
 Environment=VOICE_AGENT_TTS_VOICE=Sarah
 # A Recognized Speech Model. The code default already matches this value; it is
 # written out because an operator working an outage reads the unit, not the

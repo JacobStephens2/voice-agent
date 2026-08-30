@@ -1,4 +1,7 @@
-import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
+import {
+  defaultConfiguredSpeechSynthesis,
+  defaultRecognizedSpeechModel,
+} from "@voice-agent/contracts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -177,6 +180,7 @@ async function createInquiryFixture(
   return {
     coordinator: createTelephoneSessionCoordinator({
       recognitionModel: defaultRecognizedSpeechModel,
+      synthesisModel: defaultConfiguredSpeechSynthesis,
       interpreter: {
         async interpret() {
           return {

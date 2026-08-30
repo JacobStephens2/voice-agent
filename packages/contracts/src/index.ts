@@ -60,6 +60,7 @@ export * from "./keeplore-promotion-journal.ts";
 export * from "./keeplore-trial-promotion.ts";
 export * from "./keeplore-repository-policy-journal.ts";
 export * from "./recognized-speech-model.ts";
+export * from "./recognized-synthesis-model.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":

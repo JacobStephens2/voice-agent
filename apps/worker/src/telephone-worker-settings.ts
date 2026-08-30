@@ -1,7 +1,12 @@
 import {
+  configuredSpeechSynthesis,
   defaultRecognizedSpeechModelName,
+  defaultRecognizedSynthesisModelName,
   recognizedSpeechModel,
   recognizedSpeechModelNames,
+  recognizedSynthesisModel,
+  recognizedSynthesisModelNames,
+  type ConfiguredSpeechSynthesis,
   type RecognizedSpeechModel,
 } from "@voice-agent/contracts";
 
@@ -26,6 +31,8 @@ export interface TelephoneWorkerSettings {
   readonly rawAudioDebugDirectory: string;
   /** The Recognized Speech Model both transcribers recognize speech with. */
   readonly recognitionModel: RecognizedSpeechModel;
+  /** The Recognized Synthesis Model, and voice, every speech is spoken in. */
+  readonly synthesisModel: ConfiguredSpeechSynthesis;
 }
 
 export interface KeeploreDelegationSettings {
@@ -63,6 +70,7 @@ export function resolveTelephoneWorkerSettings(
       environment.VOICE_AGENT_RAW_AUDIO_DEBUG_DIRECTORY ??
       "/var/lib/voice-agent/raw-audio-debug",
     recognitionModel: resolveRecognitionModel(environment),
+    synthesisModel: resolveSynthesisModel(environment),
   };
 }
 
@@ -83,6 +91,37 @@ function resolveRecognitionModel(
     );
   }
   return entry;
+}
+
+/**
+ * A setting naming anything outside the Recognized Synthesis Model set is
+ * refused here for the same reason its recognition counterpart is, and so is a
+ * selected entry left with no voice to speak in: both fail the call itself, and
+ * failing the process instead puts them in front of a Promotion Attempt's
+ * health verification.
+ */
+function resolveSynthesisModel(
+  environment: NodeJS.ProcessEnv,
+): ConfiguredSpeechSynthesis {
+  const configured =
+    environment.VOICE_AGENT_TTS_MODEL ?? defaultRecognizedSynthesisModelName;
+  const entry = recognizedSynthesisModel(configured);
+  if (entry === undefined) {
+    throw new Error(
+      `VOICE_AGENT_TTS_MODEL must name a Recognized Synthesis Model: ${recognizedSynthesisModelNames.join(", ")}`,
+    );
+  }
+  const configuredVoice = environment.VOICE_AGENT_TTS_VOICE;
+  if (configuredVoice !== undefined && configuredVoice.length === 0) {
+    throw new Error("VOICE_AGENT_TTS_VOICE must name a voice");
+  }
+  const synthesis = configuredSpeechSynthesis(entry, configuredVoice);
+  if (synthesis === undefined) {
+    throw new Error(
+      `VOICE_AGENT_TTS_VOICE must name a ${entry.provider} voice for ${entry.model}`,
+    );
+  }
+  return synthesis;
 }
 
 function resolveProlongedSilenceMs(environment: NodeJS.ProcessEnv): number {

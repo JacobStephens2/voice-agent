@@ -1,4 +1,5 @@
 import {
+  defaultConfiguredSpeechSynthesis,
   defaultRecognizedSpeechModel,
   type KeeploreDelegationRecord,
   type KeeploreRegistration,
@@ -63,6 +64,7 @@ export async function createKeeploreButtonTrialScenario(
   });
   const coordinator = createTelephoneSessionCoordinator({
     recognitionModel: defaultRecognizedSpeechModel,
+    synthesisModel: defaultConfiguredSpeechSynthesis,
     interpreter: {
       async interpret(input) {
         return {

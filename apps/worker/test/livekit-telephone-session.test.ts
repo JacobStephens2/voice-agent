@@ -1,5 +1,8 @@
 import { APITimeoutError, llm } from "@livekit/agents";
-import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
+import {
+  defaultConfiguredSpeechSynthesis,
+  defaultRecognizedSpeechModel,
+} from "@voice-agent/contracts";
 import { describe, expect, test } from "vitest";
 
 import {
@@ -156,6 +159,7 @@ describe("LiveKit telephone provider failures", () => {
     expect(
       mapProviderFailureEvent({
         recognition: defaultRecognizedSpeechModel,
+        synthesis: defaultConfiguredSpeechSynthesis,
         deliveryId: "stt-timeout",
         error: new APITimeoutError({ message: "transcription timed out" }),
         occurredAt: "2026-08-17T19:00:00.000Z",
@@ -175,6 +179,7 @@ describe("LiveKit telephone provider failures", () => {
     expect(
       mapProviderFailureEvent({
         recognition: defaultRecognizedSpeechModel,
+        synthesis: defaultConfiguredSpeechSynthesis,
         deliveryId: "coordinator-failure",
         error: new Error("secret provider body"),
         occurredAt: "2026-08-17T19:00:01.000Z",
@@ -191,6 +196,7 @@ describe("LiveKit telephone provider failures", () => {
     expect(
       mapProviderFailureEvent({
         recognition: defaultRecognizedSpeechModel,
+        synthesis: defaultConfiguredSpeechSynthesis,
         deliveryId: "tts-timeout",
         error: new APITimeoutError({ message: "secret provider body" }),
         occurredAt: "2026-08-17T19:00:02.000Z",
@@ -209,6 +215,7 @@ describe("LiveKit telephone provider failures", () => {
     expect(
       mapProviderFailureEvent({
         recognition: defaultRecognizedSpeechModel,
+        synthesis: defaultConfiguredSpeechSynthesis,
         deliveryId: "setup-failure",
         error: new APITimeoutError({ message: "unclassified setup timeout" }),
         occurredAt: "2026-08-17T19:00:03.000Z",

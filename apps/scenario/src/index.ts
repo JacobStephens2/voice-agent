@@ -1,4 +1,5 @@
 import {
+  defaultConfiguredSpeechSynthesis,
   defaultRecognizedSpeechModel,
   bountywellHealthObservationSchema,
   telephoneBoundaryEvidenceEventSchema,
@@ -429,6 +430,7 @@ export async function createTelephoneBountywellScenario(
   const stateChangingDecisions = [...(options.stateChangingDecisions ?? [])];
   const coordinator = createTelephoneSessionCoordinator({
     recognitionModel: defaultRecognizedSpeechModel,
+    synthesisModel: defaultConfiguredSpeechSynthesis,
     interpreter,
     sessionEvidence: {
       async append(event) {

@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import type { RecognizedSpeechModel } from "./recognized-speech-model.ts";
+import type { ConfiguredSpeechSynthesis } from "./recognized-synthesis-model.ts";
+
 const identifierSchema = z.string().min(1).max(120);
 const deliveryIdentifierSchema = z.string().min(1).max(80);
 const turnIdentifierSchema = z.string().min(1).max(80);
@@ -30,6 +33,27 @@ export type TelephoneProviderFailureStage =
   (typeof telephoneProviderFailureStages)[number];
 const providerStageSchema = z.enum(telephoneSpeechProviderStages);
 const providerFailureStageSchema = z.enum(telephoneProviderFailureStages);
+
+/**
+ * The configured model identifier evidence carries for one stage: the
+ * transcriber's for a recognition stage and the synthesizer's for a synthesis
+ * one. A stage this system configures no speech model for carries none, because
+ * naming one there would record a model against a fault it did not raise.
+ *
+ * Both paths that write this evidence read it from here, so a stage's model is
+ * decided once rather than once per writer.
+ */
+export function speechStageModel(
+  models: {
+    readonly recognition: RecognizedSpeechModel;
+    readonly synthesis: ConfiguredSpeechSynthesis;
+  },
+  stage: TelephoneProviderFailureStage,
+): { readonly model?: string } {
+  if (stage === "stt") return { model: models.recognition.model };
+  if (stage === "tts") return { model: models.synthesis.model };
+  return {};
+}
 
 const telephoneEvidenceFields = {
   id: identifierSchema,

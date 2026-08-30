@@ -7,6 +7,7 @@ import {
 } from "@livekit/agents";
 import type { Room } from "@livekit/rtc-node";
 import {
+  defaultConfiguredSpeechSynthesis,
   defaultRecognizedSpeechModel,
   recognizedSpeechModels,
   type TelephoneConversationEvidenceEvent,
@@ -217,7 +218,71 @@ describe("bounded LiveKit telephone provider recovery", () => {
       }
       // The recognition model says nothing about a fault another stage raised.
       for (const timing of timings.filter(
-        (event) => event.details.stage !== "stt",
+        (event) => event.details.stage === "coordinator",
+      )) {
+        expect(timing.details).not.toHaveProperty("model");
+      }
+    } finally {
+      await tasks.close();
+    }
+  });
+
+  test("synthesis evidence names the configured model, and no other stage's", async () => {
+    const tasks = await createTasks("tts-configured-model");
+    const session = new RecoverySessionHarness();
+    const recordProviderFailure = vi.fn(async () => ({ ended: false as const }));
+    const evidence: TelephoneConversationEvidenceEvent[] = [];
+    const dependencies: LiveKitTelephoneSessionDependencies = {
+      createConversationSession: () => session.asAgentSession(),
+      createInterpreter: () => ({
+        async close() {},
+        async interpret() {
+          return {
+            durationMs: 24,
+            intent: "bountywell-health" as const,
+            provider: "deterministic-recovery",
+          };
+        },
+      }),
+    };
+
+    try {
+      await runLiveKitTelephoneSession(
+        {
+          ...sessionOptions({
+            evidence,
+            recordProviderFailure,
+            session,
+            tasks,
+            telephoneSessionId: "telephone-session-tts-configured-model",
+          }),
+          synthesisModel: {
+            model: "cartesia/sonic-3.5",
+            provider: "cartesia",
+            voice: "6f84f4b8-58a2-430c-8c79-688dad597532",
+          },
+        },
+        dependencies,
+      );
+
+      // A recorded synthesis timing must be readable against the model that
+      // actually spoke, not the one that was hardcoded when it was written.
+      const timings = evidence.filter(
+        (event) => event.kind === "telephone.provider.timing",
+      );
+      const synthesisTimings = timings.filter(
+        (event) => event.details.stage === "tts",
+      );
+      expect(synthesisTimings.length).toBeGreaterThan(0);
+      for (const timing of synthesisTimings) {
+        expect(timing.details).toMatchObject({
+          model: "cartesia/sonic-3.5",
+          provider: "cartesia",
+        });
+      }
+      // The synthesis model says nothing about a fault another stage raised.
+      for (const timing of timings.filter(
+        (event) => event.details.stage === "coordinator",
       )) {
         expect(timing.details).not.toHaveProperty("model");
       }
@@ -1459,6 +1524,7 @@ function sessionOptions(input: {
 }): Parameters<typeof runLiveKitTelephoneSession>[0] {
   return {
     recognitionModel: defaultRecognizedSpeechModel,
+    synthesisModel: defaultConfiguredSpeechSynthesis,
     boundaries: {
       async claimRawAudioCapture() {
         return {

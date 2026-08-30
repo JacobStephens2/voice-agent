@@ -449,3 +449,67 @@ sudo journalctl -u voice-agent-worker.service -n 20 | grep VOICE_AGENT_STT_MODEL
 Nothing switches provider during a call. A stalled transcriber still spends the
 single Bounded Provider Retry and then ends the call through the prerecorded
 response; moving off it is this attended change plus a Promotion.
+
+## Changing the speech synthesis model
+
+The Voice Agent speaks through a **Recognized Synthesis Model**: a model this
+system carries an entry for, bound to the provider identity recorded against
+the synthesis stage in evidence and to the voice that provider names its
+speakers by. `VOICE_AGENT_TTS_MODEL` chooses one, and only one of these is
+accepted:
+
+| Setting | Provider recorded | Default voice | Notes |
+| --- | --- | --- | --- |
+| `inworld/inworld-tts-2` | `inworld` | `Sarah` | The default. An absent setting selects it. |
+| `cartesia/sonic-3.5` | `cartesia` | none | The fallback designated in `research/2026-08-11-livekit-pipeline-providers.md`, which names this generation by its dated pin `cartesia/sonic-3.5-2026-05-04`; only this string is a LiveKit Inference model ID. |
+
+Both are reached through LiveKit Inference on the `LIVEKIT_API_KEY` this system
+already holds, so moving between them needs no new credential or billing path.
+The setting reaches every speech the Voice Agent makes - the conversation, the
+fixed text the authentication worker plays, and the completion callback - and
+its model appears on the provider-failure and speech-timing evidence for the
+synthesis stage, so a recorded `stage=tts` fault is read against the model that
+actually raised it. The prerecorded provider-failure response is unaffected: it
+is recorded audio this system plays itself, not speech any provider synthesises.
+
+`VOICE_AGENT_TTS_VOICE` still names the voice, and a voice belongs to its own
+provider. An entry with a default voice speaks in it when the setting names
+none; `cartesia/sonic-3.5` carries no default, because Cartesia names its
+speakers by identifier and the research note designates none, so selecting that
+entry means naming a voice for it in the same change:
+
+```
+Environment=VOICE_AGENT_TTS_MODEL=cartesia/sonic-3.5
+Environment=VOICE_AGENT_TTS_VOICE=<the Cartesia voice identifier>
+```
+
+One reading changes if you move to the Cartesia entry. The operational rollup
+enumerates only `assemblyai`, `inworld`, and `openai` and folds anything else
+into `other`, so with that entry selected the rollup reports `stage="tts"`
+against `provider="other"`. That is truthful rather than wrong, and it needs no
+schema migration; the entry's own provider and model are still named exactly on
+the provider-failure and speech-timing evidence, which is where a fault is read.
+
+The settings are declared in `ops/systemd/voice-agent-worker.service`. Change
+them there, in a pull request. That change reaches the Agent Host only through a
+Human Merge and a Promotion. Editing the unit on the host is not a supported
+path: every Promotion installs the unit definitions the pinned manifest carries,
+so a hand-edit is overwritten by the next release. A unit change also takes
+effect only once the attended deployment-authority upgrade above pins it and the
+Release is re-promoted.
+
+A value naming anything outside the set, or an entry left with no voice to speak
+in, ends `voice-agent-worker.service` at start, before it accepts a job - the
+same deliberate refusal ADR-0057 records for the recognition model, and for the
+same reason: the failure then arrives as a failed post-Promotion health
+verification and an automatic rollback rather than as a provider error in the
+middle of a call. ADR-0067 records the reasoning. The worker's journal names the
+setting it refused:
+
+```bash
+sudo journalctl -u voice-agent-worker.service -n 20 | grep VOICE_AGENT_TTS_
+```
+
+Nothing switches provider during a call. A stalled synthesizer still spends the
+single Bounded Provider Retry and then ends the call through the prerecorded
+response; moving off it is this attended change plus a Promotion.

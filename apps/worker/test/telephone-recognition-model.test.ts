@@ -1,5 +1,6 @@
 import { initializeLogger } from "@livekit/agents";
 import {
+  defaultConfiguredSpeechSynthesis,
   defaultRecognizedSpeechModel,
   recognizedSpeechModels,
 } from "@voice-agent/contracts";
@@ -79,6 +80,7 @@ describe("the provider a recognition-stage fault is recorded against", () => {
         error: new Error("gateway is unavailable"),
         occurredAt: "2026-08-25T12:00:00.000Z",
         recognition: deepgram,
+        synthesis: defaultConfiguredSpeechSynthesis,
         stage: "stt",
       }).provider,
     ).toBe("deepgram");
@@ -91,6 +93,7 @@ describe("the provider a recognition-stage fault is recorded against", () => {
         error: new Error("gateway is unavailable"),
         occurredAt: "2026-08-25T12:00:00.000Z",
         recognition: defaultRecognizedSpeechModel,
+        synthesis: defaultConfiguredSpeechSynthesis,
         stage: "stt",
       }).provider,
     ).toBe("assemblyai");
@@ -103,6 +106,7 @@ describe("the provider a recognition-stage fault is recorded against", () => {
         error: new Error("gateway is unavailable"),
         occurredAt: "2026-08-25T12:00:00.000Z",
         recognition: contextual,
+        synthesis: defaultConfiguredSpeechSynthesis,
         stage: "stt",
       }).provider,
     ).toBe("assemblyai");
@@ -134,6 +138,7 @@ describe("the provider a recognition-stage fault is recorded against", () => {
           error: new Error("gateway is unavailable"),
           occurredAt: "2026-08-25T12:00:00.000Z",
           recognition: deepgram,
+          synthesis: defaultConfiguredSpeechSynthesis,
           stage,
         }).provider,
       ).toBe(provider);

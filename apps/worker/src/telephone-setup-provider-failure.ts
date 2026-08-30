@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
+import { speechStageModel } from "@voice-agent/contracts";
 import type {
+  ConfiguredSpeechSynthesis,
   RecognizedSpeechModel,
   TelephoneEvidenceEvent,
   TelephoneProviderFailureStage,
@@ -47,6 +49,12 @@ export async function recordTelephoneSetupProviderFailure(input: {
     readonly sessionId: string;
     readonly stage: TelephoneProviderFailureStage;
   }) => Promise<unknown>;
+  /**
+   * The Recognized Synthesis Model in use: a fixed text this path plays is
+   * spoken through it, so a synthesis fault recorded here names the provider
+   * and model that actually raised it.
+   */
+  readonly synthesis: ConfiguredSpeechSynthesis;
   readonly telephoneSessionId: string;
 }): Promise<void> {
   if (!(input.error instanceof TelephoneSetupProviderError)) return;
@@ -64,13 +72,17 @@ export async function recordTelephoneSetupProviderFailure(input: {
     occurredAt: input.occurredAt,
     recognition: input.recognition,
     stage: classified.stage,
+    synthesis: input.synthesis,
   });
   const failureClass =
     failure.kind === "provider-timeout" ? "timeout" : "unavailable";
-  // The detector raises its recognition faults here, so this evidence carries
-  // the configured model for the same reason the session's does.
-  const recognitionModel =
-    failure.stage === "stt" ? { model: input.recognition.model } : {};
+  // The detector raises its recognition faults here and a fixed text is spoken
+  // here, so this evidence carries the configured model of whichever speech
+  // stage raised the fault, for the same reason the session's does.
+  const speechModel = speechStageModel(
+    { recognition: input.recognition, synthesis: input.synthesis },
+    failure.stage,
+  );
   // Setup faults end the call before it is answered, so this line is the only
   // description of them that survives.
   (input.log ?? logProviderFailureToStandardError)({
@@ -85,14 +97,14 @@ export async function recordTelephoneSetupProviderFailure(input: {
       failure.kind === "provider-timeout"
         ? {
             failure: "timeout",
-            ...recognitionModel,
+            ...speechModel,
             provider: failure.provider,
             stage: failure.stage,
             timeoutMs: failure.timeoutMs,
           }
         : {
             failure: "unavailable",
-            ...recognitionModel,
+            ...speechModel,
             provider: failure.provider,
             stage: failure.stage,
           },
