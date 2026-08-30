@@ -588,3 +588,54 @@ remove)"
   `alpha` at the time of this research; that is unusual and may be transient.
 - I did not test `/etc/grok` layers empirically, since writing there requires
   root. The path and precedence come from source and the config reference.
+
+
+## Addendum: observed on the Agent Host, 2026-08-30
+
+The findings above were established off-host. These were observed directly on
+the Agent Host against `/usr/local/bin/grok` 1.0.13
+(`edf79521581bb5e6b95abef848491a6a742e860da3e237ebe86a280d30dce4c1`).
+
+**Two fetch routes agree.** The versioned artifact from
+`https://x.ai/cli/grok-1.0.13-linux-x86_64` and the binary produced by
+`grok update --version 1.0.13` are byte-identical. Given no checksum is
+published, two independent routes agreeing is the strongest corroboration
+available. Both report `[alpha]` at 1.0.13, so that label is a property of the
+build rather than of the channel it was served from.
+
+**`configSources` is an object, not an array.** Its `layers` carry a `role` of
+`managed`, `user`, or `requirements`, a `path`, and an optional
+`note: "empty"`. `requirements` is the layer a project cannot override. With
+`GROK_HOME` set, all three resolve inside that home rather than under `/etc`.
+
+**`loginPolicy.apiKeyAuthDisabled` exists and is observable.** This is a real
+enforcement point for "no API key route", better than the absence of a variable
+in one process's environment. `permissions.managedSettingsPath` reports
+`/etc/claude-code/managed-settings.json` on this build.
+
+**The sandbox cannot deny what the identity cannot open.** Confirmed by
+elimination as `voice-grok`:
+
+| Profile | Result |
+| --- | --- |
+| `extends = "workspace"` | starts |
+| `+ restrict_network = true` | refuses: read-deny `/run/containerd/containerd.sock` could not be opened |
+| `+ deny = ["/var/lib/voice-grok-auth"]` | refuses: read-deny `/var/lib/voice-grok-auth` could not be opened |
+
+After entering Bubblewrap the runner re-opens each read-deny path to confirm
+the mask is in effect; `Permission denied` is read as an unenforced deny list
+and it refuses to start ("possible `__GROK_INSIDE_BWRAP` spoof"). Both failing
+paths are unreadable to the executor identity by ordinary permissions -
+`containerd.sock` is `srw-rw---- root:root`, `voice-grok-auth` is `drwxr-x---`.
+`restrict_network` implicitly denies the container sockets, which is why it
+fails for the same reason. A custom profile may extend only a built-in base,
+and `workspace` is the only base that accepts extension here.
+
+**Consequence:** child-process network restriction is unavailable on this host,
+and the Credential Custody Boundary must be held by identity permissions and
+the systemd unit rather than by sandbox deny rules. Tracked in issue #161.
+
+**Still unverified.** The headless result envelope
+(`session_id`, `request_id`, `stop_reason`, `usage`, `auth_source`) has not been
+observed, because it requires a completed OAuth login. `describeGrokRunOutcome`
+parses a shape that remains inferred.

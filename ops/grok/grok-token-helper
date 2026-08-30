@@ -1,22 +1,18 @@
 #!/usr/bin/env bash
 #
-# Return one short-lived Grok access token on standard output.
+# Print one Grok access token on standard output, from the identity that owns
+# the refresh credential.
 #
 # Installed at /usr/local/libexec/voice-agent/grok-token-helper, owned by root,
-# mode 0755. Grok Build invokes it as its configured auth provider; the token
-# stays in that process's memory and is never written to an auth.json under the
-# executor's ephemeral home.
+# mode 0755. Reached only through grok-token-broker under one sudoers rule.
 #
-# The durable refresh credential belongs to voice-grok-auth and is reachable
-# only through this helper. The model's sandbox denies
-# /usr/local/libexec/voice-agent, so a model-selected command cannot run it,
-# and the executor's stripped environment carries no token of its own.
+# There is no first-party command that prints a token: grok 1.0.13 has no
+# `auth` subcommand at all. The credential file is the interface, and its shape
+# is the one xAI's own installer reads - `{"<scope>": {"key": "<token>"}}`
+# keyed by authorization scope, documented inline in
+# https://x.ai/cli/install.sh. That makes the scope the route: a token under
+# the OIDC scope is the subscription device-OAuth login this MVP requires.
 set -euo pipefail
-
-# The token subcommand below is confirmed against the pinned runner during
-# enrollment, which exercises this helper before anything depends on it. A
-# build that names its token interface differently fails there, loudly, rather
-# than at the first Delegation.
 
 if [[ "$(id -un)" != "voice-grok-auth" ]]; then
   # The narrow sudoers rule is the only way here. Refusing anything else keeps
@@ -25,4 +21,37 @@ if [[ "$(id -un)" != "voice-grok-auth" ]]; then
   exit 1
 fi
 
-exec /usr/local/bin/grok auth print-access-token --quiet
+if [[ -n "${GROK_DEPLOYMENT_KEY:-}" || -n "${XAI_API_KEY:-}" ]]; then
+  # Both take precedence over a cached login in xAI's own tooling. Either one
+  # present here would mean this helper could return a credential the
+  # subscription did not issue.
+  echo "grok-token-helper refuses a deployment key or API key route" >&2
+  exit 1
+fi
+
+readonly AUTH_FILE="${GROK_HOME:-$HOME/.grok}/auth.json"
+readonly OIDC_SCOPE="https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
+
+if [[ ! -r $AUTH_FILE ]]; then
+  echo "No Grok credential is enrolled for this identity" >&2
+  exit 1
+fi
+
+# Read only the OIDC scope's key. A legacy-scope token is a different login
+# route and is refused rather than silently used: the enrollment record claims
+# subscription OAuth, and this is the only place that claim can be true.
+token=$(/usr/bin/python3 -c '
+import json, sys
+scope, path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as handle:
+    entry = json.load(handle).get(scope)
+key = entry.get("key") if isinstance(entry, dict) else None
+sys.stdout.write(key if isinstance(key, str) and key else "")
+' "$OIDC_SCOPE" "$AUTH_FILE")
+
+if [[ -z $token ]]; then
+  echo "No subscription OAuth token is enrolled for this identity" >&2
+  exit 1
+fi
+
+printf '%s' "$token"

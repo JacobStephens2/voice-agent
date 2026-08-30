@@ -7,16 +7,18 @@ import {
 } from "../src/grok-runner-pin.ts";
 
 const pin = {
-  configurationPath: "/etc/voice-agent/grok/config.toml",
+  configurationPath: "/etc/grok/requirements.toml",
   digest: "a".repeat(64),
-  version: "0.2.111",
+  version: "1.0.13",
 } as const;
+
+const reviewed = reviewedGrokInspection(pin);
 
 test("a runner reporting the reviewed version and digest is not drift", () => {
   expect(
     describeGrokRunnerDrift({
       observedDigest: pin.digest,
-      observedVersionOutput: "grok 0.2.111\n",
+      observedVersionOutput: "grok 1.0.13 (5e9a58528b76) [alpha]\n",
       pin,
     }),
   ).toBeNull();
@@ -26,17 +28,17 @@ test("a runner that upgraded itself is named as drift", () => {
   expect(
     describeGrokRunnerDrift({
       observedDigest: pin.digest,
-      observedVersionOutput: "grok 0.2.112\n",
+      observedVersionOutput: "grok 1.0.14 (abc) [stable]",
       pin,
     }),
-  ).toBe("The runner reports version 0.2.112 rather than the reviewed 0.2.111");
+  ).toBe("The runner reports version 1.0.14 rather than the reviewed 1.0.13");
 });
 
 test("a rebuilt binary at the reviewed version is still drift", () => {
   expect(
     describeGrokRunnerDrift({
       observedDigest: "b".repeat(64),
-      observedVersionOutput: "grok 0.2.111",
+      observedVersionOutput: "grok 1.0.13",
       pin,
     }),
   ).toBe("The runner binary does not match the reviewed digest");
@@ -53,105 +55,156 @@ test("a runner that will not say what it is fails closed", () => {
 });
 
 test("the reviewed effective configuration is not drift", () => {
+  expect(describeGrokConfigurationDrift({ inspection: reviewed, pin })).toBeNull();
+});
+
+/**
+ * The shape a bare 1.0.13 actually emits, recorded from the installed binary.
+ * It must be refused: nothing has configured the boundary yet.
+ */
+test("a bare runner with no reviewed requirements layer is drift", () => {
+  const bare = {
+    agents: [
+      { description: "d", name: "general-purpose", source: { type: "builtin" } },
+      { description: "d", name: "explore", source: { type: "builtin" } },
+    ],
+    channel: "unknown",
+    configSources: { layers: [] },
+    cwd: "/x",
+    externalCompat: {
+      cells: [{ enabled: true, source: "default", surface: "skills", vendor: "claude" }],
+      remoteSettingsLoaded: false,
+    },
+    grokVersion: "1.0.13",
+    hooks: [],
+    loginPolicy: {
+      apiKeyAuthDisabled: false,
+      disableApiKeyAuth: null,
+      forceLoginTeamUuid: null,
+    },
+    lspServers: [],
+    marketplaces: [],
+    mcpServers: [],
+    permissions: {
+      loaded: 0,
+      managedSettingsActive: false,
+      managedSettingsExists: false,
+      managedSettingsPath: "/etc/claude-code/managed-settings.json",
+      marketplaceAllowlist: [],
+      mcpServerAllowlist: [],
+      skipped: [],
+      sources: [],
+    },
+    plugins: [],
+    projectInstructions: [],
+    projectRoot: null,
+    projectTrusted: true,
+    skills: [],
+  };
+
+  expect(describeGrokConfigurationDrift({ inspection: bare, pin })).toBe(
+    "No reviewed requirements layer is in effect at /etc/grok/requirements.toml",
+  );
+});
+
+test("a user configuration layer in effect beside the requirements is drift", () => {
   expect(
-    describeGrokConfigurationDrift({ inspection: reviewedGrokInspection(pin), pin }),
+    describeGrokConfigurationDrift({
+      inspection: {
+        ...reviewed,
+        configSources: {
+          layers: [
+            { path: pin.configurationPath, role: "requirements" },
+            { path: "/var/lib/voice-grok/run/task/.grok/config.toml", role: "user" },
+          ],
+        },
+      },
+      pin,
+    }),
+  ).toBe("Effective configuration includes a layer outside the reviewed requirements");
+});
+
+test("an empty layer is not a layer in effect", () => {
+  expect(
+    describeGrokConfigurationDrift({
+      inspection: {
+        ...reviewed,
+        configSources: {
+          layers: [
+            { note: "empty", path: "/x/managed_config.toml", role: "managed" },
+            { path: pin.configurationPath, role: "requirements" },
+          ],
+        },
+      },
+      pin,
+    }),
   ).toBeNull();
 });
 
-test("an effective configuration that re-enabled self-update is drift", () => {
+test("a runner whose policy still permits API key authentication is drift", () => {
   expect(
     describeGrokConfigurationDrift({
-      inspection: {
-        ...reviewedGrokInspection(pin),
-        auto_update: { enabled: true },
-      },
+      inspection: { ...reviewed, loginPolicy: { apiKeyAuthDisabled: false } },
       pin,
     }),
-  ).toBe("Runner self-update is enabled");
+  ).toBe("API key authentication is not disabled by policy");
 });
 
-test("an effective configuration sourced from a project file is drift", () => {
+test("a runner reading third-party vendor surfaces is drift", () => {
   expect(
     describeGrokConfigurationDrift({
       inspection: {
-        ...reviewedGrokInspection(pin),
-        config_sources: [
-          "/etc/voice-agent/grok/config.toml",
-          "/var/lib/voice-grok/run/task/.grok/config.toml",
-        ],
+        ...reviewed,
+        externalCompat: {
+          cells: [{ enabled: true, source: "default", surface: "skills", vendor: "claude" }],
+        },
       },
       pin,
     }),
-  ).toBe(
-    "Effective configuration is read from a source outside /etc/voice-agent/grok/config.toml",
-  );
+  ).toBe("Effective configuration reads third-party claude skills");
 });
 
 test("a project MCP server, plugin, or skill in the effective configuration is drift", () => {
   expect(
     describeGrokConfigurationDrift({
-      inspection: {
-        ...reviewedGrokInspection(pin),
-        mcp_servers: ["operations-broker"],
-      },
+      inspection: { ...reviewed, mcpServers: [{ name: "operations-broker" }] },
       pin,
     }),
-  ).toBe("Effective configuration declares MCP servers, plugins, or skills");
+  ).toBe("Effective configuration declares MCP servers");
 });
 
-test("an effective configuration offering an API key is drift", () => {
+test("an agent the runner did not define is drift", () => {
   expect(
     describeGrokConfigurationDrift({
       inspection: {
-        ...reviewedGrokInspection(pin),
-        authentication: { api_key_present: true, source: "oauth" },
+        ...reviewed,
+        agents: [{ name: "repo-agent", source: { type: "project" } }],
       },
       pin,
     }),
-  ).toBe("An xAI API key is available to the runner");
+  ).toBe("Effective configuration declares agents outside the runner's own");
 });
 
-test("an effective configuration authenticating through the API is drift", () => {
+test("configuration warnings the runner raised are drift", () => {
   expect(
     describeGrokConfigurationDrift({
-      inspection: {
-        ...reviewedGrokInspection(pin),
-        authentication: { api_key_present: false, source: "api-key" },
-      },
+      inspection: { ...reviewed, configWarnings: ["unknown key [update]"] },
       pin,
     }),
-  ).toBe("The runner authenticates through api-key rather than the subscription");
-});
-
-test("an effective configuration selecting another model is drift", () => {
-  expect(
-    describeGrokConfigurationDrift({
-      inspection: { ...reviewedGrokInspection(pin), model: { default: "grok-4.6" } },
-      pin,
-    }),
-  ).toBe("The default model selector is grok-4.6 rather than grok-build");
-});
-
-test("an effective configuration naming another sandbox profile is drift", () => {
-  expect(
-    describeGrokConfigurationDrift({
-      inspection: { ...reviewedGrokInspection(pin), sandbox: { profile: "none" } },
-      pin,
-    }),
-  ).toBe("The sandbox profile is none rather than voice-agent-task");
+  ).toBe("The runner reported configuration warnings");
 });
 
 test("an inspection this contract does not recognize fails closed", () => {
   expect(
-    describeGrokConfigurationDrift({ inspection: { version: "0.2.111" }, pin }),
+    describeGrokConfigurationDrift({ inspection: { grokVersion: "1.0.13" }, pin }),
   ).toBe("The runner's effective configuration does not have the reviewed shape");
 });
 
 test("an inspection reporting a version other than the pin is drift", () => {
   expect(
     describeGrokConfigurationDrift({
-      inspection: { ...reviewedGrokInspection(pin), version: "0.2.112" },
+      inspection: { ...reviewed, grokVersion: "1.0.14" },
       pin,
     }),
-  ).toBe("The runner reports version 0.2.112 rather than the reviewed 0.2.111");
+  ).toBe("The runner reports version 1.0.14 rather than the reviewed 1.0.13");
 });

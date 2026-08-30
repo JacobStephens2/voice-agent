@@ -1,51 +1,99 @@
 import {
-  grokModelSelector,
   grokSandboxProfile,
   type GrokRunnerPin,
 } from "@voice-agent/contracts";
 import { z } from "zod";
 
 /**
- * The effective configuration a run is accepted against.
+ * What `grok inspect --json` actually emits.
  *
- * These field names, and the configuration path the runner reads, are the ones
- * the enrollment ceremony confirmed against the pinned runner's own `inspect`
- * output; both are recorded in the Runner Pin the proof belongs to. The
- * schema is strict about presence rather than tolerant: a runner whose
- * inspection this contract cannot read is a runner whose boundaries it cannot
- * check, which is a pause, not a run.
+ * Every field here was observed from the pinned binary rather than taken from
+ * documentation. The report struct is camelCase, and the fields an earlier
+ * version of this check read - `auto_update`, `authentication`, `model`,
+ * `approval`, `sandbox` - have no counterpart at any spelling. Those
+ * boundaries are held elsewhere and are named where they are held, rather than
+ * being checked against keys that were never going to appear.
+ *
+ * `configWarnings` and `mcpConfigProblems` are serialized only when non-empty,
+ * so their presence is itself the finding.
  */
 const inspectionSchema = z
   .object({
-    approval: z.object({ always_approve: z.boolean() }),
-    authentication: z.object({
-      api_key_present: z.boolean(),
-      source: z.string().min(1).max(60),
+    agents: z.array(
+      z
+        .object({
+          name: z.string().min(1).max(200),
+          source: z.object({ type: z.string().min(1).max(60) }).loose(),
+        })
+        .loose(),
+    ),
+    channel: z.string().min(1).max(60),
+    configSources: z.object({
+      layers: z.array(
+        z
+          .object({
+            note: z.string().max(200).optional(),
+            path: z.string().min(1).max(500),
+            role: z.string().min(1).max(60),
+          })
+          .loose(),
+      ),
     }),
-    auto_update: z.object({ enabled: z.boolean() }),
-    config_sources: z.array(z.string().min(1).max(500)),
-    mcp_servers: z.array(z.string().min(1).max(200)),
-    model: z.object({ default: z.string().min(1).max(120) }),
-    plugins: z.array(z.string().min(1).max(200)),
-    sandbox: z.object({ profile: z.string().min(1).max(120) }),
-    skills: z.array(z.string().min(1).max(500)),
-    version: z.string().min(1).max(60),
+    configWarnings: z.array(z.unknown()).optional(),
+    externalCompat: z
+      .object({
+        cells: z.array(
+          z
+            .object({
+              enabled: z.boolean(),
+              surface: z.string().min(1).max(60),
+              vendor: z.string().min(1).max(60),
+            })
+            .loose(),
+        ),
+      })
+      .loose(),
+    grokVersion: z.string().min(1).max(60),
+    hooks: z.array(z.unknown()),
+    loginPolicy: z
+      .object({ apiKeyAuthDisabled: z.boolean() })
+      .loose(),
+    lspServers: z.array(z.unknown()),
+    marketplaces: z.array(z.unknown()),
+    mcpConfigProblems: z.array(z.unknown()).optional(),
+    mcpServers: z.array(z.unknown()),
+    permissions: z
+      .object({
+        managedSettingsActive: z.boolean(),
+        managedSettingsPath: z.string().min(1).max(500),
+      })
+      .loose(),
+    plugins: z.array(z.unknown()),
+    skills: z.array(z.unknown()),
   })
   .loose();
 
 /** The inspection a runner pinned to `pin` must report to be accepted. */
 export function reviewedGrokInspection(pin: GrokRunnerPin): Record<string, unknown> {
   return {
-    approval: { always_approve: true },
-    authentication: { api_key_present: false, source: "oauth" },
-    auto_update: { enabled: false },
-    config_sources: [pin.configurationPath],
-    mcp_servers: [],
-    model: { default: grokModelSelector },
+    agents: [{ name: "general-purpose", source: { type: "builtin" } }],
+    channel: "unknown",
+    configSources: {
+      layers: [{ path: pin.configurationPath, role: "requirements" }],
+    },
+    externalCompat: { cells: [] },
+    grokVersion: pin.version,
+    hooks: [],
+    loginPolicy: { apiKeyAuthDisabled: true },
+    lspServers: [],
+    marketplaces: [],
+    mcpServers: [],
+    permissions: {
+      managedSettingsActive: false,
+      managedSettingsPath: "/etc/claude-code/managed-settings.json",
+    },
     plugins: [],
-    sandbox: { profile: grokSandboxProfile },
     skills: [],
-    version: pin.version,
   };
 }
 
@@ -53,9 +101,10 @@ export function reviewedGrokInspection(pin: GrokRunnerPin): Record<string, unkno
  * Say how the binary about to run differs from the reviewed one, if it does.
  *
  * The version is the runner's claim about itself and the digest is the only
- * statement about the bytes, so both are checked. A runner that reports no
- * version at all is drift rather than a pass: this check exists precisely for
- * the case where the runner is not what the contract was proved against.
+ * statement about the bytes, so both are checked. xAI publishes no checksum
+ * for its artifacts, so the digest attests only that the runner has not
+ * changed since it was reviewed on this host - which is precisely the drift
+ * self-update would otherwise introduce.
  */
 export function describeGrokRunnerDrift(input: {
   readonly observedDigest: string;
@@ -76,11 +125,11 @@ export function describeGrokRunnerDrift(input: {
 /**
  * Say how the runner's effective configuration differs from the reviewed one.
  *
- * Self-update, the authentication route, the model selector, the sandbox
- * profile, and the set of configuration sources are all things a project
- * directory or a provider release could change under an unchanged binary, so
- * they are re-read before every accepted run rather than trusted from
- * enrollment.
+ * Only things this inspection actually reports are checked here. The model
+ * selector, always-approve, the turn bound, and the sandbox profile are fixed
+ * on the command line by `buildGrokInvocation`, where they cannot be edited by
+ * a project directory; checking them against an inspection that never carried
+ * them would have looked like enforcement while being none.
  */
 export function describeGrokConfigurationDrift(input: {
   readonly inspection: unknown;
@@ -91,37 +140,61 @@ export function describeGrokConfigurationDrift(input: {
     return "The runner's effective configuration does not have the reviewed shape";
   }
   const inspection = parsed.data;
-  if (inspection.version !== input.pin.version) {
-    return `The runner reports version ${inspection.version} rather than the reviewed ${input.pin.version}`;
+  if (inspection.grokVersion !== input.pin.version) {
+    return `The runner reports version ${inspection.grokVersion} rather than the reviewed ${input.pin.version}`;
   }
-  if (inspection.auto_update.enabled) return "Runner self-update is enabled";
-  if (inspection.authentication.api_key_present) {
-    return "An xAI API key is available to the runner";
+  // The requirements layer is the one a project directory cannot override, so
+  // it is the only layer that can carry a boundary. A user or managed layer
+  // that is actually in effect is configuration this contract never reviewed.
+  const effective = inspection.configSources.layers.filter(
+    (layer) => layer.note !== "empty",
+  );
+  const requirements = effective.filter((layer) => layer.role === "requirements");
+  if (requirements.length !== 1 || requirements[0]?.path !== input.pin.configurationPath) {
+    return `No reviewed requirements layer is in effect at ${input.pin.configurationPath}`;
   }
-  if (inspection.authentication.source !== "oauth") {
-    return `The runner authenticates through ${inspection.authentication.source} rather than the subscription`;
+  if (effective.length !== requirements.length) {
+    return "Effective configuration includes a layer outside the reviewed requirements";
   }
-  if (inspection.model.default !== grokModelSelector) {
-    return `The default model selector is ${inspection.model.default} rather than ${grokModelSelector}`;
+  // The subscription is the only route this MVP may use. This is the one place
+  // the runner itself reports on that, and it reports policy rather than the
+  // absence of a key in one process's environment.
+  if (!inspection.loginPolicy.apiKeyAuthDisabled) {
+    return "API key authentication is not disabled by policy";
   }
-  if (!inspection.approval.always_approve) {
-    return "Always-approve mode is not in effect";
+  if (inspection.permissions.managedSettingsActive) {
+    return "Managed settings outside the reviewed requirements are active";
   }
-  if (inspection.sandbox.profile !== grokSandboxProfile) {
-    return `The sandbox profile is ${inspection.sandbox.profile} rather than ${grokSandboxProfile}`;
+  for (const [name, entries] of [
+    ["MCP servers", inspection.mcpServers],
+    ["plugins", inspection.plugins],
+    ["skills", inspection.skills],
+    ["hooks", inspection.hooks],
+    ["marketplaces", inspection.marketplaces],
+    ["LSP servers", inspection.lspServers],
+  ] as const) {
+    if (entries.length > 0) return `Effective configuration declares ${name}`;
+  }
+  const foreign = inspection.agents.filter(
+    (agent) => agent.source.type !== "builtin",
+  );
+  if (foreign.length > 0) {
+    return "Effective configuration declares agents outside the runner's own";
+  }
+  // A repository that ships `.claude/skills` or `.cursor/rules` would be read
+  // as instruction by default. Repository content is data in this contract.
+  const vendors = inspection.externalCompat.cells.filter((cell) => cell.enabled);
+  if (vendors.length > 0) {
+    return `Effective configuration reads third-party ${vendors[0]?.vendor} ${vendors[0]?.surface}`;
   }
   if (
-    inspection.config_sources.length !== 1 ||
-    inspection.config_sources[0] !== input.pin.configurationPath
+    (inspection.configWarnings?.length ?? 0) > 0 ||
+    (inspection.mcpConfigProblems?.length ?? 0) > 0
   ) {
-    return `Effective configuration is read from a source outside ${input.pin.configurationPath}`;
-  }
-  if (
-    inspection.mcp_servers.length > 0 ||
-    inspection.plugins.length > 0 ||
-    inspection.skills.length > 0
-  ) {
-    return "Effective configuration declares MCP servers, plugins, or skills";
+    return "The runner reported configuration warnings";
   }
   return null;
 }
+
+/** The sandbox profile name the invocation names on the command line. */
+export const reviewedSandboxProfile = grokSandboxProfile;

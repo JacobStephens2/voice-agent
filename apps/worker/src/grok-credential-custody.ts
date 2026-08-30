@@ -53,29 +53,38 @@ export function assertOutsideCredentialCustody(
 }
 
 /**
- * Say which boundary stores the reviewed sandbox profile stopped denying.
+ * Say whether the reviewed sandbox profile is the one that will be in force.
  *
- * The profile lives in root-managed configuration, which `grok inspect` names
- * but does not quote back: a profile that silently lost a deny rule would
- * still pass every other drift check. So the executor reads the configuration
- * it just proved the runner is using and re-derives this list from the
- * boundary itself. A store added here without being added there fails closed
- * on the next run rather than at the next review.
+ * This deliberately does not require the profile to deny the boundary stores
+ * above. Denying them was tried on the Agent Host and makes the runner refuse
+ * to start: after entering Bubblewrap it re-opens every read-deny path to
+ * confirm the mask took effect, and a path the executor identity cannot open
+ * at all answers `Permission denied`, which it reads as an unenforced deny
+ * list. Every store in the boundary is root-owned or 0700 for exactly the
+ * reason it is in the boundary, so listing them turns a defence-in-depth layer
+ * into a runner that never runs.
+ *
+ * Custody is therefore held where it is enforceable - the executor identity's
+ * own permissions, and the systemd unit's InaccessiblePaths - and this profile
+ * holds workspace confinement. `restrict_network` is unavailable on this host
+ * for the same reason; see issue #161.
  */
-export function describeMissingCustodyDenyRules(
-  configurationText: string,
+export function describeSandboxProfileDrift(
+  profileText: string,
 ): string | null {
-  const missing = credentialCustodyBoundaryPaths.filter(
-    (path) => !configurationText.includes(`"${path}/**"`),
-  );
-  if (missing.length > 0) {
-    return `The reviewed sandbox profile does not deny ${missing.join(", ")}`;
-  }
-  if (!/restrict_network\s*=\s*true/u.test(configurationText)) {
-    return "The reviewed sandbox profile does not restrict child-process network";
-  }
-  if (!configurationText.includes(`[sandbox.profiles.${grokSandboxProfile}]`)) {
+  if (!profileText.includes(`[profiles.${grokSandboxProfile}]`)) {
     return `The reviewed sandbox profile ${grokSandboxProfile} is not defined`;
+  }
+  if (!/extends\s*=\s*"workspace"/u.test(profileText)) {
+    return "The reviewed sandbox profile does not extend the workspace base";
+  }
+  if (
+    /^\s*deny\s*=/mu.test(profileText) ||
+    /^\s*restrict_network\s*=/mu.test(profileText)
+  ) {
+    // A future edit that adds either would be discovered as every Delegation
+    // failing to start, which is a worse way to learn it than this sentence.
+    return "The reviewed sandbox profile declares deny rules the runner cannot enforce on this host";
   }
   return null;
 }
