@@ -38,17 +38,17 @@ const brief: GrokContractDelegationBrief = {
 };
 
 const envelope = {
-  auth_source: "oauth",
-  model: "grok-4.6",
-  request_id: "req-1",
-  result: {
+  modelUsage: { "grok-4.6-build": { modelCalls: 1 } },
+  requestId: "req-1",
+  sessionId: "ses-1",
+  stopReason: "end_turn",
+  structuredOutput: {
     risks: [],
     status: "completed",
     summary: "Wrote the requested line.",
   },
-  session_id: "ses-1",
-  stop_reason: "end_turn",
-  usage: { incomplete: false, input_tokens: 10, output_tokens: 4 },
+  total_cost_usd: 0.004,
+  usage: { input_tokens: 10, output_tokens: 4 },
 };
 
 afterEach(async () => {
@@ -67,9 +67,9 @@ test("an accepted run records the provider's evidence and removes its Grok home"
   expect(record.outcome).toMatchObject({
     evidence: {
       authenticationRoute: "subscription-oauth",
-      model: { providerReported: "grok-4.6", selector: "grok-build" },
+      model: { providerReported: "grok-4.6-build", selector: "grok-4.6" },
       runner: { version: "1.0.13" },
-      usage: { cost: "unknown", incomplete: false },
+      usage: { cost: { amount: 0.004, currency: "USD" }, incomplete: false },
     },
     report: { status: "completed" },
     state: "completed",

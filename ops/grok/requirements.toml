@@ -16,9 +16,11 @@
 auto_update = false
 
 [models]
-# The logical selector xAI recommends for coding and agent sessions. The model
-# actually behind it is recorded from every run rather than assumed.
-default = "grok-build"
+# `grok-build` is documented as the recommended alias but the subscription
+# rejects it as an unknown model id; `grok models` offers grok-4.6 and
+# grok-4.5. The model actually served is recorded from every run: a request for
+# grok-4.6 is answered by grok-4.6-build.
+default = "grok-4.6"
 
 [auth]
 # The refresh credential lives with the voice-grok-auth identity. This broker

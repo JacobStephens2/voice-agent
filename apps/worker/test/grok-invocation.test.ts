@@ -7,7 +7,7 @@ const input = {
   ephemeralHome: "/var/lib/voice-grok/run/task-1/home",
   maxTurns: 12,
   briefFilePath: "/var/lib/voice-grok/run/task-1/brief.md",
-  resultSchemaPath: "/var/lib/voice-grok/run/task-1/result.schema.json",
+  resultSchema: '{"type":"object"}',
   sourceEnvironment: {
     GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
     HOME: "/var/lib/voice-grok",
@@ -22,13 +22,13 @@ test("the invocation pins the runner, the model, and the reviewed result schema"
     "--cwd",
     "/var/lib/voice-grok/run/task-1/delegation",
     "--model",
-    "grok-build",
+    "grok-4.6",
     "--prompt-file",
     "/var/lib/voice-grok/run/task-1/brief.md",
     "--output-format",
     "json",
     "--json-schema",
-    "/var/lib/voice-grok/run/task-1/result.schema.json",
+    '{"type":"object"}',
     "--always-approve",
     "--max-turns",
     "12",
@@ -47,6 +47,15 @@ test("the model process receives an ephemeral home and nothing it inherited", ()
     PATH: "/usr/bin:/bin",
     TMPDIR: "/var/lib/voice-grok/run/task-1/home/tmp",
   });
+});
+
+test("a Grok deployment key refuses the run the way an API key does", () => {
+  expect(() =>
+    buildGrokInvocation({
+      ...input,
+      sourceEnvironment: { ...input.sourceEnvironment, GROK_DEPLOYMENT_KEY: "dk" },
+    }),
+  ).toThrow("A Grok deployment key is present");
 });
 
 test("an inherited xAI API key refuses the run rather than being stripped", () => {

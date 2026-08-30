@@ -37,21 +37,38 @@ if [[ ! -r $AUTH_FILE ]]; then
   exit 1
 fi
 
-# Read only the OIDC scope's key. A legacy-scope token is a different login
-# route and is refused rather than silently used: the enrollment record claims
-# subscription OAuth, and this is the only place that claim can be true.
+# Read only the OIDC scope's key, and only while it is still valid. A
+# legacy-scope token is a different login route and is refused rather than
+# silently used: the enrollment record claims subscription OAuth, and this is
+# the only place that claim can be true.
+#
+# The credential carries `expires_at` roughly six hours out, beside a refresh
+# token. Grok refreshes it when Grok owns the login, which it does not here, so
+# an expired key would otherwise be handed out and fail mid-Delegation. Saying
+# so plainly is better than a provider error that looks like a fault.
 token=$(/usr/bin/python3 -c '
-import json, sys
+import datetime, json, sys
 scope, path = sys.argv[1], sys.argv[2]
 with open(path, encoding="utf-8") as handle:
     entry = json.load(handle).get(scope)
-key = entry.get("key") if isinstance(entry, dict) else None
-sys.stdout.write(key if isinstance(key, str) and key else "")
-' "$OIDC_SCOPE" "$AUTH_FILE")
-
-if [[ -z $token ]]; then
-  echo "No subscription OAuth token is enrolled for this identity" >&2
-  exit 1
-fi
+if not isinstance(entry, dict):
+    sys.exit(3)
+if entry.get("auth_mode") != "oidc":
+    sys.exit(4)
+expires = entry.get("expires_at")
+if isinstance(expires, str):
+    stamp = datetime.datetime.fromisoformat(expires.replace("Z", "+00:00"))
+    if stamp <= datetime.datetime.now(datetime.timezone.utc):
+        sys.exit(5)
+key = entry.get("key")
+if not isinstance(key, str) or not key:
+    sys.exit(3)
+sys.stdout.write(key)
+' "$OIDC_SCOPE" "$AUTH_FILE") || case $? in
+  3) echo "No subscription OAuth token is enrolled for this identity" >&2; exit 1 ;;
+  4) echo "The enrolled credential is not a subscription OAuth login" >&2; exit 1 ;;
+  5) echo "The enrolled subscription login has expired; sign in again" >&2; exit 1 ;;
+  *) echo "The enrolled credential could not be read" >&2; exit 1 ;;
+esac
 
 printf '%s' "$token"

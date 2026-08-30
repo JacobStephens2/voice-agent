@@ -28,23 +28,27 @@ const maximumResultBytes = 64_000;
  */
 const envelopeSchema = z
   .object({
-    auth_source: z.string().min(1).max(60),
-    model: z.string().min(1).max(200),
-    request_id: z.string().min(1).max(200).nullish(),
-    result: z.union([z.string(), z.record(z.string(), z.unknown())]),
-    session_id: z.string().min(1).max(200).nullish(),
-    stop_reason: z.string().min(1).max(120),
+    modelUsage: z.record(
+      z.string().min(1).max(200),
+      z.record(z.string(), z.unknown()),
+    ),
+    requestId: z.string().min(1).max(200).nullish(),
+    sessionId: z.string().min(1).max(200).nullish(),
+    stopReason: z.string().min(1).max(120),
+    structuredOutput: z.record(z.string(), z.unknown()),
+    total_cost_usd: z.number().nonnegative().nullish(),
     usage: z
       .object({
-        cost: z
-          .object({ amount: z.number().nonnegative(), currency: z.string().length(3) })
-          .nullish(),
-        incomplete: z.boolean(),
         input_tokens: z.number().int().nonnegative().nullish(),
         output_tokens: z.number().int().nonnegative().nullish(),
       })
       .loose(),
   })
+  .loose();
+
+/** What the runner prints instead of a result when it refuses outright. */
+const errorEnvelopeSchema = z
+  .object({ message: z.string().max(2_000), type: z.literal("error") })
   .loose();
 
 const turnLimitStopReasons = new Set(["max_turns", "turn_limit"]);
@@ -154,6 +158,16 @@ function classify(observation: GrokRunObservation): GrokContractRunOutcome {
       state: "failed",
     };
   }
+  if (envelope === "refused") {
+    const paused = pausedByProvider(observation.stdout + observation.stderr);
+    if (paused !== null) return paused;
+    return {
+      detail: "The provider refused the request without returning a result.",
+      evidence: null,
+      reason: "runner-execution",
+      state: "failed",
+    };
+  }
   if (envelope === "drifted") {
     return {
       detail:
@@ -163,16 +177,8 @@ function classify(observation: GrokRunObservation): GrokContractRunOutcome {
       state: "paused",
     };
   }
-  if (envelope.auth_source !== "oauth") {
-    return {
-      detail: `The provider reported the ${envelope.auth_source} authentication route rather than the subscription.`,
-      evidence: null,
-      reason: "provider-contract-drift",
-      state: "paused",
-    };
-  }
   const evidence = buildEvidence(envelope, observation.pin);
-  if (turnLimitStopReasons.has(envelope.stop_reason)) {
+  if (turnLimitStopReasons.has(envelope.stopReason)) {
     return {
       detail: "The provider stopped at the reviewed turn bound before returning a result.",
       evidence,
@@ -180,7 +186,7 @@ function classify(observation: GrokRunObservation): GrokContractRunOutcome {
       state: "failed",
     };
   }
-  const report = readReport(envelope.result);
+  const report = readReport(envelope.structuredOutput);
   if (report === null) {
     return {
       detail:
@@ -204,7 +210,12 @@ function classify(observation: GrokRunObservation): GrokContractRunOutcome {
 function readEnvelope(
   stdout: string,
   exceededOutputBound: boolean,
-): z.infer<typeof envelopeSchema> | "drifted" | "oversized" | "unreadable" {
+):
+  | z.infer<typeof envelopeSchema>
+  | "drifted"
+  | "oversized"
+  | "refused"
+  | "unreadable" {
   if (exceededOutputBound) return "oversized";
   if (Buffer.byteLength(stdout, "utf8") > maximumResultBytes) return "oversized";
   let parsed: unknown;
@@ -216,22 +227,15 @@ function readEnvelope(
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     return "unreadable";
   }
+  if (errorEnvelopeSchema.safeParse(parsed).success) return "refused";
   const envelope = envelopeSchema.safeParse(parsed);
   return envelope.success ? envelope.data : "drifted";
 }
 
 function readReport(
-  result: string | Record<string, unknown>,
+  structuredOutput: Record<string, unknown>,
 ): z.infer<typeof grokModelReportSchema> | null {
-  let candidate: unknown = result;
-  if (typeof result === "string") {
-    try {
-      candidate = JSON.parse(result);
-    } catch {
-      return null;
-    }
-  }
-  const report = grokModelReportSchema.safeParse(candidate);
+  const report = grokModelReportSchema.safeParse(structuredOutput);
   return report.success ? report.data : null;
 }
 
@@ -253,19 +257,36 @@ function buildEvidence(
   envelope: z.infer<typeof envelopeSchema>,
   pin: GrokRunnerPin,
 ): GrokRunEvidence {
+  // The model the provider actually served. It is not the selector: a run
+  // asking for `grok-4.6` is served by `grok-4.6-build`, and recording only
+  // what was asked for would hide the model that did the work.
+  const served = Object.keys(envelope.modelUsage);
   return {
+    // Not reported in the envelope at any spelling. The route is established
+    // where the credential is: the enrolled credential's own `auth_mode`, and
+    // the runner policy that disables API key authentication outright.
     authenticationRoute: grokAuthenticationRoute,
-    model: { providerReported: envelope.model, selector: grokModelSelector },
+    model: {
+      providerReported: served.length === 1 ? (served[0] ?? grokModelSelector) : served.join(", "),
+      selector: grokModelSelector,
+    },
     provider: grokProvider,
-    requestId: envelope.request_id ?? null,
+    requestId: envelope.requestId ?? null,
     runner: pin,
-    sessionId: envelope.session_id ?? null,
-    stopReason: envelope.stop_reason,
+    sessionId: envelope.sessionId ?? null,
+    stopReason: envelope.stopReason,
     usage: {
-      // A subscription-backed run may report no cost at all. Recording that as
-      // zero would claim the owner's allowance was not spent.
-      cost: envelope.usage.cost ?? "unknown",
-      incomplete: envelope.usage.incomplete,
+      // Subscription runs do report a cost. An absent one is recorded as
+      // unknown rather than as zero, which would claim the owner's allowance
+      // was not spent.
+      cost:
+        typeof envelope.total_cost_usd === "number"
+          ? { amount: envelope.total_cost_usd, currency: "USD" }
+          : "unknown",
+      // No completeness flag appears in an ordinary envelope; absent token
+      // counts are what an incomplete accounting looks like here.
+      incomplete:
+        envelope.usage.input_tokens == null || envelope.usage.output_tokens == null,
       inputTokens: envelope.usage.input_tokens ?? null,
       outputTokens: envelope.usage.output_tokens ?? null,
     },

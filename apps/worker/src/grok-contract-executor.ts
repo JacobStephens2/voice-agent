@@ -109,7 +109,7 @@ async function execute(): Promise<GrokContractRunOutcome> {
     ephemeralHome,
     maxTurns: brief.maxTurns,
     briefFilePath: `${runRoot}/${brief.delegationId}/brief.md`,
-    resultSchemaPath: `${runRoot}/${brief.delegationId}/result.schema.json`,
+    resultSchema: JSON.stringify(z.toJSONSchema(grokModelReportSchema)),
     sourceEnvironment: process.env,
   });
   const run = await runBoundedCommand(grokExecutable, invocation.arguments, {
@@ -282,11 +282,6 @@ async function stageRun(): Promise<void> {
   await writeFile(
     `${ephemeralHome}/sandbox.toml`,
     await readFile(reviewedSandboxProfilePath, "utf8"),
-    { mode: 0o600 },
-  );
-  await writeFile(
-    `${runRoot}/${brief.delegationId}/result.schema.json`,
-    JSON.stringify(z.toJSONSchema(grokModelReportSchema)),
     { mode: 0o600 },
   );
   await writeFile(`${runRoot}/${brief.delegationId}/brief.md`, buildBrief(brief), {

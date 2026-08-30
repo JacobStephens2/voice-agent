@@ -10,15 +10,17 @@ const sentenceSchema = z.string().min(1).max(300);
 export const grokProvider = "grok" as const;
 
 /**
- * The logical model selector the runner is given.
+ * The model this contract asks for.
  *
- * xAI recommends `grok-build` for coding and agent sessions and reserves the
- * right to move the model behind it. The selector is therefore fixed here and
- * the model the provider actually reports is recorded separately: a silent
- * change of the model behind the selector is provider-contract drift, not a
- * new default.
+ * `grok-build` is documented as the recommended alias but the subscription
+ * rejects it as an unknown model id; `grok models` offers `grok-4.6` and
+ * `grok-4.5`. It is named explicitly rather than left to the account default
+ * so that a changed default is drift rather than a silent substitution.
+ *
+ * The model the provider actually serves is recorded separately, because it
+ * differs: a run asking for `grok-4.6` is served by `grok-4.6-build`.
  */
-export const grokModelSelector = "grok-build" as const;
+export const grokModelSelector = "grok-4.6" as const;
 
 /**
  * The one authentication route this provider may use.

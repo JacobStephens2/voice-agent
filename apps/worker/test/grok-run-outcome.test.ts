@@ -12,14 +12,29 @@ const report = {
   status: "completed",
   summary: "Appended the requested rule and left every other file untouched.",
 } as const;
+/**
+ * The shape grok 1.0.13 returned for a real headless run on the Agent Host,
+ * with the reasoning text it also carries. `thought` must never reach evidence.
+ */
 const envelope = {
-  auth_source: "oauth",
-  model: "grok-4.6",
-  request_id: "req-1",
-  result: report,
-  session_id: "ses-1",
-  stop_reason: "end_turn",
-  usage: { cost: null, incomplete: false, input_tokens: 1_200, output_tokens: 340 },
+  modelUsage: {
+    "grok-4.6-build": { inputTokens: 1_200, modelCalls: 1, outputTokens: 340 },
+  },
+  num_turns: 1,
+  requestId: "b8574042-7e9e-4bde-b987-9a01d9d791ea",
+  sessionId: "01a054be-9e24-7a72-ab32-df482c72b2b5",
+  stopReason: "end_turn",
+  structuredOutput: report,
+  text: JSON.stringify(report),
+  thought: "The user wants me to return only a structured JSON result",
+  total_cost_usd: 0.005_030_64,
+  usage: {
+    cache_read_input_tokens: 0,
+    input_tokens: 1_200,
+    output_tokens: 340,
+    reasoning_tokens: 251,
+    total_tokens: 14_244,
+  },
 };
 
 function outcomeOf(overrides: Partial<Parameters<typeof describeGrokRunOutcome>[0]>) {
@@ -39,14 +54,14 @@ test("a completed run records the provider's own account of itself", () => {
   expect(outcomeOf({})).toEqual({
     evidence: {
       authenticationRoute: "subscription-oauth",
-      model: { providerReported: "grok-4.6", selector: "grok-build" },
+      model: { providerReported: "grok-4.6-build", selector: "grok-4.6" },
       provider: "grok",
-      requestId: "req-1",
+      requestId: "b8574042-7e9e-4bde-b987-9a01d9d791ea",
       runner: pin,
-      sessionId: "ses-1",
+      sessionId: "01a054be-9e24-7a72-ab32-df482c72b2b5",
       stopReason: "end_turn",
       usage: {
-        cost: "unknown",
+        cost: { amount: 0.005_030_64, currency: "USD" },
         incomplete: false,
         inputTokens: 1_200,
         outputTokens: 340,
@@ -57,12 +72,26 @@ test("a completed run records the provider's own account of itself", () => {
   });
 });
 
-test("a result returned as a JSON string is still the reviewed structured result", () => {
+test("the model's reasoning never reaches the recorded outcome", () => {
+  const outcome = outcomeOf({});
+
+  expect(JSON.stringify(outcome)).not.toContain("The user wants me to");
+});
+
+test("a runner that refused outright is failed, not read as a result", () => {
   expect(
     outcomeOf({
-      stdout: JSON.stringify({ ...envelope, result: JSON.stringify(report) }),
+      exitCode: 1,
+      stdout: JSON.stringify({
+        message: "Couldn't set model 'grok-build': unknown model id",
+        type: "error",
+      }),
     }),
-  ).toMatchObject({ report, state: "completed" });
+  ).toMatchObject({
+    detail: "The provider refused the request without returning a result.",
+    reason: "runner-execution",
+    state: "failed",
+  });
 });
 
 test("a run whose usage the provider could not complete says so", () => {
@@ -70,7 +99,8 @@ test("a run whose usage the provider could not complete says so", () => {
     outcomeOf({
       stdout: JSON.stringify({
         ...envelope,
-        usage: { incomplete: true, input_tokens: null, output_tokens: null },
+        total_cost_usd: null,
+        usage: { input_tokens: null, output_tokens: null },
       }),
     }),
   ).toMatchObject({
@@ -86,23 +116,18 @@ test("a run whose usage the provider could not complete says so", () => {
   });
 });
 
-test("a cost the provider reported is recorded as reported", () => {
-  expect(
-    outcomeOf({
-      stdout: JSON.stringify({
-        ...envelope,
-        usage: { ...envelope.usage, cost: { amount: 0.12, currency: "USD" } },
-      }),
-    }),
-  ).toMatchObject({
-    evidence: { usage: { cost: { amount: 0.12, currency: "USD" } } },
+test("a subscription run that reported no cost records unknown, never zero", () => {
+  const outcome = outcomeOf({
+    stdout: JSON.stringify({ ...envelope, total_cost_usd: null }),
   });
+
+  expect(outcome).toMatchObject({ evidence: { usage: { cost: "unknown" } } });
 });
 
 test("a model report that does not match the reviewed schema fails the run", () => {
   expect(
     outcomeOf({
-      stdout: JSON.stringify({ ...envelope, result: { status: "done" } }),
+      stdout: JSON.stringify({ ...envelope, structuredOutput: { status: "done" } }),
     }),
   ).toEqual({
     detail:
@@ -149,7 +174,7 @@ test("a refusal reported alongside a well-formed envelope still pauses", () => {
 
 test("an exhausted turn bound fails the run and keeps the run's evidence", () => {
   expect(
-    outcomeOf({ stdout: JSON.stringify({ ...envelope, stop_reason: "max_turns" }) }),
+    outcomeOf({ stdout: JSON.stringify({ ...envelope, stopReason: "max_turns" }) }),
   ).toMatchObject({
     detail: "The provider stopped at the reviewed turn bound before returning a result.",
     evidence: expect.objectContaining({ stopReason: "max_turns" }),
@@ -219,21 +244,10 @@ test("no ending offers another provider or an API key", () => {
 
 test("an envelope missing the provider's own identity is contract drift", () => {
   expect(
-    outcomeOf({ stdout: JSON.stringify({ ...envelope, model: undefined }) }),
+    outcomeOf({ stdout: JSON.stringify({ ...envelope, stopReason: undefined }) }),
   ).toMatchObject({
     detail:
       "The provider's headless result does not have the shape this contract was accepted against.",
-    reason: "provider-contract-drift",
-    state: "paused",
-  });
-});
-
-test("a run the provider says it billed to the API pauses rather than completing", () => {
-  expect(
-    outcomeOf({ stdout: JSON.stringify({ ...envelope, auth_source: "api-key" }) }),
-  ).toMatchObject({
-    detail:
-      "The provider reported the api-key authentication route rather than the subscription.",
     reason: "provider-contract-drift",
     state: "paused",
   });

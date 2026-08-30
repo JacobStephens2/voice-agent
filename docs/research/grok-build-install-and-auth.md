@@ -635,7 +635,50 @@ and `workspace` is the only base that accepts extension here.
 and the Credential Custody Boundary must be held by identity permissions and
 the systemd unit rather than by sandbox deny rules. Tracked in issue #161.
 
-**Still unverified.** The headless result envelope
-(`session_id`, `request_id`, `stop_reason`, `usage`, `auth_source`) has not been
-observed, because it requires a completed OAuth login. `describeGrokRunOutcome`
-parses a shape that remains inferred.
+**The headless envelope, observed.** After an attended device-code login, one
+real bounded run returned:
+
+```json
+{ "text": "…", "stopReason": "end_turn", "sessionId": "…", "requestId": "…",
+  "thought": "…", "num_turns": 1, "total_cost_usd": 0.00503064,
+  "usage": { "input_tokens": 13968, "output_tokens": 276,
+             "reasoning_tokens": 251, "total_tokens": 14244 },
+  "modelUsage": { "grok-4.6-build": { "modelCalls": 1, "costUSD": 0.00503064 } },
+  "structuredOutput": { "risks": [], "status": "completed", "summary": "…" } }
+```
+
+Every field the implementation inferred was wrong. The identity fields are
+camelCase (`stopReason`, `sessionId`, `requestId`), the structured result is
+`structuredOutput` rather than `result`, and `usage` is snake_case inside a
+camelCase envelope. Three findings matter beyond spelling:
+
+- **There is no `auth_source`.** The authentication route is not reported per
+  run at any spelling. It is observable in the credential instead - the
+  enrolled entry carries `auth_mode: "oidc"` - and in runner policy through
+  `loginPolicy.apiKeyAuthDisabled`.
+- **Cost is reported**, `total_cost_usd`, on a subscription-authenticated run.
+  The earlier note's expectation that OAuth runs omit cost does not hold here.
+- **`modelUsage` names the model actually served.** A run asking for `grok-4.6`
+  is answered by `grok-4.6-build`, so the selector and the served model are
+  genuinely different values and both are worth recording.
+- **`thought` carries the model's reasoning** and must never reach durable
+  evidence.
+
+A refusal is returned as a distinct envelope, `{"type":"error","message":…}`,
+on standard output with a non-zero exit.
+
+**`grok-build` is not a model id.** The subscription rejects it: *"Invalid
+params: unknown model id"*. `grok models` reports `grok-4.6` (default) and
+`grok-4.5`. The documented recommendation does not match what the account can
+select.
+
+**The credential expires in six hours.** The enrolled entry carries
+`expires_at` roughly six hours after `create_time`, beside a `refresh_token`.
+Grok refreshes it when Grok owns the login, which it does not when a token
+helper reads the file, so the helper refuses an expired token rather than
+handing one out mid-Delegation. Automatic refresh under the custody identity is
+not implemented.
+
+**Retention is observable.** The entry carries
+`coding_data_retention_opt_out`, so the enrollment record can read that setting
+rather than ask an operator to recall it.

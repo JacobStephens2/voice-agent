@@ -18,7 +18,8 @@ export interface GrokInvocationInput {
   /** A per-run Grok home, removed after evidence is extracted. */
   readonly ephemeralHome: string;
   readonly maxTurns: number;
-  readonly resultSchemaPath: string;
+  /** The reviewed result schema, as JSON. The runner takes it inline. */
+  readonly resultSchema: string;
   readonly sourceEnvironment: Readonly<Record<string, string | undefined>>;
 }
 
@@ -55,7 +56,6 @@ export function buildGrokInvocation(input: GrokInvocationInput): GrokInvocation 
   assertAbsolute(input.delegationRoot, "The Delegation root");
   assertAbsolute(input.ephemeralHome, "The ephemeral Grok home");
   assertAbsolute(input.briefFilePath, "The Delegation Brief");
-  assertAbsolute(input.resultSchemaPath, "The reviewed result schema");
   assertOutsideCredentialCustody(input.delegationRoot, "The Delegation root");
   assertOutsideCredentialCustody(input.ephemeralHome, "The ephemeral Grok home");
   assertOutsideCredentialCustody(input.briefFilePath, "The Delegation Brief");
@@ -71,7 +71,7 @@ export function buildGrokInvocation(input: GrokInvocationInput): GrokInvocation 
       "--output-format",
       "json",
       "--json-schema",
-      input.resultSchemaPath,
+      input.resultSchema,
       "--always-approve",
       "--max-turns",
       String(input.maxTurns),
