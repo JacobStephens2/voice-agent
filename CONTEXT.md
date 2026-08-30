@@ -149,6 +149,10 @@ _Avoid_: Provider error message, websocket payload, error code
 A speech model this system will accept a setting for, bound to the provider identity recorded against its stage in evidence and to the options that provider's own gateway accepts — including any per-turn option, such as the Voice Agent's most recent spoken reply pushed to the live transcriber to bias the caller's next turn, which only some entries accept and no other entry is ever sent; a setting naming anything outside the set is refused before the worker takes a call.
 _Avoid_: Model string, provider selection, automatic provider failover
 
+**Recognized Synthesis Model**:
+A speech model this system will accept a setting for synthesising with, bound to the provider identity recorded against the synthesis stage in evidence and to the voice that provider names its speakers by; an entry names a default voice only where this system has a researched choice for one, and a setting naming anything outside the set, or an entry left with no voice to speak in, is refused before the worker takes a call.
+_Avoid_: Voice model, TTS string, automatic provider failover
+
 **Bounded Excerpt**:
 An explicitly requested, code-filtered subset of server data that may be shared with a hosted model provider.
 _Avoid_: Raw payload, unrestricted context

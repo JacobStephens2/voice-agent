@@ -1,5 +1,8 @@
 import { APITimeoutError } from "@livekit/agents";
-import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
+import {
+  defaultConfiguredSpeechSynthesis,
+  defaultRecognizedSpeechModel,
+} from "@voice-agent/contracts";
 import { describe, expect, test, vi } from "vitest";
 
 import {
@@ -14,6 +17,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
 
     await recordTelephoneSetupProviderFailure({
       recognition: defaultRecognizedSpeechModel,
+      synthesis: defaultConfiguredSpeechSynthesis,
       append,
       error: new Error("durable application write failed"),
       failureEventId: "unclassified-catch-path-failure",
@@ -33,6 +37,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
 
     await recordTelephoneSetupProviderFailure({
       recognition: defaultRecognizedSpeechModel,
+      synthesis: defaultConfiguredSpeechSynthesis,
       append,
       error: new TelephoneSetupProviderError(
         "setup",
@@ -59,6 +64,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
 
     await recordTelephoneSetupProviderFailure({
       recognition: defaultRecognizedSpeechModel,
+      synthesis: defaultConfiguredSpeechSynthesis,
       append: vi.fn(async () => undefined),
       error: new Error("durable application write failed"),
       failureEventId: "unlogged-catch-path-failure",
@@ -77,6 +83,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
 
     await recordTelephoneSetupProviderFailure({
       recognition: defaultRecognizedSpeechModel,
+      synthesis: defaultConfiguredSpeechSynthesis,
       append,
       error: new TelephoneSetupProviderError(
         "setup",
@@ -111,6 +118,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
 
     await recordTelephoneSetupProviderFailure({
       recognition: defaultRecognizedSpeechModel,
+      synthesis: defaultConfiguredSpeechSynthesis,
       append,
       error: new TelephoneSetupProviderError(
         "tts",
@@ -126,6 +134,7 @@ describe("fixed-speech Telephone Session setup failures", () => {
       expect.objectContaining({
         details: {
           failure: "timeout",
+          model: "inworld/inworld-tts-2",
           provider: "inworld",
           stage: "tts",
           timeoutMs: 10_000,

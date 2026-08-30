@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   telephoneSpeechProviderStages,
+  type ConfiguredSpeechSynthesis,
   type RecognizedSpeechModel,
 } from "@voice-agent/contracts";
 import type {
@@ -82,6 +83,7 @@ export interface LiveKitTelephoneSessionDependencies {
   createConversationSession(
     prolongedSilenceMs: number,
     recognition: RecognizedSpeechModel,
+    synthesis: ConfiguredSpeechSynthesis,
   ): voice.AgentSession;
   createInterpreter(): ClosableTelephoneTurnInterpreter;
   /** Defaults to the operator journal; a test supplies its own sink. */
@@ -109,6 +111,8 @@ export async function runLiveKitTelephoneSession(
     readonly onStarted?: () => Promise<void>;
     /** The Recognized Speech Model this session recognizes speech with. */
     readonly recognitionModel: RecognizedSpeechModel;
+    /** The Recognized Synthesis Model, and voice, this session speaks with. */
+    readonly synthesisModel: ConfiguredSpeechSynthesis;
     readonly requestCompletionCallback?: (input: {
       readonly requestId: string;
       readonly taskId: string;
@@ -132,12 +136,14 @@ export async function runLiveKitTelephoneSession(
   const logProviderFailure =
     dependencies.logProviderFailure ?? logProviderFailureToStandardError;
   const recognition = options.recognitionModel;
+  const synthesis = options.synthesisModel;
   const coordinator = createTelephoneSessionCoordinator({
     ...(options.activeTaskId === undefined
       ? {}
       : { activeTaskId: options.activeTaskId }),
     interpreter,
     recognitionModel: recognition,
+    synthesisModel: synthesis,
     ...(options.keeploreDelegations === undefined
       ? {}
       : { keeploreDelegations: options.keeploreDelegations }),
@@ -154,6 +160,7 @@ export async function runLiveKitTelephoneSession(
   const session = dependencies.createConversationSession(
     prolongedSilenceMs,
     recognition,
+    synthesis,
   );
   const turnAdapter = new LiveKitTelephoneTurnAdapter(
     options.telephoneSessionId,
@@ -340,6 +347,7 @@ export async function runLiveKitTelephoneSession(
     await performConversationAction(
       speakThroughProvider,
       coordinator,
+      synthesis,
       action,
       playFailureAndEnd,
       recordProviderFailureAndRecover,
@@ -448,6 +456,7 @@ export async function runLiveKitTelephoneSession(
       recognition,
       recovery,
       stage,
+      synthesis,
       ...(taskId === undefined ? {} : { taskId }),
     });
     // Logged before anything durable is written: this fault may end the call,
@@ -827,9 +836,25 @@ export function createDetectionRecognitionSTT(
   });
 }
 
+/**
+ * The synthesizer for a Recognized Synthesis Model entry, speaking in the
+ * voice configured alongside it.
+ */
+export function createSpeechSynthesisTTS(
+  synthesis: ConfiguredSpeechSynthesis,
+): ObservedSpeechProviderTTS<ConfiguredSpeechSynthesis["model"]> {
+  return new ObservedSpeechProviderTTS({
+    connOptions: boundedProviderConnectOptions("tts"),
+    language: "en",
+    model: synthesis.model,
+    voice: synthesis.voice,
+  });
+}
+
 function createConversationSession(
   prolongedSilenceMs: number,
   recognition: RecognizedSpeechModel,
+  synthesis: ConfiguredSpeechSynthesis,
 ): voice.AgentSession {
   return new voice.AgentSession({
     connOptions: {
@@ -840,12 +865,7 @@ function createConversationSession(
     },
     stt: createConversationRecognitionSTT(recognition),
     transcriptionTimeout: transcriptionTimeoutMs,
-    tts: new ObservedSpeechProviderTTS({
-      connOptions: boundedProviderConnectOptions("tts"),
-      language: "en",
-      model: "inworld/inworld-tts-2",
-      voice: process.env.VOICE_AGENT_TTS_VOICE ?? "Sarah",
-    }),
+    tts: createSpeechSynthesisTTS(synthesis),
     turnHandling: {
       interruption: {
         enabled: true,
@@ -920,6 +940,7 @@ function abandonedSpeechFailure(
 async function performConversationAction(
   speak: TelephoneSpeaker,
   coordinator: ReturnType<typeof createTelephoneSessionCoordinator>,
+  synthesis: ConfiguredSpeechSynthesis,
   action: Exclude<TelephoneSessionAction, { kind: "retry-provider-turn" }>,
   playFailureAndEnd: () => Promise<void>,
   recordProviderFailureAndRecover: (
@@ -981,7 +1002,9 @@ async function performConversationAction(
     durationMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
     kind: "provider-timing",
     occurredAt,
-    provider: "inworld",
+    // Read from the configured entry, so a timing recorded against the
+    // synthesis stage names the provider that actually spoke.
+    provider: synthesis.provider,
     stage: "tts",
     ...(taskId === undefined ? {} : { taskId }),
   });
@@ -1265,9 +1288,10 @@ function attributeTurnPipelineFailure(
 function providerForStage(
   stage: TelephoneProviderFailureStage,
   recognition: RecognizedSpeechModel,
+  synthesis: ConfiguredSpeechSynthesis,
 ):
+  | ConfiguredSpeechSynthesis["provider"]
   | RecognizedSpeechModel["provider"]
-  | "inworld"
   | "livekit"
   | "openai"
   | "voice-agent" {
@@ -1276,7 +1300,7 @@ function providerForStage(
   // against a fault a different provider raised.
   if (stage === "stt") return recognition.provider;
   if (stage === "coordinator") return "openai";
-  if (stage === "tts") return "inworld";
+  if (stage === "tts") return synthesis.provider;
   // A fault in the Voice Agent's own turn pipeline has no provider behind it,
   // and naming one there is what sent three rounds of diagnosis at OpenAI.
   if (stage === "agent") return "voice-agent";
@@ -1301,6 +1325,7 @@ export function mapProviderFailureEvent(input: {
   readonly recognition: RecognizedSpeechModel;
   readonly recovery?: TelephoneProviderFailureRecovery;
   readonly stage: TelephoneProviderFailureStage;
+  readonly synthesis: ConfiguredSpeechSynthesis;
   readonly taskId?: string;
 }):
   | Extract<TelephoneSessionProviderEvent, { kind: "provider-timeout" }>
@@ -1308,7 +1333,7 @@ export function mapProviderFailureEvent(input: {
   const common = {
     deliveryId: input.deliveryId,
     occurredAt: input.occurredAt,
-    provider: providerForStage(input.stage, input.recognition),
+    provider: providerForStage(input.stage, input.recognition, input.synthesis),
     ...(input.recovery === undefined ? {} : { recovery: input.recovery }),
     stage: input.stage,
     ...(input.taskId === undefined ? {} : { taskId: input.taskId }),

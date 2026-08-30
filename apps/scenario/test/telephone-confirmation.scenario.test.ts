@@ -1,5 +1,8 @@
 import { expect, test } from "vitest";
-import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
+import {
+  defaultConfiguredSpeechSynthesis,
+  defaultRecognizedSpeechModel,
+} from "@voice-agent/contracts";
 
 import type {
   EvidenceRecordProjection,
@@ -46,6 +49,7 @@ test.each([
     const released: string[] = [];
     const coordinator = createTelephoneSessionCoordinator({
       recognitionModel: defaultRecognizedSpeechModel,
+      synthesisModel: defaultConfiguredSpeechSynthesis,
       interpreter: {
         async interpret() {
           return {
@@ -121,6 +125,7 @@ test("a Task Confirmation held through unclear speech is accepted by a later aff
   const released: string[] = [];
   const coordinator = createTelephoneSessionCoordinator({
     recognitionModel: defaultRecognizedSpeechModel,
+    synthesisModel: defaultConfiguredSpeechSynthesis,
     interpreter: {
       async interpret() {
         return {

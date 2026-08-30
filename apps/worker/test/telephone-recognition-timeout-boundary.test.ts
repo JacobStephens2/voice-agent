@@ -1,5 +1,8 @@
 import { llm, voice } from "@livekit/agents";
-import { defaultRecognizedSpeechModel } from "@voice-agent/contracts";
+import {
+  defaultConfiguredSpeechSynthesis,
+  defaultRecognizedSpeechModel,
+} from "@voice-agent/contracts";
 import type { Room } from "@livekit/rtc-node";
 import {
   createDurableTaskRuntime,
@@ -196,6 +199,7 @@ async function startRecognitionTimeoutCall(suffix: string): Promise<{
   const run = runLiveKitTelephoneSession(
     {
       recognitionModel: defaultRecognizedSpeechModel,
+      synthesisModel: defaultConfiguredSpeechSynthesis,
       boundaries: observedBoundaries,
       disconnected,
       async endCall() {},

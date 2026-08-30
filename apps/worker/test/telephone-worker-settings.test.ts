@@ -67,6 +67,7 @@ describe("resolving the telephone worker's settings", () => {
       prolongedSilenceMs: 60_000,
       rawAudioDebugDirectory: "/var/lib/voice-agent/raw-audio-debug",
       recognitionModel: { model: "assemblyai/universal-streaming-multilingual" },
+      synthesisModel: { model: "inworld/inworld-tts-2", voice: "Sarah" },
     });
   });
 });
@@ -113,6 +114,15 @@ describe.each([
 
     expect(result.status, result.stderr).not.toBe(0);
     expect(result.stderr).toContain("VOICE_AGENT_STT_MODEL");
+  });
+
+  test("refuses a synthesis model outside the set at start", () => {
+    const result = start({
+      VOICE_AGENT_TTS_MODEL: "cartesia/sonic-3.5-2026-05-04",
+    });
+
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(result.stderr).toContain("VOICE_AGENT_TTS_MODEL");
   });
 
   test("refuses an absent required setting at start", () => {

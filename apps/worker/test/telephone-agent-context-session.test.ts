@@ -1,6 +1,7 @@
 import { initializeLogger, llm, voice } from "@livekit/agents";
 import type { Room } from "@livekit/rtc-node";
 import {
+  defaultConfiguredSpeechSynthesis,
   defaultRecognizedSpeechModel,
   recognizedSpeechModels,
   type RecognizedSpeechModel,
@@ -145,6 +146,7 @@ async function runCall(
         async endCall() {},
         openingText,
         recognitionModel,
+        synthesisModel: defaultConfiguredSpeechSynthesis,
         room: {} as Room,
         sessionEvidence: {
           async append(event) {

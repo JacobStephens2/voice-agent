@@ -1,4 +1,5 @@
 import {
+  speechStageModel,
   telephoneSessionActionResultSchema,
   telephoneSessionProviderEventSchema,
   telephoneTurnInterpretationSchema,
@@ -12,6 +13,7 @@ import {
   type TelephoneSessionActionResult,
   type TelephoneSessionProviderEvent,
   type TelephoneTurnInterpretation,
+  type ConfiguredSpeechSynthesis,
   type RecognizedSpeechModel,
 } from "@voice-agent/contracts";
 import type { TelephoneBoundaryDecision } from "@voice-agent/durable-store";
@@ -95,6 +97,12 @@ interface TelephoneSessionCoordinatorOptions {
       taskId: string,
     ): Promise<{ readonly promotedOwnerId?: string }>;
   };
+  /**
+   * The Recognized Synthesis Model this session speaks with. Its model
+   * identifier is stamped onto synthesis-stage evidence for the same reason
+   * the recognition entry's is stamped onto recognition-stage evidence.
+   */
+  readonly synthesisModel: ConfiguredSpeechSynthesis;
   readonly tasks: TelephoneBountywellTasks;
 }
 
@@ -209,7 +217,7 @@ export function createTelephoneSessionCoordinator(
         const evidence = {
           details: {
             durationMs: event.durationMs,
-            ...recognitionModelOf(options, event.stage),
+            ...speechModelOf(options, event.stage),
             outcome: "completed" as const,
             provider: event.provider,
             stage: event.stage,
@@ -258,16 +266,18 @@ export function createTelephoneSessionCoordinator(
   };
 }
 
-/**
- * The configured model identifier, for a recognition-stage event only. Every
- * other stage's model is that stage's own concern; naming one here would
- * record the transcriber's model against a fault it did not raise.
- */
-function recognitionModelOf(
-  options: Pick<TelephoneSessionCoordinatorOptions, "recognitionModel">,
+/** The configured model this session's evidence carries for one stage. */
+function speechModelOf(
+  options: Pick<
+    TelephoneSessionCoordinatorOptions,
+    "recognitionModel" | "synthesisModel"
+  >,
   stage: TelephoneProviderFailureStage,
 ): { readonly model?: string } {
-  return stage === "stt" ? { model: options.recognitionModel.model } : {};
+  return speechStageModel(
+    { recognition: options.recognitionModel, synthesis: options.synthesisModel },
+    stage,
+  );
 }
 
 async function handleFinalizedTurn(
@@ -291,7 +301,7 @@ async function handleFinalizedTurn(
   await options.sessionEvidence?.append({
     details: {
       durationMs: turn.stt.durationMs,
-      ...recognitionModelOf(options, "stt"),
+      ...speechModelOf(options, "stt"),
       outcome: "completed",
       provider: turn.stt.provider,
       stage: "stt",
@@ -843,7 +853,7 @@ async function guidance(
 async function recordProviderFailure(
   options: Pick<
     TelephoneSessionCoordinatorOptions,
-    "recognitionModel" | "sessionEvidence" | "tasks"
+    "recognitionModel" | "sessionEvidence" | "synthesisModel" | "tasks"
   >,
   state: TelephoneSessionCoordinatorState,
   event: {
@@ -872,7 +882,7 @@ async function recordProviderFailure(
     >,
     "sequence"
   > = {
-    details: { ...details, ...recognitionModelOf(options, details.stage) },
+    details: { ...details, ...speechModelOf(options, details.stage) },
     id: `${event.deliveryId}:failure`,
     kind: "telephone.provider.failure",
     occurredAt: event.occurredAt,

@@ -551,6 +551,7 @@ export async function handleOutbound(
           endCall: room.deleteRoom,
           initialUsageScopeId: `prelive:${dispatch.effectId}`,
           recognitionModel: settings.recognitionModel,
+          synthesisModel: settings.synthesisModel,
           room: ctx.room,
           requestCompletionCallback: (input) =>
             requestCompletionCallback(runtime, continuity, input),
@@ -780,6 +781,7 @@ async function handleCompletionOutbound(
           operationId: resume.effectId,
         }),
       recognitionModel: settings.recognitionModel,
+      synthesisModel: settings.synthesisModel,
       requestCompletionCallback: (input) =>
         requestCompletionCallback(callback, continuity, input),
       room: ctx.room,
@@ -904,6 +906,7 @@ async function handleCompletionResumption(
           operationId: requireResumptionOperationId(dispatch),
         }),
       recognitionModel: settings.recognitionModel,
+      synthesisModel: settings.synthesisModel,
       requestCompletionCallback: (input) =>
         requestCompletionCallback(callback, continuity, input),
       room: ctx.room,
@@ -1026,6 +1029,7 @@ async function recordSetupProviderFailure(input: {
 }): Promise<void> {
   await recordTelephoneSetupProviderFailure({
     recognition: settings.recognitionModel,
+    synthesis: settings.synthesisModel,
     append: input.append,
     error: input.error,
     failureEventId: input.failureEventId,
@@ -1083,8 +1087,8 @@ function createFixedSpeechSession(): voice.AgentSession {
     tts: new inference.TTS({
       connOptions: boundedProviderConnectOptions("tts"),
       language: "en",
-      model: "inworld/inworld-tts-2",
-      voice: process.env.VOICE_AGENT_TTS_VOICE ?? "Sarah",
+      model: settings.synthesisModel.model,
+      voice: settings.synthesisModel.voice,
     }),
     ttsReadIdleTimeout: 10_000,
   });

@@ -4,6 +4,7 @@ import {
   voice,
 } from "@livekit/agents";
 import {
+  defaultConfiguredSpeechSynthesis,
   defaultRecognizedSpeechModel,
   recognizedSpeechModels,
 } from "@voice-agent/contracts";
@@ -78,6 +79,7 @@ describe("a recognition failure during machine detection", () => {
       log,
       occurredAt: "2026-08-25T18:00:00.000Z",
       recognition: defaultRecognizedSpeechModel,
+      synthesis: defaultConfiguredSpeechSynthesis,
       recordProviderFailure,
       telephoneSessionId: "telephone-session-detection",
     });
@@ -185,6 +187,7 @@ describe("a detection-time recognition fault under a configured model", () => {
       log,
       occurredAt: "2026-08-25T18:00:00.000Z",
       recognition: recognizedSpeechModels["deepgram/flux-general-en"],
+      synthesis: defaultConfiguredSpeechSynthesis,
       recordProviderFailure: vi.fn(async () => ({ ended: true as const })),
       telephoneSessionId: "telephone-session-detection-configured",
     });
@@ -203,7 +206,7 @@ describe("a detection-time recognition fault under a configured model", () => {
     );
   });
 
-  test("names no model for a stage the recognition setting does not configure", async () => {
+  test("names the synthesis model for a fault the fixed speech raised", async () => {
     const appended: { readonly details: Record<string, unknown> }[] = [];
     const append = async (event: unknown) => {
       appended.push(event as { readonly details: Record<string, unknown> });
@@ -219,15 +222,47 @@ describe("a detection-time recognition fault under a configured model", () => {
       log: vi.fn(),
       occurredAt: "2026-08-25T18:00:00.000Z",
       recognition: recognizedSpeechModels["deepgram/flux-general-en"],
+      synthesis: defaultConfiguredSpeechSynthesis,
       recordProviderFailure: vi.fn(async () => ({ ended: true as const })),
       telephoneSessionId: "telephone-session-detection-synthesis",
     });
 
     expect(appended).toHaveLength(1);
-    expect(appended[0]?.details).not.toHaveProperty("model");
+    // A fixed text is spoken through this path too, so a synthesis fault it
+    // raises is read against the model that actually spoke.
     expect(appended[0]?.details).toMatchObject({
+      model: "inworld/inworld-tts-2",
       provider: "inworld",
       stage: "tts",
+    });
+  });
+
+  test("names no model for a stage no speech setting configures", async () => {
+    const appended: { readonly details: Record<string, unknown> }[] = [];
+    const append = async (event: unknown) => {
+      appended.push(event as { readonly details: Record<string, unknown> });
+    };
+
+    await recordTelephoneSetupProviderFailure({
+      append,
+      error: new TelephoneSetupProviderError(
+        "setup",
+        new APIStatusError({ message: "gateway is unavailable", options: {} }),
+      ),
+      failureEventId: "detection-setup-configured",
+      log: vi.fn(),
+      occurredAt: "2026-08-25T18:00:00.000Z",
+      recognition: recognizedSpeechModels["deepgram/flux-general-en"],
+      synthesis: defaultConfiguredSpeechSynthesis,
+      recordProviderFailure: vi.fn(async () => ({ ended: true as const })),
+      telephoneSessionId: "telephone-session-detection-setup",
+    });
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.details).not.toHaveProperty("model");
+    expect(appended[0]?.details).toMatchObject({
+      provider: "livekit",
+      stage: "setup",
     });
   });
 });
