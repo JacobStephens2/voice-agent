@@ -753,4 +753,5 @@ root, so the claim that a home-local `requirements` layer coexists with a
 system one rests on the per-key merge observed between the layers that could be
 exercised. The enrollment wizard asserts the system layer carries no `[auth]`
 and that both broker crossings answer, which is where that coexistence is
-established on a real host.
+established on a real host. Issue #164 carries it, and the unobserved
+proactive re-mint, as work of their own.

@@ -39,7 +39,9 @@ as a bare token, so the re-mint is expected to come before a request is spent
 on an expired token rather than after one fails with it. That last property -
 proactive re-minting from `expires_in` - is xAI's documented behaviour and is
 the one link in this chain not established on the binary; the ending if it does
-not hold is a pause naming authentication, not a wrong credential.
+not hold is a pause naming authentication, not a wrong credential. Issue #164
+carries it, and the coexistence of a home-local `requirements` layer with
+`/etc/grok`, to be observed on the Agent Host.
 
 The probe crosses as a status, not a token. `--probe` prints the remaining
 lifetime and nothing else, under a second sudoers rule that fixes the whole
