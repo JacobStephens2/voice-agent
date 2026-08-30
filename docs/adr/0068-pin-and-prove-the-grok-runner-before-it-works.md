@@ -16,6 +16,18 @@ Everything above was designed against a research note written from documentation
 
 Two claims are weaker than this decision originally made them. xAI publishes no checksum, signature, or provenance for its artifacts, so the digest attests that the runner has not changed since it was reviewed on this host and attests nothing about the download; two independent fetch routes producing byte-identical binaries is the strongest corroboration available. And the sandbox cannot hold the Credential Custody Boundary: `restrict_network` and every `deny` rule make the runner refuse to start here, because after entering Bubblewrap it re-opens each read-deny path to confirm the mask took effect, and a path the executor identity cannot open at all answers `Permission denied` - which it reads as an unenforced deny list. Every store in the boundary is root-owned or 0700 for exactly the reason it is in the boundary. Custody is therefore held by the executor identity's own permissions and the systemd unit, and the sandbox holds workspace confinement. The child-process network restriction this decision assumed is currently unavailable, which is a real reduction in what a Delegation is confined to and is tracked rather than papered over.
 
+Two claims about the token crossing are superseded by ADR-0069, and for a
+reason this decision could not have anticipated: the enrolled credential lasts
+about six hours, and the runner renews it only when no auth provider is
+configured - a provider command takes precedence over renewing an expired
+cached login. Naming the crossing in the host-wide requirements layer therefore
+bound `voice-grok-auth` too and preempted the one renewal available. The
+crossing is now named in each run's own `$GROK_HOME/requirements.toml`, staged
+from the Release, which is still a layer a Delegation root cannot override; and
+the sudoers rule permits two commands rather than one, the second being a probe
+that returns a lifetime rather than a token. Neither change widens what crosses
+the boundary: a short-lived access token, its lifetime, and a status.
+
 One further correction came from the first real run. `grok-build`, the selector this decision named, is not a model id the subscription can select; the account offers `grok-4.6` and `grok-4.5`, and a run asking for `grok-4.6` is served by `grok-4.6-build`. The selector is now named explicitly so a changed account default is drift, and the served model is recorded beside it. The headless envelope reports no authentication route at any spelling, so the claim that a run used the subscription rests on the credential it was made with - the enrolled entry's own `auth_mode`, checked by the token helper on every use - and on runner policy that disables API key authentication outright. That is a better basis than a self-reported field would have been, because it is established where the credential is used rather than where the provider chooses to describe it.
 
 ## Consequences
