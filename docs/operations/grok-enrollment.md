@@ -1,11 +1,23 @@
 # Grok Build enrollment and contract test
 
 Issue #80 enrolls the pinned Grok Build CLI and proves one bounded, structured
-provider execution through subscription OAuth. Everything below is an attended
-root procedure on the Agent Host. Nothing here runs during an ordinary release,
-and Grok performs no work until the enrollment record is accepted: pinning a
-new runner build discards the previous build's acceptance, so an upgrade
-repeats this page.
+provider execution through subscription OAuth. Run the repeatable attended
+procedure on the Agent Host:
+
+```bash
+./ops/acceptance/run-grok-enrollment.sh
+```
+
+The wizard walks the eight stages below, runs every check it can make itself,
+and files each Enrollment Event through the reviewed CLI as you go. It stops at
+the first boundary that does not hold rather than recording around it. The rest
+of this page is the reference the wizard follows: read it when a stage refuses,
+or when you are doing this by hand.
+
+Everything here is an attended root procedure. Nothing runs during an ordinary
+release, and Grok performs no work until the enrollment record is accepted:
+pinning a new runner build discards the previous build's acceptance, so an
+upgrade repeats this page.
 
 The governing decisions are ADR-0048 and ADR-0068. The interfaces used here are
 established in `docs/research/grok-subagent-mvp.md`.
