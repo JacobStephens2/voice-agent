@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#
+# Return one short-lived Grok access token on standard output.
+#
+# Installed at /usr/local/libexec/voice-agent/grok-token-helper, owned by root,
+# mode 0755. Grok Build invokes it as its configured auth provider; the token
+# stays in that process's memory and is never written to an auth.json under the
+# executor's ephemeral home.
+#
+# The durable refresh credential belongs to voice-grok-auth and is reachable
+# only through this helper. The model's sandbox denies
+# /usr/local/libexec/voice-agent, so a model-selected command cannot run it,
+# and the executor's stripped environment carries no token of its own.
+set -euo pipefail
+
+if [[ "$(id -un)" != "voice-grok-auth" ]]; then
+  # The narrow sudoers rule is the only way here. Refusing anything else keeps
+  # the credential's custody with one identity rather than one file mode.
+  echo "grok-token-helper runs only as voice-grok-auth" >&2
+  exit 1
+fi
+
+exec /usr/local/bin/grok auth print-access-token --quiet

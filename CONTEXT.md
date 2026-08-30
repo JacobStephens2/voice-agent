@@ -28,6 +28,10 @@ _Avoid_: Raw webpage, browsing transcript, uncited summary
 An attended credential-custody action that binds one Subagent provider identity to its authenticated subscription or API route, observed privacy settings, and accepted runtime without granting repository, publication, or host authority by itself.
 _Avoid_: Provider login, Delegation, authority activation
 
+**Runner Pin**:
+The reviewed version and binary digest of a Subagent provider's runner, together with the root-managed configuration it must be reading, against which every accepted run is re-checked and a durable Provider Enrollment proof is held.
+_Avoid_: Version constraint, latest release, pinned dependency
+
 **Delegation**:
 The automatic transfer of deeper work, potentially spanning multiple codebases, from the Voice Agent to another agent selected by the Voice Agent.
 _Avoid_: Handoff, agent call
