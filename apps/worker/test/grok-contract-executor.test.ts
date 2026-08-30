@@ -162,6 +162,35 @@ test("a sandbox profile the runner could not enforce pauses", async () => {
   });
 });
 
+test("a login expiring before the run is renewed by the probe that checks it", async () => {
+  const host = await stageHost({ credential: "renewed", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({ state: "completed" });
+  await expect(readFile(`${host.root}/probe`, "utf8")).resolves.toContain("--probe");
+});
+
+test("a login the runner could not renew pauses before the model is spawned", async () => {
+  const host = await stageHost({ credential: "expired", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("expired"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
+test("an auth crossing that is not the reviewed one pauses before any request", async () => {
+  const host = await stageHost({ authLayer: "another-broker", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("does not name the reviewed token broker"),
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
 test("a provider that refused the subscription's usage pauses the task", async () => {
   const host = await stageHost({ inspection: "reviewed", runFailure: "quota" });
 
@@ -172,7 +201,9 @@ test("a provider that refused the subscription's usage pauses the task", async (
 });
 
 interface StagedHost {
+  readonly authLayerPath: string;
   readonly enrollmentPath: string;
+  readonly tokenBrokerPath: string;
   readonly evidenceRoot: string;
   readonly grokExecutable: string;
   readonly pin: GrokRunnerPin;
@@ -183,6 +214,8 @@ interface StagedHost {
 }
 
 async function stageHost(options: {
+  readonly authLayer?: "another-broker";
+  readonly credential?: "expired" | "renewed";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
   readonly unenforceableProfile?: boolean;
@@ -248,11 +281,32 @@ async function stageHost(options: {
       ),
     );
   }
+  // The broker answers with a status, never a token: this stands in for the
+  // crossing to the custody identity, which the executor cannot make in a test.
+  const tokenBrokerPath = `${root}/grok-token-broker`;
+  await writeFile(
+    tokenBrokerPath,
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" > ${root}/probe`,
+      options.credential === "expired" ? "exit 12" : "exit 0",
+      "",
+    ].join("\n"),
+  );
+  await chmod(tokenBrokerPath, 0o755);
+  const authLayerPath = `${root}/run-requirements.toml`;
+  await writeFile(
+    authLayerPath,
+    `[auth]\nauth_provider_command = "${
+      options.authLayer === "another-broker" ? `${root}/elsewhere` : tokenBrokerPath
+    }"\n`,
+  );
   const runRoot = `${root}/run`;
   const evidenceRoot = `${root}/evidence`;
   await mkdir(runRoot, { recursive: true });
   await mkdir(evidenceRoot, { recursive: true });
   return {
+    authLayerPath,
     enrollmentPath,
     evidenceRoot,
     grokExecutable,
@@ -261,6 +315,7 @@ async function stageHost(options: {
     root,
     runRoot,
     sandboxProfilePath,
+    tokenBrokerPath,
   };
 }
 
@@ -277,7 +332,9 @@ function runExecutor(host: StagedHost, override: Partial<GrokContractDelegationB
         VOICE_AGENT_GROK_EXECUTABLE: host.grokExecutable,
         VOICE_AGENT_GROK_PIN_PATH: host.pinPath,
         VOICE_AGENT_GROK_RUN_ROOT: host.runRoot,
+        VOICE_AGENT_GROK_AUTH_LAYER_PATH: host.authLayerPath,
         VOICE_AGENT_GROK_SANDBOX_PROFILE_PATH: host.sandboxProfilePath,
+        VOICE_AGENT_GROK_TOKEN_BROKER: host.tokenBrokerPath,
       },
       input: JSON.stringify({ ...brief, ...override }),
     },

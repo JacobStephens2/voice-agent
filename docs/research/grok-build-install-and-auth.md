@@ -682,3 +682,75 @@ not implemented.
 **Retention is observable.** The entry carries
 `coding_data_retention_opt_out`, so the enrollment record can read that setting
 rather than ask an operator to recall it.
+
+## Addendum: credential renewal, observed 2026-08-30
+
+The six-hour lifetime noted above raised one question the earlier addendum left
+open - what renews the credential - and answering it turned up a second
+mechanism that changes where the auth crossing may be configured. Both were
+observed against the installed `grok 1.0.13`, using a real subscription login
+for the first finding and synthetic scope entries for the rest.
+
+**An authenticated command renews an expired OIDC login, first-party.** With
+an entry three days past `expires_at`, `grok --no-auto-update models` exited 0
+and rewrote `auth.json` with a new `create_time` and an `expires_at` six hours
+out. The command needs no model tokens - it asks the account what it may
+select. Re-running it against the now-valid entry left `create_time` unchanged,
+so the renewal happens on expiry rather than proactively, and `models` reports
+`You are not authenticated.` on the run that renews, because it prints what it
+read before the refresh landed. Baseline cost of the command with nothing to
+renew: 0.3 s.
+
+| Before | Command | After |
+| --- | --- | --- |
+| `expires_at 2026-08-27T03:45:10Z` (expired) | `grok --no-auto-update models` | rewritten to `2026-08-30T23:08:58Z` / `2026-08-31T05:08:58Z`, exit 0 |
+| valid | same command | unchanged, `You are logged in with grok.com.` |
+
+**A failed refresh deletes the credential.** With an expired entry carrying a
+refresh token the issuer will not honour and no auth provider configured, the
+same command removed `auth.json` outright. The failure mode is a missing login,
+not a stale one, and only an attended `grok login --device-auth` restores it.
+
+**An external auth provider takes precedence over renewal.** With
+`auth_provider_command` set and the same expired entry, the provider command
+was invoked and the cached entry was left untouched - no refresh was attempted.
+With a *valid* cached entry the provider was not invoked at all. So a provider
+command is what the runner reaches for when the credential it holds has
+expired, which is exactly the moment the refresh grant would otherwise be
+spent.
+
+| Cached OIDC entry | `auth_provider_command` | Provider invoked | `auth.json` after |
+| --- | --- | --- | --- |
+| valid | set | no | unchanged |
+| expired | unset | - | **deleted** (refresh refused) |
+| expired | set | **yes** | present, unchanged |
+
+**Layer precedence, measured with two distinguishable provider commands.** A
+`requirements` layer beats `GROK_AUTH_PROVIDER_COMMAND` in the environment, and
+a `$GROK_HOME/requirements.toml` beats a project `.grok/config.toml`. Layers
+merge per key: a higher layer that omits `[auth]` leaves a lower layer's
+`auth_provider_command` in force. A `$GROK_HOME/requirements.toml` planted by
+hand survived repeated runs and was reported by `inspect` with `role:
+"requirements"` and its home-local path.
+
+| Lower layer | Higher layer | In force |
+| --- | --- | --- |
+| `GROK_AUTH_PROVIDER_COMMAND=B` | `$GROK_HOME/requirements.toml` → A | A |
+| project `.grok/config.toml` → B | `$GROK_HOME/requirements.toml` → A | A |
+| `$GROK_HOME/config.toml` → B | `$GROK_HOME/requirements.toml`, no `[auth]` | B |
+
+Taken together these decide where the Voice Agent's broker may be named. A
+host-wide `/etc/grok/requirements.toml` `[auth]` table would bind
+`voice-grok-auth` as well, and its `grok` is the only process that can renew
+the credential - so the host-wide crossing would send the custody identity to
+the broker that reads the credential rather than to the issuer that renews it.
+Naming the crossing in the run's own `$GROK_HOME/requirements.toml` keeps it on
+the identity that runs models, and still outranks anything a Delegation root
+ships. See ADR-0069.
+
+One caveat: `/etc/grok` layers remain untested here, since writing there needs
+root, so the claim that a home-local `requirements` layer coexists with a
+system one rests on the per-key merge observed between the layers that could be
+exercised. The enrollment wizard asserts the system layer carries no `[auth]`
+and that both broker crossings answer, which is where that coexistence is
+established on a real host.

@@ -1,0 +1,23 @@
+# The auth crossing, staged into one run's own Grok home.
+#
+# Installed by the fixed executor at the run's `$GROK_HOME/requirements.toml`,
+# mode 0600, from the reviewed Release. It is removed with the home.
+#
+# This key does not live in /etc/grok/requirements.toml, and the reason is the
+# credential's six-hour lifetime. A system requirements layer binds every
+# identity on the host, including voice-grok-auth - and an external auth
+# provider takes precedence over an expired cached login, so the custody
+# identity's own `grok` would call this broker instead of renewing the login
+# the broker exists to read. Observed on grok 1.0.13: with a provider
+# configured, an expired OIDC entry sends the runner to the provider; with none
+# configured, the runner performs its own refresh and rewrites the entry six
+# hours out.
+#
+# Naming the crossing here instead keeps it on the identity that runs models
+# and off the identity that owns the credential. `requirements` is still the
+# role a project directory cannot override - a `.grok/config.toml` inside a
+# Delegation root loses to this file, observed the same way - and layers merge
+# per key, so the system layer's own boundaries are untouched by this one.
+
+[auth]
+auth_provider_command = "/usr/local/libexec/voice-agent/grok-token-broker"

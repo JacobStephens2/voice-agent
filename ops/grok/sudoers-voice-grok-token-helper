@@ -1,6 +1,7 @@
 # Installed at /etc/sudoers.d/voice-grok-token-helper, owned by root, mode 0440.
 #
-# The executor identity may obtain a short-lived access token and nothing else.
-# It cannot read the refresh credential, run any other command as the custody
-# identity, or pass arguments of its own.
-voice-grok ALL=(voice-grok-auth) NOPASSWD: /usr/local/libexec/voice-agent/grok-token-helper ""
+# The executor identity may obtain a short-lived access token, or ask whether
+# there is a credential to obtain one from, and nothing else. It cannot read
+# the refresh credential, run any other command as the custody identity, or
+# pass arguments of its own: both rules below fix the whole argument list.
+voice-grok ALL=(voice-grok-auth) NOPASSWD: /usr/local/libexec/voice-agent/grok-token-helper "", /usr/local/libexec/voice-agent/grok-token-helper --probe
