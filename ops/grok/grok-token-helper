@@ -13,6 +13,11 @@
 # and the executor's stripped environment carries no token of its own.
 set -euo pipefail
 
+# The token subcommand below is confirmed against the pinned runner during
+# enrollment, which exercises this helper before anything depends on it. A
+# build that names its token interface differently fails there, loudly, rather
+# than at the first Delegation.
+
 if [[ "$(id -un)" != "voice-grok-auth" ]]; then
   # The narrow sudoers rule is the only way here. Refusing anything else keeps
   # the credential's custody with one identity rather than one file mode.
