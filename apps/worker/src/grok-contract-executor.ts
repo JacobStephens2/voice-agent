@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { createReadStream } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 
@@ -25,7 +26,7 @@ import {
   describeGrokConfigurationDrift,
   describeGrokRunnerDrift,
 } from "./grok-runner-pin.ts";
-import { describeMissingCustodyDenyRules } from "./grok-credential-custody.ts";
+import { describeSandboxProfileDrift } from "./grok-credential-custody.ts";
 import { describeGrokRunOutcome } from "./grok-run-outcome.ts";
 import { assertNonDestructiveGitArguments } from "./worktree-safety.ts";
 
@@ -34,6 +35,9 @@ const grokExecutable =
 const runnerPinPath =
   process.env.VOICE_AGENT_GROK_PIN_PATH ?? "/etc/voice-agent/grok/runner-pin.json";
 const runRoot = process.env.VOICE_AGENT_GROK_RUN_ROOT ?? "/var/lib/voice-grok/run";
+const reviewedSandboxProfilePath =
+  process.env.VOICE_AGENT_GROK_SANDBOX_PROFILE_PATH ??
+  fileURLToPath(new URL("../../../ops/grok/sandbox.toml", import.meta.url));
 const enrollmentRecordPath =
   process.env.VOICE_AGENT_GROK_ENROLLMENT_PATH ??
   "/var/lib/voice-agent-evidence/grok-enrollment.json";
@@ -219,7 +223,7 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
       ? (describeGrokConfigurationDrift({
           inspection: parseInspection(inspection),
           pin,
-        }) ?? (await describeSandboxProfileDrift()))
+        }) ?? (await describeStagedSandboxDrift()))
       : "The runner did not report its effective configuration";
   if (configurationDrift !== null) {
     return {
@@ -233,20 +237,20 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
 }
 
 /**
- * Read the configuration the runner was just proved to be using, and check the
- * boundary it is supposed to hold.
+ * Check the sandbox profile this run just staged into its ephemeral home.
  *
- * `inspect` names the profile in force but does not quote its rules back, so a
- * profile that quietly stopped denying a credential store would pass every
- * other check. This is the one place those two facts meet.
+ * `inspect` names the profile in force but does not quote its rules back, so
+ * the profile is read here instead. It is staged rather than inherited because
+ * a custom profile must live beside the runner's home, and this run's home is
+ * created fresh for it.
  */
-async function describeSandboxProfileDrift(): Promise<string | null> {
+async function describeStagedSandboxDrift(): Promise<string | null> {
   try {
-    return describeMissingCustodyDenyRules(
-      await readFile(pin.configurationPath, "utf8"),
+    return describeSandboxProfileDrift(
+      await readFile(`${ephemeralHome}/sandbox.toml`, "utf8"),
     );
   } catch {
-    return `The reviewed configuration at ${pin.configurationPath} could not be read`;
+    return "The reviewed sandbox profile could not be staged for this run";
   }
 }
 
@@ -272,6 +276,14 @@ function preflight(arguments_: readonly string[]): Promise<BoundedRunResult> {
 async function stageRun(): Promise<void> {
   await mkdir(delegationRoot, { mode: 0o700, recursive: true });
   await mkdir(`${ephemeralHome}/tmp`, { mode: 0o700, recursive: true });
+  // A custom sandbox profile is read from the runner's home, and this run's
+  // home is created fresh, so the reviewed profile travels into it from the
+  // Release rather than being left wherever a previous run put it.
+  await writeFile(
+    `${ephemeralHome}/sandbox.toml`,
+    await readFile(reviewedSandboxProfilePath, "utf8"),
+    { mode: 0o600 },
+  );
   await writeFile(
     `${runRoot}/${brief.delegationId}/result.schema.json`,
     JSON.stringify(z.toJSONSchema(grokModelReportSchema)),

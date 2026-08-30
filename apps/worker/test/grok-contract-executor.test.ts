@@ -68,7 +68,7 @@ test("an accepted run records the provider's evidence and removes its Grok home"
     evidence: {
       authenticationRoute: "subscription-oauth",
       model: { providerReported: "grok-4.6", selector: "grok-build" },
-      runner: { version: "0.2.111" },
+      runner: { version: "1.0.13" },
       usage: { cost: "unknown", incomplete: false },
     },
     report: { status: "completed" },
@@ -106,12 +106,12 @@ test("a runner that is not the reviewed binary pauses before any request", async
 });
 
 test("an effective configuration that changed under the pinned runner pauses", async () => {
-  const host = await stageHost({ inspection: "self-updating" });
+  const host = await stageHost({ inspection: "api-key-permitted" });
 
   const record = runExecutor(host);
 
   expect(record.outcome).toMatchObject({
-    detail: expect.stringContaining("Runner self-update is enabled"),
+    detail: expect.stringContaining("API key authentication is not disabled"),
     reason: "provider-contract-drift",
     state: "paused",
   });
@@ -149,11 +149,14 @@ test("work runs once the pinned runner's enrollment is accepted", async () => {
   });
 });
 
-test("a sandbox profile that stopped denying a boundary store pauses", async () => {
-  const host = await stageHost({ inspection: "reviewed", permissiveProfile: true });
+test("a sandbox profile the runner could not enforce pauses", async () => {
+  const host = await stageHost({
+    inspection: "reviewed",
+    unenforceableProfile: true,
+  });
 
   expect(runExecutor(host).outcome).toMatchObject({
-    detail: expect.stringContaining("does not deny /etc/ssh"),
+    detail: expect.stringContaining("cannot enforce on this host"),
     reason: "provider-contract-drift",
     state: "paused",
   });
@@ -174,41 +177,43 @@ interface StagedHost {
   readonly grokExecutable: string;
   readonly pin: GrokRunnerPin;
   readonly pinPath: string;
+  readonly sandboxProfilePath: string;
   readonly root: string;
   readonly runRoot: string;
 }
 
 async function stageHost(options: {
   readonly enrollment?: "accepted" | "for-another-build";
-  readonly inspection: "reviewed" | "self-updating";
-  readonly permissiveProfile?: boolean;
+  readonly inspection: "reviewed" | "api-key-permitted";
+  readonly unenforceableProfile?: boolean;
   readonly pinnedDigest?: string;
   readonly runFailure?: "quota";
 }): Promise<StagedHost> {
   const root = await mkdtemp(join(tmpdir(), "grok-contract-"));
   temporaryDirectories.push(root);
-  const configurationPath = `${root}/config.toml`;
-  const reviewedProfile = await readFile(
-    fileURLToPath(new URL("../../../ops/grok/config.toml", import.meta.url)),
-    "utf8",
-  );
+  const configurationPath = `${root}/requirements.toml`;
+  await writeFile(configurationPath, "[cli]\nauto_update = false\n");
+  const sandboxProfilePath = `${root}/sandbox.toml`;
   await writeFile(
-    configurationPath,
-    options.permissiveProfile === true
-      ? reviewedProfile.replace('"/etc/ssh/**",\n', "")
-      : reviewedProfile,
+    sandboxProfilePath,
+    options.unenforceableProfile === true
+      ? '[profiles.voice-agent-task]\nextends = "workspace"\nrestrict_network = true\n'
+      : await readFile(
+          fileURLToPath(new URL("../../../ops/grok/sandbox.toml", import.meta.url)),
+          "utf8",
+        ),
   );
-  const pin = { configurationPath, digest: "0".repeat(64), version: "0.2.111" };
+  const pin = { configurationPath, digest: "0".repeat(64), version: "1.0.13" };
   const inspection = reviewedGrokInspection(pin);
   const script = [
     "#!/bin/sh",
-    'if [ "$1" = "--version" ]; then echo "grok 0.2.111"; exit 0; fi',
+    'if [ "$1" = "--version" ]; then echo "grok 1.0.13"; exit 0; fi',
     'if [ "$1" = "inspect" ]; then',
     `  cat <<'JSON'`,
     JSON.stringify(
       options.inspection === "reviewed"
         ? inspection
-        : { ...inspection, auto_update: { enabled: true } },
+        : { ...inspection, loginPolicy: { apiKeyAuthDisabled: false } },
     ),
     "JSON",
     "  exit 0",
@@ -255,6 +260,7 @@ async function stageHost(options: {
     pinPath,
     root,
     runRoot,
+    sandboxProfilePath,
   };
 }
 
@@ -271,6 +277,7 @@ function runExecutor(host: StagedHost, override: Partial<GrokContractDelegationB
         VOICE_AGENT_GROK_EXECUTABLE: host.grokExecutable,
         VOICE_AGENT_GROK_PIN_PATH: host.pinPath,
         VOICE_AGENT_GROK_RUN_ROOT: host.runRoot,
+        VOICE_AGENT_GROK_SANDBOX_PROFILE_PATH: host.sandboxProfilePath,
       },
       input: JSON.stringify({ ...brief, ...override }),
     },

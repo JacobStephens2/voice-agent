@@ -41,6 +41,14 @@ export function buildGrokInvocation(input: GrokInvocationInput): GrokInvocation 
       "An xAI API key is present; this provider runs on the subscription alone",
     );
   }
+  if (input.sourceEnvironment.GROK_DEPLOYMENT_KEY !== undefined) {
+    // xAI's own tooling prefers a deployment key over a cached login, so this
+    // is a second route to a credential the owner's subscription did not
+    // issue. It is refused for the same reason and not merely stripped.
+    throw new Error(
+      "A Grok deployment key is present; this provider runs on the subscription alone",
+    );
+  }
   if (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 50) {
     throw new Error("A Grok run must be bounded by between 1 and 50 turns");
   }

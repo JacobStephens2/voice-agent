@@ -24,15 +24,12 @@ established in `docs/research/grok-subagent-mvp.md` and corrected against the
 released binary in
 [`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
 
-> **This procedure cannot complete yet.** The second note disproves nine
-> interfaces the implementation inferred: the token helper calls a subcommand
-> that does not exist, the root-managed `config.toml` uses key names Grok does
-> not read, the sandbox profile is declared in the wrong file, and every field
-> the effective-configuration drift check reads is spelled differently in the
-> real `inspect --json`. Nothing is unsafe - an unrecognized inspection fails
-> closed and pauses the Durable Task, which is exactly what an unproven runner
-> should do - but stage 2 will pause until those corrections land. Read the
-> verdict table in that note before running this.
+> **One boundary is weaker than the design intended.** `restrict_network` and
+> sandbox `deny` rules both make the runner refuse to start on this host, so
+> model-selected child processes are not confined by the sandbox's network
+> restriction. Custody is held instead by the executor identity's own
+> permissions and the systemd unit. Issue #161 carries the unresolved network
+> restriction; read it before treating a Delegation as network-isolated.
 
 ## What the two identities own
 
@@ -47,13 +44,20 @@ to that one command.
 useradd --system --create-home --home-dir /var/lib/voice-grok-auth voice-grok-auth
 useradd --system --create-home --home-dir /var/lib/voice-grok voice-grok
 install -d -o voice-grok -g voice-grok -m 0700 /var/lib/voice-grok/run /var/lib/voice-grok/brief
-install -d -o root -g root -m 0755 /etc/voice-agent/grok
-install -o root -g root -m 0644 ops/grok/config.toml /etc/voice-agent/grok/config.toml
+install -d -o root -g root -m 0755 /etc/voice-agent/grok /etc/grok
+install -o root -g root -m 0644 ops/grok/requirements.toml /etc/grok/requirements.toml
 install -o root -g root -m 0440 ops/grok/sudoers-voice-grok-token-helper /etc/sudoers.d/voice-grok-token-helper
 install -o root -g root -m 0644 ops/grok/sysctl-voice-grok-ptrace.conf /etc/sysctl.d/60-voice-grok-ptrace.conf
 sysctl --system
 visudo -c
 ```
+
+`/etc/grok/requirements.toml` is the one configuration layer a project
+directory cannot override, and the executor refuses to run unless `inspect`
+reports it as the only layer in effect. The reviewed sandbox profile is not
+installed here at all: a custom profile must live beside the runner's home, and
+each run's home is created fresh, so the executor stages
+`ops/grok/sandbox.toml` into it from the Release.
 
 The token helper, the token broker, and `voice-agent-grok-contract@.service`
 are not installed by that block. They are reviewed root authority, listed in
@@ -92,12 +96,16 @@ yourself. Both the URL shape and the channel pointer are recorded in
 
 ```bash
 curl -fsSL https://x.ai/cli/stable                      # the current stable version
-VERSION=<the version you reviewed>
+VERSION=<the version you reviewed>                     # 1.0.13 at the time of writing
 curl -fsSL -o /tmp/grok "https://x.ai/cli/grok-${VERSION}-linux-x86_64"
 sha256sum /tmp/grok
 install -o root -g root -m 0755 /tmp/grok /usr/local/bin/grok
-grok --version
+/usr/local/bin/grok --version
 ```
+
+Use the absolute path. A personal `~/.local/bin/grok` earlier on `PATH` will
+answer `grok --version` instead, which on the first host this ran on reported a
+different build than the one just installed.
 
 **xAI publishes no checksum, signature, or digest for these artifacts.** The
 installer's only integrity check is that the downloaded file runs and prints a
@@ -115,30 +123,38 @@ load-bearing rather than belt-and-braces.
 
 ## 1. Pin the runner
 
-Install the reviewed Grok Build release, then record what is actually on disk.
-The version is the runner's claim about itself; the digest is the only
-statement about the bytes that will execute, so both are pinned.
+Read the runner's own effective configuration first: `configSources` is what
+tells you which layer this build actually reads, and the pin records it
+alongside the version and digest.
 
 ```bash
-grok --version
+/usr/local/bin/grok --version
 sha256sum /usr/local/bin/grok
-printf '{"digest":"<digest>","version":"<version>"}\n' > /etc/voice-agent/grok/runner-pin.json
-chmod 0644 /etc/voice-agent/grok/runner-pin.json
+sudo -u voice-grok env -i HOME=/var/lib/voice-grok PATH=/usr/bin:/bin \
+  /usr/local/bin/grok --no-auto-update inspect --json
 ```
 
-Confirm the runner reads only the root-managed configuration, and keep this
-output with the enrollment record: the field names in
-`apps/worker/src/grok-runner-pin.ts` are confirmed against it.
+`--no-auto-update` precedes the subcommand; after it, the runner exits 2.
+
+Confirm `grokVersion` matches what you installed, `loginPolicy.apiKeyAuthDisabled`
+is `true`, nothing is declared under `mcpServers`, `plugins`, `skills`, `hooks`,
+`marketplaces`, or `lspServers`, no `externalCompat` vendor surface is enabled,
+and `configSources.layers` holds exactly one non-empty layer whose `role` is
+`requirements`. Those are the field names grok 1.0.13 actually emits, recorded
+in `apps/worker/src/grok-runner-pin.ts`. The model selector, always-approve,
+the turn bound, and the sandbox profile are fixed on the command line instead,
+where a project directory cannot reach them.
+
+Then pin the three facts together:
 
 ```bash
-sudo -u voice-grok env -i HOME=/var/lib/voice-grok PATH=/usr/bin:/bin \
-  /usr/local/bin/grok inspect --json
+printf '{"configurationPath":"/etc/grok/requirements.toml","digest":"<digest>","version":"<version>"}\n' \
+  | sudo tee /etc/voice-agent/grok/runner-pin.json
+sudo chmod 0644 /etc/voice-agent/grok/runner-pin.json
 ```
 
-Self-update must be off, the authentication source must be OAuth, no API key
-may be present, the model selector must be `grok-build`, the sandbox profile
-must be `voice-agent-task`, and `config_sources` must contain
-`/etc/voice-agent/grok/config.toml` alone.
+The executor re-reads the inspection before every run and pauses unless that
+requirements layer is the only one in effect.
 
 ## 2. Authorize the subscription
 

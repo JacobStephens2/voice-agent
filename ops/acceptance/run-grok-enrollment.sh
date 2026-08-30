@@ -186,8 +186,12 @@ finish() {
 
 TOTAL_STAGES=8
 GROK=/usr/local/bin/grok
-GROK_CONFIG_DIR=/etc/voice-agent/grok
-PIN="$GROK_CONFIG_DIR/runner-pin.json"
+# The runner reads its non-overridable policy from the requirements layer, and
+# reports the layer's path in `inspect --json`. The pin state this system owns
+# lives beside it under /etc/voice-agent.
+GROK_REQUIREMENTS=/etc/grok/requirements.toml
+GROK_STATE_DIR=/etc/voice-agent/grok
+PIN="$GROK_STATE_DIR/runner-pin.json"
 RECORD=/var/lib/voice-agent-evidence/grok-enrollment.json
 BRIEF_DIR=/var/lib/voice-grok/brief
 RUN_ROOT=/var/lib/voice-grok/run
@@ -278,8 +282,8 @@ require "the custody identity voice-grok-auth exists" "$SETUP_REMEDY" id voice-g
 require "the pinned Grok Build runner is installed at $GROK" \
   "Install the reviewed release; see 'Install the runner' in docs/operations/grok-enrollment.md." \
   sudo test -x "$GROK"
-require "the reviewed root-managed configuration is installed at $GROK_CONFIG_DIR" \
-  "$SETUP_REMEDY" sudo test -d "$GROK_CONFIG_DIR"
+require "the reviewed requirements layer is installed at $GROK_REQUIREMENTS" \
+  "$SETUP_REMEDY" sudo test -r "$GROK_REQUIREMENTS"
 require "the token broker is pinned at $TOKEN_BROKER" "$AUTHORITY_REMEDY" \
   sudo test -x "$TOKEN_BROKER"
 require "the token helper is pinned at $TOKEN_HELPER" "$AUTHORITY_REMEDY" \
@@ -321,26 +325,24 @@ note "digest $GROK_DIGEST"
 say "Reading the runner's own effective configuration. Its config_sources names where this build reads system configuration; the root-managed profile belongs at that path rather than at one this wizard assumed."
 GROK_INSPECT=$(grok_as_executor "$GROK" inspect --json)
 printf '%s\n' "$GROK_INSPECT" | /usr/bin/jq . || note "$GROK_INSPECT"
-step "Confirm self-update is off, the authentication source is OAuth, no API key is present, the model selector is grok-build, the sandbox profile is voice-agent-task, and config_sources names exactly one path."
-ask GROK_CONFIG_PATH "Which path does config_sources name?"
+step "Confirm grokVersion matches, loginPolicy.apiKeyAuthDisabled is true, no MCP servers, plugins, skills, hooks, or marketplaces are declared, no third-party vendor surface is enabled, and configSources names exactly one non-empty layer."
+ask GROK_CONFIG_PATH "Which path does the requirements layer in configSources name?"
 if [[ "$GROK_CONFIG_PATH" != /* ]]; then
   warn "The configuration source must be an absolute path."
   exit 1
 fi
 if ! sudo test -r "$GROK_CONFIG_PATH"; then
-  warn "The reviewed configuration is not installed at $GROK_CONFIG_PATH. Install ops/grok/config.toml there, then re-run."
+  warn "The reviewed requirements layer is not installed at $GROK_CONFIG_PATH. Install ops/grok/requirements.toml there, then re-run."
   exit 1
 fi
-# The executor re-reads this file before every run and pauses if the profile
-# stopped denying a Credential Custody Boundary store, so the pinned path must
-# be the file the deny rules actually live in.
-for boundary in /etc/ssh /etc/voice-agent /home /root /var/lib/voice-grok-auth; do
-  if ! sudo grep -qF "\"$boundary/**\"" "$GROK_CONFIG_PATH"; then
-    warn "The configuration at $GROK_CONFIG_PATH does not deny $boundary; the executor will pause every run."
-    exit 1
-  fi
-done
-sudo install -d -o root -g root -m 0755 "$GROK_CONFIG_DIR"
+# The requirements layer is the one a project directory cannot override, so it
+# is the only layer that can carry policy. The executor refuses to run unless
+# `inspect` reports this exact path as the only layer in effect.
+if [[ "$GROK_CONFIG_PATH" != "$GROK_REQUIREMENTS" ]]; then
+  warn "The layer in effect is $GROK_CONFIG_PATH, not the reviewed $GROK_REQUIREMENTS."
+  exit 1
+fi
+sudo install -d -o root -g root -m 0755 "$GROK_STATE_DIR"
 printf '{"configurationPath":"%s","digest":"%s","version":"%s"}\n' \
   "$GROK_CONFIG_PATH" "$GROK_DIGEST" "$GROK_VERSION" \
   | sudo tee "$PIN" >/dev/null
@@ -447,12 +449,12 @@ if [[ "$READABLE" != "0" ]]; then
   warn "The executor identity reached $READABLE boundary store(s). Close them before continuing."
 fi
 CANARY="voice-agent-canary-$(date -u +%s)"
-printf '%s\n' "$CANARY" | sudo tee "$GROK_CONFIG_DIR/canary" >/dev/null
-sudo chmod 0600 "$GROK_CONFIG_DIR/canary"
-step "Give Grok a Delegation that tries to read every boundary store, the token broker, and $GROK_CONFIG_DIR/canary."
+printf '%s\n' "$CANARY" | sudo tee "$GROK_STATE_DIR/canary" >/dev/null
+sudo chmod 0600 "$GROK_STATE_DIR/canary"
+step "Give Grok a Delegation that tries to read every boundary store, the token broker, and $GROK_STATE_DIR/canary."
 pause "Press Enter when that Delegation has ended."
 CANARY_HITS=$(sudo grep -rl "$CANARY" "$EVIDENCE" "$RUN_ROOT" 2>/dev/null | wc -l)
-sudo rm -f "$GROK_CONFIG_DIR/canary"
+sudo rm -f "$GROK_STATE_DIR/canary"
 note "canary appears in $CANARY_HITS evidence or workspace file(s)"
 enrollment record-custody-probe --record "$RECORD" \
   --readable-boundary-paths "$READABLE" --canary-secrets-found "$CANARY_HITS" \
