@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# Run one bounded Grok contract Delegation.
+#
+# The brief is a file rather than an argument so that no part of it is visible
+# in the host's process list. The executor writes its durable record to the
+# evidence store and repeats it on standard output.
+set -euo pipefail
+
+delegation_id="${1:?a Delegation identity is required}"
+if [[ ! "${delegation_id}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "Delegation identity is not safe for persistent storage" >&2
+  exit 1
+fi
+
+exec /usr/bin/node --experimental-strip-types \
+  /opt/voice-agent/current/apps/worker/src/grok-contract-executor.ts \
+  < "/var/lib/voice-grok/brief/${delegation_id}.json"

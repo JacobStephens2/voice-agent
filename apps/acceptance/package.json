@@ -8,11 +8,13 @@
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
     "cli": "node --experimental-strip-types src/cli.ts",
+    "grok-enrollment-cli": "node --experimental-strip-types src/grok-enrollment-cli.ts",
     "slice-three-cli": "node --experimental-strip-types src/slice-three-cli.ts",
     "test": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@voice-agent/contracts": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {
