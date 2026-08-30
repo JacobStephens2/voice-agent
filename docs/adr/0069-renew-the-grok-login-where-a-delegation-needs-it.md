@@ -21,16 +21,25 @@ implements no OAuth refresh of its own, and the refresh token, the issuer, and
 the client id stay where they were: with one identity, unread by anything else.
 
 It runs where the credential is needed rather than on a schedule. Before every
-Delegation the executor asks the broker to probe, the helper renews an expired
-login and answers with the credential's remaining lifetime, and the run starts
-on a credential good for six hours against a run bound of thirty minutes - so a
-Delegation that starts cannot reach expiry while it runs. The helper hands the
-runner that lifetime alongside the token, in the JSON form of Grok's provider
-contract rather than as a bare token, so the runner re-mints through the broker
-before spending an expired one instead of failing a request with it. There is no
+Delegation the executor asks the broker to probe, and the helper renews an
+expired login and answers with the credential's remaining lifetime. There is no
 periodic timer, and that is the point: a renewal that only ever runs when a
 Delegation is about to need one has no failure that can go unnoticed, and no
 unattended process holds the credential open between Delegations.
+
+The probe does not renew a login that has not expired yet, because the runner
+will not - it renews on expiry rather than proactively, observed both ways. So
+a Delegation can still begin with minutes left on the credential and reach
+expiry while it runs, and what carries it through is the same crossing running
+again: the runner reaches for its auth provider when the credential it holds
+has expired, which is observed, and the helper renews on that invocation
+exactly as it does on the probe. The helper hands the runner the lifetime
+alongside the token, in the JSON form of Grok's provider contract rather than
+as a bare token, so the re-mint is expected to come before a request is spent
+on an expired token rather than after one fails with it. That last property -
+proactive re-minting from `expires_in` - is xAI's documented behaviour and is
+the one link in this chain not established on the binary; the ending if it does
+not hold is a pause naming authentication, not a wrong credential.
 
 The probe crosses as a status, not a token. `--probe` prints the remaining
 lifetime and nothing else, under a second sudoers rule that fixes the whole
@@ -81,11 +90,13 @@ enrollment, it is written fresh for each run, and it is removed with the home.
 
 ## Consequences
 
-A Delegation begun shortly before expiry now completes, because the check that
-would have refused it is the renewal. One that cannot be renewed pauses naming
-expiry instead of failing partway through with a provider error the Durable
-Task could not explain. The cost is one extra crossing before every run, about
-a third of a second when there is nothing to renew.
+A Delegation begun after expiry now completes, because the check that would
+have refused it is the renewal. One begun shortly before expiry completes on
+the re-mint the runner makes when the token it holds runs out, through the same
+helper. One whose login cannot be renewed at all pauses naming expiry instead
+of failing partway through with a provider error the Durable Task could not
+explain. The cost is one extra crossing before every run, about a third of a
+second when there is nothing to renew.
 
 The enrollment wizard asserts what this decision depends on: that both broker
 crossings answer, and that `/etc/grok/requirements.toml` declares no `[auth]`

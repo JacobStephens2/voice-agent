@@ -107,17 +107,17 @@ export function describeAuthProviderDrift(input: {
   readonly brokerPath: string;
   readonly layerText: string;
 }): string | null {
-  const settings = input.layerText
+  const lines = input.layerText
     .split("\n")
     .map((line) => line.replace(/#.*$/u, "").trim())
     .filter((line) => line.length > 0);
-  if (
-    !settings.includes(`auth_provider_command = "${input.brokerPath}"`) ||
-    !settings.includes("[auth]")
-  ) {
+  if (lines[0] !== "[auth]") {
+    return "The staged auth layer does not open with the auth table";
+  }
+  if (lines[1] !== `auth_provider_command = "${input.brokerPath}"`) {
     return "The staged auth layer does not name the reviewed token broker";
   }
-  if (settings.length !== 2) {
+  if (lines.length !== 2) {
     return "The staged auth layer declares settings outside the token crossing";
   }
   return null;

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 import {
@@ -88,5 +90,31 @@ test("an exit code this contract does not recognise still pauses", () => {
   expect(describeCredentialRefusal({ exitCode: 1, timedOut: false })).toMatchObject({
     reason: "provider-authentication",
     state: "paused",
+  });
+});
+
+/**
+ * The exit codes are a contract across two languages, and the half that
+ * produces them cannot import the half that reads them. Nothing else would
+ * notice a renumbering until a Delegation paused for the wrong reason.
+ */
+test("the helper that produces these codes agrees with the module that reads them", async () => {
+  const helper = await readFile(
+    fileURLToPath(new URL("../../../ops/grok/grok-token-helper", import.meta.url)),
+    "utf8",
+  );
+
+  expect(
+    Object.fromEntries(
+      [...helper.matchAll(/^readonly (EXIT_[A-Z_]+)=(\d+)$/gmu)].map(
+        ([, name, code]) => [name, Number(code)],
+      ),
+    ),
+  ).toEqual({
+    EXIT_EXPIRED: grokCredentialProbeExitCodes.expired,
+    EXIT_NO_CREDENTIAL: grokCredentialProbeExitCodes.noCredential,
+    EXIT_NOT_SUBSCRIPTION: grokCredentialProbeExitCodes.notSubscription,
+    EXIT_OTHER_ROUTE: grokCredentialProbeExitCodes.otherRoutePresent,
+    EXIT_WRONG_IDENTITY: grokCredentialProbeExitCodes.wrongIdentity,
   });
 });

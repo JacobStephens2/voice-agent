@@ -103,7 +103,21 @@ test("an auth layer naming another provider command is refused", () => {
 test("an auth layer that names no provider command at all is refused", () => {
   expect(
     describeAuthProviderDrift({ brokerPath: broker, layerText: "[cli]\nauto_update = false\n" }),
-  ).toBe("The staged auth layer does not name the reviewed token broker");
+  ).toBe("The staged auth layer does not open with the auth table");
+});
+
+/**
+ * A command outside the table it looks like it belongs to is read by the
+ * runner as a top-level key it does not have, so the crossing would be absent
+ * while appearing present.
+ */
+test("a provider command outside the auth table is refused as an absent table", () => {
+  expect(
+    describeAuthProviderDrift({
+      brokerPath: broker,
+      layerText: `auth_provider_command = "${broker}"\n`,
+    }),
+  ).toBe("The staged auth layer does not open with the auth table");
 });
 
 /**

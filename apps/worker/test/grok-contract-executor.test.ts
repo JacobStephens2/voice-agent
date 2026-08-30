@@ -162,10 +162,12 @@ test("a sandbox profile the runner could not enforce pauses", async () => {
   });
 });
 
-test("a login expiring before the run is renewed by the probe that checks it", async () => {
+test("every run asks the custody identity for a credential before it spawns a model", async () => {
   const host = await stageHost({ credential: "renewed", inspection: "reviewed" });
 
   expect(runExecutor(host).outcome).toMatchObject({ state: "completed" });
+  // Only the crossing is exercised here: the renewal behind it belongs to the
+  // helper on the far side, which reaches the pinned runner, not this process.
   await expect(readFile(`${host.root}/probe`, "utf8")).resolves.toContain("--probe");
 });
 

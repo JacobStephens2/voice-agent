@@ -111,10 +111,13 @@ custody identity, which spends the refresh token itself and rewrites the entry
 six hours out. Observed against grok 1.0.13; see the addendum in
 [`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
 
-A run is bounded at thirty minutes, so a Delegation that starts on a freshly
-renewed credential cannot reach expiry while it runs. The token the runner
-holds carries its lifetime with it, so the runner re-mints through the broker
-before spending an expired one rather than failing a request with it.
+The probe renews what has already expired, not what is about to: the runner
+renews on expiry rather than proactively. A Delegation can therefore begin with
+minutes left on the credential and reach expiry while it runs, and the same
+crossing carries it through - the runner reaches for its auth provider when the
+credential it holds has expired, and the helper renews on that invocation too.
+The token carries its lifetime with it so that re-mint comes before a request
+is spent on an expired token.
 
 **A refusal by the issuer deletes the login rather than leaving it stale.** The
 runner clears `auth.json` when a refresh fails, so a refresh token the account

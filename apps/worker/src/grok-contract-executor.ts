@@ -58,8 +58,7 @@ const maximumRunOutputBytes = 1_000_000;
 const maximumPreflightOutputBytes = 200_000;
 const preflightTimeoutMilliseconds = 60_000;
 // The probe renews an expired login, which costs one request to the issuer on
-// top of starting the runner. Generous against a slow issuer, and far short of
-// the run bound below.
+// top of starting the runner. Generous against a slow issuer.
 const credentialProbeTimeoutMilliseconds = 30_000;
 const runTimeoutMilliseconds = 30 * 60 * 1_000;
 
@@ -117,7 +116,7 @@ async function execute(): Promise<GrokContractRunOutcome> {
   if (unenrolled !== null) return unenrolled;
   const drift = await describePreflightDrift();
   if (drift !== null) return drift;
-  const refusedCredential = await describeRefusedCredential();
+  const refusedCredential = await probeCredentialBeforeSpawn();
   if (refusedCredential !== null) return refusedCredential;
   if (stopRequested) return stopped();
   const invocation = buildGrokInvocation({
@@ -255,18 +254,15 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
 }
 
 /**
- * Ask the custody identity for a token before the model is spawned.
+ * Ask the custody identity for a credential before the model is spawned.
  *
- * The subscription login lasts about six hours and the runner renews it only
- * once it has expired, so a Delegation begun shortly before expiry would
- * otherwise reach expiry mid-run. The probe is that renewal: the helper on the
- * far side refreshes an expired login through the pinned runner and answers
- * with a status, not a token, so nothing this executor holds is a credential.
- *
- * A login that cannot be renewed ends the Delegation here, in a pause naming
- * expiry, rather than in a provider error partway through the work.
+ * The probe is also the renewal: the helper on the far side refreshes an
+ * expired login through the pinned runner, and answers with a status rather
+ * than a token, so nothing this executor holds is a credential. A login that
+ * cannot be renewed ends the Delegation here, in a pause naming expiry, rather
+ * than in a provider error partway through the work. ADR-0069 has the why.
  */
-async function describeRefusedCredential(): Promise<GrokContractRunOutcome | null> {
+async function probeCredentialBeforeSpawn(): Promise<GrokContractRunOutcome | null> {
   let probe: BoundedRunResult;
   try {
     probe = await runBoundedCommand(tokenBrokerPath, ["--probe"], {
@@ -277,13 +273,7 @@ async function describeRefusedCredential(): Promise<GrokContractRunOutcome | nul
   } catch {
     // A broker that cannot be executed is a crossing that is not there. That
     // is a pause an operator clears, not a run made without a credential.
-    probe = {
-      exceededOutputBound: false,
-      exitCode: null,
-      stderr: "",
-      stdout: "",
-      timedOut: false,
-    };
+    return describeCredentialRefusal({ exitCode: null, timedOut: false });
   }
   return describeCredentialRefusal({
     exitCode: probe.exitCode,

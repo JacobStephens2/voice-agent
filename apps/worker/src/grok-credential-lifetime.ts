@@ -69,15 +69,10 @@ const refusals = new Map<number, GrokContractRunOutcome>([
 /**
  * Say why the enrolled credential cannot serve this run, before it starts.
  *
- * The subscription login lasts about six hours, and the runner renews it only
- * once it has actually expired. Asking the custody identity for a token before
- * the model is spawned is therefore what turns "expires during this run" into
- * "renewed before this run": the same probe that answers the question performs
- * the renewal. What it cannot renew ends the Delegation in a pause naming
- * expiry, rather than in a provider error partway through the work.
- *
  * Every ending here is a pause. None of them is a defect in this system, and
- * each one is cleared by an attended action rather than by another provider.
+ * each one is cleared by an attended action rather than by another provider -
+ * a login that will not renew waits for a device authorization, and never for
+ * a second billing route. ADR-0069 has the renewal this reads the result of.
  */
 export function describeCredentialRefusal(
   probe: GrokCredentialProbe,
