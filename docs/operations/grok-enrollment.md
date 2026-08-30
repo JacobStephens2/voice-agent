@@ -20,7 +20,19 @@ pinning a new runner build discards the previous build's acceptance, so an
 upgrade repeats this page.
 
 The governing decisions are ADR-0048 and ADR-0068. The interfaces used here are
-established in `docs/research/grok-subagent-mvp.md`.
+established in `docs/research/grok-subagent-mvp.md` and corrected against the
+released binary in
+[`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
+
+> **This procedure cannot complete yet.** The second note disproves nine
+> interfaces the implementation inferred: the token helper calls a subcommand
+> that does not exist, the root-managed `config.toml` uses key names Grok does
+> not read, the sandbox profile is declared in the wrong file, and every field
+> the effective-configuration drift check reads is spelled differently in the
+> real `inspect --json`. Nothing is unsafe - an unrecognized inspection fails
+> closed and pauses the Durable Task, which is exactly what an unproven runner
+> should do - but stage 2 will pause until those corrections land. Read the
+> verdict table in that note before running this.
 
 ## What the two identities own
 
@@ -37,13 +49,27 @@ useradd --system --create-home --home-dir /var/lib/voice-grok voice-grok
 install -d -o voice-grok -g voice-grok -m 0700 /var/lib/voice-grok/run /var/lib/voice-grok/brief
 install -d -o root -g root -m 0755 /etc/voice-agent/grok
 install -o root -g root -m 0644 ops/grok/config.toml /etc/voice-agent/grok/config.toml
-install -o root -g root -m 0755 ops/grok/grok-token-helper /usr/local/libexec/voice-agent/grok-token-helper
-install -o root -g root -m 0755 ops/grok/grok-token-broker /usr/local/libexec/voice-agent/grok-token-broker
 install -o root -g root -m 0440 ops/grok/sudoers-voice-grok-token-helper /etc/sudoers.d/voice-grok-token-helper
 install -o root -g root -m 0644 ops/grok/sysctl-voice-grok-ptrace.conf /etc/sysctl.d/60-voice-grok-ptrace.conf
 sysctl --system
 visudo -c
 ```
+
+The token helper, the token broker, and `voice-agent-grok-contract@.service`
+are not installed by that block. They are reviewed root authority, listed in
+`ops/release/deployment-authority-manifest.sh`, and reach the host only through
+the attended upgrade below - which shows you every authority difference it will
+pin and requires a Fresh Passkey Action to authorize:
+
+```bash
+cd /opt/voice-agent/current
+./ops/upgrade-agent-host-deployment-authority.sh
+```
+
+Run it after the release carrying them is promoted. A host that could start a
+Grok Delegation without the reviewed unit would run the model with whatever
+boundary the invoking shell happened to have, which is the boundary this unit
+exists to replace.
 
 The runner invokes `grok-token-broker`, which crosses to `voice-grok-auth`
 through the one sudoers rule; `grok-token-helper` refuses to run as anyone
@@ -54,6 +80,38 @@ sudo -u voice-grok /usr/local/libexec/voice-agent/grok-token-broker | wc -c   # 
 sudo -u voice-grok /usr/local/libexec/voice-agent/grok-token-helper           # must fail
 sysctl kernel.yama.ptrace_scope                                              # must be 1 or 2
 ```
+
+## Install the runner
+
+xAI supports one route on Linux: a `curl | bash` script from `x.ai/cli`. Do not
+pipe it into a root shell. The installer places the binary under a user's
+`~/.grok/bin` and symlinks it opportunistically, which is the opposite of what
+a pinned host wants, so fetch the exact versioned artifact and install it
+yourself. Both the URL shape and the channel pointer are recorded in
+[`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
+
+```bash
+curl -fsSL https://x.ai/cli/stable                      # the current stable version
+VERSION=<the version you reviewed>
+curl -fsSL -o /tmp/grok "https://x.ai/cli/grok-${VERSION}-linux-x86_64"
+sha256sum /tmp/grok
+install -o root -g root -m 0755 /tmp/grok /usr/local/bin/grok
+grok --version
+```
+
+**xAI publishes no checksum, signature, or digest for these artifacts.** The
+installer's only integrity check is that the downloaded file runs and prints a
+version, and `xai-org/grok-build` has no GitHub releases; probes for `.sha256`,
+`.sig`, and provenance files all return 404. So the digest recorded in the next
+section is computed from the bytes you just downloaded. It defends against the
+runner changing underneath this host afterwards - self-update, tampering, an
+unreviewed reinstall - and it cannot attest that the download itself was
+authentic. That is a property of the supply chain, not of this pin, and it is
+the reason self-update must stay off.
+
+`--no-auto-update` must come **before** a subcommand; `grok inspect --json
+--no-auto-update` exits 2. Release builds self-update by default, so the flag is
+load-bearing rather than belt-and-braces.
 
 ## 1. Pin the runner
 
