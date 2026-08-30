@@ -253,18 +253,53 @@ declare -A DRILL_METHOD=(
 
 banner "Grok Build enrollment and contract test"
 
+# require CHECK DESCRIPTION REMEDY — verify one prerequisite, and say what to
+# do about it when it is absent.
+#
+# Every check below is something an attended action installs, so a bare `set -e`
+# exit tells the operator only that a command failed. Naming the missing piece
+# and the step that installs it is the difference between a wizard and a trap.
+REQUIREMENTS_MISSING=0
+require() {
+  local description="$1" remedy="$2"
+  shift 2
+  if "$@" >/dev/null 2>&1; then return 0; fi
+  printf '  %s✗%s %s\n' "$RED" "$RESET" "$description"
+  note "    $remedy"
+  REQUIREMENTS_MISSING=$((REQUIREMENTS_MISSING + 1))
+}
+
 stage "Verify the enrollment boundary"
 say "The reviewed release owns provisioning; this stage verifies it without broadening authority."
-id voice-grok >/dev/null
-id voice-grok-auth >/dev/null
-sudo test -x "$GROK"
-sudo test -x "$TOKEN_BROKER"
-sudo test -x "$TOKEN_HELPER"
-sudo test "$(sudo stat -c %U "$TOKEN_HELPER")" = root
-sudo test "$(sudo stat -c %U /etc/sudoers.d/voice-grok-token-helper)" = root
+SETUP_REMEDY="Run the one-time setup block at the top of docs/operations/grok-enrollment.md as root."
+AUTHORITY_REMEDY="Install it through the attended deployment-authority upgrade: ./ops/upgrade-agent-host-deployment-authority.sh"
+require "the executor identity voice-grok exists" "$SETUP_REMEDY" id voice-grok
+require "the custody identity voice-grok-auth exists" "$SETUP_REMEDY" id voice-grok-auth
+require "the pinned Grok Build runner is installed at $GROK" \
+  "Install the reviewed release; see 'Install the runner' in docs/operations/grok-enrollment.md." \
+  sudo test -x "$GROK"
+require "the reviewed root-managed configuration is installed at $GROK_CONFIG_DIR" \
+  "$SETUP_REMEDY" sudo test -d "$GROK_CONFIG_DIR"
+require "the token broker is pinned at $TOKEN_BROKER" "$AUTHORITY_REMEDY" \
+  sudo test -x "$TOKEN_BROKER"
+require "the token helper is pinned at $TOKEN_HELPER" "$AUTHORITY_REMEDY" \
+  sudo test -x "$TOKEN_HELPER"
+require "the contract unit is installed" "$AUTHORITY_REMEDY" \
+  sudo test -e "/etc/systemd/system/voice-agent-grok-contract@.service"
+require "the token helper is root-owned" "$AUTHORITY_REMEDY" \
+  sudo test "$(sudo stat -c %U "$TOKEN_HELPER" 2>/dev/null)" = root
+require "the sudoers rule for the token crossing is root-owned" "$SETUP_REMEDY" \
+  sudo test "$(sudo stat -c %U /etc/sudoers.d/voice-grok-token-helper 2>/dev/null)" = root
+require "the executor state directory belongs to voice-grok" "$SETUP_REMEDY" \
+  sudo test "$(sudo stat -c %U /var/lib/voice-grok 2>/dev/null)" = voice-grok
+require "the custody state directory belongs to voice-grok-auth" "$SETUP_REMEDY" \
+  sudo test "$(sudo stat -c %U /var/lib/voice-grok-auth 2>/dev/null)" = voice-grok-auth
+if (( REQUIREMENTS_MISSING > 0 )); then
+  printf '\n'
+  warn "$REQUIREMENTS_MISSING prerequisite(s) are missing. Nothing has been changed; install them and run this wizard again."
+  exit 1
+fi
 sudo visudo -c >/dev/null
-sudo test "$(sudo stat -c %U /var/lib/voice-grok)" = voice-grok
-sudo test "$(sudo stat -c %U /var/lib/voice-grok-auth)" = voice-grok-auth
 # The refresh credential's custody is the whole point of the two identities.
 # Prove the executor cannot reach it before anything is authorized into it.
 sudo -u voice-grok test ! -r /var/lib/voice-grok-auth

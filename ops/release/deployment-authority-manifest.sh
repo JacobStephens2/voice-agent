@@ -29,6 +29,13 @@ voice_agent_authority_units=(
   voice-agent-probes.timer
   voice-agent-promotion-resume.path
   voice-agent-promotion-resume.service
+  # The Grok contract Delegation runs one bounded model process per Durable
+  # Task under a template unit rather than a long-running service, so it is
+  # authority to install but not a runtime unit to restart. It holds the
+  # Credential Custody Boundary on the host side of the reviewed sandbox: a
+  # host that could start this work without the reviewed unit would run the
+  # model with whatever boundary the invoking shell happened to have.
+  voice-agent-grok-contract@.service
 )
 
 voice_agent_authority_apparmor_profiles=(
@@ -38,6 +45,14 @@ voice_agent_authority_apparmor_profiles=(
 voice_agent_authority_programs=(
   "ops/release/deployment-authority-authorization-verifier.mjs:deployment-authority-authorization-verifier.mjs"
   "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts"
+  # The Grok token crossing. The broker is what the runner invokes as its
+  # configured auth provider and the helper is the only thing that may read the
+  # refresh credential, so both are reviewed root authority rather than release
+  # content: the sudoers rule and the root-managed provider configuration name
+  # these exact pinned paths, and a host running an unreviewed copy at either
+  # path would have moved the custody boundary without an attended action.
+  "ops/grok/grok-token-broker:grok-token-broker"
+  "ops/grok/grok-token-helper:grok-token-helper"
 )
 
 # The Keeplore programs that write the repository-policy journal the pinned
