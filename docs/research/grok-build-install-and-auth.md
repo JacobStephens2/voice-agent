@@ -893,9 +893,9 @@ installed, and adding a `[login_policy] disable_api_key_auth` table to that
 layer does not move it - `disableApiKeyAuth` stays `null`. It is not a
 host-configurable setting on 1.0.13. Both the enrollment wizard's second stage
 and `describeGrokConfigurationDrift` require it to be true, so neither can pass
-on this host today. That is not this issue's finding to fix and it needs one of
-its own; it is recorded here because it was observed in the same session and
-because the checks that read it are load-bearing.
+on this host today. Issue #167 carries it. It is recorded here because it was
+observed in the same session and because the checks that read it are
+load-bearing.
 
 **`/usr/local/libexec/voice-agent` is mode 0700 on this host, and the crossing
 needs 0755.** The broker is invoked by `voice-grok`, which cannot traverse a
@@ -904,7 +904,7 @@ rather than a permission error. `ops/setup-agent-host.sh` installs that
 directory 0755, so this is host drift rather than a design choice, but nothing
 checks it and the symptom is a crossing that silently is not there. The
 directory was left as it was found; the enrollment wizard's `test -x` on the
-broker would not catch it, because it runs as root.
+broker would not catch it, because it runs as root. Issue #168 carries it.
 
 Every observation above was made through the reviewed broker and helper
 installed at their pinned paths by hand, with that directory temporarily 0755.
