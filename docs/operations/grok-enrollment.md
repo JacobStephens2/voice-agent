@@ -68,7 +68,9 @@ provider command over renewing an expired cached login, so a host-wide
 credential instead of to the issuer that renews it. The executor stages
 `ops/grok/run-requirements.toml` into each run's own home instead, as a
 `requirements` layer so that a Delegation root's `.grok/config.toml` still
-cannot override it. ADR-0069 records this.
+cannot override it. That layer sits beside the system one rather than replacing
+it: `inspect` reports `/etc/grok/requirements.toml` in a role of its own,
+`system-requirements`, and the two merge per key. ADR-0069 records this.
 
 The token helper, the token broker, and `voice-agent-grok-contract@.service`
 are not installed by that block. They are reviewed root authority, listed in
@@ -112,12 +114,22 @@ six hours out. Observed against grok 1.0.13; see the addendum in
 [`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
 
 The probe renews what has already expired, not what is about to: the runner
-renews on expiry rather than proactively. A Delegation can therefore begin with
-minutes left on the credential and reach expiry while it runs, and the same
-crossing carries it through - the runner reaches for its auth provider when the
-credential it holds has expired, and the helper renews on that invocation too.
-The token carries its lifetime with it so that re-mint comes before a request
-is spent on an expired token.
+renews on expiry rather than proactively. Nothing renews a credential part way
+through a run either. A headless run never invokes the auth crossing at all -
+not to sign in and not to re-mint - so a run whose credential expires while it
+works returns a 401 after spending model tokens on the request that failed.
+Observed on 2026-08-31 against grok 1.0.13.
+
+Two things follow, and the executor does both. The crossing is invoked once,
+by a `grok login` into the run's own Grok home before the model is spawned;
+that login is what reaches the broker, needs no browser, and writes an entry
+with `auth_mode: "external"` whose `expires_at` is the lifetime the helper
+reported. And the reported lifetime is checked against the run's own time
+bound, twice - at the probe and again against what the login minted - so a
+Delegation the credential cannot outlast pauses naming authentication instead
+of paying for a refused request. That pause clears on its own: the login is
+renewed on expiry, so the next probe past `expires_at` returns a full six
+hours.
 
 **A refusal by the issuer deletes the login rather than leaving it stale.** The
 runner clears `auth.json` when a refresh fails, so a refresh token the account
@@ -186,8 +198,11 @@ sudo -u voice-grok env -i HOME=/var/lib/voice-grok PATH=/usr/bin:/bin \
 Confirm `grokVersion` matches what you installed, `loginPolicy.apiKeyAuthDisabled`
 is `true`, nothing is declared under `mcpServers`, `plugins`, `skills`, `hooks`,
 `marketplaces`, or `lspServers`, no `externalCompat` vendor surface is enabled,
-and `configSources.layers` holds exactly one non-empty layer whose `role` is
-`requirements`. Those are the field names grok 1.0.13 actually emits, recorded
+and `configSources.layers` holds exactly one non-empty layer, whose `role` is
+`system-requirements`. That role belongs to `/etc/grok` alone; the
+`requirements` role belongs to the auth crossing each run stages into its own
+Grok home, and both are in force at once inside a Delegation. Those are the
+field names grok 1.0.13 actually emits, recorded
 in `apps/worker/src/grok-runner-pin.ts`. The model selector, always-approve,
 the turn bound, and the sandbox profile are fixed on the command line instead,
 where a project directory cannot reach them.
@@ -201,7 +216,8 @@ sudo chmod 0644 /etc/voice-agent/grok/runner-pin.json
 ```
 
 The executor re-reads the inspection before every run and pauses unless that
-requirements layer is the only one in effect.
+system-requirements layer and the run's own auth crossing are the only two in
+effect.
 
 ## 2. Authorize the subscription
 

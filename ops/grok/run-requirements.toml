@@ -9,15 +9,24 @@
 # provider takes precedence over an expired cached login, so the custody
 # identity's own `grok` would call this broker instead of renewing the login
 # the broker exists to read. Observed on grok 1.0.13: with a provider
-# configured, an expired OIDC entry sends the runner to the provider; with none
-# configured, the runner performs its own refresh and rewrites the entry six
-# hours out.
+# configured, an expired cached entry sends the runner to the provider; with
+# none configured, the runner performs its own refresh and rewrites the entry
+# six hours out.
 #
 # Naming the crossing here instead keeps it on the identity that runs models
 # and off the identity that owns the credential. `requirements` is still the
 # role a project directory cannot override - a `.grok/config.toml` inside a
-# Delegation root loses to this file, observed the same way - and layers merge
-# per key, so the system layer's own boundaries are untouched by this one.
+# Delegation root loses to this file, observed the same way - and it sits
+# beside /etc/grok/requirements.toml, which `inspect` reports in a role of its
+# own, `system-requirements`. Both are in force at once and merge per key, so
+# the system layer's boundaries are untouched by this one. Observed on the
+# Agent Host with both installed.
+#
+# What reads this file is `grok login`, not the run. Headless mode never
+# invokes an auth_provider_command at all, so the executor signs the run's own
+# home in through the broker before it spawns the model, and stages this file
+# again afterwards because the login removes it. See ADR-0069 and the addendum
+# in docs/research/grok-build-install-and-auth.md.
 
 [auth]
 auth_provider_command = "/usr/local/libexec/voice-agent/grok-token-broker"

@@ -325,8 +325,8 @@ note "digest $GROK_DIGEST"
 say "Reading the runner's own effective configuration. Its config_sources names where this build reads system configuration; the root-managed profile belongs at that path rather than at one this wizard assumed."
 GROK_INSPECT=$(grok_as_executor "$GROK" inspect --json)
 printf '%s\n' "$GROK_INSPECT" | /usr/bin/jq . || note "$GROK_INSPECT"
-step "Confirm grokVersion matches, loginPolicy.apiKeyAuthDisabled is true, no MCP servers, plugins, skills, hooks, or marketplaces are declared, no third-party vendor surface is enabled, and configSources names exactly one non-empty layer."
-ask GROK_CONFIG_PATH "Which path does the requirements layer in configSources name?"
+step "Confirm grokVersion matches, loginPolicy.apiKeyAuthDisabled is true, no MCP servers, plugins, skills, hooks, or marketplaces are declared, no third-party vendor surface is enabled, and configSources names exactly one non-empty layer - the system-requirements one. A run's own requirements layer carrying the auth crossing appears beside it only inside a Delegation's own Grok home."
+ask GROK_CONFIG_PATH "Which path does the system-requirements layer in configSources name?"
 if [[ "$GROK_CONFIG_PATH" != /* ]]; then
   warn "The configuration source must be an absolute path."
   exit 1
@@ -335,9 +335,10 @@ if ! sudo test -r "$GROK_CONFIG_PATH"; then
   warn "The reviewed requirements layer is not installed at $GROK_CONFIG_PATH. Install ops/grok/requirements.toml there, then re-run."
   exit 1
 fi
-# The requirements layer is the one a project directory cannot override, so it
-# is the only layer that can carry policy. The executor refuses to run unless
-# `inspect` reports this exact path as the only layer in effect.
+# The system-requirements layer is the one a project directory cannot override,
+# so it is the only layer that can carry policy. The executor refuses to run
+# unless `inspect` reports this exact path in that role, with the run's own
+# auth crossing as the only other layer in effect.
 if [[ "$GROK_CONFIG_PATH" != "$GROK_REQUIREMENTS" ]]; then
   warn "The layer in effect is $GROK_CONFIG_PATH, not the reviewed $GROK_REQUIREMENTS."
   exit 1

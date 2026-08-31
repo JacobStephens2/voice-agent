@@ -1,6 +1,10 @@
 import { expect, test } from "vitest";
 
 import { describeGrokRunOutcome } from "../src/grok-run-outcome.ts";
+import {
+  expiredMidRunStandardError,
+  expiredMidRunStandardOutput,
+} from "./grok-expired-credential-fixture.ts";
 
 const pin = {
   configurationPath: "/etc/voice-agent/grok/config.toml",
@@ -259,5 +263,21 @@ test("a runner that failed for its own reasons fails the run", () => {
     evidence: null,
     reason: "runner-execution",
     state: "failed",
+  });
+});
+
+test("a credential that expired mid-run pauses naming authentication", () => {
+  expect(
+    outcomeOf({
+      exitCode: 1,
+      stderr: expiredMidRunStandardError,
+      stdout: expiredMidRunStandardOutput,
+    }),
+  ).toEqual({
+    detail:
+      "The provider rejected the subscription login; a fresh device authorization is required.",
+    evidence: null,
+    reason: "provider-authentication",
+    state: "paused",
   });
 });

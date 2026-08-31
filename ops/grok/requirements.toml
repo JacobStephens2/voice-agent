@@ -2,12 +2,14 @@
 #
 # Installed at /etc/grok/requirements.toml, owned by root, mode 0644.
 #
-# `requirements` is the one configuration layer a project directory cannot
-# override - `grok inspect --json` reports it as a layer with that role, and
-# the executor refuses to run unless it is the only layer in effect. The
-# previously shipped /etc/voice-agent/grok/config.toml was not a path Grok
-# reads at all, and its key names were invented; every name below was observed
-# against grok 1.0.13 on this host.
+# This is the layer a project directory cannot override. `grok inspect --json`
+# reports it in a role of its own, `system-requirements`, beside the
+# `requirements` layer each run stages into its own Grok home; both are in
+# force at once and merge per key, observed on the Agent Host with both
+# installed. The executor refuses to run unless exactly those two are in
+# effect. The previously shipped /etc/voice-agent/grok/config.toml was not a
+# path Grok reads at all, and its key names were invented; every name below was
+# observed against grok 1.0.13 on this host.
 
 [cli]
 # Release builds self-update by default, which is the pin's only real

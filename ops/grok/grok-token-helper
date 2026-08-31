@@ -152,9 +152,15 @@ if [[ $mode == probe ]]; then
   exit 0
 fi
 
-# The JSON form of Grok's provider contract rather than a bare token, so the
-# runner re-mints before the token it is holding expires instead of failing a
-# request with it. Only the access token and its lifetime are emitted: the
-# refresh token stays with this identity, and a run that never sees it cannot
-# spend the subscription after its own Delegation ends.
+# The JSON form of Grok's provider contract rather than a bare token. The
+# lifetime is what the runner records as the entry's `expires_at`, and what the
+# executor checks the run's own time bound against - it does not cause a
+# re-mint, because headless mode never invokes this crossing a second time. A
+# run whose credential expires part way through returns a 401 rather than
+# asking for another token, observed on grok 1.0.13; see the addendum in
+# docs/research/grok-build-install-and-auth.md.
+#
+# Only the access token and its lifetime are emitted: the refresh token stays
+# with this identity, and a run that never sees it cannot spend the
+# subscription after its own Delegation ends.
 printf '{"access_token":"%s","expires_in":%d}' "${entry#*$'\n'}" "$remaining"
