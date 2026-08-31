@@ -73,13 +73,29 @@ const inspectionSchema = z
   })
   .loose();
 
-/** The inspection a runner pinned to `pin` must report to be accepted. */
-export function reviewedGrokInspection(pin: GrokRunnerPin): Record<string, unknown> {
+/**
+ * The inspection a runner pinned to `pin` must report to be accepted.
+ *
+ * Two layers, not one. `/etc/grok/requirements.toml` is reported with the role
+ * `system-requirements`, and the crossing each run stages into its own home is
+ * the `requirements` layer beside it; both are in force at once and merge per
+ * key. Observed on grok 1.0.13 with the system layer installed - see the
+ * addendum in docs/research/grok-build-install-and-auth.md.
+ */
+export function reviewedGrokInspection(input: {
+  readonly pin: GrokRunnerPin;
+  /** Where a run stages its own `requirements` layer carrying the crossing. */
+  readonly runRequirementsPath: string;
+}): Record<string, unknown> {
+  const { pin, runRequirementsPath } = input;
   return {
     agents: [{ name: "general-purpose", source: { type: "builtin" } }],
     channel: "unknown",
     configSources: {
-      layers: [{ path: pin.configurationPath, role: "requirements" }],
+      layers: [
+        { path: runRequirementsPath, role: "requirements" },
+        { path: pin.configurationPath, role: "system-requirements" },
+      ],
     },
     externalCompat: { cells: [] },
     grokVersion: pin.version,
@@ -134,6 +150,8 @@ export function describeGrokRunnerDrift(input: {
 export function describeGrokConfigurationDrift(input: {
   readonly inspection: unknown;
   readonly pin: GrokRunnerPin;
+  /** Where this run staged its own `requirements` layer carrying the crossing. */
+  readonly runRequirementsPath: string;
 }): string | null {
   const parsed = inspectionSchema.safeParse(input.inspection);
   if (!parsed.success) {
@@ -143,17 +161,26 @@ export function describeGrokConfigurationDrift(input: {
   if (inspection.grokVersion !== input.pin.version) {
     return `The runner reports version ${inspection.grokVersion} rather than the reviewed ${input.pin.version}`;
   }
-  // The requirements layer is the one a project directory cannot override, so
-  // it is the only layer that can carry a boundary. A user or managed layer
-  // that is actually in effect is configuration this contract never reviewed.
+  // Two requirements layers, in two roles a project directory cannot override.
+  // The host-wide one carries the boundaries and is what the pin names; the
+  // home-local one carries this run's auth crossing and nothing else. Anything
+  // else in effect - a user layer, a managed layer, a second home's
+  // requirements - is configuration this contract never reviewed.
   const effective = inspection.configSources.layers.filter(
     (layer) => layer.note !== "empty",
   );
-  const requirements = effective.filter((layer) => layer.role === "requirements");
-  if (requirements.length !== 1 || requirements[0]?.path !== input.pin.configurationPath) {
-    return `No reviewed requirements layer is in effect at ${input.pin.configurationPath}`;
+  const system = effective.filter((layer) => layer.role === "system-requirements");
+  if (system.length !== 1 || system[0]?.path !== input.pin.configurationPath) {
+    return `No reviewed system requirements layer is in effect at ${input.pin.configurationPath}`;
   }
-  if (effective.length !== requirements.length) {
+  const requirements = effective.filter((layer) => layer.role === "requirements");
+  if (
+    requirements.length !== 1 ||
+    requirements[0]?.path !== input.runRequirementsPath
+  ) {
+    return `No reviewed auth crossing is in effect at ${input.runRequirementsPath}`;
+  }
+  if (effective.length !== system.length + requirements.length) {
     return "Effective configuration includes a layer outside the reviewed requirements";
   }
   // The subscription is the only route this MVP may use. This is the one place

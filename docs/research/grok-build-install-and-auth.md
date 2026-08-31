@@ -607,6 +607,8 @@ build rather than of the channel it was served from.
 `managed`, `user`, or `requirements`, a `path`, and an optional
 `note: "empty"`. `requirements` is the layer a project cannot override. With
 `GROK_HOME` set, all three resolve inside that home rather than under `/etc`.
+There is a fourth role, `system-requirements`, which only appears once
+`/etc/grok/requirements.toml` exists; see the 2026-08-31 addendum.
 
 **`loginPolicy.apiKeyAuthDisabled` exists and is observable.** This is a real
 enforcement point for "no API key route", better than the absence of a variable
@@ -755,3 +757,159 @@ exercised. The enrollment wizard asserts the system layer carries no `[auth]`
 and that both broker crossings answer, which is where that coexistence is
 established on a real host. Issue #164 carries it, and the unobserved
 proactive re-mint, as work of their own.
+
+**Both were observed on 2026-08-31 and both came back negative.** The
+coexistence holds, in a role this section did not know about; the proactive
+re-mint does not happen at all in a headless run, and neither does any other
+use of the auth crossing. Read the 2026-08-31 addendum below before relying on
+anything in this section about when a provider command is invoked.
+
+## Addendum: the two unobserved links, observed 2026-08-31
+
+Issue #164 named the two links in ADR-0069's chain that had not been watched
+happen: proactive re-minting from the `expires_in` the broker reports, and the
+coexistence of a home-local `requirements` layer with `/etc/grok`. Both were
+observed on the Agent Host against the installed `grok 1.0.13`
+(`edf79521581bb5e6b95abef848491a6a742e860da3e237ebe86a280d30dce4c1`), using the
+real enrolled subscription login through the reviewed broker. Both came back
+negative, and the second turned up a third finding that decides where a
+Delegation authenticates at all.
+
+**`/etc/grok/requirements.toml` is a fourth role, `system-requirements`.** With
+it installed and a run's own `$GROK_HOME/requirements.toml` beside it, `inspect
+--json` reports both, in two distinct roles, as `voice-grok`:
+
+```json
+{ "layers": [
+  { "role": "requirements",
+    "path": "/var/lib/voice-grok/run/obs164/requirements.toml" },
+  { "role": "system-requirements", "path": "/etc/grok/requirements.toml" } ] }
+```
+
+The earlier addendum recorded three roles - `managed`, `user`, `requirements` -
+because there was no system layer on the host to report a fourth. This one
+matters beyond spelling: `apps/worker/src/grok-runner-pin.ts` required exactly
+one non-empty layer, with role `requirements`, at the pinned path, so with the
+reviewed system layer installed every Delegation would have paused on
+`No reviewed requirements layer is in effect at /etc/grok/requirements.toml`.
+
+**The layers merge per key across `/etc` and the home.** With the home-local
+layer declaring only `[auth]`, `grok models` as `voice-grok` still reported
+`Default model: grok-4.6` - the system layer's own `[models] default`. So the
+per-key merge measured earlier between layers reachable without root holds
+between these two as well.
+
+**The crossing is in force for the executor and absent for the custody
+identity.** As `voice-grok-auth` the same command reports its own empty
+home-local `requirements` layer beside the system one, and no `[auth]` in
+either, so nothing sends that identity to the broker that reads its credential:
+
+| Identity | `requirements` layer | `system-requirements` layer | `[auth]` in force |
+| --- | --- | --- | --- |
+| `voice-grok` | the run's own, carrying the crossing | `/etc/grok/requirements.toml` | the broker |
+| `voice-grok-auth` | `/var/lib/voice-grok-auth/.grok/requirements.toml`, empty | the same file | none |
+
+**Headless mode never invokes `auth_provider_command`.** This is the finding
+that changes the design. With the reviewed crossing staged and reported by
+`inspect`, `--output-format json`:
+
+| Run home holds | Result | Broker invoked |
+| --- | --- | --- |
+| no credential | exit 1 in 0.2 s, `{"type":"error","message":"Not signed in…"}` | **no** |
+| an entry that expired 48 s ago | the same error, same speed | **no** |
+| the same expired entry, `grok --no-auto-update models` 16 s later | provider invoked, entry re-minted | **yes** |
+
+Same home, same file, same layer: the provider mechanism works in an ordinary
+command and is not reached by a headless run. So ADR-0069 as written would
+never have authenticated a Delegation at all - the executor stages the crossing
+and runs headless, and nothing in that path asks the broker for anything.
+
+**No proactive re-mint, and the run pays for finding out.** A headless run was
+started over a credential with three seconds left on it. It spent 305 output
+tokens and 4.6 s of model time on one request, got a 401 back, and left the
+cached entry untouched. The broker was not invoked a second time. The runner's
+own words:
+
+```
+Unauthorized (401) from https://cli-chat-proxy.grok.com/v1/responses:
+Invalid or expired credentials (auth_kind=none, …, reason=no auth context)
+  Model:     grok-4.6
+  Auth:      External
+  Version:   1.0.13
+Your session expired and your sign-in helper could not renew it in the
+background. Run /login to sign in again.
+```
+
+xAI's documented `expires_in` contract - quoted at item 6a above, and the one
+thing ADR-0069 rested on rather than observed - does not hold for a headless
+run on this build. The runner spends the token it was handed until it fails.
+
+Issue #164 asked for this to be started "a few minutes before `expires_at`";
+three seconds was used instead, because the credential on the host was three
+hours from expiry and the shorter window puts expiry inside a run rather than
+waiting for one. It is the same question either way - whether the crossing is
+invoked a second time before a request is spent - and the two runs above
+establish that it is not invoked at all in this mode, at any distance from
+expiry.
+
+**`grok login` is what reaches the provider, and it needs no browser.** Run in
+the executor's own stripped environment with standard input closed, it invoked
+the broker, printed `✓ Signed in as …`, and wrote the minted credential into
+the run's home in 0.56 s. The entry it writes carries `auth_mode: "external"`,
+an `expires_at` equal to the moment of the call plus the `expires_in` the
+broker reported, and no `refresh_token` - the refresh grant stays with
+`voice-grok-auth`, which is the property the whole crossing exists to preserve.
+
+**`grok login` removes `$GROK_HOME/requirements.toml`.** Observed twice on
+clean homes: the staged layer is present before the login and gone after it,
+while `sandbox.toml` beside it survives. A run left in that state would spawn
+the model under no layer this contract has reviewed, so the executor stages the
+crossing again after the login and reads it back a second time.
+
+**A login whose provider fails does not fail.** With the crossing pointed at a
+command exiting 10, `grok login` printed the provider's standard error and then
+fell back to an interactive device authorization, printing a user code and
+waiting - killed at 30 s, still waiting. There is no non-zero exit to read. The
+same happens to a payload the parser rejects: a provider returning a negative
+`expires_in` sent the login to the browser flow and left the cached entry
+alone. So the executor's time bound is what turns a broken crossing into an
+ending, rather than the login's exit code.
+
+**The whole sequence, end to end.** Staging the crossing, signing in, staging
+it again, and running headless, as `voice-grok` with the executor's own
+environment:
+
+| Step | Result |
+| --- | --- |
+| `grok-token-broker --probe` | `{"expires_in":10818}` |
+| `grok --no-auto-update login` | `✓ Signed in as …`, the layer removed |
+| stage the crossing again, `inspect --json` | both layers, both roles |
+| headless run | `end_turn`, `total_cost_usd` 0.00122978 |
+| broker invocations across all four | **1**, by the login |
+
+**One boundary this build will not report.** `loginPolicy.apiKeyAuthDisabled`
+is `false` for both identities with the reviewed `/etc/grok/requirements.toml`
+installed, and adding a `[login_policy] disable_api_key_auth` table to that
+layer does not move it - `disableApiKeyAuth` stays `null`. It is not a
+host-configurable setting on 1.0.13. Both the enrollment wizard's second stage
+and `describeGrokConfigurationDrift` require it to be true, so neither can pass
+on this host today. That is not this issue's finding to fix and it needs one of
+its own; it is recorded here because it was observed in the same session and
+because the checks that read it are load-bearing.
+
+**`/usr/local/libexec/voice-agent` is mode 0700 on this host, and the crossing
+needs 0755.** The broker is invoked by `voice-grok`, which cannot traverse a
+root-only directory: the first attempt to run it returned `command not found`
+rather than a permission error. `ops/setup-agent-host.sh` installs that
+directory 0755, so this is host drift rather than a design choice, but nothing
+checks it and the symptom is a crossing that silently is not there. The
+directory was left as it was found; the enrollment wizard's `test -x` on the
+broker would not catch it, because it runs as root.
+
+Every observation above was made through the reviewed broker and helper
+installed at their pinned paths by hand, with that directory temporarily 0755.
+The attended deployment-authority upgrade, which is what pins them on a real
+host, requires a Fresh Passkey Action and was not run; both files, and the
+directory mode, were put back afterwards. `/etc/grok/requirements.toml` and the
+sudoers rule were left installed - the one-time setup block in
+`docs/operations/grok-enrollment.md` installs both, and they were missing.

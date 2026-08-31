@@ -30,7 +30,10 @@ import {
   describeAuthProviderDrift,
   describeSandboxProfileDrift,
 } from "./grok-credential-custody.ts";
-import { describeCredentialRefusal } from "./grok-credential-lifetime.ts";
+import {
+  describeCredentialRefusal,
+  describeCredentialSeedingRefusal,
+} from "./grok-credential-lifetime.ts";
 import { describeGrokRunOutcome } from "./grok-run-outcome.ts";
 import { assertNonDestructiveGitArguments } from "./worktree-safety.ts";
 
@@ -53,6 +56,27 @@ const evidenceRoot =
 const tokenBrokerPath =
   process.env.VOICE_AGENT_GROK_TOKEN_BROKER ??
   "/usr/local/libexec/voice-agent/grok-token-broker";
+/**
+ * The run's own credential entry, as the crossing leaves it.
+ *
+ * `grok login` writes what the provider returned into `$GROK_HOME/auth.json`
+ * keyed by authorization scope, with `auth_mode: "external"` and an
+ * `expires_at` computed from the `expires_in` the broker reported. Only the
+ * route and the expiry are read; the key beside them is not.
+ */
+const seededCredentialSchema = z.record(
+  z.string().min(1).max(500),
+  z
+    .object({
+      auth_mode: z.string().min(1).max(60),
+      expires_at: z.string().min(1).max(60),
+    })
+    .loose(),
+);
+
+/** A lifetime, never a credential: the probe's whole standard output. */
+const probedLifetimeSchema = z.object({ expires_in: z.number().int() });
+
 const maximumInputBytes = 1_000_000;
 const maximumRunOutputBytes = 1_000_000;
 const maximumPreflightOutputBytes = 200_000;
@@ -60,7 +84,14 @@ const preflightTimeoutMilliseconds = 60_000;
 // The probe renews an expired login, which costs one request to the issuer on
 // top of starting the runner. Generous against a slow issuer.
 const credentialProbeTimeoutMilliseconds = 30_000;
+// A login through the broker takes about half a second on the Agent Host. The
+// bound is here because of what a *failed* one does: a provider command that
+// exits non-zero sends `grok login` to an interactive device authorization
+// that waits five minutes for a browser nobody is driving. Observed on grok
+// 1.0.13.
+const credentialSeedingTimeoutMilliseconds = 30_000;
 const runTimeoutMilliseconds = 30 * 60 * 1_000;
+const runTimeoutSeconds = runTimeoutMilliseconds / 1_000;
 
 let stopRequested = false;
 let runningProcessGroup: Parameters<typeof terminateProcessGroup>[0] | undefined;
@@ -118,6 +149,8 @@ async function execute(): Promise<GrokContractRunOutcome> {
   if (drift !== null) return drift;
   const refusedCredential = await probeCredentialBeforeSpawn();
   if (refusedCredential !== null) return refusedCredential;
+  const refusedSeeding = await seedRunCredential();
+  if (refusedSeeding !== null) return refusedSeeding;
   if (stopRequested) return stopped();
   const invocation = buildGrokInvocation({
     delegationRoot,
@@ -238,34 +271,46 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
       ? (describeGrokConfigurationDrift({
           inspection: parseInspection(inspection),
           pin,
+          runRequirementsPath: `${ephemeralHome}/requirements.toml`,
         }) ??
         (await describeStagedSandboxDrift()) ??
         (await describeStagedAuthLayerDrift()))
       : "The runner did not report its effective configuration";
-  if (configurationDrift !== null) {
-    return {
-      detail: `${configurationDrift}. The task waits for the changed configuration to be reviewed.`,
-      evidence: null,
-      reason: "provider-contract-drift",
-      state: "paused",
-    };
-  }
+  if (configurationDrift !== null) return pausedConfiguration(configurationDrift);
   return null;
+}
+
+/** One ending for every boundary that is no longer the reviewed one. */
+function pausedConfiguration(drift: string): GrokContractRunOutcome {
+  return {
+    detail: `${drift}. The task waits for the changed configuration to be reviewed.`,
+    evidence: null,
+    reason: "provider-contract-drift",
+    state: "paused",
+  };
 }
 
 /**
  * Ask the custody identity for a credential before the model is spawned.
  *
  * The probe is also the renewal: the helper on the far side refreshes an
- * expired login through the pinned runner, and answers with a status rather
+ * expired login through the pinned runner, and answers with a lifetime rather
  * than a token, so nothing this executor holds is a credential. A login that
  * cannot be renewed ends the Delegation here, in a pause naming expiry, rather
- * than in a provider error partway through the work. ADR-0069 has the why.
+ * than in a provider error partway through the work.
+ *
+ * The lifetime is read as well as the status, because the runner does not
+ * renew a credential part way through a run: a run the login cannot outlast
+ * pauses here rather than spending model tokens on a request that will return
+ * a 401. ADR-0069 has the why.
  */
 async function probeCredentialBeforeSpawn(): Promise<GrokContractRunOutcome | null> {
   let probe: BoundedRunResult;
   try {
     probe = await runBoundedCommand(tokenBrokerPath, ["--probe"], {
+      // No `GROK_HOME`: the broker crosses to the custody identity, and the
+      // helper on the far side resolves that identity's own home under sudo
+      // -H rather than anything this side names.
       environment: { HOME: ephemeralHome, LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
       maximumOutputBytes: maximumPreflightOutputBytes,
       timeoutMilliseconds: credentialProbeTimeoutMilliseconds,
@@ -273,12 +318,106 @@ async function probeCredentialBeforeSpawn(): Promise<GrokContractRunOutcome | nu
   } catch {
     // A broker that cannot be executed is a crossing that is not there. That
     // is a pause an operator clears, not a run made without a credential.
-    return describeCredentialRefusal({ exitCode: null, timedOut: false });
+    return describeCredentialRefusal({
+      exitCode: null,
+      remainingSeconds: null,
+      requiredSeconds: runTimeoutSeconds,
+      timedOut: false,
+    });
   }
   return describeCredentialRefusal({
     exitCode: probe.exitCode,
+    remainingSeconds: readProbedLifetime(probe.stdout),
+    requiredSeconds: runTimeoutSeconds,
     timedOut: probe.timedOut,
   });
+}
+
+/** The whole of what the probe prints: `{"expires_in":N}`, or nothing legible. */
+function readProbedLifetime(stdout: string): number | null {
+  try {
+    const lifetime = probedLifetimeSchema.safeParse(JSON.parse(stdout));
+    return lifetime.success ? lifetime.data.expires_in : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sign this run's own Grok home in, through the broker, once.
+ *
+ * This is the only invocation of the auth crossing in a Delegation. Headless
+ * mode never reaches an `auth_provider_command` - not to sign in, and not to
+ * re-mint a credential that expired part way through a run - so a run whose
+ * home holds nothing fails in a fifth of a second with "Not signed in", and
+ * one whose credential runs out returns a 401 after spending model tokens on
+ * the request that failed. `grok login` is what reaches the provider, and it
+ * needs no browser when one answers. All observed on grok 1.0.13; see the
+ * addendum in docs/research/grok-build-install-and-auth.md and ADR-0069.
+ *
+ * The login removes `$GROK_HOME/requirements.toml` on its way out, so the
+ * reviewed crossing is staged again afterwards and read back a second time.
+ * A home left without it would run the model with no layer this contract has
+ * seen.
+ */
+async function seedRunCredential(): Promise<GrokContractRunOutcome | null> {
+  const login = await runBoundedCommand(
+    grokExecutable,
+    ["--no-auto-update", "login"],
+    {
+      environment: {
+        GROK_HOME: ephemeralHome,
+        HOME: ephemeralHome,
+        LANG: "C.UTF-8",
+        PATH: "/usr/bin:/bin",
+      },
+      maximumOutputBytes: maximumPreflightOutputBytes,
+      timeoutMilliseconds: credentialSeedingTimeoutMilliseconds,
+    },
+  );
+  await stageAuthLayer();
+  const drift = await describeStagedAuthLayerDrift();
+  if (drift !== null) return pausedConfiguration(drift);
+  const entry = await readSeededCredential();
+  return describeCredentialSeedingRefusal({
+    authenticationMode: entry?.authenticationMode ?? null,
+    exitCode: login.exitCode,
+    remainingSeconds: entry?.remainingSeconds ?? null,
+    requiredSeconds: runTimeoutSeconds,
+    timedOut: login.timedOut,
+  });
+}
+
+/**
+ * Read the run's own credential entry for its route and its remaining life.
+ *
+ * Only those two things. The access token beside them is what the model
+ * process spends, and nothing here copies it, records it, or returns it.
+ */
+async function readSeededCredential(): Promise<
+  { authenticationMode: string; remainingSeconds: number } | null
+> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(`${ephemeralHome}/auth.json`, "utf8"));
+  } catch {
+    return null;
+  }
+  const entries = seededCredentialSchema.safeParse(parsed);
+  if (!entries.success) return null;
+  // Exactly one. The home is created fresh for this run and signed in once, so
+  // a second scope in it is a credential from somewhere this contract did not
+  // look - and reading whichever came first would be a gate that skipped it.
+  const scopes = Object.values(entries.data);
+  if (scopes.length !== 1) return null;
+  const entry = scopes[0];
+  if (entry === undefined) return null;
+  const expiresAt = Date.parse(entry.expires_at);
+  if (Number.isNaN(expiresAt)) return null;
+  return {
+    authenticationMode: entry.auth_mode,
+    remainingSeconds: Math.floor((expiresAt - Date.now()) / 1_000),
+  };
 }
 
 /**
@@ -329,8 +468,16 @@ function preflight(arguments_: readonly string[]): Promise<BoundedRunResult> {
   return runBoundedCommand(grokExecutable, arguments_, {
     // Preflight answers what the runner is. It runs with the same stripped
     // environment the model process gets, so an inherited credential cannot
-    // change the answer.
-    environment: { HOME: ephemeralHome, LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+    // change the answer - and `GROK_HOME` is part of that environment, not a
+    // detail: without it the runner resolves its layers under `$HOME/.grok`
+    // and never reports the crossing this run staged at the top of its home.
+    // Observed on grok 1.0.13.
+    environment: {
+      GROK_HOME: ephemeralHome,
+      HOME: ephemeralHome,
+      LANG: "C.UTF-8",
+      PATH: "/usr/bin:/bin",
+    },
     maximumOutputBytes: maximumPreflightOutputBytes,
     timeoutMilliseconds: preflightTimeoutMilliseconds,
   });
@@ -350,14 +497,19 @@ async function stageRun(): Promise<void> {
   // The auth crossing travels with the run for the same reason, and as a
   // requirements layer rather than a user one: a Delegation root's own
   // `.grok/config.toml` outranks a user layer and cannot outrank this.
+  await stageAuthLayer();
+  await writeFile(`${runRoot}/${brief.delegationId}/brief.md`, buildBrief(brief), {
+    mode: 0o600,
+  });
+}
+
+/** Write the reviewed crossing into this run's home, from the Release. */
+async function stageAuthLayer(): Promise<void> {
   await writeFile(
     `${ephemeralHome}/requirements.toml`,
     await readFile(reviewedAuthLayerPath, "utf8"),
     { mode: 0o600 },
   );
-  await writeFile(`${runRoot}/${brief.delegationId}/brief.md`, buildBrief(brief), {
-    mode: 0o600,
-  });
 }
 
 /**

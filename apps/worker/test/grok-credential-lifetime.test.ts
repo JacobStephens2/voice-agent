@@ -4,15 +4,23 @@ import { expect, test } from "vitest";
 
 import {
   describeCredentialRefusal,
+  describeCredentialSeedingRefusal,
   grokCredentialProbeExitCodes,
 } from "../src/grok-credential-lifetime.ts";
 
+/** What a run asks the credential to cover: the executor's own time bound. */
+const requiredSeconds = 30 * 60;
+const answered = { remainingSeconds: 21_600, requiredSeconds };
+
 test("a credential the custody identity could mint from lets the run proceed", () => {
-  expect(describeCredentialRefusal({ exitCode: 0, timedOut: false })).toBeNull();
+  expect(
+    describeCredentialRefusal({ ...answered, exitCode: 0, timedOut: false }),
+  ).toBeNull();
 });
 
 test("an expired login the runner could not renew pauses the task naming expiry", () => {
   const outcome = describeCredentialRefusal({
+    ...answered,
     exitCode: grokCredentialProbeExitCodes.expired,
     timedOut: false,
   });
@@ -29,6 +37,7 @@ test("an expired login the runner could not renew pauses the task naming expiry"
 test("an unenrolled custody identity pauses for the same attended action", () => {
   expect(
     describeCredentialRefusal({
+      ...answered,
       exitCode: grokCredentialProbeExitCodes.noCredential,
       timedOut: false,
     }),
@@ -42,6 +51,7 @@ test("an unenrolled custody identity pauses for the same attended action", () =>
 test("a credential that is not the subscription login pauses rather than being used", () => {
   expect(
     describeCredentialRefusal({
+      ...answered,
       exitCode: grokCredentialProbeExitCodes.notSubscription,
       timedOut: false,
     }),
@@ -55,6 +65,7 @@ test("a credential that is not the subscription login pauses rather than being u
 test("another billing route reachable from the custody identity pauses as drift", () => {
   expect(
     describeCredentialRefusal({
+      ...answered,
       exitCode: grokCredentialProbeExitCodes.otherRoutePresent,
       timedOut: false,
     }),
@@ -68,6 +79,7 @@ test("another billing route reachable from the custody identity pauses as drift"
 test("a crossing that did not reach the custody identity pauses as drift", () => {
   expect(
     describeCredentialRefusal({
+      ...answered,
       exitCode: grokCredentialProbeExitCodes.wrongIdentity,
       timedOut: false,
     }),
@@ -79,7 +91,9 @@ test("a crossing that did not reach the custody identity pauses as drift", () =>
 });
 
 test("a probe that did not answer in time pauses rather than starting a run", () => {
-  expect(describeCredentialRefusal({ exitCode: null, timedOut: true })).toMatchObject({
+  expect(
+    describeCredentialRefusal({ ...answered, exitCode: null, timedOut: true }),
+  ).toMatchObject({
     detail: expect.stringContaining("did not answer"),
     reason: "provider-authentication",
     state: "paused",
@@ -87,7 +101,9 @@ test("a probe that did not answer in time pauses rather than starting a run", ()
 });
 
 test("an exit code this contract does not recognise still pauses", () => {
-  expect(describeCredentialRefusal({ exitCode: 1, timedOut: false })).toMatchObject({
+  expect(
+    describeCredentialRefusal({ ...answered, exitCode: 1, timedOut: false }),
+  ).toMatchObject({
     reason: "provider-authentication",
     state: "paused",
   });
@@ -116,5 +132,106 @@ test("the helper that produces these codes agrees with the module that reads the
     EXIT_NOT_SUBSCRIPTION: grokCredentialProbeExitCodes.notSubscription,
     EXIT_OTHER_ROUTE: grokCredentialProbeExitCodes.otherRoutePresent,
     EXIT_WRONG_IDENTITY: grokCredentialProbeExitCodes.wrongIdentity,
+  });
+});
+
+/**
+ * The runner does not renew a credential part way through a run. A headless
+ * run whose login expired mid-flight returned a 401 after spending 305 output
+ * tokens on the request that failed, and the crossing was never asked for
+ * another token. Observed on grok 1.0.13; see the addendum in
+ * docs/research/grok-build-install-and-auth.md.
+ */
+test("a login that expires before the run's bound pauses before anything is spent", () => {
+  expect(
+    describeCredentialRefusal({
+      exitCode: 0,
+      remainingSeconds: 900,
+      requiredSeconds,
+      timedOut: false,
+    }),
+  ).toEqual({
+    detail:
+      "The subscription login expires before this run's time bound, and the runner does not renew one part way through; the task waits for the login to be renewed on expiry.",
+    evidence: null,
+    reason: "provider-authentication",
+    state: "paused",
+  });
+});
+
+test("an answer carrying no lifetime pauses as drift", () => {
+  expect(
+    describeCredentialRefusal({
+      exitCode: 0,
+      remainingSeconds: null,
+      requiredSeconds,
+      timedOut: false,
+    }),
+  ).toMatchObject({ reason: "provider-contract-drift", state: "paused" });
+});
+
+const seeded = {
+  authenticationMode: "external",
+  exitCode: 0,
+  remainingSeconds: 21_600,
+  requiredSeconds,
+  timedOut: false,
+};
+
+test("a run home signed in through the broker proceeds", () => {
+  expect(describeCredentialSeedingRefusal(seeded)).toBeNull();
+});
+
+/**
+ * A provider command that exits non-zero does not fail the login: grok falls
+ * back to an interactive device authorization and waits five minutes for a
+ * browser nobody is driving. The bound is what makes that an ending.
+ */
+test("a login that waited for a browser pauses naming authentication", () => {
+  expect(
+    describeCredentialSeedingRefusal({
+      ...seeded,
+      exitCode: null,
+      timedOut: true,
+    }),
+  ).toMatchObject({
+    detail: expect.stringContaining("did not finish in time"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+});
+
+test("a run home left holding no credential pauses rather than being spawned", () => {
+  expect(
+    describeCredentialSeedingRefusal({
+      ...seeded,
+      authenticationMode: null,
+      remainingSeconds: null,
+    }),
+  ).toMatchObject({
+    detail: expect.stringContaining("not signed in through the Auth Crossing"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+});
+
+/**
+ * `grok login` through the broker writes `auth_mode: "external"`. Anything
+ * else in that field is a credential this crossing did not mint - a cached
+ * device-OAuth login the executor identity should not have, for instance.
+ */
+test("a credential the broker did not mint pauses as drift", () => {
+  expect(
+    describeCredentialSeedingRefusal({ ...seeded, authenticationMode: "oidc" }),
+  ).toMatchObject({ reason: "provider-contract-drift", state: "paused" });
+});
+
+test("a minted credential shorter than the run's bound pauses before the model", () => {
+  expect(
+    describeCredentialSeedingRefusal({ ...seeded, remainingSeconds: 60 }),
+  ).toMatchObject({
+    detail: expect.stringContaining("expires before this run's time bound"),
+    reason: "provider-authentication",
+    state: "paused",
   });
 });

@@ -193,6 +193,80 @@ test("an auth crossing that is not the reviewed one pauses before any request", 
   await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
 });
 
+/**
+ * Headless mode never reaches an `auth_provider_command`: a run whose home
+ * holds nothing fails in a fifth of a second with "Not signed in", and one
+ * whose credential expires part way through returns a 401 after spending
+ * model tokens. So the crossing is made once, by a login into the run's own
+ * home, before the model is spawned. Observed on grok 1.0.13; ADR-0069.
+ */
+test("every run signs its own Grok home in through the broker before the model", async () => {
+  const host = await stageHost({ inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({ state: "completed" });
+  await expect(readFile(`${host.root}/login`, "utf8")).resolves.toContain("login");
+});
+
+/**
+ * The login removes `$GROK_HOME/requirements.toml` on its way out. A home left
+ * without it would run the model under no layer this contract has reviewed, so
+ * the crossing is staged again and read back a second time.
+ */
+test("the auth crossing the login removed is staged again before the model runs", async () => {
+  const host = await stageHost({ inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({ state: "completed" });
+  await expect(readFile(`${host.root}/run-layer`, "utf8")).resolves.toContain(
+    host.tokenBrokerPath,
+  );
+});
+
+test("a run home the crossing did not sign in pauses before the model is spawned", async () => {
+  const host = await stageHost({ inspection: "reviewed", seeding: "no-credential" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("not signed in through the Auth Crossing"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
+test("a credential the broker did not mint pauses as drift", async () => {
+  const host = await stageHost({
+    inspection: "reviewed",
+    seeding: "foreign-credential",
+  });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
+test("a credential the run would outlast pauses before a request is spent", async () => {
+  const host = await stageHost({ inspection: "reviewed", seeding: "short-lived" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("expires before this run's time bound"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
+test("a probed lifetime shorter than the run's bound pauses before the login", async () => {
+  const host = await stageHost({ credential: "too-short", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("expires before this run's time bound"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/login`, "utf8")).rejects.toThrow();
+});
+
 test("a provider that refused the subscription's usage pauses the task", async () => {
   const host = await stageHost({ inspection: "reviewed", runFailure: "quota" });
 
@@ -217,12 +291,13 @@ interface StagedHost {
 
 async function stageHost(options: {
   readonly authLayer?: "another-broker";
-  readonly credential?: "expired" | "renewed";
+  readonly credential?: "expired" | "renewed" | "too-short";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
   readonly unenforceableProfile?: boolean;
   readonly pinnedDigest?: string;
   readonly runFailure?: "quota";
+  readonly seeding?: "foreign-credential" | "no-credential" | "short-lived";
 }): Promise<StagedHost> {
   const root = await mkdtemp(join(tmpdir(), "grok-contract-"));
   temporaryDirectories.push(root);
@@ -238,13 +313,30 @@ async function stageHost(options: {
           "utf8",
         ),
   );
+  const runRoot = `${root}/run`;
   const pin = { configurationPath, digest: "0".repeat(64), version: "1.0.13" };
-  const inspection = reviewedGrokInspection(pin);
+  // The layer path the runner reports is resolved from `$GROK_HOME`, so the
+  // stub reports one too. A preflight that forgot to set it would describe a
+  // home the model will not run in, and the drift check would not notice.
+  const inspection = reviewedGrokInspection({
+    pin,
+    runRequirementsPath: "$GROK_HOME/requirements.toml",
+  });
+  // `grok login` is the only thing that reaches the auth provider, it writes
+  // the minted credential into the run's own home, and it removes the
+  // requirements layer on its way out. All three observed on grok 1.0.13, and
+  // all three are what the executor is written against.
+  const seededExpiry =
+    options.seeding === "short-lived"
+      ? "Date.now() + 60_000"
+      : "Date.now() + 6 * 3_600_000";
   const script = [
     "#!/bin/sh",
     'if [ "$1" = "--version" ]; then echo "grok 1.0.13"; exit 0; fi',
     'if [ "$1" = "inspect" ]; then',
-    `  cat <<'JSON'`,
+    // Unquoted heredoc: `$GROK_HOME` expands to whatever the caller set, or to
+    // nothing at all when the caller forgot.
+    "  cat <<JSON",
     JSON.stringify(
       options.inspection === "reviewed"
         ? inspection
@@ -253,8 +345,26 @@ async function stageHost(options: {
     "JSON",
     "  exit 0",
     "fi",
+    'if [ "$2" = "login" ]; then',
+    `  printf '%s\\n' "$*" > ${root}/login`,
+    options.seeding === "no-credential"
+      ? '  echo "Signing in with browser instead..." >&2; exit 0'
+      : [
+          `  "${process.execPath}" -e 'const {writeFileSync}=require("node:fs");`,
+          `writeFileSync(process.env.GROK_HOME+"/auth.json",JSON.stringify(`,
+          `{"https://auth.x.ai::scope":{auth_mode:"${
+            options.seeding === "foreign-credential" ? "oidc" : "external"
+          }",`,
+          `expires_at:new Date(${seededExpiry}).toISOString(),key:"t"}}))'`,
+        ].join(""),
+    `  rm -f "$GROK_HOME/requirements.toml"`,
+    "  exit 0",
+    "fi",
     `printf '%s\\n' "$*" > ${root}/invocation`,
     `env >> ${root}/invocation`,
+    // The ephemeral home is removed after the run, so what the layer said at
+    // the moment the model ran is recorded here rather than read afterwards.
+    `cat "$GROK_HOME/requirements.toml" > ${root}/run-layer 2>/dev/null || true`,
     options.runFailure === "quota"
       ? 'echo "error: 429 Too Many Requests: usage limit reached" >&2; exit 1'
       : `cat <<'JSON'\n${JSON.stringify(envelope)}\nJSON`,
@@ -291,7 +401,11 @@ async function stageHost(options: {
     [
       "#!/bin/sh",
       `printf '%s\\n' "$*" > ${root}/probe`,
-      options.credential === "expired" ? "exit 12" : "exit 0",
+      options.credential === "expired" ? "exit 12" : "",
+      // A lifetime, never a credential. The run's own time bound has to fit
+      // inside it: the runner does not renew one part way through.
+      `printf '{"expires_in":${options.credential === "too-short" ? 900 : 21_600}}'`,
+      "exit 0",
       "",
     ].join("\n"),
   );
@@ -303,7 +417,6 @@ async function stageHost(options: {
       options.authLayer === "another-broker" ? `${root}/elsewhere` : tokenBrokerPath
     }"\n`,
   );
-  const runRoot = `${root}/run`;
   const evidenceRoot = `${root}/evidence`;
   await mkdir(runRoot, { recursive: true });
   await mkdir(evidenceRoot, { recursive: true });

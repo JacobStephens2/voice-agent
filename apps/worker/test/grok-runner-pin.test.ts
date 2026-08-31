@@ -12,7 +12,8 @@ const pin = {
   version: "1.0.13",
 } as const;
 
-const reviewed = reviewedGrokInspection(pin);
+const runRequirementsPath = "/var/lib/voice-grok/run/task/home/requirements.toml";
+const reviewed = reviewedGrokInspection({ pin, runRequirementsPath });
 
 test("a runner reporting the reviewed version and digest is not drift", () => {
   expect(
@@ -55,7 +56,7 @@ test("a runner that will not say what it is fails closed", () => {
 });
 
 test("the reviewed effective configuration is not drift", () => {
-  expect(describeGrokConfigurationDrift({ inspection: reviewed, pin })).toBeNull();
+  expect(describeGrokConfigurationDrift({ inspection: reviewed, pin, runRequirementsPath })).toBeNull();
 });
 
 /**
@@ -102,8 +103,8 @@ test("a bare runner with no reviewed requirements layer is drift", () => {
     skills: [],
   };
 
-  expect(describeGrokConfigurationDrift({ inspection: bare, pin })).toBe(
-    "No reviewed requirements layer is in effect at /etc/grok/requirements.toml",
+  expect(describeGrokConfigurationDrift({ inspection: bare, pin, runRequirementsPath })).toBe(
+    "No reviewed system requirements layer is in effect at /etc/grok/requirements.toml",
   );
 });
 
@@ -114,14 +115,59 @@ test("a user configuration layer in effect beside the requirements is drift", ()
         ...reviewed,
         configSources: {
           layers: [
-            { path: pin.configurationPath, role: "requirements" },
+            { path: runRequirementsPath, role: "requirements" },
+            { path: pin.configurationPath, role: "system-requirements" },
             { path: "/var/lib/voice-grok/run/task/.grok/config.toml", role: "user" },
           ],
         },
       },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("Effective configuration includes a layer outside the reviewed requirements");
+});
+
+/**
+ * The system layer binds every identity on the host and the home-local one
+ * carries this run's auth crossing. Both are in force at once on the Agent
+ * Host, so an inspection reporting only the system layer is a run whose
+ * crossing did not survive - which is what `grok login` does to it.
+ */
+test("a run whose own auth crossing is not in effect is drift", () => {
+  expect(
+    describeGrokConfigurationDrift({
+      inspection: {
+        ...reviewed,
+        configSources: {
+          layers: [{ path: pin.configurationPath, role: "system-requirements" }],
+        },
+      },
+      pin,
+      runRequirementsPath,
+    }),
+  ).toBe(
+    "No reviewed auth crossing is in effect at /var/lib/voice-grok/run/task/home/requirements.toml",
+  );
+});
+
+test("a requirements layer belonging to another run is drift", () => {
+  expect(
+    describeGrokConfigurationDrift({
+      inspection: {
+        ...reviewed,
+        configSources: {
+          layers: [
+            { path: "/var/lib/voice-grok/run/other/home/requirements.toml", role: "requirements" },
+            { path: pin.configurationPath, role: "system-requirements" },
+          ],
+        },
+      },
+      pin,
+      runRequirementsPath,
+    }),
+  ).toBe(
+    "No reviewed auth crossing is in effect at /var/lib/voice-grok/run/task/home/requirements.toml",
+  );
 });
 
 test("an empty layer is not a layer in effect", () => {
@@ -132,11 +178,13 @@ test("an empty layer is not a layer in effect", () => {
         configSources: {
           layers: [
             { note: "empty", path: "/x/managed_config.toml", role: "managed" },
-            { path: pin.configurationPath, role: "requirements" },
+            { path: runRequirementsPath, role: "requirements" },
+            { path: pin.configurationPath, role: "system-requirements" },
           ],
         },
       },
       pin,
+      runRequirementsPath,
     }),
   ).toBeNull();
 });
@@ -146,6 +194,7 @@ test("a runner whose policy still permits API key authentication is drift", () =
     describeGrokConfigurationDrift({
       inspection: { ...reviewed, loginPolicy: { apiKeyAuthDisabled: false } },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("API key authentication is not disabled by policy");
 });
@@ -160,6 +209,7 @@ test("a runner reading third-party vendor surfaces is drift", () => {
         },
       },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("Effective configuration reads third-party claude skills");
 });
@@ -169,6 +219,7 @@ test("a project MCP server, plugin, or skill in the effective configuration is d
     describeGrokConfigurationDrift({
       inspection: { ...reviewed, mcpServers: [{ name: "operations-broker" }] },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("Effective configuration declares MCP servers");
 });
@@ -181,6 +232,7 @@ test("an agent the runner did not define is drift", () => {
         agents: [{ name: "repo-agent", source: { type: "project" } }],
       },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("Effective configuration declares agents outside the runner's own");
 });
@@ -190,13 +242,18 @@ test("configuration warnings the runner raised are drift", () => {
     describeGrokConfigurationDrift({
       inspection: { ...reviewed, configWarnings: ["unknown key [update]"] },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("The runner reported configuration warnings");
 });
 
 test("an inspection this contract does not recognize fails closed", () => {
   expect(
-    describeGrokConfigurationDrift({ inspection: { grokVersion: "1.0.13" }, pin }),
+    describeGrokConfigurationDrift({
+      inspection: { grokVersion: "1.0.13" },
+      pin,
+      runRequirementsPath,
+    }),
   ).toBe("The runner's effective configuration does not have the reviewed shape");
 });
 
@@ -205,6 +262,7 @@ test("an inspection reporting a version other than the pin is drift", () => {
     describeGrokConfigurationDrift({
       inspection: { ...reviewed, grokVersion: "1.0.14" },
       pin,
+      runRequirementsPath,
     }),
   ).toBe("The runner reports version 1.0.14 rather than the reviewed 1.0.13");
 });
