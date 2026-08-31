@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
-# Print one Grok access token on standard output, from the identity that owns
-# the refresh credential.
+# Answer for the enrolled subscription login, from the identity that owns it.
+#
+# With no argument it prints one access token payload on standard output, for
+# Grok's external auth provider contract. With `--probe` it prints only the
+# credential's remaining lifetime, so the fixed executor can establish that a
+# Delegation has a credential to run on without ever holding one.
 #
 # Installed at /usr/local/libexec/voice-agent/grok-token-helper, owned by root,
 # mode 0755. Reached only through grok-token-broker under one sudoers rule.
@@ -12,13 +16,43 @@
 # keyed by authorization scope, documented inline in
 # https://x.ai/cli/install.sh. That makes the scope the route: a token under
 # the OIDC scope is the subscription device-OAuth login this MVP requires.
+#
+# Exit codes are the contract with apps/worker/src/grok-credential-lifetime.ts.
+# A status crosses back, never a sentence: the Delegation's ending is authored
+# there, in this system's own words, and this helper's standard error - which
+# names a file path and a scope - is not part of any durable record.
 set -euo pipefail
+
+readonly EXIT_NO_CREDENTIAL=10
+readonly EXIT_NOT_SUBSCRIPTION=11
+readonly EXIT_EXPIRED=12
+readonly EXIT_OTHER_ROUTE=13
+readonly EXIT_WRONG_IDENTITY=14
+
+readonly OIDC_SCOPE="https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
+readonly GROK_BINARY="${VOICE_AGENT_GROK_EXECUTABLE:-/usr/local/bin/grok}"
+readonly GROK_STATE="${GROK_HOME:-$HOME/.grok}"
+readonly AUTH_FILE="$GROK_STATE/auth.json"
+# Grok kills a headless re-mint at about seven seconds. A renewal is one
+# request to the issuer on top of starting the runner, which is well under a
+# second on the Agent Host; this bound leaves room for a slow issuer and still
+# answers before the caller stops listening.
+readonly RENEWAL_TIMEOUT=5
+
+mode=mint
+if [[ $# -gt 0 ]]; then
+  if [[ $# -ne 1 || "$1" != "--probe" ]]; then
+    echo "grok-token-helper takes no argument, or --probe" >&2
+    exit 1
+  fi
+  mode=probe
+fi
 
 if [[ "$(id -un)" != "voice-grok-auth" ]]; then
   # The narrow sudoers rule is the only way here. Refusing anything else keeps
   # the credential's custody with one identity rather than one file mode.
   echo "grok-token-helper runs only as voice-grok-auth" >&2
-  exit 1
+  exit "$EXIT_WRONG_IDENTITY"
 fi
 
 if [[ -n "${GROK_DEPLOYMENT_KEY:-}" || -n "${XAI_API_KEY:-}" ]]; then
@@ -26,32 +60,101 @@ if [[ -n "${GROK_DEPLOYMENT_KEY:-}" || -n "${XAI_API_KEY:-}" ]]; then
   # present here would mean this helper could return a credential the
   # subscription did not issue.
   echo "grok-token-helper refuses a deployment key or API key route" >&2
-  exit 1
+  exit "$EXIT_OTHER_ROUTE"
 fi
-
-readonly AUTH_FILE="${GROK_HOME:-$HOME/.grok}/auth.json"
-readonly OIDC_SCOPE="https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828"
 
 if [[ ! -r $AUTH_FILE ]]; then
   echo "No Grok credential is enrolled for this identity" >&2
-  exit 1
+  exit "$EXIT_NO_CREDENTIAL"
 fi
 
-# Read only the OIDC scope's key. A legacy-scope token is a different login
+# Read only the OIDC scope's entry. A legacy-scope token is a different login
 # route and is refused rather than silently used: the enrollment record claims
 # subscription OAuth, and this is the only place that claim can be true.
-token=$(/usr/bin/python3 -c '
-import json, sys
+#
+# Prints the entry's remaining lifetime in whole seconds, negative once it has
+# expired, followed by the access token on a second line.
+read_entry() {
+  /usr/bin/python3 -c '
+import datetime, json, sys
 scope, path = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as handle:
-    entry = json.load(handle).get(scope)
-key = entry.get("key") if isinstance(entry, dict) else None
-sys.stdout.write(key if isinstance(key, str) and key else "")
-' "$OIDC_SCOPE" "$AUTH_FILE")
+try:
+    with open(path, encoding="utf-8") as handle:
+        entry = json.load(handle).get(scope)
+except (OSError, ValueError):
+    sys.exit(3)
+if not isinstance(entry, dict):
+    sys.exit(3)
+if entry.get("auth_mode") != "oidc":
+    sys.exit(4)
+key = entry.get("key")
+if not isinstance(key, str) or not key:
+    sys.exit(3)
+expires = entry.get("expires_at")
+if not isinstance(expires, str):
+    sys.exit(3)
+stamp = datetime.datetime.fromisoformat(expires.replace("Z", "+00:00"))
+remaining = stamp - datetime.datetime.now(datetime.timezone.utc)
+sys.stdout.write("%d\n%s" % (int(remaining.total_seconds()), key))
+' "$OIDC_SCOPE" "$AUTH_FILE"
+}
 
-if [[ -z $token ]]; then
-  echo "No subscription OAuth token is enrolled for this identity" >&2
-  exit 1
+# Have the runner renew its own login.
+#
+# The entry carries a refresh token, an issuer, and a client id, and grok 1.0.13
+# spends them itself: an authenticated command over an expired OIDC entry
+# performs the refresh and rewrites the entry six hours out. Observed against
+# the installed binary. `models` is the cheapest such command - it asks the
+# account what it may select and spends no model tokens.
+#
+# It renews only what has actually expired; a valid entry is left alone. So
+# this is called when the entry has expired and not before, and the output is
+# discarded because the answer is on disk afterwards, not on the terminal.
+#
+# A refresh the issuer rejects deletes the entry rather than leaving it stale.
+# That is why nothing here retries and why the caller's next read finding no
+# credential is the honest ending: the login is gone and only an attended
+# device authorization brings it back.
+renew() {
+  env -u XAI_API_KEY -u GROK_DEPLOYMENT_KEY \
+    HOME="$HOME" GROK_HOME="$GROK_STATE" LANG=C.UTF-8 PATH=/usr/bin:/bin \
+    /usr/bin/timeout "$RENEWAL_TIMEOUT" "$GROK_BINARY" --no-auto-update models \
+    >/dev/null 2>&1 || true
+}
+
+entry=$(read_entry) || case $? in
+  3) echo "No subscription OAuth token is enrolled for this identity" >&2
+     exit "$EXIT_NO_CREDENTIAL" ;;
+  4) echo "The enrolled credential is not a subscription OAuth login" >&2
+     exit "$EXIT_NOT_SUBSCRIPTION" ;;
+  *) echo "The enrolled credential could not be read" >&2
+     exit "$EXIT_NO_CREDENTIAL" ;;
+esac
+remaining=${entry%%$'\n'*}
+
+if (( remaining <= 0 )); then
+  renew
+  entry=$(read_entry) || {
+    echo "The enrolled subscription login expired and renewing it left none" >&2
+    exit "$EXIT_EXPIRED"
+  }
+  remaining=${entry%%$'\n'*}
+  if (( remaining <= 0 )); then
+    echo "The enrolled subscription login has expired; sign in again" >&2
+    exit "$EXIT_EXPIRED"
+  fi
 fi
 
-printf '%s' "$token"
+if [[ $mode == probe ]]; then
+  # A lifetime, not a credential. The executor reads the exit code; the number
+  # is here so an operator running the probe by hand can see what it found.
+  printf '{"expires_in":%d}' "$remaining"
+  exit 0
+fi
+
+# The JSON form of Grok's provider contract rather than a bare token, so the
+# runner re-mints before the token it is holding expires instead of failing a
+# request with it. Only the access token and its lifetime are emitted: the
+# refresh token stays with this identity, and a run that never sees it cannot
+# spend the subscription after its own Delegation ends.
+printf '{"access_token":"%s","expires_in":%d}' "${entry#*$'\n'}" "$remaining"

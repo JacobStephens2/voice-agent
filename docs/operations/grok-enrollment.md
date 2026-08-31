@@ -19,7 +19,7 @@ release, and Grok performs no work until the enrollment record is accepted:
 pinning a new runner build discards the previous build's acceptance, so an
 upgrade repeats this page.
 
-The governing decisions are ADR-0048 and ADR-0068. The interfaces used here are
+The governing decisions are ADR-0048, ADR-0068, and ADR-0069. The interfaces used here are
 established in `docs/research/grok-subagent-mvp.md` and corrected against the
 released binary in
 [`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
@@ -59,6 +59,17 @@ installed here at all: a custom profile must live beside the runner's home, and
 each run's home is created fresh, so the executor stages
 `ops/grok/sandbox.toml` into it from the Release.
 
+Neither is the auth crossing. `/etc/grok/requirements.toml` carries no `[auth]`
+table on purpose: it binds every identity on this host, and an auth provider
+configured for all of them would also bind `voice-grok-auth`, whose own `grok`
+is the only thing that can renew the six-hour login. The runner prefers a
+provider command over renewing an expired cached login, so a host-wide
+`auth_provider_command` sends the custody identity to the broker that reads the
+credential instead of to the issuer that renews it. The executor stages
+`ops/grok/run-requirements.toml` into each run's own home instead, as a
+`requirements` layer so that a Delegation root's `.grok/config.toml` still
+cannot override it. ADR-0069 records this.
+
 The token helper, the token broker, and `voice-agent-grok-contract@.service`
 are not installed by that block. They are reviewed root authority, listed in
 `ops/release/deployment-authority-manifest.sh`, and reach the host only through
@@ -76,14 +87,50 @@ boundary the invoking shell happened to have, which is the boundary this unit
 exists to replace.
 
 The runner invokes `grok-token-broker`, which crosses to `voice-grok-auth`
-through the one sudoers rule; `grok-token-helper` refuses to run as anyone
-else. Confirm the crossing works and that nothing else does:
+through the sudoers rules; `grok-token-helper` refuses to run as anyone else.
+The broker answers in two ways: with no argument it prints one access token
+payload for the runner, and with `--probe` it prints only the credential's
+remaining lifetime, which is what the executor asks for before it spawns a
+model. Confirm both crossings work and that nothing else does:
 
 ```bash
+sudo -u voice-grok /usr/local/libexec/voice-agent/grok-token-broker --probe   # {"expires_in":N}
 sudo -u voice-grok /usr/local/libexec/voice-agent/grok-token-broker | wc -c   # non-zero
 sudo -u voice-grok /usr/local/libexec/voice-agent/grok-token-helper           # must fail
 sysctl kernel.yama.ptrace_scope                                              # must be 1 or 2
 ```
+
+## The credential's six-hour lifetime
+
+The enrolled entry carries `expires_at` about six hours after `create_time`,
+beside a `refresh_token`. Nothing on a schedule renews it. The renewal happens
+where the credential is needed: the executor asks the broker to probe before
+every Delegation, and the helper on the far side renews an expired login by
+running the pinned runner's own `grok --no-auto-update models` under the
+custody identity, which spends the refresh token itself and rewrites the entry
+six hours out. Observed against grok 1.0.13; see the addendum in
+[`docs/research/grok-build-install-and-auth.md`](../research/grok-build-install-and-auth.md).
+
+The probe renews what has already expired, not what is about to: the runner
+renews on expiry rather than proactively. A Delegation can therefore begin with
+minutes left on the credential and reach expiry while it runs, and the same
+crossing carries it through - the runner reaches for its auth provider when the
+credential it holds has expired, and the helper renews on that invocation too.
+The token carries its lifetime with it so that re-mint comes before a request
+is spent on an expired token.
+
+**A refusal by the issuer deletes the login rather than leaving it stale.** The
+runner clears `auth.json` when a refresh fails, so a refresh token the account
+has revoked, expired, or invalidated leaves the custody identity with no
+credential at all. That ending is a pause, not a failure: the Delegation stops
+with `provider-authentication` and a detail naming expiry, its Delegation root
+and completed commits untouched, and it resumes after an attended
+
+```bash
+sudo -u voice-grok-auth -H /usr/local/bin/grok login --device-auth
+```
+
+Nothing retries around this, and nothing falls back to another route.
 
 ## Install the runner
 
@@ -174,6 +221,7 @@ observed. Confirm the executor identity holds no credential of its own:
 ```bash
 sudo -u voice-grok test ! -e /var/lib/voice-grok/.grok/auth.json && echo "no executor credential"
 sudo -u voice-grok env | grep -c XAI_API_KEY   # must print 0
+grep -c '^\[auth\]' /etc/grok/requirements.toml   # must print 0
 ```
 
 ## 3. Run the contract Delegation

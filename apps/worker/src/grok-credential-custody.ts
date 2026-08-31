@@ -88,3 +88,37 @@ export function describeSandboxProfileDrift(
   }
   return null;
 }
+
+/**
+ * Say whether the auth crossing staged for this run is the reviewed one.
+ *
+ * The crossing is named in the run's own Grok home rather than in the host's
+ * requirements layer, because a host-wide auth provider would also bind the
+ * custody identity - and the runner prefers a provider command over renewing
+ * an expired cached login, so the one identity that can renew the credential
+ * would be sent to the broker that reads it instead. See ADR-0069.
+ *
+ * The layer this stages outranks a Delegation root's own `.grok/config.toml`,
+ * which is why it must carry the crossing and nothing else: any other setting
+ * here would be policy that reached the runner without being reviewed as
+ * policy.
+ */
+export function describeAuthProviderDrift(input: {
+  readonly brokerPath: string;
+  readonly layerText: string;
+}): string | null {
+  const lines = input.layerText
+    .split("\n")
+    .map((line) => line.replace(/#.*$/u, "").trim())
+    .filter((line) => line.length > 0);
+  if (lines[0] !== "[auth]") {
+    return "The staged auth layer does not open with the auth table";
+  }
+  if (lines[1] !== `auth_provider_command = "${input.brokerPath}"`) {
+    return "The staged auth layer does not name the reviewed token broker";
+  }
+  if (lines.length !== 2) {
+    return "The staged auth layer declares settings outside the token crossing";
+  }
+  return null;
+}

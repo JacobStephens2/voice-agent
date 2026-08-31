@@ -371,17 +371,29 @@ if grok_as_executor /usr/bin/env | grep -q XAI_API_KEY; then
   warn "An xAI API key is present for the executor identity. Remove it: this MVP runs on the subscription alone."
   exit 1
 fi
-# The runner reaches the credential only through the broker. Prove the crossing
-# works and that the helper behind it refuses everyone else.
+# The runner reaches the credential only through the broker. Prove both
+# crossings work and that the helper behind them refuses everyone else.
+if ! sudo -u voice-grok "$TOKEN_BROKER" --probe >/dev/null; then
+  warn "The token broker could not report a credential lifetime. Read its standard error as voice-grok, clear the cause, and re-run this wizard."
+  exit 1
+fi
 if ! sudo -u voice-grok "$TOKEN_BROKER" >/dev/null; then
-  warn "The token broker returned nothing. Confirm the subcommand in $TOKEN_HELPER matches this runner build's own token interface, correct it in ops/grok/grok-token-helper, and promote that change before continuing."
+  warn "The token broker returned nothing. Read its standard error as voice-grok: the helper behind it names which of the enrolled credential's properties it refused."
   exit 1
 fi
 if sudo -u voice-grok "$TOKEN_HELPER" >/dev/null 2>&1; then
   warn "The token helper ran as voice-grok. The custody crossing is open; do not continue."
   exit 1
 fi
-printf '  %s✓%s no executor credential, no API key, broker crossing holds\n' "$GREEN" "$RESET"
+# A host-wide auth provider would bind voice-grok-auth too, and the runner
+# prefers a provider command over renewing an expired cached login - so the one
+# identity that can renew this credential would be sent to the broker that
+# reads it. The crossing belongs in each run's own home. See ADR-0069.
+if sudo grep -q '^\[auth\]' "$GROK_REQUIREMENTS"; then
+  warn "$GROK_REQUIREMENTS declares [auth]. That layer binds voice-grok-auth as well and would preempt its own credential renewal. Install the reviewed ops/grok/requirements.toml and re-run."
+  exit 1
+fi
+printf '  %s✓%s no executor credential, no API key, both broker crossings hold\n' "$GREEN" "$RESET"
 RETENTION=false
 confirm "Is provider code-data retention disabled for this account?" && RETENTION=true
 enrollment record-enrollment --record "$RECORD" \

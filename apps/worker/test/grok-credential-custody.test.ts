@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertOutsideCredentialCustody,
   credentialCustodyBoundaryPaths,
+  describeAuthProviderDrift,
   describeSandboxProfileDrift,
 } from "../src/grok-credential-custody.ts";
 
@@ -77,4 +78,63 @@ test("a profile declaring deny rules the runner cannot enforce is refused", () =
   ).toBe(
     "The reviewed sandbox profile declares deny rules the runner cannot enforce on this host",
   );
+});
+
+const broker = "/usr/local/libexec/voice-agent/grok-token-broker";
+
+test("the auth layer shipped with this repository names the reviewed broker", async () => {
+  const layer = await readFile(
+    fileURLToPath(new URL("../../../ops/grok/run-requirements.toml", import.meta.url)),
+    "utf8",
+  );
+
+  expect(describeAuthProviderDrift({ brokerPath: broker, layerText: layer })).toBeNull();
+});
+
+test("an auth layer naming another provider command is refused", () => {
+  expect(
+    describeAuthProviderDrift({
+      brokerPath: broker,
+      layerText: '[auth]\nauth_provider_command = "/tmp/mint"\n',
+    }),
+  ).toBe("The staged auth layer does not name the reviewed token broker");
+});
+
+test("an auth layer that names no provider command at all is refused", () => {
+  expect(
+    describeAuthProviderDrift({ brokerPath: broker, layerText: "[cli]\nauto_update = false\n" }),
+  ).toBe("The staged auth layer does not open with the auth table");
+});
+
+/**
+ * A command outside the table it looks like it belongs to is read by the
+ * runner as a top-level key it does not have, so the crossing would be absent
+ * while appearing present.
+ */
+test("a provider command outside the auth table is refused as an absent table", () => {
+  expect(
+    describeAuthProviderDrift({
+      brokerPath: broker,
+      layerText: `auth_provider_command = "${broker}"\n`,
+    }),
+  ).toBe("The staged auth layer does not open with the auth table");
+});
+
+/**
+ * This layer outranks a Delegation root's own `.grok/config.toml`, so anything
+ * it carries beyond the crossing would be policy nothing else reviewed.
+ */
+test("an auth layer carrying anything beyond the crossing is refused", () => {
+  expect(
+    describeAuthProviderDrift({
+      brokerPath: broker,
+      layerText: `[auth]\nauth_provider_command = "${broker}"\n\n[cli]\nauto_update = true\n`,
+    }),
+  ).toBe("The staged auth layer declares settings outside the token crossing");
+  expect(
+    describeAuthProviderDrift({
+      brokerPath: broker,
+      layerText: `[auth]\nauth_provider_command = "${broker}"\nauth_token_ttl = 60\n`,
+    }),
+  ).toBe("The staged auth layer declares settings outside the token crossing");
 });

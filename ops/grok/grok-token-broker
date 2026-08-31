@@ -1,17 +1,30 @@
 #!/usr/bin/env bash
 #
 # The auth provider Grok Build invokes: one short-lived access token, on
-# standard output, from the identity that owns the refresh credential.
+# standard output, from the identity that owns the refresh credential. With
+# `--probe` it asks the same identity whether there is a credential to run on
+# and returns only a status, which is how the fixed executor establishes that a
+# Delegation has one before it spawns a model.
 #
 # Installed at /usr/local/libexec/voice-agent/grok-token-broker, owned by root,
 # mode 0755. The runner runs as voice-grok and cannot read the credential
-# itself; this is the only crossing, and the sudoers rule beside it permits
-# exactly this one command with no arguments.
+# itself; this is the only crossing, and the sudoers rules beside it permit
+# exactly these two commands and no other argument.
 #
 # The model's sandbox denies /usr/local/libexec/voice-agent, so a
 # model-selected command cannot invoke this broker even though the runner it
 # runs under just did.
 set -euo pipefail
 
-exec /usr/bin/sudo -n -u voice-grok-auth \
-  /usr/local/libexec/voice-agent/grok-token-helper
+readonly HELPER=/usr/local/libexec/voice-agent/grok-token-helper
+
+# -H so the helper resolves the custody identity's own Grok home rather than
+# whichever HOME the caller happened to be running under.
+if [[ $# -eq 0 ]]; then
+  exec /usr/bin/sudo -n -H -u voice-grok-auth "$HELPER"
+fi
+if [[ $# -eq 1 && "$1" == "--probe" ]]; then
+  exec /usr/bin/sudo -n -H -u voice-grok-auth "$HELPER" --probe
+fi
+echo "grok-token-broker takes no argument, or --probe" >&2
+exit 1

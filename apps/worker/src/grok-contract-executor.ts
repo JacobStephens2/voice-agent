@@ -26,7 +26,11 @@ import {
   describeGrokConfigurationDrift,
   describeGrokRunnerDrift,
 } from "./grok-runner-pin.ts";
-import { describeSandboxProfileDrift } from "./grok-credential-custody.ts";
+import {
+  describeAuthProviderDrift,
+  describeSandboxProfileDrift,
+} from "./grok-credential-custody.ts";
+import { describeCredentialRefusal } from "./grok-credential-lifetime.ts";
 import { describeGrokRunOutcome } from "./grok-run-outcome.ts";
 import { assertNonDestructiveGitArguments } from "./worktree-safety.ts";
 
@@ -38,15 +42,24 @@ const runRoot = process.env.VOICE_AGENT_GROK_RUN_ROOT ?? "/var/lib/voice-grok/ru
 const reviewedSandboxProfilePath =
   process.env.VOICE_AGENT_GROK_SANDBOX_PROFILE_PATH ??
   fileURLToPath(new URL("../../../ops/grok/sandbox.toml", import.meta.url));
+const reviewedAuthLayerPath =
+  process.env.VOICE_AGENT_GROK_AUTH_LAYER_PATH ??
+  fileURLToPath(new URL("../../../ops/grok/run-requirements.toml", import.meta.url));
 const enrollmentRecordPath =
   process.env.VOICE_AGENT_GROK_ENROLLMENT_PATH ??
   "/var/lib/voice-agent-evidence/grok-enrollment.json";
 const evidenceRoot =
   process.env.VOICE_AGENT_GROK_EVIDENCE_ROOT ?? "/var/lib/voice-agent-evidence";
+const tokenBrokerPath =
+  process.env.VOICE_AGENT_GROK_TOKEN_BROKER ??
+  "/usr/local/libexec/voice-agent/grok-token-broker";
 const maximumInputBytes = 1_000_000;
 const maximumRunOutputBytes = 1_000_000;
 const maximumPreflightOutputBytes = 200_000;
 const preflightTimeoutMilliseconds = 60_000;
+// The probe renews an expired login, which costs one request to the issuer on
+// top of starting the runner. Generous against a slow issuer.
+const credentialProbeTimeoutMilliseconds = 30_000;
 const runTimeoutMilliseconds = 30 * 60 * 1_000;
 
 let stopRequested = false;
@@ -103,13 +116,15 @@ async function execute(): Promise<GrokContractRunOutcome> {
   if (unenrolled !== null) return unenrolled;
   const drift = await describePreflightDrift();
   if (drift !== null) return drift;
+  const refusedCredential = await probeCredentialBeforeSpawn();
+  if (refusedCredential !== null) return refusedCredential;
   if (stopRequested) return stopped();
   const invocation = buildGrokInvocation({
     delegationRoot,
     ephemeralHome,
     maxTurns: brief.maxTurns,
     briefFilePath: `${runRoot}/${brief.delegationId}/brief.md`,
-    resultSchemaPath: `${runRoot}/${brief.delegationId}/result.schema.json`,
+    resultSchema: JSON.stringify(z.toJSONSchema(grokModelReportSchema)),
     sourceEnvironment: process.env,
   });
   const run = await runBoundedCommand(grokExecutable, invocation.arguments, {
@@ -223,7 +238,9 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
       ? (describeGrokConfigurationDrift({
           inspection: parseInspection(inspection),
           pin,
-        }) ?? (await describeStagedSandboxDrift()))
+        }) ??
+        (await describeStagedSandboxDrift()) ??
+        (await describeStagedAuthLayerDrift()))
       : "The runner did not report its effective configuration";
   if (configurationDrift !== null) {
     return {
@@ -234,6 +251,34 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
     };
   }
   return null;
+}
+
+/**
+ * Ask the custody identity for a credential before the model is spawned.
+ *
+ * The probe is also the renewal: the helper on the far side refreshes an
+ * expired login through the pinned runner, and answers with a status rather
+ * than a token, so nothing this executor holds is a credential. A login that
+ * cannot be renewed ends the Delegation here, in a pause naming expiry, rather
+ * than in a provider error partway through the work. ADR-0069 has the why.
+ */
+async function probeCredentialBeforeSpawn(): Promise<GrokContractRunOutcome | null> {
+  let probe: BoundedRunResult;
+  try {
+    probe = await runBoundedCommand(tokenBrokerPath, ["--probe"], {
+      environment: { HOME: ephemeralHome, LANG: "C.UTF-8", PATH: "/usr/bin:/bin" },
+      maximumOutputBytes: maximumPreflightOutputBytes,
+      timeoutMilliseconds: credentialProbeTimeoutMilliseconds,
+    });
+  } catch {
+    // A broker that cannot be executed is a crossing that is not there. That
+    // is a pause an operator clears, not a run made without a credential.
+    return describeCredentialRefusal({ exitCode: null, timedOut: false });
+  }
+  return describeCredentialRefusal({
+    exitCode: probe.exitCode,
+    timedOut: probe.timedOut,
+  });
 }
 
 /**
@@ -251,6 +296,24 @@ async function describeStagedSandboxDrift(): Promise<string | null> {
     );
   } catch {
     return "The reviewed sandbox profile could not be staged for this run";
+  }
+}
+
+/**
+ * Check the auth crossing this run just staged into its ephemeral home.
+ *
+ * Read back for the same reason the sandbox profile is: the preflight
+ * inspection reports the host's own configuration layers, and this one belongs
+ * to a home that exists only for this run.
+ */
+async function describeStagedAuthLayerDrift(): Promise<string | null> {
+  try {
+    return describeAuthProviderDrift({
+      brokerPath: tokenBrokerPath,
+      layerText: await readFile(`${ephemeralHome}/requirements.toml`, "utf8"),
+    });
+  } catch {
+    return "The reviewed auth crossing could not be staged for this run";
   }
 }
 
@@ -284,9 +347,12 @@ async function stageRun(): Promise<void> {
     await readFile(reviewedSandboxProfilePath, "utf8"),
     { mode: 0o600 },
   );
+  // The auth crossing travels with the run for the same reason, and as a
+  // requirements layer rather than a user one: a Delegation root's own
+  // `.grok/config.toml` outranks a user layer and cannot outrank this.
   await writeFile(
-    `${runRoot}/${brief.delegationId}/result.schema.json`,
-    JSON.stringify(z.toJSONSchema(grokModelReportSchema)),
+    `${ephemeralHome}/requirements.toml`,
+    await readFile(reviewedAuthLayerPath, "utf8"),
     { mode: 0o600 },
   );
   await writeFile(`${runRoot}/${brief.delegationId}/brief.md`, buildBrief(brief), {

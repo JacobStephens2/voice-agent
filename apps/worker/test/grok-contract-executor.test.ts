@@ -38,17 +38,17 @@ const brief: GrokContractDelegationBrief = {
 };
 
 const envelope = {
-  auth_source: "oauth",
-  model: "grok-4.6",
-  request_id: "req-1",
-  result: {
+  modelUsage: { "grok-4.6-build": { modelCalls: 1 } },
+  requestId: "req-1",
+  sessionId: "ses-1",
+  stopReason: "end_turn",
+  structuredOutput: {
     risks: [],
     status: "completed",
     summary: "Wrote the requested line.",
   },
-  session_id: "ses-1",
-  stop_reason: "end_turn",
-  usage: { incomplete: false, input_tokens: 10, output_tokens: 4 },
+  total_cost_usd: 0.004,
+  usage: { input_tokens: 10, output_tokens: 4 },
 };
 
 afterEach(async () => {
@@ -67,9 +67,9 @@ test("an accepted run records the provider's evidence and removes its Grok home"
   expect(record.outcome).toMatchObject({
     evidence: {
       authenticationRoute: "subscription-oauth",
-      model: { providerReported: "grok-4.6", selector: "grok-build" },
+      model: { providerReported: "grok-4.6-build", selector: "grok-4.6" },
       runner: { version: "1.0.13" },
-      usage: { cost: "unknown", incomplete: false },
+      usage: { cost: { amount: 0.004, currency: "USD" }, incomplete: false },
     },
     report: { status: "completed" },
     state: "completed",
@@ -162,6 +162,37 @@ test("a sandbox profile the runner could not enforce pauses", async () => {
   });
 });
 
+test("every run asks the custody identity for a credential before it spawns a model", async () => {
+  const host = await stageHost({ credential: "renewed", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({ state: "completed" });
+  // Only the crossing is exercised here: the renewal behind it belongs to the
+  // helper on the far side, which reaches the pinned runner, not this process.
+  await expect(readFile(`${host.root}/probe`, "utf8")).resolves.toContain("--probe");
+});
+
+test("a login the runner could not renew pauses before the model is spawned", async () => {
+  const host = await stageHost({ credential: "expired", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("expired"),
+    reason: "provider-authentication",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
+test("an auth crossing that is not the reviewed one pauses before any request", async () => {
+  const host = await stageHost({ authLayer: "another-broker", inspection: "reviewed" });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("does not name the reviewed token broker"),
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
 test("a provider that refused the subscription's usage pauses the task", async () => {
   const host = await stageHost({ inspection: "reviewed", runFailure: "quota" });
 
@@ -172,7 +203,9 @@ test("a provider that refused the subscription's usage pauses the task", async (
 });
 
 interface StagedHost {
+  readonly authLayerPath: string;
   readonly enrollmentPath: string;
+  readonly tokenBrokerPath: string;
   readonly evidenceRoot: string;
   readonly grokExecutable: string;
   readonly pin: GrokRunnerPin;
@@ -183,6 +216,8 @@ interface StagedHost {
 }
 
 async function stageHost(options: {
+  readonly authLayer?: "another-broker";
+  readonly credential?: "expired" | "renewed";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
   readonly unenforceableProfile?: boolean;
@@ -248,11 +283,32 @@ async function stageHost(options: {
       ),
     );
   }
+  // The broker answers with a status, never a token: this stands in for the
+  // crossing to the custody identity, which the executor cannot make in a test.
+  const tokenBrokerPath = `${root}/grok-token-broker`;
+  await writeFile(
+    tokenBrokerPath,
+    [
+      "#!/bin/sh",
+      `printf '%s\\n' "$*" > ${root}/probe`,
+      options.credential === "expired" ? "exit 12" : "exit 0",
+      "",
+    ].join("\n"),
+  );
+  await chmod(tokenBrokerPath, 0o755);
+  const authLayerPath = `${root}/run-requirements.toml`;
+  await writeFile(
+    authLayerPath,
+    `[auth]\nauth_provider_command = "${
+      options.authLayer === "another-broker" ? `${root}/elsewhere` : tokenBrokerPath
+    }"\n`,
+  );
   const runRoot = `${root}/run`;
   const evidenceRoot = `${root}/evidence`;
   await mkdir(runRoot, { recursive: true });
   await mkdir(evidenceRoot, { recursive: true });
   return {
+    authLayerPath,
     enrollmentPath,
     evidenceRoot,
     grokExecutable,
@@ -261,6 +317,7 @@ async function stageHost(options: {
     root,
     runRoot,
     sandboxProfilePath,
+    tokenBrokerPath,
   };
 }
 
@@ -277,7 +334,9 @@ function runExecutor(host: StagedHost, override: Partial<GrokContractDelegationB
         VOICE_AGENT_GROK_EXECUTABLE: host.grokExecutable,
         VOICE_AGENT_GROK_PIN_PATH: host.pinPath,
         VOICE_AGENT_GROK_RUN_ROOT: host.runRoot,
+        VOICE_AGENT_GROK_AUTH_LAYER_PATH: host.authLayerPath,
         VOICE_AGENT_GROK_SANDBOX_PROFILE_PATH: host.sandboxProfilePath,
+        VOICE_AGENT_GROK_TOKEN_BROKER: host.tokenBrokerPath,
       },
       input: JSON.stringify({ ...brief, ...override }),
     },

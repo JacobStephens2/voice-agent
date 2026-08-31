@@ -72,6 +72,10 @@ _Avoid_: Secret injection, manifest, shared credential
 The designated host stores whose SSH, provider, browser-session, passkey, TLS, deployment, and application credentials may be used only through typed brokers and are never directly readable by a Subagent.
 _Avoid_: Repository secret filtering, hidden prompt, unrestricted root
 
+**Auth Crossing**:
+The one command through which a Subagent's runner obtains a short-lived provider access token from the identity that owns the refresh credential, and asks whether there is a credential to obtain one from; it discloses a token and a lifetime, never the refresh credential behind them.
+_Avoid_: Token helper, credential injection, shared login
+
 **Code Inquiry**:
 A narrow, read-only search of a registered codebase performed directly by the Voice Agent to answer an immediate conversational question using bounded code excerpts; broad analysis and all code changes are delegated to a Subagent.
 _Avoid_: Delegation, code edit, repository dump

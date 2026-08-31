@@ -16,14 +16,18 @@
 auto_update = false
 
 [models]
-# The logical selector xAI recommends for coding and agent sessions. The model
-# actually behind it is recorded from every run rather than assumed.
-default = "grok-build"
+# `grok-build` is documented as the recommended alias but the subscription
+# rejects it as an unknown model id; `grok models` offers grok-4.6 and
+# grok-4.5. The model actually served is recorded from every run: a request for
+# grok-4.6 is answered by grok-4.6-build.
+default = "grok-4.6"
 
-[auth]
-# The refresh credential lives with the voice-grok-auth identity. This broker
-# is the only crossing to it, and the model's sandbox cannot invoke it.
-auth_provider_command = "/usr/local/libexec/voice-agent/grok-token-broker"
+# There is deliberately no [auth] table here. This layer binds every identity
+# on the host, and an auth provider configured for all of them would preempt
+# the custody identity's own credential refresh - the runner prefers a provider
+# command over renewing an expired cached login. The crossing to the broker is
+# staged into each run's own Grok home instead; see ops/grok/run-requirements.toml
+# and ADR-0069.
 
 [shell_environment_policy]
 # The default inherits the whole environment, including anything matching
