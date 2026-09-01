@@ -37,6 +37,12 @@ state version, Administrative Execution Manifest fingerprint, active immutable
 Release, API process instance, and Linux boot identity from its own composition
 boundary. The request can supply none of those values.
 
+The API captures its real entrypoint and Restart Witness module paths when the
+process is composed. Every observation requires those captured root-owned,
+non-writable files to belong to the Release that is active at observation time.
+An API process left running across Promotion therefore fails closed instead of
+following the moved `current` symlink and claiming the new Release's identity.
+
 After the baseline, the wizard restarts `voice-agent-api.service` and
 `voice-agent-worker.service`. The service-restart observation passes only for a
 new API process instance on the same Linux boot. The wizard then invokes a real

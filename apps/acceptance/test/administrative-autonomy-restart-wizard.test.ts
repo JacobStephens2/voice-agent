@@ -43,6 +43,12 @@ test("the witness is post-Promotion, resumable, and records no raw credential or
   expect(wizard).toContain(
     'voice_agent_release_tree_is_immutable "$ACTIVE_RELEASE"',
   );
+  expect(wizard).toContain(
+    'sudo find "$ACTIVE_RELEASE" ! -uid 0 -print -quit',
+  );
+  expect(wizard).toContain(
+    'sudo find "$ACTIVE_RELEASE" ! -type l -perm /222 -print -quit',
+  );
   expect(wizard).toContain('"$ACTIVE_RELEASE/.voice-agent-release"');
   expect(wizard).toContain("Run this only post-Promotion");
   expect(wizard).toContain("The server-recorded campaign resumes");

@@ -202,6 +202,15 @@ if [[ ! -f "$ACTIVE_RELEASE/.voice-agent-release" ]] || \
   warn "Run this only post-Promotion from the exact active immutable Agent Host Release."
   exit 1
 fi
+if [[ -n $(sudo find "$ACTIVE_RELEASE" ! -uid 0 -print -quit) ]] || \
+  [[ -n $(sudo find "$ACTIVE_RELEASE" ! -type l -perm /222 -print -quit) ]]; then
+  warn "The active Agent Host Release tree is not root-owned and immutable."
+  exit 1
+fi
+if [[ -L "$ACTIVE_RELEASE/ops/release/release-immutability.sh" ]]; then
+  warn "The active Release immutability verifier is not a regular Release file."
+  exit 1
+fi
 source "$ACTIVE_RELEASE/ops/release/release-immutability.sh"
 if ! voice_agent_release_tree_is_immutable "$ACTIVE_RELEASE"; then
   warn "The active Agent Host Release tree is not immutable."

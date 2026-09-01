@@ -1,4 +1,6 @@
-import { readFile, realpath } from "node:fs/promises";
+import { realpathSync, statSync } from "node:fs";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import {
   agentHostBootIdentitySchema,
@@ -13,6 +15,7 @@ import {
   type AdministrativeRestartWitnessHostObservation,
   type AdministrativeRestartWitnessObservationIdentity,
   type AdministrativeRestartWitnessObservationResponse,
+  type AdministrativeRestartWitnessReleaseCommit,
 } from "@voice-agent/contracts";
 import type { AdministrativeRestartWitnessStore } from "@voice-agent/durable-store";
 
@@ -24,6 +27,44 @@ export interface AdministrativeRestartWitnessRuntime {
   observe(
     input: AdministrativeRestartWitnessObservationIdentity,
   ): Promise<AdministrativeRestartWitnessObservationResponse>;
+}
+
+export interface AdministrativeRestartWitnessReleaseProvenance {
+  readonly activeReleaseMode: number;
+  readonly activeReleaseOwnerUid: number;
+  readonly activeReleasePath: string;
+  readonly apiEntrypointMode: number;
+  readonly apiEntrypointOwnerUid: number;
+  readonly apiEntrypointPath: string;
+  readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+  readonly witnessModuleMode: number;
+  readonly witnessModuleOwnerUid: number;
+  readonly witnessModulePath: string;
+}
+
+/**
+ * Proves that the live API and this witness boundary are the root-owned,
+ * immutable source in the exact Release named by the active marker.
+ */
+export function administrativeRestartWitnessReleaseProvenanceIsExact(
+  input: AdministrativeRestartWitnessReleaseProvenance,
+): boolean {
+  const releasePath = `/opt/voice-agent/releases/${input.releaseCommit}`;
+  return (
+    input.activeReleasePath === releasePath &&
+    input.apiEntrypointPath === `${releasePath}/apps/api/src/server.ts` &&
+    input.witnessModulePath ===
+      `${releasePath}/packages/runtime/src/administrative-restart-witness.ts` &&
+    input.activeReleaseOwnerUid === 0 &&
+    input.apiEntrypointOwnerUid === 0 &&
+    input.witnessModuleOwnerUid === 0 &&
+    (input.activeReleaseMode & 0o170000) === 0o040000 &&
+    (input.apiEntrypointMode & 0o170000) === 0o100000 &&
+    (input.witnessModuleMode & 0o170000) === 0o100000 &&
+    modeIsImmutable(input.activeReleaseMode) &&
+    modeIsImmutable(input.apiEntrypointMode) &&
+    modeIsImmutable(input.witnessModuleMode)
+  );
 }
 
 /**
@@ -81,6 +122,17 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
     administrativeRestartWitnessServiceInstanceIdSchema.parse(
       input.serviceInstanceId,
     );
+  const apiEntrypoint = process.argv[1];
+  if (apiEntrypoint === undefined) {
+    throw new Error("The running Voice Agent API entrypoint is unavailable");
+  }
+  // Capture the executing modules at process composition. Resolving argv after
+  // Promotion would follow /opt/voice-agent/current to the new Release even
+  // though this process still has the old module bytes loaded.
+  const apiEntrypointPath = realpathSync(apiEntrypoint);
+  const witnessModulePath = realpathSync(fileURLToPath(import.meta.url));
+  const apiEntrypointMetadata = statSync(apiEntrypointPath);
+  const witnessModuleMetadata = statSync(witnessModulePath);
   return {
     async read() {
       const [bootIdentity, marker, activeReleasePath] = await Promise.all([
@@ -91,8 +143,20 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
       const releaseCommit = administrativeRestartWitnessReleaseCommitSchema.parse(
         marker.trim(),
       );
+      const activeReleaseMetadata = await stat(activeReleasePath);
       if (
-        activeReleasePath !== `/opt/voice-agent/releases/${releaseCommit}`
+        !administrativeRestartWitnessReleaseProvenanceIsExact({
+          activeReleaseMode: activeReleaseMetadata.mode,
+          activeReleaseOwnerUid: activeReleaseMetadata.uid,
+          activeReleasePath,
+          apiEntrypointMode: apiEntrypointMetadata.mode,
+          apiEntrypointOwnerUid: apiEntrypointMetadata.uid,
+          apiEntrypointPath,
+          releaseCommit,
+          witnessModuleMode: witnessModuleMetadata.mode,
+          witnessModuleOwnerUid: witnessModuleMetadata.uid,
+          witnessModulePath,
+        })
       ) {
         throw new Error("The active immutable Voice Agent Release is invalid");
       }
@@ -103,4 +167,8 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
       });
     },
   };
+}
+
+function modeIsImmutable(mode: number): boolean {
+  return (mode & 0o222) === 0;
 }

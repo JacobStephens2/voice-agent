@@ -22,7 +22,10 @@ import {
 import { evaluateAdministrativeAutonomyRestartWitness } from "@voice-agent/acceptance";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import { administrativeAutonomyPolicyDefinition } from "@voice-agent/policy";
-import { createAdministrativeRestartWitnessRuntime } from "@voice-agent/runtime";
+import {
+  administrativeRestartWitnessReleaseProvenanceIsExact,
+  createAdministrativeRestartWitnessRuntime,
+} from "@voice-agent/runtime";
 import {
   createSqliteAdministrativeAutonomyStore,
   createSqliteAdministrativeRestartWitnessStore,
@@ -293,6 +296,46 @@ test("an unavailable composition observation is durable and consumes its challen
 
   await fixture.store.close();
   await fixture.policyStore.close();
+});
+
+test("the host observation rejects a stale or non-root API process", () => {
+  const activeReleasePath = `/opt/voice-agent/releases/${releaseCommit}`;
+  const exact = {
+    activeReleaseMode: 0o40555,
+    activeReleaseOwnerUid: 0,
+    activeReleasePath,
+    apiEntrypointMode: 0o100444,
+    apiEntrypointOwnerUid: 0,
+    apiEntrypointPath: `${activeReleasePath}/apps/api/src/server.ts`,
+    releaseCommit,
+    witnessModuleMode: 0o100444,
+    witnessModuleOwnerUid: 0,
+    witnessModulePath:
+      `${activeReleasePath}/packages/runtime/src/administrative-restart-witness.ts`,
+  };
+
+  expect(administrativeRestartWitnessReleaseProvenanceIsExact(exact)).toBe(
+    true,
+  );
+  for (const mutation of [
+    {
+      apiEntrypointPath:
+        `/opt/voice-agent/releases/${"c".repeat(40)}/apps/api/src/server.ts`,
+    },
+    { activeReleaseOwnerUid: 501 },
+    { apiEntrypointOwnerUid: 501 },
+    { witnessModuleOwnerUid: 501 },
+    { activeReleaseMode: 0o40755 },
+    { apiEntrypointMode: 0o100664 },
+    { witnessModuleMode: 0o100644 },
+  ]) {
+    expect(
+      administrativeRestartWitnessReleaseProvenanceIsExact({
+        ...exact,
+        ...mutation,
+      }),
+    ).toBe(false);
+  }
 });
 
 test("campaign challenges and observations remain append-only after restart", async () => {

@@ -25,4 +25,5 @@ test("the attended CLI reads only the fixed composition-owned witness store", ()
   expect(cli).toContain("fileURLToPath(import.meta.url)");
   expect(cli).toContain("expectedCliPath");
   expect(cli).toContain("administrativeRestartWitnessReleaseCommitSchema");
+  expect(cli).toContain("activeReleaseTreeIsOwnedAndImmutable");
 });
