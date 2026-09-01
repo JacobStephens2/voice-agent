@@ -41,6 +41,20 @@ export type AdministrativeConfirmationClaim =
         | "task-unavailable";
     };
 
+export type AdministrativeOperationClaim =
+  | {
+      readonly claimId: string;
+      readonly decision: "claimed";
+      readonly recovered: boolean;
+      readonly request: AdministrativeOperationRequest;
+    }
+  | { readonly decision: "deferred"; readonly retryAt: string }
+  | {
+      readonly decision: "denied";
+      readonly reason: "stale-policy" | "unsafe-live-patch-deadline";
+    }
+  | { readonly decision: "empty" };
+
 /** Durable state behind the Administrative Autonomy runtime interface. */
 export interface AdministrativeAutonomyStore {
   activatePolicy(input: {
@@ -55,7 +69,21 @@ export interface AdministrativeAutonomyStore {
     readonly ownerId: string;
     readonly taskId: string;
   }): Promise<AdministrativeConfirmationClaim>;
+  claimNextOperation(input: {
+    readonly claimId: string;
+    readonly claimedAt: string;
+    readonly leaseExpiresAt: string;
+    readonly taskId: string;
+  }): Promise<AdministrativeOperationClaim>;
+  declineConfirmation(input: {
+    readonly capabilityHash: string;
+    readonly declinedAt: string;
+    readonly declinedEvent: UnsequencedAdministrativeEvidenceEvent;
+    readonly ownerId: string;
+    readonly taskId: string;
+  }): Promise<AdministrativeConfirmationClaim>;
   completeOperation(input: {
+    readonly claimId: string;
     readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly operationId: string;
     readonly result: AdministrativeOperationResult;
@@ -73,8 +101,15 @@ export interface AdministrativeAutonomyStore {
   }): Promise<AdministrativeEvidenceRecord>;
   findActivePolicy(): Promise<AdministrativePolicyRevision | undefined>;
   findTask(taskId: string): Promise<AdministrativeEvidenceRecord | undefined>;
+  listRecoverableTaskIds(): Promise<readonly string[]>;
   listTasks(): Promise<readonly AdministrativeTask[]>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
+  renewOperationClaim(input: {
+    readonly claimId: string;
+    readonly leaseExpiresAt: string;
+    readonly operationId: string;
+    readonly renewedAt: string;
+  }): Promise<boolean>;
   savePlan(input: {
     readonly operations: readonly AdministrativePlannedOperation[];
     readonly planEvent: UnsequencedAdministrativeEvidenceEvent;
@@ -83,5 +118,15 @@ export interface AdministrativeAutonomyStore {
   savePreparedTask(
     input: AdministrativePreparedTaskPersistence,
   ): Promise<AdministrativeEvidenceRecord | undefined>;
+  /**
+   * Persistence seam for #86: active policy has no TTL, and this CAS transition
+   * can suspend it without a schema change. Task-lifetime behavior and the
+   * authenticated PWA trigger remain owned by #86.
+   */
+  suspendPolicy(input: {
+    readonly expectedRevision: number;
+    readonly expectedStateVersion: number;
+    readonly suspendedAt: string;
+  }): Promise<AdministrativePolicyStatus | undefined>;
   close(): Promise<void>;
 }

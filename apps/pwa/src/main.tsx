@@ -4,7 +4,7 @@ import { registerSW } from "virtual:pwa-register";
 
 import {
   type AuthenticationStatus,
-  type AdministrativePolicyStatus,
+  type AdministrativeAutonomyStatus,
   type BountywellRegistration,
   type KeeploreLiveInspection,
   type KeeploreRegistration,
@@ -27,7 +27,7 @@ import {
   enrollBootstrapPasskey,
   enrollReplacementPasskey,
   loadAuthenticationStatus,
-  loadAdministrativePolicyStatus,
+  loadAdministrativeAutonomyStatus,
   loadBountywellRegistration,
   loadRegisteredTelephone,
   loadTelephoneBoundaryStatus,
@@ -79,8 +79,8 @@ const pendingBountywellRequestIdKey =
 
 function App() {
   const [status, setStatus] = useState<AuthenticationStatus>();
-  const [administrativePolicy, setAdministrativePolicy] =
-    useState<AdministrativePolicyStatus>();
+  const [administrativeAutonomy, setAdministrativeAutonomy] =
+    useState<AdministrativeAutonomyStatus>();
   const [tasks, setTasks] = useState<readonly EvidenceRecordSummary[]>();
   const [record, setRecord] = useState<VoiceAgentEvidenceRecordProjection>();
   const [bountywellRegistration, setBountywellRegistration] =
@@ -122,13 +122,13 @@ function App() {
       setRecord(undefined);
       const [administrative, bountywell, telephone, notification, boundaries] =
         await Promise.all([
-          loadAdministrativePolicyStatus(),
+          loadAdministrativeAutonomyStatus(),
           loadBountywellRegistration(),
           loadRegisteredTelephone(),
           loadNotificationPreference(),
           loadTelephoneBoundaryStatus(),
         ]);
-      setAdministrativePolicy(administrative);
+      setAdministrativeAutonomy(administrative);
       setBountywellRegistration(bountywell);
       setRegisteredTelephone(telephone);
       setTelephoneRegistrationLoaded(true);
@@ -267,15 +267,22 @@ function App() {
     }
     await run(async () => {
       const expectedActiveRevision =
-        administrativePolicy === undefined ||
-        administrativePolicy.status === "inactive"
+        administrativeAutonomy === undefined ||
+        administrativeAutonomy.policy.status === "inactive"
           ? null
-          : administrativePolicy.revision;
+          : administrativeAutonomy.policy.revision;
       const activated = await activateAdministrativePolicy(
         csrfToken,
         expectedActiveRevision,
       );
-      setAdministrativePolicy(activated);
+      setAdministrativeAutonomy((current) => ({
+        policy: activated,
+        taskExecution: current?.taskExecution ?? {
+          reason:
+            "Typed administrative task execution adapters are not configured.",
+          status: "unavailable",
+        },
+      }));
       if (activated.status !== "active") {
         throw new Error("Administrative Autonomy did not become active.");
       }
@@ -582,7 +589,7 @@ function App() {
   }
   return (
     <TaskList
-      administrativePolicy={administrativePolicy}
+      administrativeAutonomy={administrativeAutonomy}
       bountywellRegistration={bountywellRegistration}
       registeredTelephone={registeredTelephone}
       telephoneRegistrationLoaded={telephoneRegistrationLoaded}

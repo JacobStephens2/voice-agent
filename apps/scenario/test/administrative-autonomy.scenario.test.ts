@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
+import { administrativeOperationRequestSchema } from "@voice-agent/contracts";
+
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
 
 const temporaryDirectories: string[] = [];
@@ -36,6 +38,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
   });
   const result = await scenario.confirmAndRunTask({
     confirmation: "confirmed",
+    intendedState: "The requested administrative outcome is achieved.",
     outcome: "repair",
     ownerId: "owner",
     requestId: "request-83",
@@ -53,6 +56,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     activation,
     executed: scenario.executedOperations,
     result,
+    runtimeStatus: await scenario.readAutonomyStatus(),
     task: record?.task,
     usedPolicyRevision: record?.evidence.find(
       (event) => event.kind === "administrative.plan.accepted",
@@ -93,6 +97,21 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
       },
       {
         kind: "live-patch.apply",
+        mutationBoundary: {
+          healthCheck: {
+            kind: "registered-application-health",
+            requiredBeforeMutation: true,
+          },
+          independentRollback: {
+            armedBeforeMutation: true,
+            kind: "independent-live-patch-rollback",
+            rollbackDeadline: "2026-08-31T15:30:00.000Z",
+          },
+          verification: {
+            kind: "independent-application-health-proof",
+            requiredAfterMutation: true,
+          },
+        },
         operationId: "administrative-operation-3",
         policyRevision: 1,
         policyStateVersion: 1,
@@ -108,15 +127,30 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
       policyRevision: 1,
       taskId: "administrative-task-1",
     },
+    runtimeStatus: {
+      body: {
+        policy: {
+          activatedAt: "2026-08-31T15:00:00.000Z",
+          activatedBy: "fresh-passkey-action",
+          revision: 1,
+          stateVersion: 1,
+          status: "active",
+        },
+        taskExecution: { status: "adapters-configured" },
+      },
+      statusCode: 200,
+    },
     task: {
       conclusion: "The confirmed administrative plan completed.",
       createdAt: "2026-08-31T15:00:00.000Z",
       id: "administrative-task-1",
+      intendedState: "The requested administrative outcome is achieved.",
       kind: "administrative.work",
-      outcome: "repair",
+      outcome: "intervention",
       policyRevision: 1,
       policyStateVersion: 1,
-      question: "Repair voice-agent in production.",
+      question:
+        "Confirm changing voice-agent in production to this intended state: The requested administrative outcome is achieved.",
       status: "completed",
       target: {
         environment: "production",
@@ -226,6 +260,7 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
   });
 
   const ambiguousTask = await scenario.prepareTask({
+    intendedState: "The production application health is understood.",
     outcome: "investigate",
     ownerId: "owner",
     requestId: "ambiguous-request",
@@ -245,6 +280,7 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
   });
 
   const staleTask = await scenario.prepareTask({
+    intendedState: "The production application health is understood.",
     outcome: "investigate",
     ownerId: "owner",
     requestId: "stale-request",
@@ -265,6 +301,7 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
   });
 
   const identityTask = await scenario.prepareTask({
+    intendedState: "The production application health is understood.",
     outcome: "investigate",
     ownerId: "owner",
     requestId: "identity-request",
@@ -284,6 +321,7 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
   });
 
   const replayTask = await scenario.prepareTask({
+    intendedState: "The production application health is understood.",
     outcome: "investigate",
     ownerId: "owner",
     requestId: "replay-request",
@@ -378,6 +416,7 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
     });
     const result = await scenario.confirmAndRunTask({
       confirmation: "confirmed",
+      intendedState: "The requested administrative outcome is achieved.",
       outcome: testCase.outcome,
       ownerId: "owner",
       requestId: `outcome-request-${index}`,
@@ -427,7 +466,7 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
       outcome: "propose",
       result: {
         decision: "denied",
-        reason: "live-patch.apply exceeds the confirmed propose outcome",
+        reason: "live-patch.apply exceeds the confirmed proposal outcome",
       },
     },
     {
@@ -435,8 +474,7 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
       outcome: "open-pull-request",
       result: {
         decision: "denied",
-        reason:
-          "live-patch.apply exceeds the confirmed open-pull-request outcome",
+        reason: "live-patch.apply exceeds the confirmed proposal outcome",
       },
     },
     {
@@ -463,7 +501,7 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
       result: {
         decision: "denied",
         reason:
-          "delegated-worktree.change exceeds the confirmed investigate outcome",
+          "delegated-worktree.change exceeds the confirmed investigation outcome",
       },
     },
     {
@@ -512,6 +550,7 @@ test("provider instructions cannot invent administrative authority or persist ra
   });
   const result = await scenario.confirmAndRunTask({
     confirmation: "confirmed",
+    intendedState: "The requested administrative outcome is achieved.",
     outcome: "repair",
     ownerId: "owner",
     requestId: "provider-attack-request",
@@ -567,6 +606,7 @@ test("a policy revision interleaved with plan admission prevents every Operation
 
   const result = await scenario.confirmAndRunTask({
     confirmation: "confirmed",
+    intendedState: "The production application health is understood.",
     outcome: "investigate",
     ownerId: "owner",
     requestId: "interleaved-revision-request",
@@ -596,4 +636,570 @@ test("a policy revision interleaved with plan admission prevents every Operation
   });
 
   await scenario.close();
+});
+
+test("Live Patch requests carry the complete pre-mutation safety boundary", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const scenario = await createAdministrativeAutonomyScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: "2026-08-31T22:00:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+
+  await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The production application serves healthy responses.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "safe-live-patch-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const record = await scenario.readTask("administrative-task-1");
+  const completion = record?.evidence.find(
+    (event) => event.kind === "administrative.operation.completed",
+  );
+
+  expect({
+    incompleteAccepted: administrativeOperationRequestSchema.safeParse({
+      kind: "live-patch.apply",
+      operationId: "unsafe-live-patch",
+      policyRevision: 1,
+      policyStateVersion: 1,
+      target: {
+        environment: "production",
+        registeredCodebaseId: "voice-agent",
+      },
+      taskId: "administrative-task-unsafe",
+    }).success,
+    proof:
+      completion?.kind === "administrative.operation.completed"
+        ? completion.details.result
+        : undefined,
+    request: scenario.executedOperations[0],
+  }).toEqual({
+    incompleteAccepted: false,
+    proof: {
+      completedAt: "2026-08-31T22:00:00.000Z",
+      kind: "live-patch.apply",
+      operationId: "administrative-operation-1",
+      mutationProof: {
+        healthCheck: {
+          kind: "registered-application-health",
+          observedAt: "2026-08-31T22:00:00.000Z",
+          status: "healthy",
+        },
+        independentRollback: {
+          armedAt: "2026-08-31T22:00:00.000Z",
+          kind: "independent-live-patch-rollback",
+          rollbackDeadline: "2026-08-31T22:30:00.000Z",
+        },
+        verification: {
+          kind: "independent-application-health-proof",
+          observedAt: "2026-08-31T22:00:00.000Z",
+          status: "healthy",
+        },
+      },
+      summary:
+        "The live-patch.apply Operation completed through the fake executor.",
+    },
+    request: {
+      kind: "live-patch.apply",
+      mutationBoundary: {
+        healthCheck: {
+          kind: "registered-application-health",
+          requiredBeforeMutation: true,
+        },
+        independentRollback: {
+          armedBeforeMutation: true,
+          kind: "independent-live-patch-rollback",
+          rollbackDeadline: "2026-08-31T22:30:00.000Z",
+        },
+        verification: {
+          kind: "independent-application-health-proof",
+          requiredAfterMutation: true,
+        },
+      },
+      operationId: "administrative-operation-1",
+      policyRevision: 1,
+      policyStateVersion: 1,
+      taskId: "administrative-task-1",
+      target: {
+        environment: "production",
+        registeredCodebaseId: "voice-agent",
+      },
+    },
+  });
+
+  await scenario.close();
+});
+
+test("Task Confirmation presents the intended state and decline consumes its capability", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const scenario = await createAdministrativeAutonomyScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: "2026-08-31T23:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+  const prepared = await scenario.prepareTask({
+    intendedState: "The production application serves healthy responses.",
+    outcome: "fix",
+    ownerId: "owner",
+    requestId: "declined-intended-state-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  if (prepared.decision !== "prepared") {
+    throw new Error("Decline fixture was not prepared");
+  }
+
+  const declined = await scenario.answerTask({
+    confirmation: "declined",
+    confirmationCapability: prepared.confirmationCapability,
+    ownerId: "owner",
+    taskId: prepared.taskId,
+  });
+  const replay = await scenario.answerTask({
+    confirmation: "confirmed",
+    confirmationCapability: prepared.confirmationCapability,
+    ownerId: "owner",
+    taskId: prepared.taskId,
+  });
+  const record = await scenario.readTask(prepared.taskId);
+
+  expect({
+    declined,
+    evidenceKinds: record?.evidence.map((event) => event.kind),
+    presentedIntendedState: prepared.task.intendedState,
+    presentedQuestion: prepared.task.question,
+    replay,
+    task: record?.task,
+  }).toEqual({
+    declined: {
+      decision: "denied",
+      reason: "Task Confirmation was declined",
+    },
+    evidenceKinds: [
+      "administrative.confirmation.prepared",
+      "administrative.confirmation.declined",
+    ],
+    presentedIntendedState:
+      "The production application serves healthy responses.",
+    presentedQuestion:
+      "Confirm changing voice-agent in production to this intended state: The production application serves healthy responses.",
+    replay: {
+      decision: "denied",
+      reason: "Task Confirmation capability was already used",
+    },
+    task: {
+      conclusion: "Task Confirmation was declined.",
+      createdAt: "2026-08-31T23:00:00.000Z",
+      id: "administrative-task-1",
+      intendedState: "The production application serves healthy responses.",
+      kind: "administrative.work",
+      outcome: "intervention",
+      policyRevision: 1,
+      policyStateVersion: 1,
+      question:
+        "Confirm changing voice-agent in production to this intended state: The production application serves healthy responses.",
+      status: "denied",
+      target: {
+        environment: "production",
+        registeredCodebaseId: "voice-agent",
+      },
+      updatedAt: "2026-08-31T23:00:00.000Z",
+    },
+  });
+
+  await scenario.close();
+});
+
+test("a crashed Operation is reconciled after restart with one stable idempotent effect", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const effectLedger = new Set<string>();
+  const operationAttempts: string[] = [];
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    crashAfterFirstEffect: true,
+    databasePath,
+    effectLedger,
+    now: "2026-09-01T00:00:00.000Z",
+    operationAttempts,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+
+  const admitted = await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The proposed change exists in an isolated worktree.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "restart-recovery-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const beforeRestart = await firstProcess.readTask("administrative-task-1");
+  await firstProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    effectLedger,
+    identifierNamespace: "restart-",
+    now: "2026-09-01T00:01:00.000Z",
+    operationAttempts,
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  const afterRestart = await restartedProcess.readTask("administrative-task-1");
+
+  expect({
+    admitted,
+    effectCount: effectLedger.size,
+    operationAttempts,
+    statusBeforeRestart: beforeRestart?.task.status,
+    taskAfterRestart: afterRestart?.task,
+  }).toEqual({
+    admitted: {
+      decision: "admitted",
+      policyRevision: 1,
+      taskId: "administrative-task-1",
+    },
+    effectCount: 1,
+    operationAttempts: [
+      "administrative-operation-1",
+      "administrative-operation-1",
+    ],
+    statusBeforeRestart: "running",
+    taskAfterRestart: {
+      conclusion: "The confirmed administrative plan completed.",
+      createdAt: "2026-09-01T00:00:00.000Z",
+      id: "administrative-task-1",
+      intendedState: "The proposed change exists in an isolated worktree.",
+      kind: "administrative.work",
+      outcome: "proposal",
+      policyRevision: 1,
+      policyStateVersion: 1,
+      question:
+        "Confirm branch-only work for voice-agent in production toward this intended state: The proposed change exists in an isolated worktree.",
+      status: "completed",
+      target: {
+        environment: "production",
+        registeredCodebaseId: "voice-agent",
+      },
+      updatedAt: "2026-09-01T00:01:00.000Z",
+    },
+  });
+
+  await restartedProcess.close();
+});
+
+test("administrative mutation plans share one durable global execution lane", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  let activeMutations = 0;
+  let maximumActiveMutations = 0;
+  let releaseFirstMutation!: () => void;
+  let reportFirstMutation!: () => void;
+  const firstMutationStarted = new Promise<void>((resolve) => {
+    reportFirstMutation = resolve;
+  });
+  const firstMutationRelease = new Promise<void>((resolve) => {
+    releaseFirstMutation = resolve;
+  });
+  const scenario = await createAdministrativeAutonomyScenario({
+    beforeOperationEffect: async (request) => {
+      if (request.kind === "production.observe") return;
+      activeMutations += 1;
+      maximumActiveMutations = Math.max(
+        maximumActiveMutations,
+        activeMutations,
+      );
+      if (request.taskId === "administrative-task-1") {
+        reportFirstMutation();
+        await firstMutationRelease;
+      }
+      activeMutations -= 1;
+    },
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: "2026-09-01T01:00:00.000Z",
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+
+  const firstTask = scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The first proposal exists in an isolated worktree.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "serialized-mutation-1",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  await Promise.race([
+    firstMutationStarted,
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(
+        () => reject(new Error("The first mutation did not reach the executor")),
+        100,
+      ),
+    ),
+  ]);
+  const secondTask = scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The second proposal exists in an isolated worktree.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "serialized-mutation-2",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  const attemptsWhileFirstHeld = scenario.operationAttempts.length;
+  releaseFirstMutation();
+  await Promise.all([firstTask, secondTask]);
+
+  expect({
+    attemptsWhileFirstHeld,
+    maximumActiveMutations,
+    taskStatuses: await Promise.all(
+      ["administrative-task-1", "administrative-task-2"].map(async (taskId) =>
+        (await scenario.readTask(taskId))?.task.status,
+      ),
+    ),
+  }).toEqual({
+    attemptsWhileFirstHeld: 1,
+    maximumActiveMutations: 1,
+    taskStatuses: ["completed", "completed"],
+  });
+
+  await scenario.close();
+});
+
+test("a policy revision after one effect blocks every not-yet-started Operation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const scenario = await createAdministrativeAutonomyScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: "2026-09-01T02:00:00.000Z",
+    providerPlan: [
+      { kind: "production.observe" },
+      { kind: "delegated-worktree.change" },
+    ],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+  scenario.interleavePolicyRevisionAfterFirstOperation();
+
+  const result = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The observed fault is repaired in an isolated worktree.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "between-operation-policy-revision",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const record = await scenario.readTask("administrative-task-1");
+
+  expect({
+    executedKinds: scenario.executedOperations.map((operation) => operation.kind),
+    policy: await scenario.readPolicyStatus(),
+    result,
+    taskStatus: record?.task.status,
+  }).toEqual({
+    executedKinds: ["production.observe"],
+    policy: {
+      activatedAt: "2026-09-01T02:00:00.000Z",
+      activatedBy: "fresh-passkey-action",
+      revision: 2,
+      stateVersion: 2,
+      status: "active",
+    },
+    result: {
+      decision: "denied",
+      reason: "Administrative Autonomy policy state is stale",
+    },
+    taskStatus: "denied",
+  });
+
+  await scenario.close();
+});
+
+test("deployed policy activation does not imply unavailable task execution", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const scenario = await createAdministrativeAutonomyScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    executionAdapters: "unavailable",
+    now: "2026-09-01T03:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+
+  const prepared = await scenario.prepareTask({
+    intendedState: "The production application health is understood.",
+    outcome: "investigate",
+    ownerId: "owner",
+    requestId: "unavailable-production-execution",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+
+  expect({
+    prepared,
+    status: await scenario.readAutonomyStatus(),
+    task: await scenario.readTask("administrative-task-1"),
+  }).toEqual({
+    prepared: {
+      decision: "denied",
+      reason: "Typed administrative task execution adapters are not configured.",
+    },
+    status: {
+      body: {
+        policy: {
+          activatedAt: "2026-09-01T03:00:00.000Z",
+          activatedBy: "fresh-passkey-action",
+          revision: 1,
+          stateVersion: 1,
+          status: "active",
+        },
+        taskExecution: {
+          reason:
+            "Typed administrative task execution adapters are not configured.",
+          status: "unavailable",
+        },
+      },
+      statusCode: 200,
+    },
+    task: undefined,
+  });
+
+  await scenario.close();
+});
+
+test("policy state has no TTL and the #86 suspension seam persists without a schema change", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    now: "2026-09-01T04:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    freshPasskey: true,
+  });
+  await firstProcess.close();
+
+  const suspensionProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "suspend-",
+    now: "2026-10-01T04:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  const activeWithoutTtl = await suspensionProcess.readPolicyStatus();
+  const suspended = await suspensionProcess.suspendPolicyState();
+  await suspensionProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "reactivate-",
+    now: "2026-10-01T05:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  const afterRestart = await restartedProcess.readPolicyStatus();
+  const blockedTask = await restartedProcess.prepareTask({
+    intendedState: "The production application health is understood.",
+    outcome: "investigate",
+    ownerId: "owner",
+    requestId: "suspended-task-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const reactivated = await restartedProcess.activatePolicy({
+    expectedActiveRevision: 1,
+    freshPasskey: true,
+  });
+
+  expect({
+    activeWithoutTtl,
+    afterRestart,
+    blockedTask,
+    reactivated,
+    suspended,
+  }).toEqual({
+    activeWithoutTtl: {
+      activatedAt: "2026-09-01T04:00:00.000Z",
+      activatedBy: "fresh-passkey-action",
+      revision: 1,
+      stateVersion: 1,
+      status: "active",
+    },
+    afterRestart: {
+      revision: 1,
+      stateVersion: 2,
+      status: "suspended",
+      suspendedAt: "2026-10-01T04:00:00.000Z",
+    },
+    blockedTask: {
+      decision: "denied",
+      reason: "Administrative Autonomy is not active",
+    },
+    reactivated: {
+      body: {
+        activatedAt: "2026-10-01T05:00:00.000Z",
+        activatedBy: "fresh-passkey-action",
+        revision: 2,
+        stateVersion: 3,
+        status: "active",
+      },
+      statusCode: 200,
+    },
+    suspended: {
+      revision: 1,
+      stateVersion: 2,
+      status: "suspended",
+      suspendedAt: "2026-10-01T04:00:00.000Z",
+    },
+  });
+
+  await restartedProcess.close();
 });

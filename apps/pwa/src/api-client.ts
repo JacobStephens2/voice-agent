@@ -7,6 +7,7 @@ import {
 
 import {
   authenticationStatusSchema,
+  administrativeAutonomyStatusSchema,
   administrativePolicyStatusSchema,
   authorizeRawAudioDebugResultSchema,
   bountywellOutageInjectionSchema,
@@ -37,6 +38,7 @@ import {
   telephoneBoundaryStatusSchema,
   webAuthnOptionsSchema,
   type AuthenticationStatus,
+  type AdministrativeAutonomyStatus,
   type AdministrativePolicyStatus,
   type TelephoneBoundaryStatus,
   type BountywellOutageInjection,
@@ -74,15 +76,15 @@ export async function loadAuthenticationStatus(): Promise<AuthenticationStatus> 
   return authenticationStatusSchema.parse(await response.json());
 }
 
-export async function loadAdministrativePolicyStatus(): Promise<
-  AdministrativePolicyStatus | undefined
+export async function loadAdministrativeAutonomyStatus(): Promise<
+  AdministrativeAutonomyStatus | undefined
 > {
   const response = await fetch("/api/administrative-autonomy");
   if (response.status === 401) return undefined;
   if (!response.ok) {
     throw new Error("Administrative Autonomy policy state is unavailable.");
   }
-  return administrativePolicyStatusSchema.parse(await response.json());
+  return administrativeAutonomyStatusSchema.parse(await response.json());
 }
 
 export async function activateAdministrativePolicy(

@@ -5,6 +5,7 @@ const eventLabels: Record<
   string
 > = {
   "administrative.confirmation.accepted": "Task Confirmation accepted",
+  "administrative.confirmation.declined": "Task Confirmation declined",
   "administrative.confirmation.prepared": "Task Confirmation prepared",
   "administrative.operation.accepted": "Operation accepted",
   "administrative.operation.completed": "Operation completed",
@@ -31,6 +32,9 @@ export function AdministrativeTaskPage({
       <section className="conclusion" aria-labelledby="conclusion-heading">
         <h2 id="conclusion-heading">Conclusion</h2>
         <p>{record.task.conclusion}</p>
+        <p>
+          <strong>Intended resulting state:</strong> {record.task.intendedState}
+        </p>
         <p>Administrative Autonomy Policy revision {record.task.policyRevision}</p>
       </section>
 

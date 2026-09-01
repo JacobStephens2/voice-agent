@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 
 import type {
-  AdministrativePolicyStatus,
+  AdministrativeAutonomyStatus,
   BountywellRegistration,
   EvidenceRecordSummary,
   KeeploreLiveInspection,
@@ -190,7 +190,7 @@ export function RecoveryCodesView(props: {
 }
 
 export function TaskList(props: {
-  administrativePolicy?: AdministrativePolicyStatus | undefined;
+  administrativeAutonomy?: AdministrativeAutonomyStatus | undefined;
   bountywellRegistration?: BountywellRegistration | undefined;
   keeploreInspection?: KeeploreLiveInspection | undefined;
   keeploreRegistration?: KeeploreRegistration | undefined;
@@ -254,16 +254,15 @@ export function TaskList(props: {
       >
         <p className="eyebrow">Standing authority</p>
         <h2 id="administrative-autonomy-heading">Administrative Autonomy</h2>
-        {props.administrativePolicy?.status === "active" ? (
+        {props.administrativeAutonomy?.policy.status === "active" ? (
           <p>
-            Policy revision {props.administrativePolicy.revision} is active. A
-            confirmed Durable Task may choose only the typed Operations allowed
-            by its confirmed outcome.
+            Policy revision {props.administrativeAutonomy.policy.revision} is
+            active.
           </p>
-        ) : props.administrativePolicy?.status === "suspended" ? (
+        ) : props.administrativeAutonomy?.policy.status === "suspended" ? (
           <p>
-            Policy revision {props.administrativePolicy.revision} is suspended.
-            A new Fresh Passkey Action is required before reactivation.
+            Policy revision {props.administrativeAutonomy.policy.revision} is
+            suspended. A new Fresh Passkey Action is required before reactivation.
           </p>
         ) : (
           <p>
@@ -272,11 +271,31 @@ export function TaskList(props: {
             merge, or deployment authority.
           </p>
         )}
+        {props.administrativeAutonomy?.taskExecution.status ===
+          "adapters-configured" &&
+        props.administrativeAutonomy.policy.status === "active" ? (
+          <p>
+            Confirmed Durable Tasks may choose only the typed Operations allowed
+            by their intended resulting state and policy.
+          </p>
+        ) : props.administrativeAutonomy?.taskExecution.status ===
+          "adapters-configured" ? (
+          <p>
+            Typed task-execution adapters are configured, but administrative
+            effects remain blocked while the policy is not active.
+          </p>
+        ) : (
+          <p>
+            Task execution is unavailable because the typed provider and broker
+            adapters are not configured. Policy activation alone does not grant
+            executable administrative authority.
+          </p>
+        )}
         <button
           disabled={props.busy}
           onClick={() => void props.onActivateAdministrativeAutonomy()}
         >
-          {props.administrativePolicy?.status === "active"
+          {props.administrativeAutonomy?.policy.status === "active"
             ? "Activate a new policy revision"
             : "Activate Administrative Autonomy"}
         </button>

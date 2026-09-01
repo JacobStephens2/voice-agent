@@ -62,9 +62,14 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
+// Issue #83's acceptance gate uses a fake provider/executor at the scenario
+// seam. ADR-0048 keeps real effects behind typed brokers delivered by #84,
+// #88, #90, and #92, so production truthfully exposes policy activation while
+// reporting administrative task execution unavailable until those adapters exist.
 const administrativeRuntime = createAdministrativeAutonomyRuntime({
   identifiers: {
     nextCapability: randomUUID,
+    nextClaimId: randomUUID,
     nextEventId: randomUUID,
     nextOperationId: randomUUID,
     nextTaskId: randomUUID,
@@ -72,6 +77,7 @@ const administrativeRuntime = createAdministrativeAutonomyRuntime({
   now: () => new Date().toISOString(),
   store: createSqliteAdministrativeAutonomyStore(databasePath),
 });
+await administrativeRuntime.reconcileOperations();
 const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({

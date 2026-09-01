@@ -1,25 +1,19 @@
 import {
   administrativePolicyDefinitionSchema,
+  forbiddenAdministrativeOperationKinds,
   type AdministrativeOperationKind,
   type AdministrativePolicyActivationSource,
   type AdministrativePolicyDefinition,
   type AdministrativePolicyStatus,
   type AdministrativeProviderPlan,
+  type AdministrativeRequestedOutcome,
   type AdministrativeTaskOutcome,
 } from "@voice-agent/contracts";
 
 export const administrativeAutonomyPolicyDefinition: AdministrativePolicyDefinition =
   administrativePolicyDefinitionSchema.parse({
     branchOnlyOperations: ["delegated-worktree.change"],
-    forbiddenOperations: [
-      "policy.revise",
-      "shell.root",
-      "credential-custody.read",
-      "production-data.mutate",
-      "git.production-ref.write",
-      "pull-request.merge",
-      "deployment.execute",
-    ],
+    forbiddenOperations: forbiddenAdministrativeOperationKinds,
     livePatchOperations: ["live-patch.apply"],
     observationalOperations: ["production.observe"],
     schemaVersion: 1,
@@ -71,15 +65,26 @@ export function authorizeAdministrativeTaskConfirmation(input: {
   return { decision: "allow" };
 }
 
-const repairOutcomes = new Set<AdministrativeTaskOutcome>([
-  "fix",
-  "repair",
-  "restore",
-]);
-const proposalOutcomes = new Set<AdministrativeTaskOutcome>([
-  "propose",
-  "open-pull-request",
-]);
+/**
+ * The ticket's user-facing “fix, repair, restore” phrases all request the
+ * domain's Intervention outcome. The avoided synonym `fix` never crosses the
+ * admission seam into Durable Task state or Evidence Events.
+ */
+export function canonicalAdministrativeOutcome(
+  requested: AdministrativeRequestedOutcome,
+): AdministrativeTaskOutcome {
+  if (
+    requested === "fix" ||
+    requested === "repair" ||
+    requested === "restore"
+  ) {
+    return "intervention";
+  }
+  if (requested === "propose" || requested === "open-pull-request") {
+    return "proposal";
+  }
+  return "investigation";
+}
 
 export function authorizeAdministrativePlan(input: {
   readonly definition: AdministrativePolicyDefinition;
@@ -112,10 +117,10 @@ function allowedOperationKinds(
   outcome: AdministrativeTaskOutcome,
 ): ReadonlySet<AdministrativeOperationKind> {
   const observational = definition.observationalOperations;
-  if (outcome === "investigate") return new Set(observational);
+  if (outcome === "investigation") return new Set(observational);
   const branchOnly = [...observational, ...definition.branchOnlyOperations];
-  if (proposalOutcomes.has(outcome)) return new Set(branchOnly);
-  if (repairOutcomes.has(outcome)) {
+  if (outcome === "proposal") return new Set(branchOnly);
+  if (outcome === "intervention") {
     return new Set([...branchOnly, ...definition.livePatchOperations]);
   }
   return new Set();

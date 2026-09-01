@@ -38,6 +38,7 @@ import {
   registerBountywellRequestSchema,
   activateKeeploreDeploymentContractRequestSchema,
   activateAdministrativePolicyRequestSchema,
+  administrativeAutonomyStatusSchema,
   administrativePolicyStatusSchema,
   enrollKeeploreRequestSchema,
   keeploreDeploymentContractSchema,
@@ -76,6 +77,7 @@ import {
   type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
   type AdministrativePolicyStatus,
+  type AdministrativeAutonomyStatus,
 } from "@voice-agent/contracts";
 
 import { DeploymentAuthorityChallengeError } from "./deployment-authority-challenge.ts";
@@ -219,7 +221,7 @@ export interface AdministrativeAutonomyApiControls {
       }
     | { readonly decision: "denied"; readonly reason: string }
   >;
-  getPolicyStatus(): Promise<AdministrativePolicyStatus>;
+  getStatus(): Promise<AdministrativeAutonomyStatus>;
 }
 
 export interface TelephoneControls {
@@ -499,8 +501,8 @@ function registerAdministrativeAutonomyRoutes(
     if (!(await authorizeEvidence(request, options.authentication))) {
       return reply.code(401).send({ error: "Authentication required" });
     }
-    return administrativePolicyStatusSchema.parse(
-      await options.controls.getPolicyStatus(),
+    return administrativeAutonomyStatusSchema.parse(
+      await options.controls.getStatus(),
     );
   });
 

@@ -23,6 +23,11 @@ export type AdministrativeOperationKind = z.infer<
   typeof administrativeOperationKindSchema
 >;
 
+export const administrativeMutationOperationKinds = [
+  "delegated-worktree.change",
+  "live-patch.apply",
+] as const satisfies readonly AdministrativeOperationKind[];
+
 export const forbiddenAdministrativeOperationKinds = [
   "policy.revise",
   "shell.root",
@@ -95,6 +100,34 @@ export type AdministrativePolicyStatus = z.infer<
   typeof administrativePolicyStatusSchema
 >;
 
+export const administrativeTaskExecutionStatusSchema = z.discriminatedUnion(
+  "status",
+  [
+    z.object({ status: z.literal("adapters-configured") }).strict(),
+    z
+      .object({
+        reason: z.literal(
+          "Typed administrative task execution adapters are not configured.",
+        ),
+        status: z.literal("unavailable"),
+      })
+      .strict(),
+  ],
+);
+export type AdministrativeTaskExecutionStatus = z.infer<
+  typeof administrativeTaskExecutionStatusSchema
+>;
+
+export const administrativeAutonomyStatusSchema = z
+  .object({
+    policy: administrativePolicyStatusSchema,
+    taskExecution: administrativeTaskExecutionStatusSchema,
+  })
+  .strict();
+export type AdministrativeAutonomyStatus = z.infer<
+  typeof administrativeAutonomyStatusSchema
+>;
+
 export const activateAdministrativePolicyRequestSchema = z
   .object({
     csrfToken: z.string().min(16).max(200),
@@ -102,7 +135,7 @@ export const activateAdministrativePolicyRequestSchema = z
   })
   .strict();
 
-export const administrativeTaskOutcomeSchema = z.enum([
+export const administrativeRequestedOutcomeSchema = z.enum([
   "fix",
   "repair",
   "restore",
@@ -110,9 +143,20 @@ export const administrativeTaskOutcomeSchema = z.enum([
   "open-pull-request",
   "investigate",
 ]);
+export type AdministrativeRequestedOutcome = z.infer<
+  typeof administrativeRequestedOutcomeSchema
+>;
+
+export const administrativeTaskOutcomeSchema = z.enum([
+  "intervention",
+  "proposal",
+  "investigation",
+]);
 export type AdministrativeTaskOutcome = z.infer<
   typeof administrativeTaskOutcomeSchema
 >;
+
+export const administrativeIntendedStateSchema = z.string().min(1).max(240);
 
 export const administrativeTaskTargetSchema = z
   .object({
@@ -138,26 +182,125 @@ export type AdministrativeProviderPlan = z.infer<
   typeof administrativeProviderPlanSchema
 >;
 
-export const administrativeOperationRequestSchema = z
+const administrativeOperationRequestFields = {
+  operationId: identifierSchema,
+  policyRevision: z.number().int().positive(),
+  policyStateVersion: z.number().int().positive(),
+  target: administrativeTaskTargetSchema,
+  taskId: identifierSchema,
+};
+
+export const livePatchMutationBoundarySchema = z
   .object({
-    kind: administrativeOperationKindSchema,
-    operationId: identifierSchema,
-    policyRevision: z.number().int().positive(),
-    policyStateVersion: z.number().int().positive(),
-    target: administrativeTaskTargetSchema,
-    taskId: identifierSchema,
+    healthCheck: z
+      .object({
+        kind: z.literal("registered-application-health"),
+        requiredBeforeMutation: z.literal(true),
+      })
+      .strict(),
+    independentRollback: z
+      .object({
+        armedBeforeMutation: z.literal(true),
+        kind: z.literal("independent-live-patch-rollback"),
+        rollbackDeadline: timestampSchema,
+      })
+      .strict(),
+    verification: z
+      .object({
+        kind: z.literal("independent-application-health-proof"),
+        requiredAfterMutation: z.literal(true),
+      })
+      .strict(),
   })
   .strict();
+export type LivePatchMutationBoundary = z.infer<
+  typeof livePatchMutationBoundarySchema
+>;
+
+export const administrativeOperationRequestSchema = z.discriminatedUnion(
+  "kind",
+  [
+    z
+      .object({
+        ...administrativeOperationRequestFields,
+        kind: z.literal("production.observe"),
+      })
+      .strict(),
+    z
+      .object({
+        ...administrativeOperationRequestFields,
+        kind: z.literal("delegated-worktree.change"),
+      })
+      .strict(),
+    z
+      .object({
+        ...administrativeOperationRequestFields,
+        kind: z.literal("live-patch.apply"),
+        mutationBoundary: livePatchMutationBoundarySchema,
+      })
+      .strict(),
+  ],
+);
 export type AdministrativeOperationRequest = z.infer<
   typeof administrativeOperationRequestSchema
 >;
 
-export const administrativeOperationResultSchema = z
+const administrativeOperationResultFields = {
+  completedAt: timestampSchema,
+  operationId: identifierSchema,
+  summary: z.string().min(1).max(240),
+};
+
+export const livePatchMutationProofSchema = z
   .object({
-    completedAt: timestampSchema,
-    summary: z.string().min(1).max(240),
+    healthCheck: z
+      .object({
+        kind: z.literal("registered-application-health"),
+        observedAt: timestampSchema,
+        status: z.literal("healthy"),
+      })
+      .strict(),
+    independentRollback: z
+      .object({
+        armedAt: timestampSchema,
+        kind: z.literal("independent-live-patch-rollback"),
+        rollbackDeadline: timestampSchema,
+      })
+      .strict(),
+    verification: z
+      .object({
+        kind: z.literal("independent-application-health-proof"),
+        observedAt: timestampSchema,
+        status: z.literal("healthy"),
+      })
+      .strict(),
   })
   .strict();
+
+export const administrativeOperationResultSchema = z.discriminatedUnion(
+  "kind",
+  [
+    z
+      .object({
+        ...administrativeOperationResultFields,
+        kind: z.literal("production.observe"),
+      })
+      .strict(),
+    z
+      .object({
+        ...administrativeOperationResultFields,
+        kind: z.literal("delegated-worktree.change"),
+      })
+      .strict(),
+    z
+      .object({
+        ...administrativeOperationResultFields,
+        kind: z.literal("live-patch.apply"),
+        mutationProof: livePatchMutationProofSchema,
+      })
+      .strict(),
+  ],
+);
 export type AdministrativeOperationResult = z.infer<
   typeof administrativeOperationResultSchema
 >;
@@ -167,11 +310,12 @@ export const administrativeTaskSchema = z
     conclusion: z.string().min(1).max(240),
     createdAt: timestampSchema,
     id: identifierSchema,
+    intendedState: administrativeIntendedStateSchema,
     kind: z.literal("administrative.work"),
     outcome: administrativeTaskOutcomeSchema,
     policyRevision: z.number().int().positive(),
     policyStateVersion: z.number().int().positive(),
-    question: z.string().min(1).max(240),
+    question: z.string().min(1).max(500),
     status: z.enum([
       "awaiting-confirmation",
       "planning",
@@ -196,6 +340,7 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
   z.object({
     ...eventFields,
     details: z.object({
+      intendedState: administrativeIntendedStateSchema,
       outcome: administrativeTaskOutcomeSchema,
       policyRevision: z.number().int().positive(),
       requestId: identifierSchema,
@@ -207,6 +352,11 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
     ...eventFields,
     details: z.object({ policyRevision: z.number().int().positive() }),
     kind: z.literal("administrative.confirmation.accepted"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z.object({ reason: z.literal("Task Confirmation was declined") }),
+    kind: z.literal("administrative.confirmation.declined"),
   }),
   z.object({
     ...eventFields,
@@ -232,7 +382,7 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
     details: z.object({
       kind: administrativeOperationKindSchema,
       operationId: identifierSchema,
-      summary: z.string().min(1).max(240),
+      result: administrativeOperationResultSchema,
     }),
     kind: z.literal("administrative.operation.completed"),
   }),
