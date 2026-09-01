@@ -7,7 +7,10 @@ import {
   delegationResultCoreSchema,
   delegationWorktreeSchema,
 } from "./delegation.ts";
-import { registeredCodebaseSchema } from "./promotion.ts";
+import {
+  registeredCodebaseIdSchema,
+  registeredCodebaseSchema,
+} from "./promotion.ts";
 
 const identifierSchema = z.string().min(1).max(120);
 const administrativeIdentitySchema = (kind: "claim" | "operation" | "task") =>
@@ -612,10 +615,13 @@ export const administrativeIntendedStateSchema = z.string().min(1).max(240);
 export const administrativeTaskTargetRequestSchema = z
   .object({
     environment: z.literal("production"),
-    registeredCodebaseId: identifierSchema,
+    registeredCodebaseId: registeredCodebaseIdSchema,
   })
   .strict();
 export type AdministrativeTaskTargetRequest = z.infer<
+  typeof administrativeTaskTargetRequestSchema
+>;
+export type AdministrativeTaskTargetRequestInput = z.input<
   typeof administrativeTaskTargetRequestSchema
 >;
 
@@ -633,10 +639,47 @@ export type AdministrativeRegisteredCodebase = z.infer<
 export const administrativeTaskTargetSchema =
   administrativeTaskTargetRequestSchema.extend({
     registeredCodebase: administrativeRegisteredCodebaseSchema,
+  })
+  .superRefine((target, context) => {
+    if (target.registeredCodebase.applicationId !== target.registeredCodebaseId) {
+      context.addIssue({
+        code: "custom",
+        message: "Registered Codebase snapshot does not match its identity",
+        path: ["registeredCodebase"],
+      });
+    }
   });
 export type AdministrativeTaskTarget = z.infer<
   typeof administrativeTaskTargetSchema
 >;
+
+export const administrativeTaskTargetFingerprintSchema = z
+  .string()
+  .min(1)
+  .max(8_000)
+  .brand<"AdministrativeTaskTargetFingerprint">();
+export type AdministrativeTaskTargetFingerprint = z.infer<
+  typeof administrativeTaskTargetFingerprintSchema
+>;
+
+/** Exact identity of the complete Task target and trusted registration snapshot. */
+export function administrativeTaskTargetFingerprint(
+  target: AdministrativeTaskTarget,
+): AdministrativeTaskTargetFingerprint {
+  return administrativeTaskTargetFingerprintSchema.parse(
+    JSON.stringify(administrativeTaskTargetSchema.parse(target)),
+  );
+}
+
+export function sameAdministrativeTaskTarget(
+  left: AdministrativeTaskTarget,
+  right: AdministrativeTaskTarget,
+): boolean {
+  return (
+    administrativeTaskTargetFingerprint(left) ===
+    administrativeTaskTargetFingerprint(right)
+  );
+}
 
 export function sameAdministrativeRegisteredCodebase(
   left: AdministrativeRegisteredCodebase,
@@ -658,9 +701,22 @@ export const livePatchRollbackActivationRequestSchema = z
     operationId: administrativeOperationIdSchema,
     rollbackDeadline: timestampSchema,
     target: administrativeTaskTargetSchema,
+    targetFingerprint: administrativeTaskTargetFingerprintSchema,
     taskId: administrativeTaskIdSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    if (
+      request.targetFingerprint !==
+      administrativeTaskTargetFingerprint(request.target)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Live Patch rollback request target fingerprint is invalid",
+        path: ["targetFingerprint"],
+      });
+    }
+  });
 export type LivePatchRollbackActivationRequest = z.infer<
   typeof livePatchRollbackActivationRequestSchema
 >;
@@ -686,10 +742,23 @@ export const livePatchRollbackActivationResultSchema = z
     outcome: z.enum(["activated", "already-activated"]),
     productionMutationRetained: z.literal(false),
     target: administrativeTaskTargetSchema,
+    targetFingerprint: administrativeTaskTargetFingerprintSchema,
     taskId: administrativeTaskIdSchema,
     verifiedBy: z.literal("independent-live-patch-rollback-controller"),
   })
-  .strict();
+  .strict()
+  .superRefine((result, context) => {
+    if (
+      result.targetFingerprint !==
+      administrativeTaskTargetFingerprint(result.target)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Live Patch rollback result target fingerprint is invalid",
+        path: ["targetFingerprint"],
+      });
+    }
+  });
 export type LivePatchRollbackActivationResult = z.infer<
   typeof livePatchRollbackActivationResultSchema
 >;
@@ -964,8 +1033,9 @@ export const livePatchMutationProofSchema = z
           observedAt: timestampSchema,
           productionMutationRetained: z.literal(true),
           reconciledPatch: z.literal("accepted-live-patch-diff"),
-          registeredCodebaseId: identifierSchema,
+          registeredCodebaseId: registeredCodebaseIdSchema,
           state: z.literal("open"),
+          targetFingerprint: administrativeTaskTargetFingerprintSchema,
           verifiedBy: z.literal("independent-reconciliation-observer"),
         })
         .strict(),
@@ -974,7 +1044,8 @@ export const livePatchMutationProofSchema = z
           kind: z.literal("removed-from-production"),
           observedAt: timestampSchema,
           productionMutationRetained: z.literal(false),
-          registeredCodebaseId: identifierSchema,
+          registeredCodebaseId: registeredCodebaseIdSchema,
+          targetFingerprint: administrativeTaskTargetFingerprintSchema,
           verifiedBy: z.literal("independent-reconciliation-observer"),
         })
         .strict(),
@@ -1035,7 +1106,7 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
               headCommit: delegationCommitSchema,
               kind: z.literal("isolated-pull-request-opened"),
               productionMutation: z.literal(false),
-              registeredCodebaseId: identifierSchema,
+              registeredCodebaseId: registeredCodebaseIdSchema,
               state: z.literal("open"),
               url: z.url().startsWith("https://github.com/"),
             })

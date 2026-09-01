@@ -84,6 +84,10 @@ _Avoid_: Delegation, code edit, repository dump
 A repository enrolled explicitly or through policy-authorized discovery for Code Inquiry and Delegation with a fixed path, remote, production branch, isolated-worktree location, verification commands, and, when deployed, a Deployment Contract.
 _Avoid_: Application directory, discovered repository, arbitrary path
 
+**Registered Codebase ID**:
+The durable identity used to look up one complete Registered Codebase registration; the ID never stands in for the registration snapshot whose paths, remote, branch, revision, verification scope, and lifetime carry authority.
+_Avoid_: Repository slug, generic identifier, application ID
+
 **Configuration Repository**:
 The private Registered Codebase that represents reproducible Agent Host packages, services, network policy, device setup, recovery inventory, and other Host Patch targets.
 _Avoid_: Server notes, live host configuration, backup

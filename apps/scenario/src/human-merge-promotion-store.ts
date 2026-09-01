@@ -603,29 +603,31 @@ export function createPromotionStore(
     now: string,
     policyOptions: { readonly seedContract?: boolean } = {},
   ): void {
-    const registration: FixtureCodebaseRegistration = {
-      applicationId: codebase.applicationId,
-      initialProductionCommit: codebase.initialProductionCommit,
-      liveCheckoutPath: codebase.liveCheckoutPath,
-      productionBranch: codebase.productionBranch,
-      registeredAt: now,
-      repository: codebase.repository,
-      sourceCheckoutRoot: codebase.sourceCheckoutRoot,
-    };
-    const contract: FixtureDeploymentContract = {
-      activatedAt: now,
-      activatedBy: "fresh-passkey-action",
-      applicationId: codebase.applicationId,
-      buildCommand: codebase.buildCommand,
-      health: codebase.health,
-      preflightCommand: codebase.preflightCommand,
-      releaseRoot: codebase.releaseRoot,
-      revision: 1,
-      ...(codebase.selfPromotion === undefined
-        ? {}
-        : { selfPromotion: codebase.selfPromotion }),
-      source: "voice-agent-policy",
-    };
+    const registration: FixtureCodebaseRegistration =
+      fixtureCodebaseRegistrationSchema.parse({
+        applicationId: codebase.applicationId,
+        initialProductionCommit: codebase.initialProductionCommit,
+        liveCheckoutPath: codebase.liveCheckoutPath,
+        productionBranch: codebase.productionBranch,
+        registeredAt: now,
+        repository: codebase.repository,
+        sourceCheckoutRoot: codebase.sourceCheckoutRoot,
+      });
+    const contract: FixtureDeploymentContract =
+      fixtureDeploymentContractSchema.parse({
+        activatedAt: now,
+        activatedBy: "fresh-passkey-action",
+        applicationId: codebase.applicationId,
+        buildCommand: codebase.buildCommand,
+        health: codebase.health,
+        preflightCommand: codebase.preflightCommand,
+        releaseRoot: codebase.releaseRoot,
+        revision: 1,
+        ...(codebase.selfPromotion === undefined
+          ? {}
+          : { selfPromotion: codebase.selfPromotion }),
+        source: "voice-agent-policy",
+      });
     database
       .prepare(`
         INSERT OR IGNORE INTO promotion_registrations (

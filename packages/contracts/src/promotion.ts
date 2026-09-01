@@ -12,9 +12,13 @@ const promotionTextSchema = z.string().min(1).max(500);
 const promotionPathSchema = z.string().min(1).max(500).startsWith("/");
 const promotionCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 const promotionTimestampSchema = z.iso.datetime();
-const promotionApplicationIdSchema = z
+export const registeredCodebaseIdSchema = z
   .string()
-  .regex(/^[a-z][a-z0-9-]{2,60}$/u);
+  .regex(/^[a-z][a-z0-9-]{2,60}$/u)
+  .brand<"RegisteredCodebaseId">();
+export type RegisteredCodebaseId = z.infer<
+  typeof registeredCodebaseIdSchema
+>;
 const promotionRepositorySchema = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);
@@ -42,7 +46,7 @@ export const fixtureGitHubEventSchema = z
 
 export const registeredCodebaseSchema = z
   .object({
-    applicationId: promotionApplicationIdSchema,
+    applicationId: registeredCodebaseIdSchema,
     initialProductionCommit: promotionCommitSchema,
     liveCheckoutPath: promotionPathSchema,
     productionBranch: promotionBranchSchema,
@@ -58,7 +62,7 @@ export const deploymentContractSchema = z
   .object({
     activatedAt: promotionTimestampSchema,
     activatedBy: z.literal("fresh-passkey-action"),
-    applicationId: promotionApplicationIdSchema,
+    applicationId: registeredCodebaseIdSchema,
     buildCommand: promotionTextSchema,
     health: z
       .object({

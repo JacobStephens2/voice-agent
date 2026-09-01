@@ -6,7 +6,11 @@ import {
   administrativeExecutionManifestSchema,
   administrativePlanProviderIdentitySchema,
   administrativePolicyEvidencePageSchema,
+  administrativeTaskTargetFingerprint,
+  administrativeTaskTargetRequestSchema,
+  administrativeTaskTargetSchema,
   administrativeTimestampSchema,
+  type AdministrativeTaskTarget,
   type AdministrativeTimestamp,
   type LivePatchRollbackActivationRequest,
 } from "@voice-agent/contracts";
@@ -15,10 +19,10 @@ import { createAdministrativeAutonomyScenario } from "../src/administrative-auto
 import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
 
 const temporaryDirectories: string[] = [];
-const target = {
+const target = administrativeTaskTargetRequestSchema.parse({
   environment: "production" as const,
   registeredCodebaseId: "voice-agent",
-};
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -2620,8 +2624,165 @@ test("Administrative Suspension replays rollback activation without repeating it
     },
   });
 
+  expect(rollbackEvidence?.[0]?.details.result.target).toEqual(
+    rollbackActivationAttempts[0]?.target,
+  );
+  expect(rollbackEvidence?.[0]?.details.result.targetFingerprint).toBe(
+    rollbackActivationAttempts[0] === undefined
+      ? undefined
+      : administrativeTaskTargetFingerprint(
+          rollbackActivationAttempts[0].target,
+        ),
+  );
+
   await restartedProcess.close();
 });
+
+const changedRegisteredCodebaseTargets = [
+  [
+    "embedded Registered Codebase ID",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      applicationId: "substituted-voice-agent",
+    }),
+  ],
+  [
+    "initial production commit",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      initialProductionCommit: "2".repeat(40),
+    }),
+  ],
+  [
+    "live checkout path",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      liveCheckoutPath: "/srv/substituted-voice-agent",
+    }),
+  ],
+  [
+    "production branch",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      productionBranch: "substituted-production",
+    }),
+  ],
+  [
+    "registration time",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      registeredAt: "1991-01-01T00:00:00.000Z",
+    }),
+  ],
+  [
+    "repository",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      repository: "Attacker/substituted-voice-agent",
+    }),
+  ],
+  [
+    "source checkout root",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      sourceCheckoutRoot: "/srv/source/substituted-voice-agent",
+    }),
+  ],
+  [
+    "registration expiry",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    }),
+  ],
+  [
+    "registration revision",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      revision: target.registeredCodebase.revision + 1,
+    }),
+  ],
+  [
+    "verification scope",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      verificationCommands: ["pnpm substituted-verification"],
+    }),
+  ],
+  [
+    "worktree root",
+    (target: AdministrativeTaskTarget) => ({
+      ...target.registeredCodebase,
+      worktreeRoot: "/var/lib/voice-agent/worktrees/substituted",
+    }),
+  ],
+] as const;
+
+test.each(changedRegisteredCodebaseTargets)(
+  "rollback proof cannot substitute the trusted %s under the same Registered Codebase ID",
+  async (_field, mutateRegisteredCodebase) => {
+    const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+    const { scenario } = await createActivatedScenario(
+      {
+        now: "2026-10-02T14:50:00.000Z",
+        providerPlan: [{ kind: "live-patch.apply" }],
+        rollbackActivationAttempts,
+        rollbackActivationResultTargetMutation: (trustedTarget) =>
+          administrativeTaskTargetSchema.parse({
+            ...trustedTarget,
+            registeredCodebase: mutateRegisteredCodebase(trustedTarget),
+          }),
+      },
+      temporaryDirectories,
+    );
+    await scenario.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState: "The urgent production behavior is restored.",
+      outcome: "restore",
+      ownerId: "owner",
+      requestId: `substituted-target-${_field}`,
+      target,
+    });
+    const suspension = await scenario.suspendPolicy({
+      authenticated: true,
+      expectedRevision: 1,
+      expectedStateVersion: 1,
+    });
+    const record = await scenario.readTask("administrative-task-1");
+
+    expect({
+      activatedEvidence: record?.evidence.filter(
+        (event) =>
+          event.kind === "administrative.live-patch.rollback-activated",
+      ),
+      attempts: rollbackActivationAttempts.map((attempt) => attempt.target),
+      suspension,
+    }).toMatchObject({
+      activatedEvidence: [],
+      attempts: [
+        {
+          registeredCodebase: {
+            repository: "JacobStephens2/voice-agent",
+            revision: 1,
+          },
+          registeredCodebaseId: "voice-agent",
+        },
+      ],
+      suspension: {
+        body: {
+          rollbackActivations: {
+            activatedOperationIds: [],
+            pendingOperationIds: ["administrative-operation-1"],
+          },
+          status: "suspended",
+        },
+        statusCode: 200,
+      },
+    });
+
+    await scenario.close();
+  },
+);
 
 test("a Live Patch crash after its effect replays the original durable safety proof", async () => {
   const clock = { current: "2026-10-02T15:00:00.000Z" };

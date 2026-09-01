@@ -18,6 +18,7 @@ import {
   administrativeTimestampSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
+  administrativeTaskTargetFingerprint,
   administrativeTaskTargetSchema,
   administrativeTaskTargetRequestSchema,
   delegationIdSchema,
@@ -28,6 +29,7 @@ import {
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
   sameAdministrativeRegisteredCodebase,
+  sameAdministrativeTaskTarget,
   sameGrokRunnerPin,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
@@ -48,11 +50,12 @@ import {
   type AdministrativePublicationIntent,
   type AdministrativeRequestedOutcome,
   type AdministrativeRegisteredCodebase,
+  type RegisteredCodebaseId,
   type AdministrativeTask,
   type AdministrativeTaskId,
   type AdministrativeTaskOutcome,
   type AdministrativeTaskTarget,
-  type AdministrativeTaskTargetRequest,
+  type AdministrativeTaskTargetRequestInput,
   type AdministrativeTimestamp,
   type LivePatchRollbackActivationRequest,
   type AdministrativeLivePatchRollbackActivatorIdentity,
@@ -87,7 +90,7 @@ export interface AdministrativePlanProvider {
 /** Trusted, composition-owned Registered Codebase lookup. */
 export interface AdministrativeRegisteredCodebaseRegistry {
   findRegisteredCodebase(
-    registeredCodebaseId: string,
+    registeredCodebaseId: RegisteredCodebaseId,
   ): Promise<unknown>;
 }
 
@@ -274,7 +277,7 @@ export interface AdministrativeAutonomyRuntime {
     readonly outcome: AdministrativeRequestedOutcome;
     readonly ownerId: string;
     readonly requestId: string;
-    readonly target: AdministrativeTaskTargetRequest;
+    readonly target: AdministrativeTaskTargetRequestInput;
   }): Promise<AdministrativeTaskPreparationResult>;
   suspendPolicy(input: {
     readonly expectation: AdministrativePolicySuspensionExpectation;
@@ -468,7 +471,7 @@ export function createAdministrativeAutonomyRuntime(options: {
   >();
 
   async function findTrustedRegisteredCodebase(
-    registeredCodebaseId: string,
+    registeredCodebaseId: RegisteredCodebaseId,
     observedAt: AdministrativeTimestamp,
   ): Promise<AdministrativeRegisteredCodebase | undefined> {
     if (options.registeredCodebases === undefined) return undefined;
@@ -756,9 +759,8 @@ export function createAdministrativeAutonomyRuntime(options: {
           completedAt >= attemptDeadline ||
           result.operationId !== request.operationId ||
           result.taskId !== request.taskId ||
-          result.target.environment !== request.target.environment ||
-          result.target.registeredCodebaseId !==
-            request.target.registeredCodebaseId ||
+          result.targetFingerprint !== request.targetFingerprint ||
+          !sameAdministrativeTaskTarget(result.target, request.target) ||
           result.activatedAt < policy.suspendedAt ||
           result.activatedAt > completedAt
         ) {
@@ -1089,6 +1091,9 @@ export function createAdministrativeAutonomyRuntime(options: {
           mutationAuthorizedAt: null,
           operationId: claim.request.operationId,
           target: claim.request.target,
+          targetFingerprint: administrativeTaskTargetFingerprint(
+            claim.request.target,
+          ),
           taskId: claim.request.taskId,
         });
         if (
@@ -2186,7 +2191,9 @@ function validateLivePatchResult(
     reconciliationObserved > timing.completed ||
     timing.completed >= rollbackDeadline ||
     proof.reconciliation.registeredCodebaseId !==
-      request.target.registeredCodebaseId
+      request.target.registeredCodebaseId ||
+    proof.reconciliation.targetFingerprint !==
+      administrativeTaskTargetFingerprint(request.target)
   ) {
     throw new Error("Live Patch safety proof is not in a valid time order");
   }

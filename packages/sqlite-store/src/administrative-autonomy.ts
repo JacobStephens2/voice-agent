@@ -23,6 +23,7 @@ import {
   administrativePolicyStatusSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
+  administrativeTaskTargetFingerprint,
   administrativeTaskSchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
@@ -33,6 +34,7 @@ import {
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeAuthoritySnapshot,
   sameAdministrativeExecutionManifest,
+  sameAdministrativeTaskTarget,
   type AdministrativeAuthoritySnapshot,
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
@@ -894,7 +896,9 @@ export function createSqliteAdministrativeAutonomyStore(
           completedOperation.kind !== "live-patch.apply" ||
           completedOperation.operationId !== request.operationId ||
           completedOperation.mutationProof.reconciliation.registeredCodebaseId !==
-            request.target.registeredCodebaseId
+            request.target.registeredCodebaseId ||
+          completedOperation.mutationProof.reconciliation.targetFingerprint !==
+            request.targetFingerprint
         ) {
           throw new Error(
             "A Live Patch rollback can expire only after its verified Operation completed",
@@ -1023,9 +1027,12 @@ export function createSqliteAdministrativeAutonomyStore(
         operationRequest.kind !== "live-patch.apply" ||
         operationRequest.operationId !== request.operationId ||
         operationRequest.taskId !== request.taskId ||
-        operationRequest.target.environment !== request.target.environment ||
-        operationRequest.target.registeredCodebaseId !==
-          request.target.registeredCodebaseId ||
+        !sameAdministrativeTaskTarget(
+          operationRequest.target,
+          request.target,
+        ) ||
+        request.targetFingerprint !==
+          administrativeTaskTargetFingerprint(operationRequest.target) ||
         !sameAdministrativeAuthoritySnapshot(
           operationRequest.authority,
           request.authority,
@@ -1144,6 +1151,12 @@ export function createSqliteAdministrativeAutonomyStore(
         if (
           window === undefined ||
           activationRequest.taskId !== input.taskId ||
+          !sameAdministrativeTaskTarget(
+            activationRequest.target,
+            request.target,
+          ) ||
+          activationRequest.targetFingerprint !==
+            administrativeTaskTargetFingerprint(request.target) ||
           window.armedAt !== activationRequest.armedAt ||
           window.mutationStartedAt !== input.effectAt ||
           activationRequest.armedAt > window.mutationStartedAt ||
@@ -1208,9 +1221,8 @@ export function createSqliteAdministrativeAutonomyStore(
       if (
         request.operationId !== result.operationId ||
         request.taskId !== result.taskId ||
-        request.target.environment !== result.target.environment ||
-        request.target.registeredCodebaseId !==
-          result.target.registeredCodebaseId
+        request.targetFingerprint !== result.targetFingerprint ||
+        !sameAdministrativeTaskTarget(request.target, result.target)
       ) {
         return false;
       }
@@ -1222,9 +1234,8 @@ export function createSqliteAdministrativeAutonomyStore(
         return (
           recorded.operationId === request.operationId &&
           recorded.taskId === request.taskId &&
-          recorded.target.environment === request.target.environment &&
-          recorded.target.registeredCodebaseId ===
-            request.target.registeredCodebaseId
+          recorded.targetFingerprint === request.targetFingerprint &&
+          sameAdministrativeTaskTarget(recorded.target, request.target)
         );
       }
       if (
@@ -1600,7 +1611,13 @@ export function createSqliteAdministrativeAutonomyStore(
           activationRequest.mutationAuthorizedAt !==
             result.mutationProof.mutationStartedAt ||
           activationRequest.rollbackDeadline !==
-            result.mutationProof.independentRollback.rollbackDeadline
+            result.mutationProof.independentRollback.rollbackDeadline ||
+          !sameAdministrativeTaskTarget(
+            activationRequest.target,
+            request.target,
+          ) ||
+          result.mutationProof.reconciliation.targetFingerprint !==
+            activationRequest.targetFingerprint
         ) {
           throw new Error("Live Patch rollback proof changed after arming");
         }

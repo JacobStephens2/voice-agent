@@ -5,6 +5,7 @@ import {
   administrativeOperationIdSchema,
   administrativeRegisteredCodebaseSchema,
   administrativeTaskIdSchema,
+  administrativeTaskTargetFingerprint,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
   delegationIdSchema,
@@ -19,10 +20,12 @@ import {
   type AdministrativePolicyStatus,
   type AdministrativeProviderPlan,
   type AdministrativeRequestedOutcome,
-  type AdministrativeTaskTargetRequest,
+  type AdministrativeTaskTarget,
+  type AdministrativeTaskTargetRequestInput,
   type AdministrativeTimestamp,
   type LivePatchMutationProof,
   type LivePatchRollbackActivationRequest,
+  type RegisteredCodebaseId,
 } from "@voice-agent/contracts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
@@ -73,7 +76,7 @@ export interface AdministrativeAutonomyScenario {
     readonly outcome: AdministrativeRequestedOutcome;
     readonly ownerId: string;
     readonly requestId: string;
-    readonly target: AdministrativeTaskTargetRequest;
+    readonly target: AdministrativeTaskTargetRequestInput;
   }): Promise<AdministrativeTaskAdmissionResult>;
   interleavePolicyRevisionBeforePlanAdmission(): void;
   interleavePolicyRevisionAfterFirstOperation(): void;
@@ -386,6 +389,9 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly rollbackActivationHangs?: number;
   readonly rollbackActivationLedger?: Set<string>;
   readonly rollbackActivationSignals?: AbortSignal[];
+  readonly rollbackActivationResultTargetMutation?: (
+    target: AdministrativeTaskTarget,
+  ) => AdministrativeTaskTarget;
   readonly rollbackActivationTimeLedger?: Map<
     string,
     AdministrativeTimestamp
@@ -723,6 +729,9 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
       }
       await options.beforeRollbackActivationResultReturn?.();
+      const resultTarget =
+        options.rollbackActivationResultTargetMutation?.(request.target) ??
+        request.target;
       return livePatchRollbackActivationResultSchema.parse({
         activatedAt,
         kind: "live-patch-rollback-activated",
@@ -730,7 +739,8 @@ export async function createAdministrativeAutonomyScenario(options: {
         outcome:
           existingActivation === undefined ? "activated" : "already-activated",
         productionMutationRetained: false,
-        target: request.target,
+        target: resultTarget,
+        targetFingerprint: administrativeTaskTargetFingerprint(resultTarget),
         taskId: request.taskId,
         verifiedBy: "independent-live-patch-rollback-controller",
       });
@@ -771,7 +781,9 @@ export async function createAdministrativeAutonomyScenario(options: {
             },
             provider,
             registeredCodebases: {
-              async findRegisteredCodebase(registeredCodebaseId: string) {
+              async findRegisteredCodebase(
+                registeredCodebaseId: RegisteredCodebaseId,
+              ) {
                 if (
                   options.registeredCodebaseAvailability === "unavailable"
                 ) {
@@ -1123,6 +1135,7 @@ function createLivePatchProof(
       reconciledPatch: "accepted-live-patch-diff",
       registeredCodebaseId: request.target.registeredCodebaseId,
       state: "open",
+      targetFingerprint: administrativeTaskTargetFingerprint(request.target),
       verifiedBy: "independent-reconciliation-observer",
     },
     verification: {
