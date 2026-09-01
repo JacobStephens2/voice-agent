@@ -52,6 +52,7 @@ const timestampSchema = administrativeTimestampSchema;
 export const administrativeActiveExecutionMilliseconds =
   6 * 60 * 60 * 1_000;
 export const livePatchRollbackWindowMilliseconds = 30 * 60 * 1_000;
+export const livePatchRollbackActivationAttemptMilliseconds = 30 * 1_000;
 
 export const administrativePolicyActivationSourceSchema = z.enum([
   "fresh-passkey-action",
@@ -1014,6 +1015,13 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
         publication: z.discriminatedUnion("kind", [
           z
             .object({
+              kind: z.literal("not-published"),
+              productionMutation: z.literal(false),
+              reason: z.enum(["delegation-failed", "delegation-stopped"]),
+            })
+            .strict(),
+          z
+            .object({
               branch: z.string().min(1).max(200),
               headCommit: delegationCommitSchema,
               kind: z.literal("isolated-branch-prepared"),
@@ -1140,6 +1148,21 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
       result: administrativeOperationResultSchema,
     }),
     kind: z.literal("administrative.operation.completed"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z.object({
+      kind: z.literal("delegated-worktree.change"),
+      operationId: administrativeOperationIdSchema,
+      result: administrativeOperationResultSchema.refine(
+        (result) =>
+          result.kind === "delegated-worktree.change" &&
+          result.delegation.status !== "completed",
+        "A terminal Delegation Evidence Event requires a failed or stopped Delegation Result",
+      ),
+      terminalStatus: z.enum(["failed", "stopped"]),
+    }),
+    kind: z.literal("administrative.operation.terminated"),
   }),
   z.object({
     ...eventFields,

@@ -57,24 +57,33 @@ export const delegationVerifiedCandidateSchema = z
   })
   .strict();
 
+/** Fields every Delegation Result carries, regardless of its domain-specific proof. */
+export const delegationResultSharedFields = {
+  branch: z.string().min(1).max(200),
+  changedFiles: z.array(delegationRepositoryPathSchema).max(20),
+  commits: z.array(delegationCommitSchema).max(20),
+  completedAt: timestampSchema,
+  delegationId: identifierSchema,
+  failure: delegationFailureSchema.nullable(),
+  risks: z.array(z.string().min(1).max(300)).max(20),
+  status: z.enum(["completed", "failed", "stopped"]),
+  worktree: delegationWorktreeSchema,
+};
+
+export const delegationAutomatedVerificationResultsSchema = z
+  .array(delegationAutomaticVerificationSchema)
+  .max(10);
+
 /** Canonical cross-codebase portion of every structured Delegation Result. */
 export const delegationResultCoreSchema = z
   .object({
-    branch: z.string().min(1).max(200),
-    changedFiles: z.array(delegationRepositoryPathSchema).max(20),
-    commits: z.array(delegationCommitSchema).max(20),
-    completedAt: timestampSchema,
-    delegationId: identifierSchema,
-    failure: delegationFailureSchema.nullable(),
-    risks: z.array(z.string().min(1).max(300)).max(20),
-    status: z.enum(["completed", "failed", "stopped"]),
+    ...delegationResultSharedFields,
     verification: z
       .object({
-        automated: z.array(delegationAutomaticVerificationSchema).max(10),
+        automated: delegationAutomatedVerificationResultsSchema,
         candidate: delegationVerifiedCandidateSchema.nullable(),
       })
       .strict(),
-    worktree: delegationWorktreeSchema,
   })
   .strict()
   .superRefine((result, context) => {

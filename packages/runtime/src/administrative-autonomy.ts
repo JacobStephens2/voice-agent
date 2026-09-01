@@ -22,6 +22,7 @@ import {
   administrativeTaskTargetRequestSchema,
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
+  livePatchRollbackActivationAttemptMilliseconds,
   administrativeLivePatchRollbackActivatorIdentitySchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
@@ -119,7 +120,12 @@ export interface AdministrativeLivePatchRollbackActivator {
    * request after failure or restart must return the already-activated result
    * without repeating an external effect.
    */
-  activate(request: LivePatchRollbackActivationRequest): Promise<unknown>;
+  activate(input: {
+    readonly attemptDeadline: AdministrativeTimestamp;
+    readonly attemptStartedAt: AdministrativeTimestamp;
+    readonly request: LivePatchRollbackActivationRequest;
+    readonly signal: AbortSignal;
+  }): Promise<unknown>;
 }
 
 /**
@@ -282,6 +288,7 @@ export function createAdministrativeAutonomyRuntime(options: {
   readonly provider?: AdministrativePlanProvider;
   readonly reconciliationScheduler?: AdministrativeReconciliationScheduler;
   readonly registeredCodebases?: AdministrativeRegisteredCodebaseRegistry;
+  readonly rollbackActivationDeadlineTimer?: AdministrativePlanningDeadlineTimer;
   readonly rollbackActivator?: AdministrativeLivePatchRollbackActivator;
   readonly store: AdministrativeAutonomyStore;
 }): AdministrativeAutonomyRuntime {
@@ -344,6 +351,8 @@ export function createAdministrativeAutonomyRuntime(options: {
       return () => clearTimeout(timer);
     },
   };
+  const rollbackActivationDeadlineTimer =
+    options.rollbackActivationDeadlineTimer ?? planningDeadlineTimer;
   const executionManifestPresent =
     options.provider !== undefined && options.executor !== undefined;
   const livePatchManifestPresent = executionManifest.operationAdapters.some(
@@ -644,7 +653,41 @@ export function createAdministrativeAutonomyRuntime(options: {
             "implementation-mismatch",
           );
         }
-        const untrusted = await options.rollbackActivator.activate(request);
+        const attemptStartedAt = now();
+        const attemptDeadline = administrativeTimestampSchema.parse(
+          new Date(
+            new Date(attemptStartedAt).getTime() +
+              livePatchRollbackActivationAttemptMilliseconds,
+          ).toISOString(),
+        );
+        const attemptController = new AbortController();
+        let rejectDeadline: ((error: Error) => void) | undefined;
+        const deadlineElapsed = new Promise<never>((_resolve, reject) => {
+          rejectDeadline = reject;
+        });
+        const cancelDeadline = rollbackActivationDeadlineTimer.arm(
+          attemptDeadline,
+          () => {
+            rejectDeadline?.(
+              new AdministrativeRollbackActivationError("transient-failure"),
+            );
+            attemptController.abort();
+          },
+        );
+        let untrusted: unknown;
+        try {
+          untrusted = await Promise.race([
+            options.rollbackActivator.activate({
+              attemptDeadline,
+              attemptStartedAt,
+              request,
+              signal: attemptController.signal,
+            }),
+            deadlineElapsed,
+          ]);
+        } finally {
+          cancelDeadline();
+        }
         const result = livePatchRollbackActivationResultSchema.parse(untrusted);
         const completedAt = now();
         if (
@@ -1151,6 +1194,34 @@ export function createAdministrativeAutonomyRuntime(options: {
         return true;
       }
       try {
+        if (
+          result.kind === "delegated-worktree.change" &&
+          result.delegation.status !== "completed"
+        ) {
+          await options.store.terminateDelegatedOperation({
+            claimId: claim.claimId,
+            operationId: claim.request.operationId,
+            result,
+            taskId,
+            terminatedEvent: {
+              details: {
+                kind: result.kind,
+                operationId: result.operationId,
+                result,
+                terminalStatus: result.delegation.status,
+              },
+              id: options.identifiers.nextEventId(),
+              kind: "administrative.operation.terminated",
+              occurredAt: result.completedAt,
+              summary: `The delegated Operation ${result.delegation.status} with bounded evidence.`,
+            },
+          });
+          await denyPlannedTask(
+            taskId,
+            `Administrative Delegation ${result.delegation.status}.`,
+          );
+          return true;
+        }
         await options.store.completeOperation({
           claimId: claim.claimId,
           completedEvent: {
@@ -1847,23 +1918,11 @@ function confirmedIntendedState(intendedState: string) {
 function operationRequest(
   input: AdministrativeOperationRequestInput,
 ): AdministrativeOperationRequest {
-  switch (input.kind) {
-    case "delegated-worktree.change":
-      return administrativeOperationHandlers[input.kind].buildRequest({
-        ...input,
-        kind: input.kind,
-      });
-    case "live-patch.apply":
-      return administrativeOperationHandlers[input.kind].buildRequest({
-        ...input,
-        kind: input.kind,
-      });
-    case "production.observe":
-      return administrativeOperationHandlers[input.kind].buildRequest({
-        ...input,
-        kind: input.kind,
-      });
-  }
+  const buildRequest = administrativeOperationHandlers[input.kind]
+    .buildRequest as (
+      correlatedInput: AdministrativeOperationRequestInput,
+    ) => AdministrativeOperationRequest;
+  return buildRequest(input);
 }
 
 function operationResult(
@@ -1922,37 +1981,16 @@ function validateAdministrativeOperationKindResult(
   result: AdministrativeOperationResult,
   timing: AdministrativeOperationResultValidation,
 ): void {
-  switch (request.kind) {
-    case "delegated-worktree.change":
-      if (result.kind !== request.kind) {
-        throw new Error("Delegation Result does not match its Operation kind");
-      }
-      administrativeOperationHandlers[request.kind].validateResult(
-        request,
-        result,
-        timing,
-      );
-      return;
-    case "live-patch.apply":
-      if (result.kind !== request.kind) {
-        throw new Error("Live Patch result does not match its Operation kind");
-      }
-      administrativeOperationHandlers[request.kind].validateResult(
-        request,
-        result,
-        timing,
-      );
-      return;
-    case "production.observe":
-      if (result.kind !== request.kind) {
-        throw new Error("Observation result does not match its Operation kind");
-      }
-      administrativeOperationHandlers[request.kind].validateResult(
-        request,
-        result,
-        timing,
-      );
+  if (result.kind !== request.kind) {
+    throw new Error("Administrative Result does not match its Operation kind");
   }
+  const validateResult = administrativeOperationHandlers[request.kind]
+    .validateResult as (
+      correlatedRequest: AdministrativeOperationRequest,
+      correlatedResult: AdministrativeOperationResult,
+      correlatedTiming: AdministrativeOperationResultValidation,
+    ) => void;
+  validateResult(request, result, timing);
 }
 
 function validateObservationResult(
@@ -1985,22 +2023,55 @@ function validateDelegatedWorktreeResult(
     delegation.verification.automated.every(
       (verification) => verification.outcome === "passed",
     );
-  if (
+  const commonProofMismatch =
     delegation.delegationId !== request.delegation.brief.delegationId ||
     delegation.completedAt !== timing.reportedCompletedAt ||
     reportedCompleted < timing.effectStarted ||
     reportedCompleted > timing.completed ||
     delegation.branch !== expectedWorktree.branch ||
-    delegation.status !== "completed" ||
-    delegation.failure !== null ||
-    delegation.changedFiles.length === 0 ||
-    delegation.commits.length === 0 ||
     delegation.worktree.id !== expectedWorktree.id ||
     delegation.worktree.baseCommit !== expectedWorktree.baseCommit ||
     delegation.worktree.branch !== expectedWorktree.branch ||
     delegation.worktree.path !== expectedWorktree.path ||
+    delegation.worktree.dirty;
+  if (commonProofMismatch) {
+    throw new Error(
+      "Administrative Delegation Result is incomplete, mismatched, or unverified",
+    );
+  }
+  if (delegation.status !== "completed") {
+    const expectedPublicationReason =
+      delegation.status === "failed"
+        ? "delegation-failed"
+        : "delegation-stopped";
+    const verificationIsBounded = delegation.verification.automated.every(
+      (verification) => expectedCommands.includes(verification.command),
+    );
+    const candidateMatches =
+      candidate === null ||
+      (headCommit !== undefined &&
+        candidate.branch === delegation.branch &&
+        candidate.commit === headCommit &&
+        candidate.worktreeId === delegation.worktree.id);
+    if (
+      delegation.failure === null ||
+      delegation.worktree.state !== delegation.status ||
+      result.publication.kind !== "not-published" ||
+      result.publication.reason !== expectedPublicationReason ||
+      !verificationIsBounded ||
+      !candidateMatches
+    ) {
+      throw new Error(
+        "Administrative terminal Delegation Result is incomplete or mismatched",
+      );
+    }
+    return;
+  }
+  if (
+    delegation.failure !== null ||
+    delegation.changedFiles.length === 0 ||
+    delegation.commits.length === 0 ||
     delegation.worktree.state !== "completed" ||
-      delegation.worktree.dirty ||
     candidate === null ||
     candidate.branch !== delegation.branch ||
     candidate.commit !== headCommit ||

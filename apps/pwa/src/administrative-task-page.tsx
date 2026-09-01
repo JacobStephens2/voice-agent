@@ -15,6 +15,7 @@ const eventLabels: Record<
     "Live Patch rollback window expired",
   "administrative.operation.accepted": "Operation accepted",
   "administrative.operation.completed": "Operation completed",
+  "administrative.operation.terminated": "Delegated Operation terminated",
   "administrative.plan.accepted": "Operation plan accepted",
   "administrative.task.completed": "Administrative Task completed",
   "administrative.task.denied": "Administrative Task denied",

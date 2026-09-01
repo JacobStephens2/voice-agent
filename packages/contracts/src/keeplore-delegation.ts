@@ -1,10 +1,9 @@
 import { z } from "zod";
 
 import {
-  delegationAutomaticVerificationSchema,
+  delegationAutomatedVerificationResultsSchema,
   delegationCommitSchema,
-  delegationFailureSchema,
-  delegationRepositoryPathSchema,
+  delegationResultSharedFields,
   delegationWorktreeSchema,
 } from "./delegation.ts";
 
@@ -269,17 +268,13 @@ export const keeploreScreenshotSchema = z
 
 export const keeploreDelegationResultSchema = z
   .object({
-    branch: z.string().min(1).max(200),
-    changedFiles: z.array(delegationRepositoryPathSchema).max(20),
+    ...delegationResultSharedFields,
     cleanup: z
       .object({
         eligible: z.boolean(),
         quarantineReason: z.string().min(1).max(300).nullable(),
       })
       .strict(),
-    commits: z.array(delegationCommitSchema).max(20),
-    completedAt: timestampSchema,
-    delegationId: identifierSchema,
     environment: z
       .object({
         dockerSocket: z.literal(false),
@@ -291,7 +286,6 @@ export const keeploreDelegationResultSchema = z
         sudo: z.literal(false),
       })
       .strict(),
-    failure: delegationFailureSchema.nullable(),
     pullRequest: z
       .discriminatedUnion("state", [
         z.object({ state: z.literal("none"), url: z.null() }).strict(),
@@ -302,15 +296,9 @@ export const keeploreDelegationResultSchema = z
           })
           .strict(),
       ]),
-    risks: z.array(z.string().min(1).max(300)).max(20),
-    status: z.enum(["completed", "failed", "stopped"]),
     verification: z
       .object({
-        automated: z
-          .array(
-            delegationAutomaticVerificationSchema,
-          )
-          .max(10),
+        automated: delegationAutomatedVerificationResultsSchema,
         cardView: z
           .object({
             afterHash: z.string().min(1).max(200),
@@ -332,7 +320,6 @@ export const keeploreDelegationResultSchema = z
         screenshots: z.array(keeploreScreenshotSchema).max(4),
       })
       .strict(),
-    worktree: keeploreWorktreeSchema,
   })
   .strict();
 

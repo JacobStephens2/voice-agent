@@ -7,6 +7,7 @@ import {
   administrativePlanProviderIdentitySchema,
   administrativePolicyEvidencePageSchema,
   administrativeTimestampSchema,
+  type AdministrativeTimestamp,
   type LivePatchRollbackActivationRequest,
 } from "@voice-agent/contracts";
 
@@ -524,7 +525,6 @@ test.each([
   "mismatched-candidate",
   "mismatched-publication",
   "failed-verification",
-  "terminated",
 ] as const)(
   "a %s Delegation Result cannot complete its Operation or Task",
   async (delegatedWorktreeProof) => {
@@ -567,6 +567,83 @@ test.each([
     });
 
     await scenario.close();
+  },
+);
+
+test.each([
+  ["terminated", "stopped", "delegation-stopped"],
+  ["failed", "failed", "delegation-failed"],
+] as const)(
+  "a %s Delegation persists its canonical terminal result without completing the Task",
+  async (delegatedWorktreeProof, terminalStatus, publicationReason) => {
+    const { databasePath, scenario } = await createActivatedScenario(
+      {
+        delegatedWorktreeProof,
+        now: "2026-10-02T11:36:00.000Z",
+        providerPlan: [{ kind: "delegated-worktree.change" }],
+      },
+      temporaryDirectories,
+    );
+    const admission = await scenario.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState: "The proposed change is verified in its isolated worktree.",
+      outcome: "propose",
+      ownerId: "owner",
+      requestId: `terminal-delegation-result-${terminalStatus}`,
+      target,
+    });
+    await scenario.close();
+
+    const restarted = await createAdministrativeAutonomyScenario({
+      databasePath,
+      identifierNamespace: `${terminalStatus}-restart-`,
+      now: "2026-10-02T11:37:00.000Z",
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    });
+    const record = await restarted.readTask("administrative-task-1");
+    const terminalEvidence = record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.terminated",
+    );
+
+    expect({ admission, record, terminalEvidence }).toMatchObject({
+      admission: {
+        decision: "denied",
+        reason: `Administrative Delegation ${terminalStatus}.`,
+      },
+      record: { task: { status: "denied" } },
+      terminalEvidence: [
+        {
+          details: {
+            result: {
+              delegation: {
+                failure: { kind: "restricted-runner" },
+                status: terminalStatus,
+              },
+              publication: {
+                kind: "not-published",
+                productionMutation: false,
+                reason: publicationReason,
+              },
+            },
+            terminalStatus,
+          },
+          kind: "administrative.operation.terminated",
+        },
+      ],
+    });
+    expect(
+      record?.evidence.filter(
+        (event) => event.kind === "administrative.operation.completed",
+      ),
+    ).toEqual([]);
+
+    await restarted.reconcileOperations();
+    expect(
+      (await restarted.readTask("administrative-task-1"))?.evidence.filter(
+        (event) => event.kind === "administrative.operation.terminated",
+      ),
+    ).toHaveLength(1);
+    await restarted.close();
   },
 );
 
@@ -1897,6 +1974,86 @@ test("the suspension reconciliation controller retries durable rollback failures
   await recoveryProcess.close();
 });
 
+test("a hanging rollback activator is aborted, evidenced, scheduled, and retried", async () => {
+  const clock = { current: "2026-10-02T15:15:00.000Z" };
+  const deadlineCallbacks: Array<() => void> = [];
+  const attemptDeadlines: AdministrativeTimestamp[] = [];
+  const reconciliationCallbacks: Array<() => Promise<void>> = [];
+  const reconciliationSchedule: string[] = [];
+  const signals: AbortSignal[] = [];
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const { scenario } = await createActivatedScenario(
+    {
+      clock,
+      now: clock.current,
+      onRollbackActivationStart: () => markStarted?.(),
+      providerPlan: [{ kind: "live-patch.apply" }],
+      reconciliationCallbacks,
+      reconciliationSchedule,
+      rollbackActivationAttemptDeadlines: attemptDeadlines,
+      rollbackActivationDeadlineCallbacks: deadlineCallbacks,
+      rollbackActivationHangs: 1,
+      rollbackActivationSignals: signals,
+    },
+    temporaryDirectories,
+  );
+  await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "hanging-rollback-activator",
+    target,
+  });
+
+  const suspension = scenario.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  await started;
+  expect(deadlineCallbacks).toHaveLength(1);
+  deadlineCallbacks[0]?.();
+  await suspension;
+  const pending = await scenario.readPolicyStatus();
+  const failedEvidence = (
+    await scenario.readTask("administrative-task-1")
+  )?.evidence.filter(
+    (event) =>
+      event.kind === "administrative.live-patch.rollback-activation-failed",
+  );
+
+  expect({ attemptDeadlines, failedEvidence, pending, schedule: reconciliationSchedule, signals }).toMatchObject({
+    attemptDeadlines: ["2026-10-02T15:15:30.000Z"],
+    failedEvidence: [
+      { details: { attemptCount: 1, reason: "transient-failure" } },
+    ],
+    pending: {
+      rollbackActivations: {
+        pendingActivations: [{ attemptCount: 1 }],
+        pendingOperationIds: ["administrative-operation-1"],
+      },
+      status: "suspended",
+    },
+    schedule: ["2026-10-02T15:15:01.000Z"],
+  });
+  expect(signals[0]?.aborted).toBe(true);
+
+  clock.current = reconciliationSchedule[0] ?? clock.current;
+  await reconciliationCallbacks[0]?.();
+  expect(await scenario.readPolicyStatus()).toMatchObject({
+    rollbackActivations: {
+      activatedOperationIds: ["administrative-operation-1"],
+      pendingOperationIds: [],
+    },
+    status: "suspended",
+  });
+  await scenario.close();
+});
+
 test("repeated rollback attempts remain append-only behind a truthful bounded Evidence Record", async () => {
   const clock = { current: "2026-10-02T15:30:00.000Z" };
   const callbacks: Array<() => Promise<void>> = [];
@@ -2031,6 +2188,78 @@ test("a matured Live Patch rollback window is durably disarmed before a racing d
   expect(raced.filter((result) => result.decision === "activated")).toHaveLength(1);
   expect(raced.filter((result) => result.decision === "denied")).toHaveLength(1);
 
+  await restarted.close();
+});
+
+test("an unfinished Live Patch cannot expire its rollback window after the mutation crash window", async () => {
+  const clock = { current: "2026-10-02T16:45:00.000Z" };
+  const reconciliationCallbacks: Array<() => Promise<void>> = [];
+  const { databasePath, scenario } = await createActivatedScenario(
+    {
+      clock,
+      crashAfterFirstEffect: true,
+      now: clock.current,
+      providerPlan: [{ kind: "live-patch.apply" }],
+      reconciliationCallbacks,
+    },
+    temporaryDirectories,
+  );
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "unfinished-live-patch-expiry",
+    target,
+  });
+
+  clock.current = "2026-10-02T17:16:00.000Z";
+  const reactivation = await scenario.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 1,
+    freshPasskey: true,
+  });
+  const beforeSuspension = await scenario.readTask("administrative-task-1");
+  const suspension = await scenario.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  await scenario.close();
+
+  const restarted = await createAdministrativeAutonomyScenario({
+    clock,
+    databasePath,
+    identifierNamespace: "unfinished-live-patch-restart-",
+    now: clock.current,
+    providerPlan: [{ kind: "live-patch.apply" }],
+  });
+  const recovered = await restarted.readPolicyStatus();
+
+  expect({ admission, beforeSuspension, reactivation, recovered, suspension }).toMatchObject({
+    admission: { decision: "admitted" },
+    beforeSuspension: { task: { status: "running" } },
+    reactivation: {
+      body: {
+        error:
+          "Administrative Autonomy has unresolved Live Patch rollback windows",
+      },
+      statusCode: 409,
+    },
+    recovered: {
+      rollbackActivations: {
+        activatedOperationIds: ["administrative-operation-1"],
+        pendingOperationIds: [],
+      },
+      status: "suspended",
+    },
+    suspension: { body: { status: "suspended" }, statusCode: 200 },
+  });
+  expect(
+    beforeSuspension?.evidence.filter(
+      (event) => event.kind === "administrative.live-patch.rollback-window-expired",
+    ),
+  ).toEqual([]);
   await restarted.close();
 });
 

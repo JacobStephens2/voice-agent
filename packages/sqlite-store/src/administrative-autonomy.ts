@@ -11,6 +11,7 @@ import {
   administrativeExecutionManifestSchema,
   administrativeMutationOperationKinds,
   administrativeOperationRequestSchema,
+  administrativeOperationResultSchema,
   administrativePolicyRevisionSchema,
   administrativePolicyActivationExpectationSchema,
   administrativePolicyEvidenceEventInputSchema,
@@ -132,7 +133,7 @@ interface AdministrativeOperationRow {
   readonly initial_execution_started_at: string | null;
   readonly lease_expires_at: string | null;
   readonly request_json: string;
-  readonly status: "accepted" | "completed" | "running";
+  readonly status: "accepted" | "completed" | "failed" | "running" | "stopped";
   readonly task_id: string;
 }
 
@@ -155,6 +156,10 @@ interface LivePatchRollbackRow {
     | "armed"
     | "window-expired";
   readonly task_id: string;
+}
+
+interface MaturedLivePatchRollbackRow extends LivePatchRollbackRow {
+  readonly operation_result_json: string;
 }
 
 interface LivePatchRollbackIdRow {
@@ -409,6 +414,12 @@ export function createSqliteAdministrativeAutonomyStore(
       claim_id = NULL, lease_expires_at = NULL
     WHERE id = ? AND task_id = ? AND status = 'running' AND claim_id = ?
   `);
+  const terminateDelegatedOperation = database.prepare(`
+    UPDATE administrative_operations
+    SET status = ?, result_json = ?, updated_at = ?,
+      claim_id = NULL, lease_expires_at = NULL
+    WHERE id = ? AND task_id = ? AND status = 'running' AND claim_id = ?
+  `);
   const countIncompleteOperations = database.prepare<
     [taskId: string],
     { readonly count: number }
@@ -485,17 +496,31 @@ export function createSqliteAdministrativeAutonomyStore(
     SET status = 'window-expired', updated_at = ?
     WHERE status = 'armed'
       AND json_extract(request_json, '$.rollbackDeadline') <= ?
+      AND EXISTS (
+        SELECT 1
+        FROM administrative_operations
+        WHERE administrative_operations.id =
+          administrative_live_patch_rollbacks.operation_id
+          AND administrative_operations.status = 'completed'
+          AND administrative_operations.result_json IS NOT NULL
+      )
   `);
   const listMaturedLivePatchRollbacks = database.prepare<
     [expiresAt: string],
-    LivePatchRollbackRow
+    MaturedLivePatchRollbackRow
   >(`
-    SELECT operation_id, task_id, status, request_json, result_json,
-      attempt_count, last_error, next_attempt_at
-    FROM administrative_live_patch_rollbacks
-    WHERE status = 'armed'
-      AND json_extract(request_json, '$.rollbackDeadline') <= ?
-    ORDER BY operation_id
+    SELECT rollbacks.operation_id, rollbacks.task_id, rollbacks.status,
+      rollbacks.request_json, rollbacks.result_json, rollbacks.attempt_count,
+      rollbacks.last_error, rollbacks.next_attempt_at,
+      operations.result_json AS operation_result_json
+    FROM administrative_live_patch_rollbacks AS rollbacks
+    JOIN administrative_operations AS operations
+      ON operations.id = rollbacks.operation_id
+    WHERE rollbacks.status = 'armed'
+      AND json_extract(rollbacks.request_json, '$.rollbackDeadline') <= ?
+      AND operations.status = 'completed'
+      AND operations.result_json IS NOT NULL
+    ORDER BY rollbacks.operation_id
   `);
   const activateLivePatchRollbackWindow = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -813,6 +838,19 @@ export function createSqliteAdministrativeAutonomyStore(
         const request = livePatchRollbackActivationRequestSchema.parse(
           JSON.parse(rollback.request_json),
         );
+        const completedOperation = administrativeOperationResultSchema.parse(
+          JSON.parse(rollback.operation_result_json),
+        );
+        if (
+          completedOperation.kind !== "live-patch.apply" ||
+          completedOperation.operationId !== request.operationId ||
+          completedOperation.mutationProof.reconciliation.registeredCodebaseId !==
+            request.target.registeredCodebaseId
+        ) {
+          throw new Error(
+            "A Live Patch rollback can expire only after its verified Operation completed",
+          );
+        }
         appendEvents(request.taskId, [
           {
             details: {
@@ -1534,6 +1572,69 @@ export function createSqliteAdministrativeAutonomyStore(
     },
   );
 
+  const terminateDelegatedOperationTransaction = database.transaction(
+    (
+      input: Parameters<
+        AdministrativeAutonomyStore["terminateDelegatedOperation"]
+      >[0],
+    ) => {
+      const operation = readOperation.get(input.operationId);
+      if (
+        operation === undefined ||
+        operation.task_id !== input.taskId ||
+        operation.status !== "running" ||
+        operation.claim_id !== input.claimId
+      ) {
+        throw new Error("Administrative Operation claim changed concurrently");
+      }
+      const task = requireTask(input.taskId);
+      const request = administrativeOperationRequestSchema.parse(
+        JSON.parse(operation.request_json),
+      );
+      const result = administrativeOperationResultSchema.parse(input.result);
+      if (
+        request.kind !== "delegated-worktree.change" ||
+        result.kind !== request.kind ||
+        result.operationId !== request.operationId ||
+        result.delegation.status === "completed" ||
+        task.active_execution_deadline === null ||
+        result.completedAt >= task.active_execution_deadline ||
+        !matchesAuthoritySnapshot(request.authority)
+      ) {
+        throw new Error("Terminal Delegation Result is not authoritative");
+      }
+      if (
+        input.terminatedEvent.kind !== "administrative.operation.terminated" ||
+        input.terminatedEvent.occurredAt !== result.completedAt ||
+        input.terminatedEvent.details.operationId !== result.operationId ||
+        input.terminatedEvent.details.kind !== result.kind ||
+        input.terminatedEvent.details.terminalStatus !==
+          result.delegation.status ||
+        JSON.stringify(input.terminatedEvent.details.result) !==
+          JSON.stringify(result)
+      ) {
+        throw new Error(
+          "Terminal Delegation Evidence Event does not match its result",
+        );
+      }
+      if (
+        terminateDelegatedOperation.run(
+          result.delegation.status,
+          JSON.stringify(result),
+          result.completedAt,
+          input.operationId,
+          input.taskId,
+          input.claimId,
+        ).changes !== 1
+      ) {
+        throw new Error("Administrative Operation changed concurrently");
+      }
+      releaseMutationLane.run(input.operationId, input.claimId);
+      appendEvents(input.taskId, [input.terminatedEvent]);
+      return loadRecord(requireTask(input.taskId));
+    },
+  );
+
   const renewOperationTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["renewOperationClaim"]>[0]) => {
       const operation = readOperation.get(input.operationId);
@@ -1655,6 +1756,9 @@ export function createSqliteAdministrativeAutonomyStore(
     },
     async completeOperation(input) {
       return completeOperationTransaction.immediate(input);
+    },
+    async terminateDelegatedOperation(input) {
+      return terminateDelegatedOperationTransaction.immediate(input);
     },
     async completeLivePatchRollbackActivation(input) {
       return completeLivePatchRollbackActivationTransaction.immediate(input);

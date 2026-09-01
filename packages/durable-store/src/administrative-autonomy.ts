@@ -138,6 +138,16 @@ export interface AdministrativeAutonomyStore {
     readonly result: AdministrativeOperationResult;
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
+  terminateDelegatedOperation(input: {
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly operationId: AdministrativeOperationId;
+    readonly result: Extract<
+      AdministrativeOperationResult,
+      { readonly kind: "delegated-worktree.change" }
+    >;
+    readonly taskId: AdministrativeTaskId;
+    readonly terminatedEvent: UnsequencedAdministrativeEvidenceEvent;
+  }): Promise<AdministrativeEvidenceRecord>;
   completeLivePatchRollbackActivation(input: {
     readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly result: LivePatchRollbackActivationResult;

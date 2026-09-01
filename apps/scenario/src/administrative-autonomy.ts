@@ -110,6 +110,7 @@ interface ScenarioOperationResultContext {
     "completedAt" | "effect" | "operationId" | "summary"
   >;
   readonly delegatedWorktreeProof:
+    | "failed"
     | "failed-verification"
     | "mismatched"
     | "mismatched-candidate"
@@ -143,6 +144,12 @@ type ScenarioOperationResultHandlerRegistry = {
 
 const scenarioOperationResultHandlers = {
   "delegated-worktree.change": (request, context) => {
+    const terminalStatus =
+      context.delegatedWorktreeProof === "terminated"
+        ? ("stopped" as const)
+        : context.delegatedWorktreeProof === "failed"
+          ? ("failed" as const)
+          : undefined;
     const result = {
       ...context.common,
       delegation: {
@@ -151,17 +158,12 @@ const scenarioOperationResultHandlers = {
             ? "administrative/untrusted-provider-branch"
             : request.delegation.worktree.branch,
         changedFiles:
-          context.delegatedWorktreeProof === "terminated"
-            ? []
-            : ["src/administrative-change.ts"],
-        commits:
-          context.delegatedWorktreeProof === "terminated"
-            ? []
-            : ["a".repeat(40)],
+          terminalStatus === undefined ? ["src/administrative-change.ts"] : [],
+        commits: terminalStatus === undefined ? ["a".repeat(40)] : [],
         completedAt: context.common.completedAt,
         delegationId: request.delegation.brief.delegationId,
         failure:
-          context.delegatedWorktreeProof === "terminated"
+          terminalStatus !== undefined
             ? {
                 evidencePaths: [
                   `/var/lib/voice-agent-evidence/${request.operationId}/restricted-runner-failure.json`,
@@ -172,10 +174,7 @@ const scenarioOperationResultHandlers = {
               }
             : null,
         risks: [],
-        status:
-          context.delegatedWorktreeProof === "terminated"
-            ? ("stopped" as const)
-            : ("completed" as const),
+        status: terminalStatus ?? ("completed" as const),
         verification: {
           automated:
             request.delegation.brief.acceptanceCriteria.automaticVerification.commands.map(
@@ -189,7 +188,7 @@ const scenarioOperationResultHandlers = {
               }),
             ),
           candidate:
-            context.delegatedWorktreeProof === "terminated"
+            terminalStatus !== undefined
               ? null
               : {
                   branch: request.delegation.worktree.branch,
@@ -203,15 +202,21 @@ const scenarioOperationResultHandlers = {
         worktree: {
           ...request.delegation.worktree,
           dirty: false,
-          state:
-            context.delegatedWorktreeProof === "terminated"
-              ? ("stopped" as const)
-              : ("completed" as const),
+          state: terminalStatus ?? ("completed" as const),
         },
       },
       kind: request.kind,
       publication:
-        request.publication.kind === "open-pull-request"
+        terminalStatus !== undefined
+          ? {
+              kind: "not-published" as const,
+              productionMutation: false as const,
+              reason:
+                terminalStatus === "failed"
+                  ? ("delegation-failed" as const)
+                  : ("delegation-stopped" as const),
+            }
+          : request.publication.kind === "open-pull-request"
           ? {
               baseBranch: "registered-production-branch" as const,
               headBranch: request.delegation.worktree.branch,
@@ -278,14 +283,11 @@ function scenarioOperationResult(
   request: AdministrativeOperationRequest,
   context: ScenarioOperationResultContext,
 ): AdministrativeOperationResult {
-  switch (request.kind) {
-    case "delegated-worktree.change":
-      return scenarioOperationResultHandlers[request.kind](request, context);
-    case "live-patch.apply":
-      return scenarioOperationResultHandlers[request.kind](request, context);
-    case "production.observe":
-      return scenarioOperationResultHandlers[request.kind](request, context);
-  }
+  const handler = scenarioOperationResultHandlers[request.kind] as (
+    correlatedRequest: AdministrativeOperationRequest,
+    correlatedContext: ScenarioOperationResultContext,
+  ) => AdministrativeOperationResult;
+  return handler(request, context);
 }
 
 export async function createAdministrativeAutonomyScenario(options: {
@@ -329,6 +331,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly now: string;
   readonly onOperationStart?: () => void;
   readonly onProviderPlanStart?: () => void;
+  readonly onRollbackActivationStart?: () => void;
   readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
   readonly omitLivePatchReconciliation?: boolean;
@@ -341,14 +344,19 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly reconciliationSchedule?: string[];
   readonly reportedCompletionTime?: string;
   readonly rollbackActivationAttempts?: LivePatchRollbackActivationRequest[];
+  readonly rollbackActivationAttemptDeadlines?: AdministrativeTimestamp[];
+  readonly rollbackActivationDeadlineCallbacks?: Array<() => void>;
   readonly rollbackActivationEffects?: string[];
   readonly rollbackActivationFailures?: number;
+  readonly rollbackActivationHangs?: number;
   readonly rollbackActivationLedger?: Set<string>;
+  readonly rollbackActivationSignals?: AbortSignal[];
   readonly rollbackActivationTimeLedger?: Map<
     string,
     AdministrativeTimestamp
   >;
   readonly delegatedWorktreeProof?:
+    | "failed"
     | "failed-verification"
     | "mismatched"
     | "mismatched-candidate"
@@ -374,6 +382,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   let executorFailuresRemaining = options.executorFailures ?? 0;
   let rollbackActivationFailuresRemaining =
     options.rollbackActivationFailures ?? 0;
+  let rollbackActivationHangsRemaining = options.rollbackActivationHangs ?? 0;
   const executedOperations: AdministrativeOperationRequest[] = [];
   const operationAttempts: AdministrativeOperationRequest[] = [];
   const effectLedger = options.effectLedger ?? new Set<string>();
@@ -609,8 +618,24 @@ export async function createAdministrativeAutonomyScenario(options: {
         selfReportedRollbackActivatorImplementation.rollbackActivationImplementationDigest,
       kind: "live-patch.apply" as const,
     },
-    async activate(request: LivePatchRollbackActivationRequest) {
+    async activate(input: {
+      readonly attemptDeadline: AdministrativeTimestamp;
+      readonly request: LivePatchRollbackActivationRequest;
+      readonly signal: AbortSignal;
+    }) {
+      const { attemptDeadline, request, signal } = input;
       options.rollbackActivationAttempts?.push(request);
+      options.rollbackActivationAttemptDeadlines?.push(attemptDeadline);
+      options.rollbackActivationSignals?.push(signal);
+      options.onRollbackActivationStart?.();
+      if (rollbackActivationHangsRemaining > 0) {
+        rollbackActivationHangsRemaining -= 1;
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("Simulated hanging rollback activation was aborted");
+      }
       if (rollbackActivationFailuresRemaining > 0) {
         rollbackActivationFailuresRemaining -= 1;
         throw new Error("Simulated Live Patch rollback activation failure");
@@ -775,6 +800,21 @@ export async function createAdministrativeAutonomyScenario(options: {
                 });
                 return () => {
                   scheduled = false;
+                };
+              },
+            },
+          }),
+      ...(options.rollbackActivationDeadlineCallbacks === undefined
+        ? {}
+        : {
+            rollbackActivationDeadlineTimer: {
+              arm(_deadline: AdministrativeTimestamp, onDeadline: () => void) {
+                let armed = true;
+                options.rollbackActivationDeadlineCallbacks?.push(() => {
+                  if (armed) onDeadline();
+                });
+                return () => {
+                  armed = false;
                 };
               },
             },
