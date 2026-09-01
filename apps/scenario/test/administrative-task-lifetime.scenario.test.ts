@@ -3,6 +3,7 @@ import { rm } from "node:fs/promises";
 import { afterEach, expect, test } from "vitest";
 
 import { administrativeActiveExecutionMilliseconds } from "@voice-agent/contracts";
+import { AdministrativeExecutionPaused } from "@voice-agent/runtime";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
 import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
@@ -587,6 +588,99 @@ test("an executor cannot invent a pause reason to hold the budget open", async (
     pauseEvents: [],
   });
   expect(JSON.stringify(record)).not.toContain("sk-live-CANARY");
+
+  await scenario.close();
+});
+
+test("a quota block during planning banks the budget instead of spending it", async () => {
+  const clock = { current: "2026-10-02T12:00:00.000Z" };
+  const { scenario } = await createActivatedScenario(
+    {
+      clock,
+      now: clock.current,
+      providerPauses: ["quota-blocked"],
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
+
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The production application health is understood.",
+    outcome: "investigate",
+    ownerId: "owner",
+    requestId: "planning-quota-request",
+    target,
+  });
+  const paused = await scenario.readTask("administrative-task-1");
+  clock.current = "2026-10-09T12:00:00.000Z";
+  await scenario.resumeTask("administrative-task-1");
+  const record = await scenario.readTask("administrative-task-1");
+
+  expect({
+    admission: admission.decision,
+    paused: paused?.task,
+    resumed: record?.task,
+  }).toMatchObject({
+    admission: "admitted",
+    paused: {
+      activeExecutionConsumedMilliseconds: 0,
+      activeExecutionDeadline: null,
+      executionPause: { reason: "quota-blocked" },
+      // The plan was never chosen, so the Task is still planning.
+      status: "planning",
+    },
+    resumed: {
+      activeExecutionDeadline: "2026-10-09T18:00:00.000Z",
+      executionPause: null,
+      status: "completed",
+    },
+  });
+
+  await scenario.close();
+});
+
+test("a Task holding an armed Live Patch rollback cannot pause its budget", async () => {
+  const rollbackActivationEffects: string[] = [];
+  const { scenario } = await createActivatedScenario(
+    {
+      // The pause is raised after the mutation has armed its rollback.
+      afterLivePatchRollbackArmed: async () => {
+        throw new AdministrativeExecutionPaused("provider-paused");
+      },
+      now: "2026-10-02T13:00:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationEffects,
+    },
+    temporaryDirectories,
+  );
+
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The bounded production response is restored.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "armed-rollback-pause-request",
+    target,
+  });
+  const record = await scenario.readTask("administrative-task-1");
+
+  expect({
+    admission: admission.decision,
+    pauseEvents: record?.evidence.filter(
+      (event) => event.kind === "administrative.task.paused",
+    ),
+    task: record?.task,
+  }).toMatchObject({
+    admission: "admitted",
+    // A pause has no bound, so the Task keeps spending its budget and the
+    // thirty-minute window goes on protecting the mutation that is live.
+    pauseEvents: [],
+    task: {
+      activeExecutionDeadline: "2026-10-02T19:00:00.000Z",
+      executionPause: null,
+    },
+  });
 
   await scenario.close();
 });

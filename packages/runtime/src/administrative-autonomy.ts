@@ -269,13 +269,18 @@ class AdministrativePlanningDeadlineError extends Error {}
  * stops spending it until it resumes.
  */
 export class AdministrativeExecutionPaused extends Error {
-  readonly reason: AdministrativeExecutionPauseReason;
+  /** Untrusted until narrowed: an executor may hold anything here. */
+  readonly reason: unknown;
 
-  constructor(reason: AdministrativeExecutionPauseReason) {
-    super(`Administrative execution paused: ${reason}`);
+  constructor(reason: unknown) {
+    super("Administrative execution paused");
     this.reason = reason;
   }
 }
+
+/** The one loss reason Stop raises, shared by the abort and the settlement. */
+export const administrativeTaskStopLossReason =
+  "The owner stopped the Administrative Task";
 
 function administrativeExecutionPauseReason(
   error: unknown,
@@ -312,7 +317,7 @@ export type AdministrativePolicySuspensionResult =
 
 export type AdministrativeTaskLifetimeResult =
   | {
-      readonly decision: "paused" | "resumed" | "stopped";
+      readonly decision: "resumed" | "stopped";
       readonly task: AdministrativeTask;
     }
   | { readonly decision: "denied"; readonly reason: string };
@@ -391,15 +396,17 @@ function describeLifetimeDenial(
   reason: AdministrativeTaskLifetimeDenialReason,
 ): string {
   switch (reason) {
+    case "armed-live-patch-rollback":
+      return "The Administrative Task holds an armed Live Patch rollback";
     case "budget-exhausted":
-      return "Administrative Task active-execution deadline elapsed";
+      return "The Active Execution Budget is exhausted";
     case "task-already-paused":
       return "The Administrative Task is already paused";
     case "task-not-paused":
       return "The Administrative Task is not paused";
     case "task-not-running":
       return "The Administrative Task is not running";
-    default:
+    case "task-unavailable":
       return "The Administrative Task is unavailable";
   }
 }
@@ -700,11 +707,16 @@ export function createAdministrativeAutonomyRuntime(options: {
     return { decision: "denied" as const, reason };
   }
 
+  /**
+   * Banks the Active Execution Budget. It can be refused — a Task holding an
+   * armed Live Patch rollback may not pause — and the caller must then settle
+   * the failure the way it would have without a pause signal.
+   */
   async function pauseAdministrativeTask(
     taskId: AdministrativeTaskId,
     reason: AdministrativeExecutionPauseReason,
-  ): Promise<void> {
-    await options.store.pauseTask({
+  ): Promise<boolean> {
+    const outcome = await options.store.pauseTask({
       event: {
         id: options.identifiers.nextEventId(),
         summary: "Active execution paused and stopped spending its budget.",
@@ -713,6 +725,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       reason,
       taskId,
     });
+    return outcome.decision === "applied";
   }
 
   async function denyClaimedOperation(
@@ -1101,6 +1114,19 @@ export function createAdministrativeAutonomyRuntime(options: {
         );
       }
     } catch (error) {
+      // Quota and provider pauses reach planning as well as execution, and a
+      // Task that cannot plan must stop spending its budget either way.
+      const pauseReason = administrativeExecutionPauseReason(error);
+      if (
+        pauseReason !== undefined &&
+        (await pauseAdministrativeTask(task.id, pauseReason))
+      ) {
+        return {
+          decision: "admitted",
+          policyRevision: task.authority.policyRevision,
+          taskId: task.id,
+        };
+      }
       if (
         error instanceof AdministrativePlanningDeadlineError ||
         now() >= task.activeExecutionDeadline
@@ -1455,7 +1481,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           // second settlement would overwrite the reason the owner gave.
           if (
             lossReason.startsWith("Administrative Suspension") ||
-            lossReason.startsWith("The owner stopped")
+            lossReason === administrativeTaskStopLossReason
           ) {
             return false;
           }
@@ -1463,8 +1489,10 @@ export function createAdministrativeAutonomyRuntime(options: {
           return true;
         }
         const pauseReason = administrativeExecutionPauseReason(error);
-        if (pauseReason !== undefined) {
-          await pauseAdministrativeTask(claim.request.taskId, pauseReason);
+        if (
+          pauseReason !== undefined &&
+          (await pauseAdministrativeTask(claim.request.taskId, pauseReason))
+        ) {
           return true;
         }
         if (error instanceof AdministrativeEffectFenceError) {
@@ -1698,13 +1726,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         if (policy.status !== "active") return;
         const record = await options.store.findTask(taskId);
         const task = record?.task;
-        if (
-          task === undefined ||
-          task.executionPause !== null ||
-          (task.status !== "planning" && task.status !== "running")
-        ) {
-          return;
-        }
+        if (task === undefined || administrativeTaskIsSettled(record)) return;
         progressed = taskRequiresResultSettlement(task, policy, now())
           ? await reconcileCompletedOperationSettlement(taskId, policy)
           : await reconcileTask(taskId);
@@ -1759,7 +1781,11 @@ export function createAdministrativeAutonomyRuntime(options: {
             record: recoverableRecords[index],
             taskId,
           }))
-          .filter((entry) => entry.record?.task.executionPause == null);
+          .filter(
+            (entry) =>
+              entry.record === undefined ||
+              entry.record.task.executionPause === null,
+          );
         const taskIds = runnable.map((entry) => entry.taskId);
         const taskRecords = runnable.map((entry) => entry.record);
         const settlementTaskIds = taskIds.filter((_taskId, index) => {
@@ -2094,10 +2120,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           };
     },
     async stopTask(input) {
-      abortTaskExecutions(
-        input.taskId,
-        "The owner stopped the Administrative Task",
-      );
+      abortTaskExecutions(input.taskId, administrativeTaskStopLossReason);
       const outcome = await options.store.stopTask({
         event: {
           id: options.identifiers.nextEventId(),

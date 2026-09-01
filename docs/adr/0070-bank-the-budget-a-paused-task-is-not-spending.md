@@ -51,7 +51,24 @@ provider able to describe its way out of the only time bound it has.
 
 The three reasons are recorded, but nothing branches on which one it was. They
 exist so the Evidence Record says why the budget stopped, and the resumption
-that follows is the owner's either way.
+that follows is the owner's either way. Nothing here retries a pause on a
+timer: ADR-0048 makes provider failure and quota exhaustion durable pause
+states rather than grounds for failover, and a pause that cleared itself would
+be a failover to the same exhausted route.
+
+A pause is raised at both points a provider can refuse — choosing the plan and
+running an Operation — because a Task blocked at planning is spending the same
+budget as one blocked mid-Operation. It stays `planning` while paused, and the
+plan it never received is chosen when it resumes.
+
+**A Task holding an armed Live Patch rollback may not pause.** These two holds
+are incompatible by construction: the rollback window is thirty minutes and a
+pause has no bound, so pausing over an armed rollback would let the window
+mature on the wall clock while the Task that owns the mutation sits
+indefinitely — and a later Stop would find nothing left to compensate. The
+store refuses that pause, and the executor's failure settles the way it would
+have without a pause signal, which leaves the independent rollback controller
+holding the mutation exactly as it does for a Live Patch whose process died.
 
 ## Stop is terminal, and its compensation outlives the policy
 

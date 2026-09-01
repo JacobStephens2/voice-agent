@@ -15,6 +15,7 @@ import {
   administrativeOperationRequestSchema,
   administrativeOperationResultSchema,
   administrativePolicyRevisionSchema,
+  administrativeRemainingActiveExecutionMilliseconds,
   administrativePolicyActivationExpectationSchema,
   administrativePolicyEvidenceEventInputSchema,
   administrativePolicyEvidenceEventSchema,
@@ -548,13 +549,15 @@ export function createSqliteAdministrativeAutonomyStore(
     UPDATE administrative_tasks
     SET active_execution_deadline = NULL, active_execution_consumed_ms = ?,
       execution_pause_json = ?, updated_at = ?
-    WHERE id = ? AND status = 'running' AND execution_pause_json IS NULL
+    WHERE id = ? AND status IN ('planning', 'running')
+      AND execution_pause_json IS NULL
   `);
   const resumeTaskExecution = database.prepare(`
     UPDATE administrative_tasks
     SET active_execution_deadline = ?, execution_pause_json = NULL,
       updated_at = ?
-    WHERE id = ? AND status = 'running' AND execution_pause_json IS NOT NULL
+    WHERE id = ? AND status IN ('planning', 'running')
+      AND execution_pause_json IS NOT NULL
   `);
   const stopTaskExecution = database.prepare(`
     UPDATE administrative_tasks
@@ -2215,11 +2218,16 @@ export function createSqliteAdministrativeAutonomyStore(
       if (task === undefined) {
         return { decision: "denied", reason: "task-unavailable" };
       }
-      if (task.status !== "running") {
+      if (task.status !== "planning" && task.status !== "running") {
         return { decision: "denied", reason: "task-not-running" };
       }
       if (task.execution_pause_json !== null) {
         return { decision: "denied", reason: "task-already-paused" };
+      }
+      // An armed rollback is a live mutation waiting thirty minutes to be
+      // undone. A pause has no bound, so the two cannot coexist.
+      if (listTaskArmedRollbackIds.all(input.taskId).length > 0) {
+        return { decision: "denied", reason: "armed-live-patch-rollback" };
       }
       const consumed = consumedActiveExecutionMilliseconds(task, input.pausedAt);
       const pause = administrativeExecutionPauseSchema.parse({
@@ -2244,7 +2252,9 @@ export function createSqliteAdministrativeAutonomyStore(
             consumedMilliseconds: consumed,
             reason: pause.reason,
             remainingMilliseconds:
-              administrativeActiveExecutionMilliseconds - consumed,
+              administrativeRemainingActiveExecutionMilliseconds({
+                activeExecutionConsumedMilliseconds: consumed,
+              }),
           },
           id: input.event.id,
           kind: "administrative.task.paused",
@@ -2264,7 +2274,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (task === undefined) {
         return { decision: "denied", reason: "task-unavailable" };
       }
-      if (task.status !== "running") {
+      if (task.status !== "planning" && task.status !== "running") {
         return { decision: "denied", reason: "task-not-running" };
       }
       if (task.execution_pause_json === null) {
@@ -2274,8 +2284,9 @@ export function createSqliteAdministrativeAutonomyStore(
         JSON.parse(task.execution_pause_json),
       );
       const consumed = task.active_execution_consumed_ms;
-      const remaining =
-        administrativeActiveExecutionMilliseconds - consumed;
+      const remaining = administrativeRemainingActiveExecutionMilliseconds({
+        activeExecutionConsumedMilliseconds: consumed,
+      });
       if (remaining <= 0) {
         return { decision: "denied", reason: "budget-exhausted" };
       }

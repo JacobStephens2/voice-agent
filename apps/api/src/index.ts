@@ -689,7 +689,13 @@ function registerAdministrativeAutonomyRoutes(
     return administrativePolicyStatusSchema.parse(result.policy);
   });
 
-  for (const action of ["stop", "resume"] as const) {
+  const taskLifetimeActions = {
+    resume: (taskId: AdministrativeTaskId) =>
+      options.controls.resumeTask({ taskId }),
+    stop: (taskId: AdministrativeTaskId) =>
+      options.controls.stopTask({ taskId }),
+  } as const;
+  for (const [action, apply] of Object.entries(taskLifetimeActions)) {
     api.post<{ readonly Params: { readonly taskId: string } }>(
       `/api/administrative-autonomy/tasks/:taskId/${action}`,
       async (request, reply) => {
@@ -703,11 +709,8 @@ function registerAdministrativeAutonomyRoutes(
           options.records,
         );
         if (sessionToken === undefined) return;
-        const taskId = administrativeTaskIdSchema.parse(request.params.taskId);
         const result = administrativeTaskLifetimeResponseSchema.parse(
-          action === "stop"
-            ? await options.controls.stopTask({ taskId })
-            : await options.controls.resumeTask({ taskId }),
+          await apply(administrativeTaskIdSchema.parse(request.params.taskId)),
         );
         return result.decision === "denied"
           ? reply.code(409).send(result)

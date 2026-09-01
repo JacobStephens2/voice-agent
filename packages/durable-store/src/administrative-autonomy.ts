@@ -106,6 +106,7 @@ export interface AdministrativeLifetimeEventIdentity {
 }
 
 export type AdministrativeTaskLifetimeDenialReason =
+  | "armed-live-patch-rollback"
   | "budget-exhausted"
   | "task-already-paused"
   | "task-not-paused"
@@ -247,8 +248,10 @@ export interface AdministrativeAutonomyStore {
     readonly renewedAt: AdministrativeTimestamp;
   }): Promise<boolean>;
   /**
-   * Suspends the active-execution budget. The remaining budget is banked, the
+   * Suspends the Active Execution Budget. The remaining budget is banked, the
    * deadline is cleared, and no Operation may start until the Task resumes.
+   * A Task holding an armed Live Patch rollback cannot pause: an indefinite
+   * hold would outlive the thirty-minute window protecting that mutation.
    */
   pauseTask(input: {
     readonly event: AdministrativeLifetimeEventIdentity;

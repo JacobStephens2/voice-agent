@@ -430,6 +430,8 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly executorPauses?: readonly AdministrativeExecutionPauseReason[];
   /** An untrusted pause reason the executor invents rather than one of ours. */
   readonly executorPauseForgery?: string;
+  /** One pause signal per planning attempt, in order, before the plan returns. */
+  readonly providerPauses?: readonly AdministrativeExecutionPauseReason[];
   readonly executionAdapters?: "available" | "unavailable";
   readonly operationCompletionEvidenceForgery?:
     | "details-kind"
@@ -537,6 +539,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   let revisePolicyAfterFirstOperation = false;
   let revisePolicyBeforePlanAdmission = false;
   const executorPauses = [...(options.executorPauses ?? [])];
+  const providerPauses = [...(options.providerPauses ?? [])];
   let forgedPauseAttempted = false;
   let providerFailuresRemaining = options.providerFailures ?? 0;
   let executorFailuresRemaining = options.executorFailures ?? 0;
@@ -787,9 +790,7 @@ export async function createAdministrativeAutonomyScenario(options: {
       }
       if (options.executorPauseForgery !== undefined && !forgedPauseAttempted) {
         forgedPauseAttempted = true;
-        throw new AdministrativeExecutionPaused(
-          options.executorPauseForgery as AdministrativeExecutionPauseReason,
-        );
+        throw new AdministrativeExecutionPaused(options.executorPauseForgery);
       }
       const pauseReason = executorPauses.shift();
       if (pauseReason !== undefined) {
@@ -945,6 +946,10 @@ export async function createAdministrativeAutonomyScenario(options: {
       if (providerFailuresRemaining > 0) {
         providerFailuresRemaining -= 1;
         throw new Error("Simulated provider failure during planning");
+      }
+      const providerPauseReason = providerPauses.shift();
+      if (providerPauseReason !== undefined) {
+        throw new AdministrativeExecutionPaused(providerPauseReason);
       }
       if (revisePolicyBeforePlanAdmission) {
         revisePolicyBeforePlanAdmission = false;

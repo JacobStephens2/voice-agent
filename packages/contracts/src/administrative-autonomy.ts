@@ -1584,7 +1584,7 @@ export const administrativeTaskLifetimeResponseSchema = z.discriminatedUnion(
   [
     z
       .object({
-        decision: z.enum(["stopped", "paused", "resumed"]),
+        decision: z.enum(["stopped", "resumed"]),
         task: administrativeTaskSchema,
       })
       .strict(),
