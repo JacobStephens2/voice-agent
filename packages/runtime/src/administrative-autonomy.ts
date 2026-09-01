@@ -6,6 +6,7 @@ import {
   administrativeAuthoritySnapshotSchema,
   administrativeExecutionManifestFingerprint,
   administrativeExecutionManifestSchema,
+  administrativeExecutionPauseReasonSchema,
   administrativeOperationRequestSchema,
   administrativeOperationRecoveryResultSchema,
   administrativeOperationResultSchema,
@@ -38,6 +39,7 @@ import {
   type AdministrativeAutonomyStatus,
   type AdministrativeAuthoritySnapshot,
   type AdministrativeExecutionManifest,
+  type AdministrativeExecutionPauseReason,
   type AdministrativeOperationRequest,
   type AdministrativeOperationClaimId,
   type AdministrativeOperationId,
@@ -66,6 +68,7 @@ import {
 import type {
   AdministrativeAutonomyStore,
   AdministrativeOperationClaim,
+  AdministrativeTaskLifetimeDenialReason,
 } from "@voice-agent/durable-store";
 import {
   administrativeAutonomyPolicyDefinition,
@@ -259,6 +262,36 @@ class AdministrativeEffectFenceError extends Error {
 
 class AdministrativePlanningDeadlineError extends Error {}
 
+/**
+ * Raised by an Operation executor when the provider cannot continue for a
+ * reason that is not the Task's fault: a provider pause, exhausted quota, or
+ * work that now waits on the owner. The Task keeps its remaining budget and
+ * stops spending it until it resumes.
+ */
+export class AdministrativeExecutionPaused extends Error {
+  /** Untrusted until narrowed: an executor may hold anything here. */
+  readonly reason: unknown;
+
+  constructor(reason: unknown) {
+    super("Administrative execution paused");
+    this.reason = reason;
+  }
+}
+
+/** The one loss reason Stop raises, shared by the abort and the settlement. */
+export const administrativeTaskStopLossReason =
+  "The owner stopped the Administrative Task";
+
+function administrativeExecutionPauseReason(
+  error: unknown,
+): AdministrativeExecutionPauseReason | undefined {
+  if (!(error instanceof AdministrativeExecutionPaused)) return undefined;
+  const parsed = administrativeExecutionPauseReasonSchema.safeParse(
+    error.reason,
+  );
+  return parsed.success ? parsed.data : undefined;
+}
+
 class AdministrativeRollbackActivationError extends Error {
   readonly reason: "implementation-mismatch" | "transient-failure";
 
@@ -279,6 +312,13 @@ export type AdministrativePolicySuspensionResult =
   | {
       readonly decision: "suspended";
       readonly policy: AdministrativePolicyStatus;
+    }
+  | { readonly decision: "denied"; readonly reason: string };
+
+export type AdministrativeTaskLifetimeResult =
+  | {
+      readonly decision: "resumed" | "stopped";
+      readonly task: AdministrativeTask;
     }
   | { readonly decision: "denied"; readonly reason: string };
 
@@ -336,9 +376,39 @@ export interface AdministrativeAutonomyRuntime {
     readonly requestId: string;
     readonly target: AdministrativeTaskTargetRequestInput;
   }): Promise<AdministrativeTaskPreparationResult>;
+  /**
+   * Owner Stop. Future work is refused and the current live mutation's armed
+   * rollback becomes owed compensation, while Delegated Worktrees, commits,
+   * branches, and evidence are left exactly as they are.
+   */
+  stopTask(input: {
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeResult>;
+  resumeTask(input: {
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeResult>;
   suspendPolicy(input: {
     readonly expectation: AdministrativePolicySuspensionExpectation;
   }): Promise<AdministrativePolicySuspensionResult>;
+}
+
+function describeLifetimeDenial(
+  reason: AdministrativeTaskLifetimeDenialReason,
+): string {
+  switch (reason) {
+    case "armed-live-patch-rollback":
+      return "The Administrative Task holds an armed Live Patch rollback";
+    case "budget-exhausted":
+      return "The Active Execution Budget is exhausted";
+    case "task-already-paused":
+      return "The Administrative Task is already paused";
+    case "task-not-paused":
+      return "The Administrative Task is not paused";
+    case "task-not-running":
+      return "The Administrative Task is not running";
+    case "task-unavailable":
+      return "The Administrative Task is unavailable";
+  }
 }
 
 export function createAdministrativeAutonomyRuntime(options: {
@@ -505,13 +575,17 @@ export function createAdministrativeAutonomyRuntime(options: {
     },
   };
   let closed = false;
+  const taskReconciliations = new Map<AdministrativeTaskId, Promise<void>>();
   let reconciliationPromise: Promise<void> | undefined;
   let reconciliationRequested = false;
   let cancelRetry: (() => void) | undefined;
   let retryAt: AdministrativeTimestamp | undefined;
   const inFlightExecutions = new Map<
     AdministrativeOperationId,
-    { readonly abort: (reason: string) => void }
+    {
+      readonly abort: (reason: string) => void;
+      readonly taskId: AdministrativeTaskId;
+    }
   >();
 
   async function findTrustedRegisteredCodebase(
@@ -631,6 +705,27 @@ export function createAdministrativeAutonomyRuntime(options: {
       taskId,
     });
     return { decision: "denied" as const, reason };
+  }
+
+  /**
+   * Banks the Active Execution Budget. It can be refused — a Task holding an
+   * armed Live Patch rollback may not pause — and the caller must then settle
+   * the failure the way it would have without a pause signal.
+   */
+  async function pauseAdministrativeTask(
+    taskId: AdministrativeTaskId,
+    reason: AdministrativeExecutionPauseReason,
+  ): Promise<boolean> {
+    const outcome = await options.store.pauseTask({
+      event: {
+        id: options.identifiers.nextEventId(),
+        summary: "Active execution paused and stopped spending its budget.",
+      },
+      pausedAt: now(),
+      reason,
+      taskId,
+    });
+    return outcome.decision === "applied";
   }
 
   async function denyClaimedOperation(
@@ -809,9 +904,18 @@ export function createAdministrativeAutonomyRuntime(options: {
     }
   }
 
-  async function reconcileLivePatchRollbackActivations(
-    policy: Extract<AdministrativePolicyStatus, { status: "suspended" }>,
-  ): Promise<void> {
+  function abortTaskExecutions(taskId: AdministrativeTaskId, reason: string): void {
+    for (const execution of inFlightExecutions.values()) {
+      if (execution.taskId === taskId) execution.abort(reason);
+    }
+  }
+
+  /**
+   * Drives every owed Live Patch compensation to an activated proof. It is
+   * owed by Administrative Suspension or by Stop, so it runs whether or not
+   * the policy is still active, and never depends on the provider or worker.
+   */
+  async function reconcileLivePatchRollbackActivations(): Promise<void> {
     const pendingActivations =
       await options.store.listPendingLivePatchRollbackActivations();
     for (const pending of pendingActivations) {
@@ -875,7 +979,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           result.operationId !== request.operationId ||
           result.taskId !== request.taskId ||
           !sameAdministrativeTaskTargetBinding(result, request) ||
-          result.activatedAt < policy.suspendedAt ||
+          result.activatedAt < pending.compensationRequestedAt ||
           result.activatedAt > completedAt
         ) {
           throw new Error(
@@ -1010,6 +1114,19 @@ export function createAdministrativeAutonomyRuntime(options: {
         );
       }
     } catch (error) {
+      // Quota and provider pauses reach planning as well as execution, and a
+      // Task that cannot plan must stop spending its budget either way.
+      const pauseReason = administrativeExecutionPauseReason(error);
+      if (
+        pauseReason !== undefined &&
+        (await pauseAdministrativeTask(task.id, pauseReason))
+      ) {
+        return {
+          decision: "admitted",
+          policyRevision: task.authority.policyRevision,
+          taskId: task.id,
+        };
+      }
       if (
         error instanceof AdministrativePlanningDeadlineError ||
         now() >= task.activeExecutionDeadline
@@ -1159,6 +1276,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       scheduleReconciliation(claim.retryAt);
       return false;
     }
+    if (claim.decision === "halted") return false;
     if (claim.decision === "denied") {
       await denyPlannedTask(
         taskId,
@@ -1200,7 +1318,10 @@ export function createAdministrativeAutonomyRuntime(options: {
       operationId: claim.request.operationId,
       settlementOnly: claim.settlementOnly,
     });
-    inFlightExecutions.set(claim.request.operationId, claimMaintenance);
+    inFlightExecutions.set(claim.request.operationId, {
+      abort: claimMaintenance.abort,
+      taskId: claim.request.taskId,
+    });
     try {
       let untrustedResult: unknown;
       let brokerRecoveredResult = false;
@@ -1356,8 +1477,22 @@ export function createAdministrativeAutonomyRuntime(options: {
       } catch (error) {
         const lossReason = claimMaintenance.lossReason();
         if (lossReason !== undefined) {
-          if (lossReason.startsWith("Administrative Suspension")) return false;
+          // Suspension and Stop already settled this Operation durably; a
+          // second settlement would overwrite the reason the owner gave.
+          if (
+            lossReason.startsWith("Administrative Suspension") ||
+            lossReason === administrativeTaskStopLossReason
+          ) {
+            return false;
+          }
           await denyClaimedOperation(claim, lossReason);
+          return true;
+        }
+        const pauseReason = administrativeExecutionPauseReason(error);
+        if (
+          pauseReason !== undefined &&
+          (await pauseAdministrativeTask(claim.request.taskId, pauseReason))
+        ) {
           return true;
         }
         if (error instanceof AdministrativeEffectFenceError) {
@@ -1465,7 +1600,10 @@ export function createAdministrativeAutonomyRuntime(options: {
         return false;
       }
     } finally {
-      if (inFlightExecutions.get(claim.request.operationId) === claimMaintenance) {
+      if (
+        inFlightExecutions.get(claim.request.operationId)?.abort ===
+        claimMaintenance.abort
+      ) {
         inFlightExecutions.delete(claim.request.operationId);
       }
       claimMaintenance.stop();
@@ -1537,6 +1675,18 @@ export function createAdministrativeAutonomyRuntime(options: {
     return progressed;
   }
 
+  /** A Task at rest: terminal, or deliberately holding its budget. */
+  function administrativeTaskIsSettled(
+    record: AdministrativeEvidenceRecord | undefined,
+  ): boolean {
+    const task = record?.task;
+    if (task === undefined) return false;
+    return (
+      task.executionPause !== null ||
+      (task.status !== "planning" && task.status !== "running")
+    );
+  }
+
   function taskRequiresResultSettlement(
     task: AdministrativeTask,
     policy: AdministrativePolicyStatus,
@@ -1556,6 +1706,41 @@ export function createAdministrativeAutonomyRuntime(options: {
     );
   }
 
+  /**
+   * Drives one Task to its next durable rest point without waiting behind
+   * another Task's work. Mutations still serialize on the durable global lane,
+   * so read-only Research proceeds while a mutation holds it.
+   */
+  async function reconcileTaskUntilSettled(
+    taskId: AdministrativeTaskId,
+  ): Promise<boolean> {
+    const inFlight = taskReconciliations.get(taskId);
+    if (inFlight !== undefined) {
+      await inFlight;
+      return administrativeTaskIsSettled(await options.store.findTask(taskId));
+    }
+    const reconciliation = (async () => {
+      let progressed = true;
+      while (progressed && !closed) {
+        const policy = await options.store.readPolicyStatus();
+        if (policy.status !== "active") return;
+        const record = await options.store.findTask(taskId);
+        const task = record?.task;
+        if (task === undefined || administrativeTaskIsSettled(record)) return;
+        progressed = taskRequiresResultSettlement(task, policy, now())
+          ? await reconcileCompletedOperationSettlement(taskId, policy)
+          : await reconcileTask(taskId);
+      }
+    })();
+    taskReconciliations.set(taskId, reconciliation);
+    try {
+      await reconciliation;
+    } finally {
+      taskReconciliations.delete(taskId);
+    }
+    return administrativeTaskIsSettled(await options.store.findTask(taskId));
+  }
+
   async function reconcileOperations(): Promise<void> {
     if (closed) return;
     reconciliationRequested = true;
@@ -1564,10 +1749,15 @@ export function createAdministrativeAutonomyRuntime(options: {
       let progressed: boolean;
       do {
         reconciliationRequested = false;
+        // Work a Task is already driving belongs to that Task's loop. The
+        // shared pass waits for it so anything queued behind the global
+        // mutation lane is picked up as soon as the lane frees.
+        const driven = [...taskReconciliations.values()];
+        if (driven.length > 0) await Promise.allSettled(driven);
         const policy = await options.store.readPolicyStatus();
         if (policy.status === "suspended") {
           abortInFlightExecutions();
-          await reconcileLivePatchRollbackActivations(policy);
+          await reconcileLivePatchRollbackActivations();
           if (options.executor !== undefined) {
             const taskIds = await options.store.listRecoverableTaskIds();
             await Promise.all(
@@ -1578,11 +1768,26 @@ export function createAdministrativeAutonomyRuntime(options: {
           }
           return;
         }
+        // Stop can owe compensation while the policy is still active.
+        await reconcileLivePatchRollbackActivations();
         if (options.executor === undefined) return;
-        const taskIds = await options.store.listRecoverableTaskIds();
-        const taskRecords = await Promise.all(
-          taskIds.map((taskId) => options.store.findTask(taskId)),
+        const recoverableTaskIds = await options.store.listRecoverableTaskIds();
+        const recoverableRecords = await Promise.all(
+          recoverableTaskIds.map((taskId) => options.store.findTask(taskId)),
         );
+        // A paused Task spends no budget and starts no work until it resumes.
+        const runnable = recoverableTaskIds
+          .map((taskId, index) => ({
+            record: recoverableRecords[index],
+            taskId,
+          }))
+          .filter(
+            (entry) =>
+              entry.record === undefined ||
+              entry.record.task.executionPause === null,
+          );
+        const taskIds = runnable.map((entry) => entry.taskId);
+        const taskRecords = runnable.map((entry) => entry.record);
         const settlementTaskIds = taskIds.filter((_taskId, index) => {
           const task = taskRecords[index]?.task;
           return task === undefined
@@ -1620,7 +1825,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         current.status === "suspended" &&
         current.rollbackActivations.pendingOperationCount > 0
       ) {
-        await reconcileLivePatchRollbackActivations(current);
+        await reconcileLivePatchRollbackActivations();
         current = await options.store.readPolicyStatus();
         if (
           current.status === "suspended" &&
@@ -1731,7 +1936,13 @@ export function createAdministrativeAutonomyRuntime(options: {
       if ((await options.store.findTask(task.id))?.task.status === "planning") {
         return admission;
       }
-      await reconcileOperations();
+      // The Task drives itself first, so read-only work is not queued behind
+      // another Task's mutation. Anything it could not settle alone — a
+      // deferred global mutation lane, a policy change — rejoins the shared
+      // reconciliation pass.
+      if (!(await reconcileTaskUntilSettled(task.id))) {
+        await reconcileOperations();
+      }
       const reconciled = await options.store.findTask(task.id);
       if (reconciled?.task.status === "denied") {
         return {
@@ -1872,8 +2083,10 @@ export function createAdministrativeAutonomyRuntime(options: {
         ownerId: input.ownerId,
         requestId: input.requestId,
         task: {
+          activeExecutionConsumedMilliseconds: 0,
           activeExecutionDeadline: null,
           conclusion: "Administrative Task confirmation is pending.",
+          executionPause: null,
           createdAt: preparedAt,
           id: taskId,
           intendedState,
@@ -1906,6 +2119,52 @@ export function createAdministrativeAutonomyRuntime(options: {
             taskId,
           };
     },
+    async stopTask(input) {
+      abortTaskExecutions(input.taskId, administrativeTaskStopLossReason);
+      const outcome = await options.store.stopTask({
+        event: {
+          id: options.identifiers.nextEventId(),
+          summary: "The owner stopped the Administrative Task.",
+        },
+        stoppedAt: now(),
+        taskId: input.taskId,
+      });
+      if (outcome.decision === "denied") {
+        return {
+          decision: "denied",
+          reason: describeLifetimeDenial(outcome.reason),
+        };
+      }
+      // Compensation is owed now, and does not wait on the provider or worker.
+      await reconcileLivePatchRollbackActivations();
+      const settled = await options.store.findTask(input.taskId);
+      return {
+        decision: "stopped",
+        task: settled?.task ?? outcome.record.task,
+      };
+    },
+    async resumeTask(input) {
+      const outcome = await options.store.resumeTask({
+        event: {
+          id: options.identifiers.nextEventId(),
+          summary: "Active execution resumed with the budget it had left.",
+        },
+        resumedAt: now(),
+        taskId: input.taskId,
+      });
+      if (outcome.decision === "denied") {
+        return {
+          decision: "denied",
+          reason: describeLifetimeDenial(outcome.reason),
+        };
+      }
+      await reconcileOperations();
+      const resumed = await options.store.findTask(input.taskId);
+      return {
+        decision: "resumed",
+        task: resumed?.task ?? outcome.record.task,
+      };
+    },
     async suspendPolicy(input) {
       const suspendedAt = now();
       const suspended = await options.store.suspendPolicy({
@@ -1933,7 +2192,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         throw new Error("Administrative Suspension did not persist");
       }
       abortInFlightExecutions();
-      await reconcileLivePatchRollbackActivations(suspended);
+      await reconcileLivePatchRollbackActivations();
       const reconciled = await options.store.readPolicyStatus();
       if (reconciled.status !== "suspended") {
         throw new Error("Administrative Suspension changed concurrently");

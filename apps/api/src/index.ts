@@ -40,6 +40,8 @@ import {
   activateAdministrativePolicyRequestSchema,
   administrativeTaskAdmissionResponseSchema,
   administrativeTaskIdSchema,
+  administrativeTaskLifetimeRequestSchema,
+  administrativeTaskLifetimeResponseSchema,
   administrativeTaskPreparationResponseSchema,
   administrativeAutonomyStatusSchema,
   administrativePolicyEvidencePageRequestSchema,
@@ -97,6 +99,7 @@ import {
   type AdministrativeRequestedOutcome,
   type AdministrativeTaskAdmissionResponse,
   type AdministrativeTaskId,
+  type AdministrativeTaskLifetimeResponse,
   type AdministrativeTaskPreparationResponse,
   type AdministrativeTaskTargetRequest,
 } from "@voice-agent/contracts";
@@ -260,6 +263,12 @@ export interface AdministrativeAutonomyApiControls {
     readonly requestId: string;
     readonly target: AdministrativeTaskTargetRequest;
   }): Promise<AdministrativeTaskPreparationResponse>;
+  resumeTask(input: {
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeResponse>;
+  stopTask(input: {
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeResponse>;
   suspendPolicy(input: {
     readonly expectation: AdministrativePolicySuspensionExpectation;
   }): Promise<
@@ -679,6 +688,36 @@ function registerAdministrativeAutonomyRoutes(
     }
     return administrativePolicyStatusSchema.parse(result.policy);
   });
+
+  const taskLifetimeActions = {
+    resume: (taskId: AdministrativeTaskId) =>
+      options.controls.resumeTask({ taskId }),
+    stop: (taskId: AdministrativeTaskId) =>
+      options.controls.stopTask({ taskId }),
+  } as const;
+  for (const [action, apply] of Object.entries(taskLifetimeActions)) {
+    api.post<{ readonly Params: { readonly taskId: string } }>(
+      `/api/administrative-autonomy/tasks/:taskId/${action}`,
+      async (request, reply) => {
+        if (!requireOrigin(request, reply, options.origin)) return;
+        const body = administrativeTaskLifetimeRequestSchema.parse(request.body);
+        const sessionToken = await authorizeStateChange(
+          request,
+          reply,
+          options.authentication,
+          body.csrfToken,
+          options.records,
+        );
+        if (sessionToken === undefined) return;
+        const result = administrativeTaskLifetimeResponseSchema.parse(
+          await apply(administrativeTaskIdSchema.parse(request.params.taskId)),
+        );
+        return result.decision === "denied"
+          ? reply.code(409).send(result)
+          : result;
+      },
+    );
+  }
 
   api.post("/api/administrative-autonomy/suspend", async (request, reply) => {
     if (!requireOrigin(request, reply, options.origin)) return;

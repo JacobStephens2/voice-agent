@@ -8,11 +8,14 @@ import {
   administrativeEvidenceEventSchema,
   administrativeEvidenceRecordSchema,
   administrativeExecutionManifestFingerprint,
+  administrativeExecutionPauseSchema,
   administrativeExecutionManifestSchema,
   administrativeMutationOperationKinds,
+  administrativeOperationIdSchema,
   administrativeOperationRequestSchema,
   administrativeOperationResultSchema,
   administrativePolicyRevisionSchema,
+  administrativeRemainingActiveExecutionMilliseconds,
   administrativePolicyActivationExpectationSchema,
   administrativePolicyEvidenceEventInputSchema,
   administrativePolicyEvidenceEventSchema,
@@ -55,6 +58,7 @@ import type {
   AdministrativeOperationClaim,
   AdministrativePlannedOperation,
   AdministrativePreparedTaskPersistence,
+  AdministrativeTaskLifetimeOutcome,
 } from "@voice-agent/durable-store";
 
 interface PolicyStateRow {
@@ -79,7 +83,9 @@ interface AdministrativePolicyEvidenceRow {
 }
 
 interface AdministrativeTaskRow {
+  readonly active_execution_consumed_ms: number;
   readonly active_execution_deadline: string | null;
+  readonly execution_pause_json: string | null;
   readonly capability_consumed_at: string | null;
   readonly capability_hash: string;
   readonly conclusion: string;
@@ -104,6 +110,8 @@ const administrativeTaskProjectionColumns = [
   "capability_hash",
   "capability_consumed_at",
   "active_execution_deadline",
+  "active_execution_consumed_ms",
+  "execution_pause_json",
   "outcome",
   "publication_intent",
   "execution_manifest_json",
@@ -159,6 +167,8 @@ interface AdministrativeMutationLaneRow {
 
 interface LivePatchRollbackRow {
   readonly attempt_count: number;
+  readonly compensation_requested_at: string | null;
+  readonly compensation_trigger: string | null;
   readonly last_error: string | null;
   readonly next_attempt_at: string;
   readonly operation_id: string;
@@ -520,6 +530,42 @@ export function createSqliteAdministrativeAutonomyStore(
       lease_expires_at = NULL
     WHERE task_id = ? AND status IN ('accepted', 'running')
   `);
+  const stopOutstandingOperations = database.prepare(`
+    UPDATE administrative_operations
+    SET status = 'stopped', updated_at = ?, claim_id = NULL,
+      lease_expires_at = NULL
+    WHERE task_id = ? AND status IN ('accepted', 'running')
+  `);
+  /**
+   * A paused Operation keeps its recovery identity. Only the lease is dropped,
+   * so a resumed Task re-claims the same attempt instead of starting again.
+   */
+  const releaseTaskOperationLeases = database.prepare(`
+    UPDATE administrative_operations
+    SET claim_id = NULL, lease_expires_at = NULL, updated_at = ?
+    WHERE task_id = ? AND status = 'running'
+  `);
+  const pauseTaskExecution = database.prepare(`
+    UPDATE administrative_tasks
+    SET active_execution_deadline = NULL, active_execution_consumed_ms = ?,
+      execution_pause_json = ?, updated_at = ?
+    WHERE id = ? AND status IN ('planning', 'running')
+      AND execution_pause_json IS NULL
+  `);
+  const resumeTaskExecution = database.prepare(`
+    UPDATE administrative_tasks
+    SET active_execution_deadline = ?, execution_pause_json = NULL,
+      updated_at = ?
+    WHERE id = ? AND status IN ('planning', 'running')
+      AND execution_pause_json IS NOT NULL
+  `);
+  const stopTaskExecution = database.prepare(`
+    UPDATE administrative_tasks
+    SET status = 'stopped', conclusion = ?, active_execution_deadline = NULL,
+      active_execution_consumed_ms = ?, execution_pause_json = NULL,
+      updated_at = ?
+    WHERE id = ? AND status IN ('planning', 'running')
+  `);
   const countIncompleteOperations = database.prepare<
     [taskId: string],
     { readonly count: number }
@@ -576,7 +622,8 @@ export function createSqliteAdministrativeAutonomyStore(
     LivePatchRollbackRow
   >(`
     SELECT operation_id, task_id, status, request_json, result_json,
-      attempt_count, last_error, next_attempt_at
+      attempt_count, last_error, next_attempt_at, compensation_requested_at,
+      compensation_trigger
     FROM administrative_live_patch_rollbacks
     WHERE operation_id = ?
   `);
@@ -588,8 +635,25 @@ export function createSqliteAdministrativeAutonomyStore(
   `);
   const markArmedRollbacksPending = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
-    SET status = 'activation-pending', updated_at = ?, next_attempt_at = ?
+    SET status = 'activation-pending', updated_at = ?, next_attempt_at = ?,
+      compensation_requested_at = ?,
+      compensation_trigger = 'administrative-suspension'
     WHERE status = 'armed'
+  `);
+  const markTaskArmedRollbacksPending = database.prepare(`
+    UPDATE administrative_live_patch_rollbacks
+    SET status = 'activation-pending', updated_at = ?, next_attempt_at = ?,
+      compensation_requested_at = ?, compensation_trigger = 'task-stopped'
+    WHERE status = 'armed' AND task_id = ?
+  `);
+  const listTaskArmedRollbackIds = database.prepare<
+    [taskId: string],
+    LivePatchRollbackIdRow
+  >(`
+    SELECT operation_id
+    FROM administrative_live_patch_rollbacks
+    WHERE status = 'armed' AND task_id = ?
+    ORDER BY operation_id
   `);
   const expireMaturedLivePatchRollbacks = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -612,6 +676,7 @@ export function createSqliteAdministrativeAutonomyStore(
     SELECT rollbacks.operation_id, rollbacks.task_id, rollbacks.status,
       rollbacks.request_json, rollbacks.result_json, rollbacks.attempt_count,
       rollbacks.last_error, rollbacks.next_attempt_at,
+      rollbacks.compensation_requested_at, rollbacks.compensation_trigger,
       operations.request_json AS operation_request_json,
       operations.result_json AS operation_result_json
     FROM administrative_live_patch_rollbacks AS rollbacks
@@ -653,7 +718,8 @@ export function createSqliteAdministrativeAutonomyStore(
     LivePatchRollbackRow
   >(`
     SELECT operation_id, task_id, status, request_json, result_json,
-      attempt_count, last_error, next_attempt_at
+      attempt_count, last_error, next_attempt_at, compensation_requested_at,
+      compensation_trigger
     FROM administrative_live_patch_rollbacks
     WHERE status = 'activation-pending'
     ORDER BY operation_id
@@ -858,6 +924,17 @@ export function createSqliteAdministrativeAutonomyStore(
     );
   }
 
+  /**
+   * Suspension owes compensation only while it stands; Stop owes it for that
+   * one Task whatever the policy does afterwards.
+   */
+  function compensationIsStillOwed(rollback: LivePatchRollbackRow): boolean {
+    return (
+      rollback.compensation_trigger === "task-stopped" ||
+      requirePolicyState().status === "suspended"
+    );
+  }
+
   function appendEvents(
     taskId: string,
     events: readonly Omit<AdministrativeEvidenceEvent, "sequence">[],
@@ -978,9 +1055,14 @@ export function createSqliteAdministrativeAutonomyStore(
 
   function taskProjection(task: AdministrativeTaskRow): AdministrativeTask {
     return administrativeTaskSchema.parse({
+      activeExecutionConsumedMilliseconds: task.active_execution_consumed_ms,
       activeExecutionDeadline: task.active_execution_deadline,
       conclusion: task.conclusion,
       createdAt: task.created_at,
+      executionPause:
+        task.execution_pause_json === null
+          ? null
+          : (JSON.parse(task.execution_pause_json) as unknown),
       id: task.id,
       intendedState: task.intended_state,
       kind: "administrative.work",
@@ -1058,7 +1140,11 @@ export function createSqliteAdministrativeAutonomyStore(
         current.state_version === expectation.expectedStateVersion + 1
       ) {
         expireVerifiedMaturedLivePatchRollbackWindows(input.suspendedAt);
-        markArmedRollbacksPending.run(input.suspendedAt, input.suspendedAt);
+        markArmedRollbacksPending.run(
+          input.suspendedAt,
+          input.suspendedAt,
+          input.suspendedAt,
+        );
         return policyStatus(current);
       }
       const result = suspendPolicyState.run(
@@ -1087,7 +1173,11 @@ export function createSqliteAdministrativeAutonomyStore(
         JSON.stringify(suspensionEvent.details),
       );
       expireVerifiedMaturedLivePatchRollbackWindows(input.suspendedAt);
-      markArmedRollbacksPending.run(input.suspendedAt, input.suspendedAt);
+      markArmedRollbacksPending.run(
+        input.suspendedAt,
+        input.suspendedAt,
+        input.suspendedAt,
+      );
       return policyStatus();
     },
   );
@@ -1323,7 +1413,7 @@ export function createSqliteAdministrativeAutonomyStore(
       }
       if (
         rollback.status !== "activation-pending" ||
-        requirePolicyState().status !== "suspended"
+        !compensationIsStillOwed(rollback)
       ) {
         return false;
       }
@@ -1363,7 +1453,7 @@ export function createSqliteAdministrativeAutonomyStore(
         if (
           rollback === undefined ||
           rollback.status !== "activation-pending" ||
-          requirePolicyState().status !== "suspended"
+          !compensationIsStillOwed(rollback)
         ) {
           return false;
         }
@@ -1564,6 +1654,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (task === undefined || task.status !== "running") {
         return { decision: "empty" };
       }
+      if (task.execution_pause_json !== null) return { decision: "halted" };
       const operation = readNextOperation.get(input.taskId);
       if (operation === undefined) return { decision: "empty" };
       if (
@@ -1669,6 +1760,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (task === undefined || task.status !== "running") {
         return { decision: "empty" };
       }
+      if (task.execution_pause_json !== null) return { decision: "halted" };
       const operation = readNextOperation.get(input.taskId);
       if (operation === undefined || operation.status !== "running") {
         return { decision: "empty" };
@@ -2067,6 +2159,8 @@ export function createSqliteAdministrativeAutonomyStore(
       const result = denyTask.run(reason, input.deniedAt, input.taskId);
       if (result.changes !== 1) {
         const task = requireTask(input.taskId);
+        // Stop is the owner's terminal answer and outranks a late denial.
+        if (task.status === "stopped") return loadRecord(task);
         if (task.status === "denied") {
           appendEvents(
             input.taskId,
@@ -2088,6 +2182,222 @@ export function createSqliteAdministrativeAutonomyStore(
       releaseTaskMutationLane.run(input.taskId);
       appendEvents(input.taskId, [...outstandingEvents, input.deniedEvent]);
       return loadRecord(requireTask(input.taskId));
+    },
+  );
+
+  const STOP_REASON = "The owner stopped the Administrative Task.";
+
+  /**
+   * Budget spent by `at`. The deadline carries the remaining budget forward,
+   * so consumption is what the deadline no longer covers. A clock that moved
+   * backwards can never refund budget, and an elapsed deadline can never spend
+   * more than the whole six hours.
+   */
+  function consumedActiveExecutionMilliseconds(
+    task: AdministrativeTaskRow,
+    at: string,
+  ): number {
+    if (task.active_execution_deadline === null) {
+      return task.active_execution_consumed_ms;
+    }
+    const spent =
+      administrativeActiveExecutionMilliseconds -
+      (new Date(task.active_execution_deadline).getTime() -
+        new Date(at).getTime());
+    return Math.min(
+      administrativeActiveExecutionMilliseconds,
+      Math.max(task.active_execution_consumed_ms, Math.round(spent)),
+    );
+  }
+
+  const pauseTaskTransaction = database.transaction(
+    (
+      input: Parameters<AdministrativeAutonomyStore["pauseTask"]>[0],
+    ): AdministrativeTaskLifetimeOutcome => {
+      const task = readTask.get(input.taskId);
+      if (task === undefined) {
+        return { decision: "denied", reason: "task-unavailable" };
+      }
+      if (task.status !== "planning" && task.status !== "running") {
+        return { decision: "denied", reason: "task-not-running" };
+      }
+      if (task.execution_pause_json !== null) {
+        return { decision: "denied", reason: "task-already-paused" };
+      }
+      // An armed rollback is a live mutation waiting thirty minutes to be
+      // undone. A pause has no bound, so the two cannot coexist.
+      if (listTaskArmedRollbackIds.all(input.taskId).length > 0) {
+        return { decision: "denied", reason: "armed-live-patch-rollback" };
+      }
+      const consumed = consumedActiveExecutionMilliseconds(task, input.pausedAt);
+      const pause = administrativeExecutionPauseSchema.parse({
+        pausedAt: input.pausedAt,
+        reason: input.reason,
+      });
+      if (
+        pauseTaskExecution.run(
+          consumed,
+          JSON.stringify(pause),
+          input.pausedAt,
+          input.taskId,
+        ).changes !== 1
+      ) {
+        throw new Error("Administrative Task changed concurrently");
+      }
+      releaseTaskOperationLeases.run(input.pausedAt, input.taskId);
+      releaseTaskMutationLane.run(input.taskId);
+      appendEvents(input.taskId, [
+        {
+          details: {
+            consumedMilliseconds: consumed,
+            reason: pause.reason,
+            remainingMilliseconds:
+              administrativeRemainingActiveExecutionMilliseconds({
+                activeExecutionConsumedMilliseconds: consumed,
+              }),
+          },
+          id: input.event.id,
+          kind: "administrative.task.paused",
+          occurredAt: administrativeTimestampSchema.parse(input.pausedAt),
+          summary: input.event.summary,
+        },
+      ]);
+      return { decision: "applied", record: loadRecord(requireTask(input.taskId)) };
+    },
+  );
+
+  const resumeTaskTransaction = database.transaction(
+    (
+      input: Parameters<AdministrativeAutonomyStore["resumeTask"]>[0],
+    ): AdministrativeTaskLifetimeOutcome => {
+      const task = readTask.get(input.taskId);
+      if (task === undefined) {
+        return { decision: "denied", reason: "task-unavailable" };
+      }
+      if (task.status !== "planning" && task.status !== "running") {
+        return { decision: "denied", reason: "task-not-running" };
+      }
+      if (task.execution_pause_json === null) {
+        return { decision: "denied", reason: "task-not-paused" };
+      }
+      const pause = administrativeExecutionPauseSchema.parse(
+        JSON.parse(task.execution_pause_json),
+      );
+      const consumed = task.active_execution_consumed_ms;
+      const remaining = administrativeRemainingActiveExecutionMilliseconds({
+        activeExecutionConsumedMilliseconds: consumed,
+      });
+      if (remaining <= 0) {
+        return { decision: "denied", reason: "budget-exhausted" };
+      }
+      const activeExecutionDeadline = administrativeTimestampSchema.parse(
+        new Date(new Date(input.resumedAt).getTime() + remaining).toISOString(),
+      );
+      if (
+        resumeTaskExecution.run(
+          activeExecutionDeadline,
+          input.resumedAt,
+          input.taskId,
+        ).changes !== 1
+      ) {
+        throw new Error("Administrative Task changed concurrently");
+      }
+      appendEvents(input.taskId, [
+        {
+          details: {
+            activeExecutionDeadline,
+            consumedMilliseconds: consumed,
+            pausedFor: pause.reason,
+            remainingMilliseconds: remaining,
+          },
+          id: input.event.id,
+          kind: "administrative.task.resumed",
+          occurredAt: administrativeTimestampSchema.parse(input.resumedAt),
+          summary: input.event.summary,
+        },
+      ]);
+      return { decision: "applied", record: loadRecord(requireTask(input.taskId)) };
+    },
+  );
+
+  const stopTaskTransaction = database.transaction(
+    (
+      input: Parameters<AdministrativeAutonomyStore["stopTask"]>[0],
+    ): AdministrativeTaskLifetimeOutcome => {
+      const task = readTask.get(input.taskId);
+      if (task === undefined) {
+        return { decision: "denied", reason: "task-unavailable" };
+      }
+      if (task.status === "stopped") {
+        return { decision: "applied", record: loadRecord(task) };
+      }
+      if (task.status !== "planning" && task.status !== "running") {
+        return { decision: "denied", reason: "task-not-running" };
+      }
+      const occurredAt = administrativeTimestampSchema.parse(input.stoppedAt);
+      // A matured window is already resolved; Stop must not re-open it.
+      expireVerifiedMaturedLivePatchRollbackWindows(input.stoppedAt);
+      const outstanding = listOutstandingOperations.all(input.taskId);
+      const compensating = listTaskArmedRollbackIds.all(input.taskId);
+      if (
+        stopOutstandingOperations.run(input.stoppedAt, input.taskId).changes !==
+        outstanding.length
+      ) {
+        throw new Error(
+          "Outstanding Administrative Operations changed concurrently",
+        );
+      }
+      if (
+        markTaskArmedRollbacksPending.run(
+          input.stoppedAt,
+          input.stoppedAt,
+          input.stoppedAt,
+          input.taskId,
+        ).changes !== compensating.length
+      ) {
+        throw new Error("Armed Live Patch rollbacks changed concurrently");
+      }
+      releaseTaskMutationLane.run(input.taskId);
+      if (
+        stopTaskExecution.run(
+          STOP_REASON,
+          consumedActiveExecutionMilliseconds(task, input.stoppedAt),
+          input.stoppedAt,
+          input.taskId,
+        ).changes !== 1
+      ) {
+        throw new Error("Administrative Task changed concurrently");
+      }
+      appendEvents(input.taskId, [
+        ...outstanding.map((operation) => ({
+          details: {
+            kind: operation.kind,
+            operationId: operation.id,
+            reason: STOP_REASON,
+          },
+          id: operationFailureEventId(operation.id),
+          kind: "administrative.operation.failed" as const,
+          occurredAt,
+          summary: `The outstanding ${operation.kind} Operation stopped with its Task.`,
+        })),
+        {
+          details: {
+            compensatingOperationIds: compensating.map((rollback) =>
+              administrativeOperationIdSchema.parse(rollback.operation_id),
+            ),
+            policyRevision: task.policy_revision,
+            preservedWorktrees: true as const,
+            stoppedOperationIds: outstanding.map((operation) =>
+              administrativeOperationIdSchema.parse(operation.id),
+            ),
+          },
+          id: input.event.id,
+          kind: "administrative.task.stopped",
+          occurredAt,
+          summary: input.event.summary,
+        },
+      ]);
+      return { decision: "applied", record: loadRecord(requireTask(input.taskId)) };
     },
   );
 
@@ -2173,6 +2483,8 @@ export function createSqliteAdministrativeAutonomyStore(
         .map((row) =>
           pendingLivePatchRollbackActivationSchema.parse({
             attemptCount: row.attempt_count,
+            compensationRequestedAt: row.compensation_requested_at,
+            compensationTrigger: row.compensation_trigger,
             lastFailureReason: row.last_error,
             nextAttemptAt: row.next_attempt_at,
             request: JSON.parse(row.request_json) as unknown,
@@ -2198,6 +2510,15 @@ export function createSqliteAdministrativeAutonomyStore(
     },
     async renewOperationClaim(input) {
       return renewOperationTransaction.immediate(input);
+    },
+    async pauseTask(input) {
+      return pauseTaskTransaction.immediate(input);
+    },
+    async resumeTask(input) {
+      return resumeTaskTransaction.immediate(input);
+    },
+    async stopTask(input) {
+      return stopTaskTransaction.immediate(input);
     },
     async savePlan(input) {
       return planTransaction.immediate(input);
@@ -2251,6 +2572,8 @@ function createSchema(database: Database.Database): void {
       capability_hash TEXT NOT NULL UNIQUE,
       capability_consumed_at TEXT,
       active_execution_deadline TEXT,
+      active_execution_consumed_ms INTEGER NOT NULL DEFAULT 0,
+      execution_pause_json TEXT,
       outcome TEXT NOT NULL,
       publication_intent TEXT NOT NULL DEFAULT 'branch-only',
       execution_manifest_json TEXT,
@@ -2301,6 +2624,8 @@ function createSchema(database: Database.Database): void {
       attempt_count INTEGER NOT NULL DEFAULT 0,
       last_error TEXT,
       next_attempt_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
+      compensation_requested_at TEXT,
+      compensation_trigger TEXT,
       FOREIGN KEY (operation_id) REFERENCES administrative_operations(id),
       FOREIGN KEY (task_id) REFERENCES administrative_tasks(id)
     );
@@ -2407,6 +2732,18 @@ function createSchema(database: Database.Database): void {
     "execution_manifest_json",
     "TEXT",
   );
+  ensureColumn(
+    database,
+    "administrative_tasks",
+    "active_execution_consumed_ms",
+    "INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(
+    database,
+    "administrative_tasks",
+    "execution_pause_json",
+    "TEXT",
+  );
   ensureColumn(database, "administrative_operations", "claim_id", "TEXT");
   ensureColumn(
     database,
@@ -2421,6 +2758,26 @@ function createSchema(database: Database.Database): void {
     "TEXT",
   );
   migrateAdministrativeLivePatchRollbacks(database);
+  ensureColumn(
+    database,
+    "administrative_live_patch_rollbacks",
+    "compensation_requested_at",
+    "TEXT",
+  );
+  ensureColumn(
+    database,
+    "administrative_live_patch_rollbacks",
+    "compensation_trigger",
+    "TEXT",
+  );
+  // Rollbacks made pending by an earlier release owe their compensation to the
+  // Administrative Suspension that made them pending.
+  database.exec(`
+    UPDATE administrative_live_patch_rollbacks
+    SET compensation_requested_at = updated_at,
+      compensation_trigger = 'administrative-suspension'
+    WHERE status = 'activation-pending' AND compensation_requested_at IS NULL
+  `);
 }
 
 function migrateAdministrativeLivePatchRollbacks(

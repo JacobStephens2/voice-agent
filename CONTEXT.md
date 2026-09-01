@@ -149,6 +149,18 @@ _Avoid_: SQLite reopen test, simulated process recovery, simulated reboot
 An owner-triggered state that refuses new administrative Operations, activates every armed Live Patch and Host Patch rollback, and preserves Delegated Worktrees and Evidence Records until a Fresh Passkey Action reactivates Administrative Autonomy.
 _Avoid_: Task stop, service shutdown, rollback deletion
 
+**Active Execution Budget**:
+The six hours of working time one confirmed Durable Task may spend without further approval, carried in its execution deadline and consumed only while the Task is actually executing; an Execution Pause banks the remainder instead of spending it, so paused, quota-blocked, and owner-waiting time is unlimited.
+_Avoid_: Six-hour deadline, wall-clock timeout, task TTL
+
+**Execution Pause**:
+An indefinite hold on a running Durable Task's Active Execution Budget, entered for one of three recorded reasons — a paused provider, exhausted provider quota, or work that now waits on the owner — during which no Operation may start and the deadline is absent rather than elapsed.
+_Avoid_: Provider retry, task timeout, cancellation
+
+**Task Stop**:
+An owner-triggered end to one Durable Task that refuses its future work, settles its outstanding Operations as stopped, activates the armed rollback of the live mutation it interrupts, and preserves that Task's Delegated Worktrees, commits, branches, and Evidence Record; it needs no Fresh Passkey Action because it spends no authority.
+_Avoid_: Administrative Suspension, cancel, kill, revert
+
 **Task Confirmation**:
 A concise spoken readback of the target application, environment, and intended state-changing outcome—not the eventual Operation plan—that remains pending until the user affirmatively confirms or declines it, before the Voice Agent accepts a Durable Task or Delegation.
 _Avoid_: Per-operation approval, conversational acknowledgement

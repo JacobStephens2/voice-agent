@@ -209,6 +209,7 @@ export function TaskList(props: {
   busy: boolean;
   onAuthorizeDeploymentAuthorityUpgrade(): Promise<void>;
   onActivateAdministrativeAutonomy(): Promise<void>;
+  onSuspendAdministrativeAutonomy(): Promise<void>;
   onRecordRestartWitnessObservation(): Promise<void>;
   onFresh(): Promise<void>;
   onApplyEvidenceRetention(): Promise<void>;
@@ -311,6 +312,22 @@ export function TaskList(props: {
             ? "Activate a new policy revision"
             : "Activate Administrative Autonomy"}
         </button>
+        {props.administrativeAutonomy?.policy.status === "active" ? (
+          <>
+            <p>
+              Administrative Suspension blocks every new administrative effect
+              and activates every armed rollback. It preserves Delegated
+              Worktrees and evidence, and reactivation needs a new Fresh Passkey
+              Action.
+            </p>
+            <button
+              disabled={props.busy}
+              onClick={() => void props.onSuspendAdministrativeAutonomy()}
+            >
+              Suspend Administrative Autonomy
+            </button>
+          </>
+        ) : null}
       </section>
       {props.restartWitnessObservation === undefined ? null : (
         <section
