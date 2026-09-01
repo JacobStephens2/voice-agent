@@ -4,9 +4,15 @@ import type {
   AdministrativeExecutionManifest,
   AdministrativeOperationRequest,
   AdministrativeOperationResult,
+  AdministrativeOperationClaimId,
+  AdministrativeOperationId,
   AdministrativePolicyRevision,
   AdministrativePolicyStatus,
   AdministrativeTask,
+  AdministrativeTaskId,
+  AdministrativeTimestamp,
+  LivePatchRollbackActivationRequest,
+  LivePatchRollbackActivationResult,
 } from "@voice-agent/contracts";
 
 type UnsequencedAdministrativeEvidenceEvent =
@@ -44,14 +50,17 @@ export type AdministrativeConfirmationClaim =
 
 export type AdministrativeOperationClaim =
   | {
-      readonly claimId: string;
+      readonly claimId: AdministrativeOperationClaimId;
       readonly decision: "claimed";
-      readonly activeExecutionDeadline: string;
-      readonly initialExecutionStartedAt: string;
+      readonly activeExecutionDeadline: AdministrativeTimestamp;
+      readonly initialExecutionStartedAt: AdministrativeTimestamp;
       readonly recovered: boolean;
       readonly request: AdministrativeOperationRequest;
     }
-  | { readonly decision: "deferred"; readonly retryAt: string }
+  | {
+      readonly decision: "deferred";
+      readonly retryAt: AdministrativeTimestamp;
+    }
   | {
       readonly decision: "denied";
       readonly reason:
@@ -61,9 +70,27 @@ export type AdministrativeOperationClaim =
     }
   | { readonly decision: "empty" };
 
+export type AdministrativeEffectAuthority =
+  | { readonly decision: "authorized" }
+  | {
+      readonly decision: "denied";
+      readonly reason:
+        | "active-execution-deadline"
+        | "claim-lost"
+        | "execution-manifest"
+        | "live-patch-rollback"
+        | "stale-policy";
+    };
+
 /** Durable state behind the Administrative Autonomy runtime interface. */
 export interface AdministrativeAutonomyStore {
-  applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
+  applyEvidenceRetention(input: {
+    readonly cutoff: AdministrativeTimestamp;
+  }): Promise<void>;
+  armLivePatchRollback(input: {
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly request: LivePatchRollbackActivationRequest;
+  }): Promise<boolean>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
     readonly expectedExecutionManifestFingerprint: string;
@@ -72,73 +99,90 @@ export interface AdministrativeAutonomyStore {
     readonly stateVersion: number;
   }): Promise<AdministrativePolicyStatus | undefined>;
   claimConfirmation(input: {
-    readonly acceptedAt: string;
+    readonly acceptedAt: AdministrativeTimestamp;
     readonly acceptedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly capabilityHash: string;
     readonly ownerId: string;
-    readonly taskId: string;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeConfirmationClaim>;
   claimNextOperation(input: {
-    readonly claimId: string;
-    readonly claimedAt: string;
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly claimedAt: AdministrativeTimestamp;
     readonly executionManifest: AdministrativeExecutionManifest;
-    readonly leaseExpiresAt: string;
-    readonly taskId: string;
+    readonly leaseExpiresAt: AdministrativeTimestamp;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeOperationClaim>;
   declineConfirmation(input: {
     readonly capabilityHash: string;
-    readonly declinedAt: string;
+    readonly declinedAt: AdministrativeTimestamp;
     readonly declinedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly ownerId: string;
-    readonly taskId: string;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeConfirmationClaim>;
   completeOperation(input: {
-    readonly claimId: string;
+    readonly claimId: AdministrativeOperationClaimId;
     readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;
-    readonly operationId: string;
+    readonly operationId: AdministrativeOperationId;
     readonly result: AdministrativeOperationResult;
-    readonly taskId: string;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
+  completeLivePatchRollbackActivation(input: {
+    readonly result: LivePatchRollbackActivationResult;
+  }): Promise<boolean>;
   completeTask(input: {
-    readonly completedAt: string;
+    readonly completedAt: AdministrativeTimestamp;
     readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;
-    readonly taskId: string;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
   denyTask(input: {
-    readonly deniedAt: string;
+    readonly deniedAt: AdministrativeTimestamp;
     readonly deniedEvent: UnsequencedAdministrativeEvidenceEvent;
-    readonly taskId: string;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
   findActivePolicy(): Promise<AdministrativePolicyRevision | undefined>;
   findTaskByOperationId(
-    operationId: string,
+    operationId: AdministrativeOperationId,
   ): Promise<AdministrativeEvidenceRecord | undefined>;
-  findTask(taskId: string): Promise<AdministrativeEvidenceRecord | undefined>;
-  listRecoverableTaskIds(): Promise<readonly string[]>;
+  findTask(
+    taskId: AdministrativeTaskId,
+  ): Promise<AdministrativeEvidenceRecord | undefined>;
+  listRecoverableTaskIds(): Promise<readonly AdministrativeTaskId[]>;
+  listPendingLivePatchRollbackActivations(): Promise<
+    readonly LivePatchRollbackActivationRequest[]
+  >;
   listTasks(): Promise<readonly AdministrativeTask[]>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
+  recheckOperationEffect(input: {
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly effectAt: AdministrativeTimestamp;
+    readonly executionManifest: AdministrativeExecutionManifest;
+    readonly operationId: AdministrativeOperationId;
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeEffectAuthority>;
   renewOperationClaim(input: {
-    readonly claimId: string;
-    readonly leaseExpiresAt: string;
-    readonly operationId: string;
-    readonly renewedAt: string;
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly leaseExpiresAt: AdministrativeTimestamp;
+    readonly operationId: AdministrativeOperationId;
+    readonly renewedAt: AdministrativeTimestamp;
   }): Promise<boolean>;
   savePlan(input: {
     readonly operations: readonly AdministrativePlannedOperation[];
     readonly planEvent: UnsequencedAdministrativeEvidenceEvent;
-    readonly taskId: string;
+    readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord | undefined>;
   savePreparedTask(
     input: AdministrativePreparedTaskPersistence,
   ): Promise<AdministrativeEvidenceRecord | undefined>;
   /**
-   * Durable CAS behind the authenticated #83 suspension control. Active policy
-   * has no TTL. #86 owns PWA exposure, task lifetime, and compensation.
+   * Durable CAS behind #83 Administrative Suspension. It closes admission and
+   * makes every armed Live Patch rollback recoverably pending in one commit.
+   * #86 owns PWA exposure, task lifetime, Host Patch coverage, and broader
+   * compensation orchestration.
    */
   suspendPolicy(input: {
     readonly expectedRevision: number;
     readonly expectedStateVersion: number;
-    readonly suspendedAt: string;
+    readonly suspendedAt: AdministrativeTimestamp;
   }): Promise<AdministrativePolicyStatus | undefined>;
   close(): Promise<void>;
 }

@@ -4,7 +4,12 @@ import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
-import { administrativeOperationRequestSchema } from "@voice-agent/contracts";
+import {
+  administrativeOperationClaimIdSchema,
+  administrativeOperationIdSchema,
+  administrativeOperationRequestSchema,
+  administrativeTaskIdSchema,
+} from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
 import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
@@ -17,6 +22,29 @@ afterEach(async () => {
       rm(directory, { force: true, recursive: true }),
     ),
   );
+});
+
+test("Administrative Task, Operation, and claim identities cannot be cross-wired", () => {
+  const taskId = "administrative-task-identity-1";
+  const operationId = "administrative-operation-identity-1";
+  const claimId = "administrative-claim-identity-1";
+
+  expect({
+    claimAsOperation: administrativeOperationIdSchema.safeParse(claimId).success,
+    operationAsTask: administrativeTaskIdSchema.safeParse(operationId).success,
+    taskAsClaim:
+      administrativeOperationClaimIdSchema.safeParse(taskId).success,
+    validClaim: administrativeOperationClaimIdSchema.safeParse(claimId).success,
+    validOperation: administrativeOperationIdSchema.safeParse(operationId).success,
+    validTask: administrativeTaskIdSchema.safeParse(taskId).success,
+  }).toEqual({
+    claimAsOperation: false,
+    operationAsTask: false,
+    taskAsClaim: false,
+    validClaim: true,
+    validOperation: true,
+    validTask: true,
+  });
 });
 
 test("a Fresh Passkey Action activates the policy used by one confirmed repair plan", async () => {
@@ -146,7 +174,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
           stateVersion: 1,
           status: "active",
         },
-        taskExecution: { status: "adapters-configured" },
+        taskExecution: { status: "execution-manifest-present" },
       },
       statusCode: 200,
     },
@@ -1118,7 +1146,7 @@ test("deployed policy activation does not imply unavailable task execution", asy
   }).toMatchObject({
     prepared: {
       decision: "denied",
-      reason: "Typed administrative task execution adapters are not configured.",
+      reason: "An executable Administrative Execution Manifest is not present.",
     },
     status: {
       body: {
@@ -1131,7 +1159,7 @@ test("deployed policy activation does not imply unavailable task execution", asy
         },
         taskExecution: {
           reason:
-            "Typed administrative task execution adapters are not configured.",
+            "An executable Administrative Execution Manifest is not present.",
           status: "unavailable",
         },
       },
@@ -1507,7 +1535,7 @@ test("authenticated Evidence Lifecycle expiry prunes ordinary administrative eve
   await retentionProcess.close();
 });
 
-test("losing an Operation lease aborts the bounded executor before its effect", async () => {
+test("Administrative Suspension aborts an in-flight mutation before its effect", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
   temporaryDirectories.push(directory);
   let markStarted: (() => void) | undefined;
@@ -1539,22 +1567,28 @@ test("losing an Operation lease aborts the bounded executor before its effect", 
     },
   });
   await started;
-  await scenario.suspendPolicyState();
+  const suspended = await scenario.suspendPolicyState();
 
   expect({
     admission: await admission,
     executed: scenario.executedOperations,
+    suspended,
     task: await scenario.readTask("administrative-task-1"),
   }).toMatchObject({
     admission: {
-      decision: "denied",
-      reason: "Administrative Operation claim was lost",
+      decision: "admitted",
     },
     executed: [],
+    suspended: {
+      rollbackActivations: {
+        activatedOperationIds: [],
+        pendingOperationIds: [],
+      },
+      status: "suspended",
+    },
     task: {
       task: {
-        conclusion: "Administrative Operation claim was lost",
-        status: "denied",
+        status: "running",
       },
     },
   });
@@ -1625,6 +1659,7 @@ test("Operation evidence uses the trusted runtime completion time", async () => 
     clock,
     databasePath: join(directory, "voice-agent.sqlite"),
     now: clock.current,
+    operationLeaseMilliseconds: 2 * 60 * 1_000,
     providerPlan: [{ kind: "production.observe" }],
     reportedCompletionTime: "2026-10-01T10:00:00.000Z",
   });

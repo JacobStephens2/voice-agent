@@ -272,30 +272,30 @@ export function TaskList(props: {
           </p>
         )}
         {props.administrativeAutonomy?.taskExecution.status ===
-          "adapters-configured" &&
+          "execution-manifest-present" &&
         props.administrativeAutonomy.policy.status === "active" ? (
           <p>
             Confirmed Durable Tasks may choose only the typed Operations allowed
             by their intended resulting state and policy.
           </p>
         ) : props.administrativeAutonomy?.taskExecution.status ===
-          "adapters-configured" ? (
+          "execution-manifest-present" ? (
           <p>
-            Typed task-execution adapters are configured, but administrative
+            An Administrative Execution Manifest is present, but administrative
             effects remain blocked while the policy is not active.
           </p>
         ) : props.administrativeAutonomy?.taskExecution.status ===
           "activation-required" ? (
           <p>
-            The configured provider or typed adapter manifest differs from the
+            The runtime Administrative Execution Manifest differs from the
             active policy revision. A new Fresh Passkey Action is required
             before task execution.
           </p>
         ) : (
           <p>
-            Task execution is unavailable because the typed provider and broker
-            adapters are not configured. Policy activation alone does not grant
-            executable administrative authority.
+            Task execution is unavailable because an executable Administrative
+            Execution Manifest is not present. Policy activation alone does not
+            grant executable administrative authority.
           </p>
         )}
         <button

@@ -293,12 +293,12 @@ function App() {
             ? {
                 executionManifest: activated.executionManifest,
                 reason:
-                  "Typed administrative task execution adapters are not configured.",
+                  "An executable Administrative Execution Manifest is not present.",
                 status: "unavailable",
               }
             : {
                 executionManifest: activated.executionManifest,
-                status: "adapters-configured",
+                status: "execution-manifest-present",
               },
       });
       setMessage(

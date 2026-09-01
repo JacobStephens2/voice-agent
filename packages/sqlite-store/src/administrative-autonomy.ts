@@ -10,8 +10,13 @@ import {
   administrativeOperationRequestSchema,
   administrativePolicyRevisionSchema,
   administrativePolicyStatusSchema,
+  administrativeTaskIdSchema,
   administrativeTaskSchema,
+  administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
+  livePatchRollbackActivationRequestSchema,
+  livePatchRollbackActivationResultSchema,
+  livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
@@ -82,6 +87,14 @@ interface AdministrativeMutationLaneRow {
   readonly claim_id: string | null;
   readonly lease_expires_at: string | null;
   readonly operation_id: string | null;
+}
+
+interface LivePatchRollbackRow {
+  readonly operation_id: string;
+  readonly request_json: string;
+  readonly result_json: string | null;
+  readonly status: "activated" | "activation-pending" | "armed";
+  readonly task_id: string;
 }
 
 type AdministrativeConfirmationDenialReason = Extract<
@@ -348,6 +361,43 @@ export function createSqliteAdministrativeAutonomyStore(
     DELETE FROM administrative_evidence_events
     WHERE occurred_at < ?
   `);
+  const readLivePatchRollback = database.prepare<
+    [operationId: string],
+    LivePatchRollbackRow
+  >(`
+    SELECT operation_id, task_id, status, request_json, result_json
+    FROM administrative_live_patch_rollbacks
+    WHERE operation_id = ?
+  `);
+  const insertLivePatchRollback = database.prepare(`
+    INSERT INTO administrative_live_patch_rollbacks (
+      operation_id, task_id, status, request_json, result_json, updated_at
+    ) VALUES (?, ?, 'armed', ?, NULL, ?)
+  `);
+  const markArmedRollbacksPending = database.prepare(`
+    UPDATE administrative_live_patch_rollbacks
+    SET status = 'activation-pending', updated_at = ?
+    WHERE status = 'armed'
+  `);
+  const listLivePatchRollbacks = database.prepare<[], LivePatchRollbackRow>(`
+    SELECT operation_id, task_id, status, request_json, result_json
+    FROM administrative_live_patch_rollbacks
+    ORDER BY operation_id
+  `);
+  const listPendingLivePatchRollbacks = database.prepare<
+    [],
+    LivePatchRollbackRow
+  >(`
+    SELECT operation_id, task_id, status, request_json, result_json
+    FROM administrative_live_patch_rollbacks
+    WHERE status = 'activation-pending'
+    ORDER BY operation_id
+  `);
+  const completeLivePatchRollbackActivation = database.prepare(`
+    UPDATE administrative_live_patch_rollbacks
+    SET status = 'activated', result_json = ?, updated_at = ?
+    WHERE operation_id = ? AND status = 'activation-pending'
+  `);
 
   function policyStatus(row = requirePolicyState()): AdministrativePolicyStatus {
     if (row.status === "inactive") {
@@ -364,9 +414,18 @@ export function createSqliteAdministrativeAutonomyStore(
       if (row.suspended_at === null) {
         throw new Error("Administrative Suspension has no timestamp");
       }
+      const rollbacks = listLivePatchRollbacks.all();
       return administrativePolicyStatusSchema.parse({
         executionManifest: requirePolicyRevision(row.active_revision)
           .executionManifest,
+        rollbackActivations: {
+          activatedOperationIds: rollbacks
+            .filter((rollback) => rollback.status === "activated")
+            .map((rollback) => rollback.operation_id),
+          pendingOperationIds: rollbacks
+            .filter((rollback) => rollback.status !== "activated")
+            .map((rollback) => rollback.operation_id),
+        },
         revision: row.active_revision,
         stateVersion: row.state_version,
         status: "suspended",
@@ -524,13 +583,236 @@ export function createSqliteAdministrativeAutonomyStore(
 
   const suspendTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["suspendPolicy"]>[0]) => {
+      const current = requirePolicyState();
+      if (
+        current.status === "suspended" &&
+        current.active_revision === input.expectedRevision &&
+        current.state_version === input.expectedStateVersion + 1
+      ) {
+        markArmedRollbacksPending.run(input.suspendedAt);
+        return policyStatus(current);
+      }
       const result = suspendPolicyState.run(
         input.suspendedAt,
         input.suspendedAt,
         input.expectedRevision,
         input.expectedStateVersion,
       );
-      return result.changes === 1 ? policyStatus() : undefined;
+      if (result.changes !== 1) return undefined;
+      markArmedRollbacksPending.run(input.suspendedAt);
+      return policyStatus();
+    },
+  );
+
+  const armLivePatchRollbackTransaction = database.transaction(
+    (input: Parameters<AdministrativeAutonomyStore["armLivePatchRollback"]>[0]) => {
+      const request = livePatchRollbackActivationRequestSchema.parse(
+        input.request,
+      );
+      const operation = readOperation.get(request.operationId);
+      if (
+        operation === undefined ||
+        operation.task_id !== request.taskId ||
+        operation.status !== "running" ||
+        operation.claim_id !== input.claimId ||
+        operation.lease_expires_at === null ||
+        operation.lease_expires_at <= request.armedAt
+      ) {
+        return false;
+      }
+      const operationRequest = administrativeOperationRequestSchema.parse(
+        JSON.parse(operation.request_json),
+      );
+      const task = requireTask(request.taskId);
+      if (
+        operationRequest.kind !== "live-patch.apply" ||
+        operationRequest.operationId !== request.operationId ||
+        operationRequest.taskId !== request.taskId ||
+        operationRequest.target.environment !== request.target.environment ||
+        operationRequest.target.registeredCodebaseId !==
+          request.target.registeredCodebaseId ||
+        task.active_execution_deadline === null ||
+        request.armedAt >= task.active_execution_deadline ||
+        request.rollbackDeadline > task.active_execution_deadline ||
+        new Date(request.rollbackDeadline).getTime() -
+          new Date(request.armedAt).getTime() !==
+          livePatchRollbackWindowMilliseconds ||
+        !matchesAuthoritySnapshot({
+          executionManifest: operationRequest.executionManifest,
+          policyRevision: operationRequest.policyRevision,
+          stateVersion: operationRequest.policyStateVersion,
+        })
+      ) {
+        return false;
+      }
+      const lane = readMutationLane.get();
+      if (
+        lane?.operation_id !== request.operationId ||
+        lane.claim_id !== input.claimId ||
+        lane.lease_expires_at === null ||
+        lane.lease_expires_at <= request.armedAt
+      ) {
+        return false;
+      }
+      const existing = readLivePatchRollback.get(request.operationId);
+      if (existing !== undefined) {
+        return (
+          existing.status === "armed" &&
+          JSON.stringify(
+            livePatchRollbackActivationRequestSchema.parse(
+              JSON.parse(existing.request_json),
+            ),
+          ) === JSON.stringify(request)
+        );
+      }
+      insertLivePatchRollback.run(
+        request.operationId,
+        request.taskId,
+        JSON.stringify(request),
+        request.armedAt,
+      );
+      return true;
+    },
+  );
+
+  const recheckOperationEffectTransaction = database.transaction(
+    (input: Parameters<AdministrativeAutonomyStore["recheckOperationEffect"]>[0]) => {
+      const operation = readOperation.get(input.operationId);
+      if (
+        operation === undefined ||
+        operation.task_id !== input.taskId ||
+        operation.status !== "running" ||
+        operation.claim_id !== input.claimId ||
+        operation.lease_expires_at === null
+      ) {
+        return { decision: "denied", reason: "claim-lost" } as const;
+      }
+      const request = administrativeOperationRequestSchema.parse(
+        JSON.parse(operation.request_json),
+      );
+      const task = requireTask(input.taskId);
+      if (
+        task.active_execution_deadline === null ||
+        input.effectAt >= task.active_execution_deadline
+      ) {
+        return {
+          decision: "denied",
+          reason: "active-execution-deadline",
+        } as const;
+      }
+      if (operation.lease_expires_at <= input.effectAt) {
+        return { decision: "denied", reason: "claim-lost" } as const;
+      }
+      if (request.operationId !== input.operationId) {
+        return { decision: "denied", reason: "claim-lost" } as const;
+      }
+      if (
+        !sameAdministrativeExecutionManifest(
+          request.executionManifest,
+          input.executionManifest,
+        )
+      ) {
+        return { decision: "denied", reason: "execution-manifest" } as const;
+      }
+      if (
+        !matchesAuthoritySnapshot({
+          executionManifest: request.executionManifest,
+          policyRevision: request.policyRevision,
+          stateVersion: request.policyStateVersion,
+        })
+      ) {
+        return { decision: "denied", reason: "stale-policy" } as const;
+      }
+      const mutation = administrativeMutationOperationKinds.some(
+        (kind) => kind === request.kind,
+      );
+      if (mutation) {
+        const lane = readMutationLane.get();
+        if (
+          lane?.operation_id !== input.operationId ||
+          lane.claim_id !== input.claimId ||
+          lane.lease_expires_at === null ||
+          lane.lease_expires_at <= input.effectAt
+        ) {
+          return { decision: "denied", reason: "claim-lost" } as const;
+        }
+      }
+      if (request.kind === "live-patch.apply") {
+        const rollback = readLivePatchRollback.get(input.operationId);
+        if (rollback?.status !== "armed") {
+          return {
+            decision: "denied",
+            reason: "live-patch-rollback",
+          } as const;
+        }
+        const activationRequest =
+          livePatchRollbackActivationRequestSchema.parse(
+            JSON.parse(rollback.request_json),
+          );
+        if (
+          activationRequest.taskId !== input.taskId ||
+          activationRequest.armedAt > input.effectAt ||
+          new Date(activationRequest.rollbackDeadline).getTime() -
+            new Date(input.effectAt).getTime() !==
+            livePatchRollbackWindowMilliseconds
+        ) {
+          return {
+            decision: "denied",
+            reason: "live-patch-rollback",
+          } as const;
+        }
+      }
+      return { decision: "authorized" } as const;
+    },
+  );
+
+  const completeLivePatchRollbackActivationTransaction = database.transaction(
+    (
+      input: Parameters<
+        AdministrativeAutonomyStore["completeLivePatchRollbackActivation"]
+      >[0],
+    ) => {
+      const result = livePatchRollbackActivationResultSchema.parse(input.result);
+      const rollback = readLivePatchRollback.get(result.operationId);
+      if (rollback === undefined) return false;
+      const request = livePatchRollbackActivationRequestSchema.parse(
+        JSON.parse(rollback.request_json),
+      );
+      if (
+        request.operationId !== result.operationId ||
+        request.taskId !== result.taskId ||
+        request.target.environment !== result.target.environment ||
+        request.target.registeredCodebaseId !==
+          result.target.registeredCodebaseId
+      ) {
+        return false;
+      }
+      if (rollback.status === "activated") {
+        if (rollback.result_json === null) return false;
+        const recorded = livePatchRollbackActivationResultSchema.parse(
+          JSON.parse(rollback.result_json),
+        );
+        return (
+          recorded.operationId === request.operationId &&
+          recorded.taskId === request.taskId &&
+          recorded.target.environment === request.target.environment &&
+          recorded.target.registeredCodebaseId ===
+            request.target.registeredCodebaseId
+        );
+      }
+      if (
+        rollback.status !== "activation-pending" ||
+        requirePolicyState().status !== "suspended"
+      ) {
+        return false;
+      }
+      return (
+        completeLivePatchRollbackActivation.run(
+          JSON.stringify(result),
+          result.activatedAt,
+          result.operationId,
+        ).changes === 1
+      );
     },
   );
 
@@ -739,7 +1021,9 @@ export function createSqliteAdministrativeAutonomyStore(
       ) {
         return {
           decision: "deferred",
-          retryAt: operation.lease_expires_at,
+          retryAt: administrativeTimestampSchema.parse(
+            operation.lease_expires_at,
+          ),
         };
       }
       const mutation = administrativeMutationOperationKinds.some(
@@ -756,7 +1040,10 @@ export function createSqliteAdministrativeAutonomyStore(
           lane.lease_expires_at !== null &&
           lane.lease_expires_at > input.claimedAt
         ) {
-          return { decision: "deferred", retryAt: lane.lease_expires_at };
+          return {
+            decision: "deferred",
+            retryAt: administrativeTimestampSchema.parse(lane.lease_expires_at),
+          };
         }
         const laneResult = claimMutationLane.run(
           operation.id,
@@ -782,11 +1069,14 @@ export function createSqliteAdministrativeAutonomyStore(
         throw new Error("Administrative Operation changed concurrently");
       }
       return {
-        activeExecutionDeadline: task.active_execution_deadline,
+        activeExecutionDeadline: administrativeTimestampSchema.parse(
+          task.active_execution_deadline,
+        ),
         claimId: input.claimId,
         decision: "claimed",
-        initialExecutionStartedAt:
+        initialExecutionStartedAt: administrativeTimestampSchema.parse(
           operation.initial_execution_started_at ?? input.claimedAt,
+        ),
         recovered: operation.status === "running",
         request,
       };
@@ -806,11 +1096,39 @@ export function createSqliteAdministrativeAutonomyStore(
         throw new Error("Administrative Operation claim changed concurrently");
       }
       const task = requireTask(input.taskId);
+      const request = administrativeOperationRequestSchema.parse(
+        JSON.parse(operation.request_json),
+      );
       if (
         task.active_execution_deadline === null ||
-        input.result.completedAt >= task.active_execution_deadline
+        input.result.completedAt >= task.active_execution_deadline ||
+        !matchesAuthoritySnapshot({
+          executionManifest: request.executionManifest,
+          policyRevision: request.policyRevision,
+          stateVersion: request.policyStateVersion,
+        })
       ) {
-        throw new Error("Administrative Task active-execution deadline elapsed");
+        throw new Error("Administrative Operation authority is no longer active");
+      }
+      if (request.kind === "live-patch.apply") {
+        const rollback = readLivePatchRollback.get(input.operationId);
+        const result =
+          input.result.kind === "live-patch.apply" ? input.result : undefined;
+        if (rollback?.status !== "armed" || result === undefined) {
+          throw new Error("Live Patch rollback is not armed");
+        }
+        const activationRequest =
+          livePatchRollbackActivationRequestSchema.parse(
+            JSON.parse(rollback.request_json),
+          );
+        if (
+          activationRequest.armedAt !==
+            result.mutationProof.independentRollback.armedAt ||
+          activationRequest.rollbackDeadline !==
+            result.mutationProof.independentRollback.rollbackDeadline
+        ) {
+          throw new Error("Live Patch rollback proof changed after arming");
+        }
       }
       const result = completeOperation.run(
         JSON.stringify(input.result),
@@ -936,6 +1254,9 @@ export function createSqliteAdministrativeAutonomyStore(
     async applyEvidenceRetention(input) {
       expireEvidenceTransaction.immediate(input.cutoff);
     },
+    async armLivePatchRollback(input) {
+      return armLivePatchRollbackTransaction.immediate(input);
+    },
     async activatePolicy(input) {
       return activateTransaction.immediate(input);
     },
@@ -950,6 +1271,9 @@ export function createSqliteAdministrativeAutonomyStore(
     },
     async completeOperation(input) {
       return completeOperationTransaction.immediate(input);
+    },
+    async completeLivePatchRollbackActivation(input) {
+      return completeLivePatchRollbackActivationTransaction.immediate(input);
     },
     async completeTask(input) {
       return completeTaskTransaction.immediate(input);
@@ -978,10 +1302,24 @@ export function createSqliteAdministrativeAutonomyStore(
       return listTasks.all().map(taskProjection);
     },
     async listRecoverableTaskIds() {
-      return listRecoverableTaskIds.all().map((row) => row.task_id);
+      return listRecoverableTaskIds
+        .all()
+        .map((row) => administrativeTaskIdSchema.parse(row.task_id));
+    },
+    async listPendingLivePatchRollbackActivations() {
+      return listPendingLivePatchRollbacks
+        .all()
+        .map((row) =>
+          livePatchRollbackActivationRequestSchema.parse(
+            JSON.parse(row.request_json),
+          ),
+        );
     },
     async readPolicyStatus() {
       return policyStatus();
+    },
+    async recheckOperationEffect(input) {
+      return recheckOperationEffectTransaction.immediate(input);
     },
     async renewOperationClaim(input) {
       return renewOperationTransaction.immediate(input);
@@ -1063,6 +1401,19 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (task_id) REFERENCES administrative_tasks(id),
       FOREIGN KEY (policy_revision)
         REFERENCES administrative_policy_revisions(revision)
+    );
+
+    CREATE TABLE IF NOT EXISTS administrative_live_patch_rollbacks (
+      operation_id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (
+        status IN ('armed', 'activation-pending', 'activated')
+      ),
+      request_json TEXT NOT NULL,
+      result_json TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (operation_id) REFERENCES administrative_operations(id),
+      FOREIGN KEY (task_id) REFERENCES administrative_tasks(id)
     );
 
     CREATE TABLE IF NOT EXISTS administrative_mutation_lane (

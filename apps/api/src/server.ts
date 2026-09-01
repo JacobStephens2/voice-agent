@@ -18,7 +18,12 @@ import { rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
-import { administrativeUnavailableExecutionManifest } from "@voice-agent/contracts";
+import {
+  administrativeOperationClaimIdSchema,
+  administrativeOperationIdSchema,
+  administrativeTaskIdSchema,
+  administrativeUnavailableExecutionManifest,
+} from "@voice-agent/contracts";
 
 import {
   createUnixSocketBountywellController,
@@ -64,8 +69,9 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
-// Issue #83's acceptance gate uses a fake provider/executor at the scenario
-// seam. ADR-0048 keeps real planning and effects behind Grok enrollment (#80),
+// Issue #83's acceptance gate uses a fake provider, executor, and independent
+// rollback activator at the scenario seam. ADR-0048 keeps real planning and
+// effects behind Grok enrollment (#80),
 // the Administrative Publisher App (#82), typed observation brokers (#90), and
 // the Live Patch broker (#92). Production therefore binds activation to the
 // unavailable manifest and reports that exact prerequisite through status.
@@ -73,10 +79,17 @@ const administrativeRuntime = createAdministrativeAutonomyRuntime({
   executionManifest: administrativeUnavailableExecutionManifest,
   identifiers: {
     nextCapability: randomUUID,
-    nextClaimId: randomUUID,
+    nextClaimId: () =>
+      administrativeOperationClaimIdSchema.parse(
+        `administrative-claim-${randomUUID()}`,
+      ),
     nextEventId: randomUUID,
-    nextOperationId: randomUUID,
-    nextTaskId: randomUUID,
+    nextOperationId: () =>
+      administrativeOperationIdSchema.parse(
+        `administrative-operation-${randomUUID()}`,
+      ),
+    nextTaskId: () =>
+      administrativeTaskIdSchema.parse(`administrative-task-${randomUUID()}`),
   },
   now: () => new Date().toISOString(),
   store: createSqliteAdministrativeAutonomyStore(databasePath),
@@ -296,9 +309,12 @@ const api = createVoiceApi({
         const records = await readKeeploreEvidenceRecords();
         return records.find((record) => record.task.id === taskId);
       }
+      const administrativeTaskId = administrativeTaskIdSchema.safeParse(taskId);
       return (
         (await callbackRuntime.readEvidenceRecord(taskId)) ??
-        (await administrativeRuntime.getTask(taskId)) ??
+        (administrativeTaskId.success
+          ? await administrativeRuntime.getTask(administrativeTaskId.data)
+          : undefined) ??
         (await runtime.getEvidenceRecord(taskId))
       );
     },

@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
+import type { LivePatchRollbackActivationRequest } from "@voice-agent/contracts";
+
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
 import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
 
@@ -21,7 +23,7 @@ afterEach(async () => {
   );
 });
 
-test("an activated adapter manifest cannot gain authority after Human Merge", async () => {
+test("an Administrative Execution Manifest cannot gain authority after Human Merge", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
   temporaryDirectories.push(directory);
   const databasePath = join(directory, "voice-agent.sqlite");
@@ -444,6 +446,7 @@ test("a delayed Live Patch arms a fresh thirty-minute rollback and must reconcil
       clock: rollbackClock,
       livePatchRollbackArmLeadMilliseconds: 60 * 1_000,
       now: rollbackClock.current,
+      operationLeaseMilliseconds: 2 * 60 * 1_000,
       providerPlan: [{ kind: "live-patch.apply" }],
     },
     temporaryDirectories,
@@ -517,6 +520,301 @@ test("authenticated Administrative Suspension is durable and blocks new admissio
   });
 
   await scenario.close();
+});
+
+test("Administrative Suspension aborts an armed Live Patch before mutation and activates its rollback", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  let reportArmed: (() => void) | undefined;
+  const armed = new Promise<void>((resolve) => {
+    reportArmed = resolve;
+  });
+  let releaseExecutor: (() => void) | undefined;
+  const executorReleased = new Promise<void>((resolve) => {
+    releaseExecutor = resolve;
+  });
+  const effectLedger = new Set<string>();
+  const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+  const rollbackActivationLedger = new Set<string>();
+  const scenario = await createAdministrativeAutonomyScenario({
+    afterLivePatchRollbackArmed: async () => {
+      reportArmed?.();
+      await executorReleased;
+    },
+    databasePath: join(directory, "voice-agent.sqlite"),
+    effectLedger,
+    now: "2026-10-02T14:15:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationLedger,
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const admission = scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "in-flight-suspension-request",
+    target,
+  });
+  await armed;
+  const suspension = await scenario.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  releaseExecutor?.();
+
+  expect({
+    admission: await admission,
+    effects: [...effectLedger],
+    rollbackActivationAttempts,
+    rollbackActivationLedger: [...rollbackActivationLedger],
+    suspension,
+    task: await scenario.readTask("administrative-task-1"),
+  }).toMatchObject({
+    admission: { decision: "admitted" },
+    effects: [],
+    rollbackActivationAttempts: [
+      {
+        kind: "activate-armed-live-patch-rollback",
+        operationId: "administrative-operation-1",
+        taskId: "administrative-task-1",
+        target,
+      },
+    ],
+    rollbackActivationLedger: ["administrative-operation-1"],
+    suspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: ["administrative-operation-1"],
+          pendingOperationIds: [],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+    task: { task: { status: "running" } },
+  });
+
+  await scenario.close();
+});
+
+test("Administrative Suspension retains failed Live Patch rollback activation for restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+  const rollbackActivationLedger = new Set<string>();
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    now: "2026-10-02T14:30:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationFailures: 1,
+    rollbackActivationLedger,
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "suspension-rollback-request",
+    target,
+  });
+  const suspension = await firstProcess.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  const failedStatus = await firstProcess.readAutonomyStatus();
+  await firstProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "suspension-restart-",
+    now: "2026-10-02T14:31:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationLedger,
+  });
+  const restartedStatus = await restartedProcess.readAutonomyStatus();
+  const repeatedSuspension = await restartedProcess.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  const blockedAdmission = await restartedProcess.prepareTask({
+    intendedState: "No additional production effect occurs.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "suspension-blocked-request",
+    target,
+  });
+
+  expect({
+    blockedAdmission,
+    failedStatus,
+    repeatedSuspension,
+    restartedStatus,
+    rollbackActivationAttempts,
+    rollbackActivationLedger: [...rollbackActivationLedger],
+    suspension,
+  }).toMatchObject({
+    blockedAdmission: {
+      decision: "denied",
+      reason: "Administrative Autonomy is not active",
+    },
+    failedStatus: {
+      body: {
+        policy: {
+          rollbackActivations: {
+            activatedOperationIds: [],
+            pendingOperationIds: ["administrative-operation-1"],
+          },
+          status: "suspended",
+        },
+      },
+      statusCode: 200,
+    },
+    repeatedSuspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: ["administrative-operation-1"],
+          pendingOperationIds: [],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+    restartedStatus: {
+      body: {
+        policy: {
+          rollbackActivations: {
+            activatedOperationIds: ["administrative-operation-1"],
+            pendingOperationIds: [],
+          },
+          status: "suspended",
+        },
+      },
+      statusCode: 200,
+    },
+    rollbackActivationAttempts: [
+      {
+        kind: "activate-armed-live-patch-rollback",
+        operationId: "administrative-operation-1",
+        taskId: "administrative-task-1",
+        target,
+      },
+      {
+        kind: "activate-armed-live-patch-rollback",
+        operationId: "administrative-operation-1",
+        taskId: "administrative-task-1",
+        target,
+      },
+    ],
+    rollbackActivationLedger: ["administrative-operation-1"],
+    suspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: [],
+          pendingOperationIds: ["administrative-operation-1"],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+  });
+
+  await restartedProcess.close();
+});
+
+test("Administrative Suspension replays rollback activation without repeating its effect", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+  const rollbackActivationEffects: string[] = [];
+  const rollbackActivationLedger = new Set<string>();
+  const rollbackActivationTimeLedger = new Map();
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    crashAfterFirstRollbackActivation: true,
+    databasePath,
+    now: "2026-10-02T14:40:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationEffects,
+    rollbackActivationLedger,
+    rollbackActivationTimeLedger,
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "rollback-post-effect-crash-request",
+    target,
+  });
+  const suspension = await firstProcess.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  await firstProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "rollback-replay-",
+    now: "2026-10-02T14:41:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationEffects,
+    rollbackActivationLedger,
+    rollbackActivationTimeLedger,
+  });
+
+  expect({
+    attempts: rollbackActivationAttempts.map((request) => request.operationId),
+    effects: rollbackActivationEffects,
+    restarted: await restartedProcess.readPolicyStatus(),
+    suspension,
+  }).toMatchObject({
+    attempts: ["administrative-operation-1", "administrative-operation-1"],
+    effects: ["administrative-operation-1"],
+    restarted: {
+      rollbackActivations: {
+        activatedOperationIds: ["administrative-operation-1"],
+        pendingOperationIds: [],
+      },
+      status: "suspended",
+    },
+    suspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: [],
+          pendingOperationIds: ["administrative-operation-1"],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+  });
+
+  await restartedProcess.close();
 });
 
 test("a Live Patch crash after its effect replays the original durable safety proof", async () => {
