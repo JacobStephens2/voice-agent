@@ -41,6 +41,14 @@ export const delegationFailureSchema = z
   })
   .strict();
 
+export const delegationTerminationSchema = z
+  .object({
+    evidencePaths: z.array(absolutePathSchema).max(4),
+    kind: z.enum(["deadline", "owner-requested", "signal"]),
+    message: z.string().min(1).max(300),
+  })
+  .strict();
+
 export const delegationAutomaticVerificationSchema = z
   .object({
     command: z.string().min(1).max(200),
@@ -70,6 +78,13 @@ export const delegationResultSharedFields = {
   worktree: delegationWorktreeSchema,
 };
 
+/** One truthful outcome invariant shared by every Delegation Result schema. */
+export const delegationResultOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({ failure: z.null(), status: z.literal("completed") }),
+  z.object({ failure: delegationFailureSchema, status: z.literal("failed") }),
+  z.object({ failure: z.null(), status: z.literal("stopped") }),
+]);
+
 export const delegationAutomatedVerificationResultsSchema = z
   .array(delegationAutomaticVerificationSchema)
   .max(10);
@@ -78,6 +93,7 @@ export const delegationAutomatedVerificationResultsSchema = z
 export const delegationResultCoreSchema = z
   .object({
     ...delegationResultSharedFields,
+    termination: delegationTerminationSchema.nullable(),
     verification: z
       .object({
         automated: delegationAutomatedVerificationResultsSchema,
@@ -87,12 +103,22 @@ export const delegationResultCoreSchema = z
   })
   .strict()
   .superRefine((result, context) => {
-    if ((result.status === "completed") !== (result.failure === null)) {
+    if (!delegationResultOutcomeSchema.safeParse(result).success) {
       context.addIssue({
         code: "custom",
         message:
-          "Completed Delegations have no failure; failed or stopped Delegations retain one",
+          "Completed and stopped Delegations have no failure; failed Delegations retain one",
         path: ["failure"],
+      });
+    }
+    if (
+      (result.status === "stopped") !== (result.termination !== null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Stopped Delegations retain termination proof; completed and failed Delegations do not",
+        path: ["termination"],
       });
     }
     const headCommit = result.commits.at(-1);

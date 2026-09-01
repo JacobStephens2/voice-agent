@@ -138,15 +138,15 @@ export interface AdministrativeAutonomyStore {
     readonly result: AdministrativeOperationResult;
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
-  terminateDelegatedOperation(input: {
+  settleClaimedOperationAndDenyTask(input: {
     readonly claimId: AdministrativeOperationClaimId;
+    readonly deniedAt: AdministrativeTimestamp;
+    readonly deniedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly operationId: AdministrativeOperationId;
-    readonly result: Extract<
-      AdministrativeOperationResult,
-      { readonly kind: "delegated-worktree.change" }
-    >;
+    readonly operationEvent: UnsequencedAdministrativeEvidenceEvent;
+    readonly operationStatus: "failed" | "stopped";
+    readonly result?: AdministrativeOperationResult;
     readonly taskId: AdministrativeTaskId;
-    readonly terminatedEvent: UnsequencedAdministrativeEvidenceEvent;
   }): Promise<AdministrativeEvidenceRecord>;
   completeLivePatchRollbackActivation(input: {
     readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;

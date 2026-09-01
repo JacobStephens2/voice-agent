@@ -158,12 +158,14 @@ const scenarioOperationResultHandlers = {
             ? "administrative/untrusted-provider-branch"
             : request.delegation.worktree.branch,
         changedFiles:
-          terminalStatus === undefined ? ["src/administrative-change.ts"] : [],
+          terminalStatus === undefined
+            ? ["src/administrative-change.ts"]
+            : ["src/preserved-administrative-work.ts"],
         commits: terminalStatus === undefined ? ["a".repeat(40)] : [],
         completedAt: context.common.completedAt,
         delegationId: request.delegation.brief.delegationId,
         failure:
-          terminalStatus !== undefined
+          terminalStatus === "failed"
             ? {
                 evidencePaths: [
                   `/var/lib/voice-agent-evidence/${request.operationId}/restricted-runner-failure.json`,
@@ -173,8 +175,21 @@ const scenarioOperationResultHandlers = {
                 name: "AdministrativeDelegationTerminated",
               }
             : null,
-        risks: [],
+        risks:
+          terminalStatus === undefined
+            ? []
+            : ["The preserved partial work requires human review."],
         status: terminalStatus ?? ("completed" as const),
+        termination:
+          terminalStatus === "stopped"
+            ? {
+                evidencePaths: [
+                  `/var/lib/voice-agent-evidence/${request.operationId}/stop.json`,
+                ],
+                kind: "owner-requested" as const,
+                message: "The bounded Delegation was stopped by its owner.",
+              }
+            : null,
         verification: {
           automated:
             request.delegation.brief.acceptanceCriteria.automaticVerification.commands.map(
@@ -201,7 +216,7 @@ const scenarioOperationResultHandlers = {
         },
         worktree: {
           ...request.delegation.worktree,
-          dirty: false,
+          dirty: terminalStatus !== undefined,
           state: terminalStatus ?? ("completed" as const),
         },
       },
@@ -298,6 +313,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly beforeProviderPlanReturn?: (input: {
     readonly signal?: AbortSignal;
   }) => Promise<void>;
+  readonly beforeRollbackActivationResultReturn?: () => Promise<void> | void;
   readonly afterLivePatchRollbackArmed?: (
     request: Extract<
       AdministrativeOperationRequest,
@@ -328,6 +344,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly livePatchRollbackArmLeadMilliseconds?: number;
   readonly livePatchRollbackDurationMilliseconds?: number;
   readonly livePatchProofLedger?: Map<string, LivePatchMutationProof>;
+  readonly loseFirstOperationSettlementResponse?: boolean;
   readonly now: string;
   readonly onOperationStart?: () => void;
   readonly onProviderPlanStart?: () => void;
@@ -376,6 +393,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   let freshPasskey = false;
   let crashedAfterEffect = false;
   let crashedAfterRollbackActivation = false;
+  let lostOperationSettlementResponse = false;
   let revisePolicyAfterFirstOperation = false;
   let revisePolicyBeforePlanAdmission = false;
   let providerFailuresRemaining = options.providerFailures ?? 0;
@@ -394,6 +412,24 @@ export async function createAdministrativeAutonomyScenario(options: {
   const currentTime = () => options.clock?.current ?? options.now;
   let registeredCodebaseLookup = 0;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
+  const runtimeStore: ReturnType<
+    typeof createSqliteAdministrativeAutonomyStore
+  > =
+    options.loseFirstOperationSettlementResponse === true
+      ? {
+          ...store,
+          async settleClaimedOperationAndDenyTask(input) {
+            const record = await store.settleClaimedOperationAndDenyTask(input);
+            if (!lostOperationSettlementResponse) {
+              lostOperationSettlementResponse = true;
+              throw new Error(
+                "Simulated process loss after atomic Operation settlement",
+              );
+            }
+            return record;
+          },
+        }
+      : store;
   const executionManifest =
     options.executionAdapters === "unavailable"
       ? administrativeUnavailableExecutionManifest
@@ -665,6 +701,7 @@ export async function createAdministrativeAutonomyScenario(options: {
           );
         }
       }
+      await options.beforeRollbackActivationResultReturn?.();
       return livePatchRollbackActivationResultSchema.parse({
         activatedAt,
         kind: "live-patch-rollback-activated",
@@ -819,7 +856,7 @@ export async function createAdministrativeAutonomyScenario(options: {
               },
             },
           }),
-      store,
+      store: runtimeStore,
     });
   } catch (error) {
     await store.close();

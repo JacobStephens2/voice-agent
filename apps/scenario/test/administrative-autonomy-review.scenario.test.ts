@@ -551,6 +551,9 @@ test.each([
       completedOperationEvents: record?.evidence.filter(
         (event) => event.kind === "administrative.operation.completed",
       ),
+      failedOperationEvents: record?.evidence.filter(
+        (event) => event.kind === "administrative.operation.failed",
+      ),
       task: record?.task,
     }).toMatchObject({
       admission: {
@@ -559,6 +562,16 @@ test.each([
           "Administrative executor returned incomplete or mismatched bounded proof",
       },
       completedOperationEvents: [],
+      failedOperationEvents: [
+        {
+          details: {
+            kind: "delegated-worktree.change",
+            operationId: "administrative-operation-1",
+            reason:
+              "Administrative executor returned incomplete or mismatched bounded proof",
+          },
+        },
+      ],
       task: {
         conclusion:
           "Administrative executor returned incomplete or mismatched bounded proof",
@@ -616,8 +629,18 @@ test.each([
           details: {
             result: {
               delegation: {
-                failure: { kind: "restricted-runner" },
+                changedFiles: ["src/preserved-administrative-work.ts"],
+                failure:
+                  terminalStatus === "failed"
+                    ? { kind: "restricted-runner" }
+                    : null,
+                risks: ["The preserved partial work requires human review."],
                 status: terminalStatus,
+                termination:
+                  terminalStatus === "stopped"
+                    ? { kind: "owner-requested" }
+                    : null,
+                worktree: { dirty: true, state: terminalStatus },
               },
               publication: {
                 kind: "not-published",
@@ -646,6 +669,64 @@ test.each([
     await restarted.close();
   },
 );
+
+test("terminal Delegation settlement survives commit-response loss without duplicate evidence", async () => {
+  const { databasePath, scenario } = await createActivatedScenario(
+    {
+      delegatedWorktreeProof: "terminated",
+      loseFirstOperationSettlementResponse: true,
+      now: "2026-10-02T11:36:15.000Z",
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
+  await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The preserved partial work is available for human review.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "terminal-settlement-response-loss",
+    target,
+  });
+  await scenario.close();
+
+  const restarted = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "terminal-response-loss-restart-",
+    now: "2026-10-02T11:37:15.000Z",
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await restarted.reconcileOperations();
+  const record = await restarted.readTask("administrative-task-1");
+
+  expect({
+    denied: record?.evidence.filter(
+      (event) => event.kind === "administrative.task.denied",
+    ),
+    task: record?.task,
+    terminal: record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.terminated",
+    ),
+  }).toMatchObject({
+    denied: [{ details: { reason: "Administrative Delegation stopped." } }],
+    task: { status: "denied" },
+    terminal: [
+      {
+        details: {
+          result: {
+            delegation: {
+              failure: null,
+              termination: { kind: "owner-requested" },
+              worktree: { dirty: true, state: "stopped" },
+            },
+          },
+          terminalStatus: "stopped",
+        },
+      },
+    ],
+  });
+  await restarted.close();
+});
 
 test("a verified Delegation completion remains valid when trusted receipt time advances", async () => {
   const clock = { current: "2026-10-02T11:36:30.000Z" };
@@ -2050,6 +2131,78 @@ test("a hanging rollback activator is aborted, evidenced, scheduled, and retried
       pendingOperationIds: [],
     },
     status: "suspended",
+  });
+  await scenario.close();
+});
+
+test("a rollback activation result that arrives after its trusted deadline fails closed and replays", async () => {
+  const clock = { current: "2026-10-02T15:20:00.000Z" };
+  const deadlineCallbacks: Array<() => void> = [];
+  const reconciliationCallbacks: Array<() => Promise<void>> = [];
+  const reconciliationSchedule: string[] = [];
+  let advanceFirstResult = true;
+  const { scenario } = await createActivatedScenario(
+    {
+      beforeRollbackActivationResultReturn() {
+        if (!advanceFirstResult) return;
+        advanceFirstResult = false;
+        clock.current = "2026-10-02T15:20:31.000Z";
+      },
+      clock,
+      now: clock.current,
+      providerPlan: [{ kind: "live-patch.apply" }],
+      reconciliationCallbacks,
+      reconciliationSchedule,
+      rollbackActivationDeadlineCallbacks: deadlineCallbacks,
+    },
+    temporaryDirectories,
+  );
+  await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "late-rollback-activation-result",
+    target,
+  });
+  await scenario.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  const pendingRecord = await scenario.readTask("administrative-task-1");
+
+  expect({
+    activated: pendingRecord?.evidence.filter(
+      (event) => event.kind === "administrative.live-patch.rollback-activated",
+    ),
+    failed: pendingRecord?.evidence.filter(
+      (event) =>
+        event.kind === "administrative.live-patch.rollback-activation-failed",
+    ),
+    schedule: reconciliationSchedule,
+  }).toMatchObject({
+    activated: [],
+    failed: [{ details: { reason: "transient-failure" } }],
+    schedule: ["2026-10-02T15:20:32.000Z"],
+  });
+
+  clock.current = reconciliationSchedule[0] ?? clock.current;
+  await reconciliationCallbacks[0]?.();
+  const recoveredRecord = await scenario.readTask("administrative-task-1");
+  expect({
+    activated: recoveredRecord?.evidence.filter(
+      (event) => event.kind === "administrative.live-patch.rollback-activated",
+    ),
+    status: await scenario.readPolicyStatus(),
+  }).toMatchObject({
+    activated: [
+      { details: { result: { outcome: "already-activated" } } },
+    ],
+    status: {
+      rollbackActivations: { pendingOperationIds: [] },
+      status: "suspended",
+    },
   });
   await scenario.close();
 });

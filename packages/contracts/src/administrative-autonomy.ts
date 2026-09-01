@@ -1166,6 +1166,15 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...eventFields,
+    details: z.object({
+      kind: administrativeOperationKindSchema,
+      operationId: administrativeOperationIdSchema,
+      reason: z.string().min(1).max(240),
+    }),
+    kind: z.literal("administrative.operation.failed"),
+  }),
+  z.object({
+    ...eventFields,
     details: z
       .object({
         operationId: administrativeOperationIdSchema,

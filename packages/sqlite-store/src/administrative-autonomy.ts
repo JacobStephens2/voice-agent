@@ -133,6 +133,7 @@ interface AdministrativeOperationRow {
   readonly initial_execution_started_at: string | null;
   readonly lease_expires_at: string | null;
   readonly request_json: string;
+  readonly result_json: string | null;
   readonly status: "accepted" | "completed" | "failed" | "running" | "stopped";
   readonly task_id: string;
 }
@@ -353,7 +354,7 @@ export function createSqliteAdministrativeAutonomyStore(
     AdministrativeOperationRow
   >(`
     SELECT id, task_id, status, request_json, claim_id, lease_expires_at,
-      initial_execution_started_at
+      initial_execution_started_at, result_json
     FROM administrative_operations
     WHERE id = ?
   `);
@@ -362,7 +363,7 @@ export function createSqliteAdministrativeAutonomyStore(
     AdministrativeOperationRow
   >(`
     SELECT id, task_id, status, request_json, claim_id, lease_expires_at,
-      initial_execution_started_at
+      initial_execution_started_at, result_json
     FROM administrative_operations
     WHERE task_id = ? AND status != 'completed'
     ORDER BY ordinal
@@ -414,7 +415,7 @@ export function createSqliteAdministrativeAutonomyStore(
       claim_id = NULL, lease_expires_at = NULL
     WHERE id = ? AND task_id = ? AND status = 'running' AND claim_id = ?
   `);
-  const terminateDelegatedOperation = database.prepare(`
+  const settleClaimedOperationAndDenyTask = database.prepare(`
     UPDATE administrative_operations
     SET status = ?, result_json = ?, updated_at = ?,
       claim_id = NULL, lease_expires_at = NULL
@@ -1572,13 +1573,25 @@ export function createSqliteAdministrativeAutonomyStore(
     },
   );
 
-  const terminateDelegatedOperationTransaction = database.transaction(
+  const settleClaimedOperationAndDenyTaskTransaction = database.transaction(
     (
       input: Parameters<
-        AdministrativeAutonomyStore["terminateDelegatedOperation"]
+        AdministrativeAutonomyStore["settleClaimedOperationAndDenyTask"]
       >[0],
     ) => {
       const operation = readOperation.get(input.operationId);
+      const task = requireTask(input.taskId);
+      const encodedResult =
+        input.result === undefined ? null : JSON.stringify(input.result);
+      if (
+        operation !== undefined &&
+        operation.task_id === input.taskId &&
+        operation.status === input.operationStatus &&
+        operation.result_json === encodedResult &&
+        task.status === "denied"
+      ) {
+        return loadRecord(task);
+      }
       if (
         operation === undefined ||
         operation.task_id !== input.taskId ||
@@ -1587,41 +1600,54 @@ export function createSqliteAdministrativeAutonomyStore(
       ) {
         throw new Error("Administrative Operation claim changed concurrently");
       }
-      const task = requireTask(input.taskId);
       const request = administrativeOperationRequestSchema.parse(
         JSON.parse(operation.request_json),
       );
-      const result = administrativeOperationResultSchema.parse(input.result);
+      const result =
+        input.result === undefined
+          ? undefined
+          : administrativeOperationResultSchema.parse(input.result);
       if (
+        input.deniedEvent.kind !== "administrative.task.denied" ||
+        input.deniedEvent.occurredAt !== input.deniedAt
+      ) {
+        throw new Error("Task denial Evidence Event is mismatched");
+      }
+      if (result === undefined) {
+        if (
+          input.operationStatus !== "failed" ||
+          input.operationEvent.kind !== "administrative.operation.failed" ||
+          input.operationEvent.occurredAt !== input.deniedAt ||
+          input.operationEvent.details.operationId !== request.operationId ||
+          input.operationEvent.details.kind !== request.kind ||
+          input.operationEvent.details.reason !==
+            input.deniedEvent.details.reason
+        ) {
+          throw new Error("Operation failure Evidence Event is mismatched");
+        }
+      } else if (
         request.kind !== "delegated-worktree.change" ||
         result.kind !== request.kind ||
         result.operationId !== request.operationId ||
         result.delegation.status === "completed" ||
-        task.active_execution_deadline === null ||
-        result.completedAt >= task.active_execution_deadline ||
-        !matchesAuthoritySnapshot(request.authority)
-      ) {
-        throw new Error("Terminal Delegation Result is not authoritative");
-      }
-      if (
-        input.terminatedEvent.kind !== "administrative.operation.terminated" ||
-        input.terminatedEvent.occurredAt !== result.completedAt ||
-        input.terminatedEvent.details.operationId !== result.operationId ||
-        input.terminatedEvent.details.kind !== result.kind ||
-        input.terminatedEvent.details.terminalStatus !==
+        result.delegation.status !== input.operationStatus ||
+        result.completedAt > input.deniedAt ||
+        input.operationEvent.kind !== "administrative.operation.terminated" ||
+        input.operationEvent.occurredAt !== result.completedAt ||
+        input.operationEvent.details.operationId !== result.operationId ||
+        input.operationEvent.details.kind !== result.kind ||
+        input.operationEvent.details.terminalStatus !==
           result.delegation.status ||
-        JSON.stringify(input.terminatedEvent.details.result) !==
+        JSON.stringify(input.operationEvent.details.result) !==
           JSON.stringify(result)
       ) {
-        throw new Error(
-          "Terminal Delegation Evidence Event does not match its result",
-        );
+        throw new Error("Terminal Delegation Evidence Event is mismatched");
       }
       if (
-        terminateDelegatedOperation.run(
-          result.delegation.status,
-          JSON.stringify(result),
-          result.completedAt,
+        settleClaimedOperationAndDenyTask.run(
+          input.operationStatus,
+          encodedResult,
+          input.deniedAt,
           input.operationId,
           input.taskId,
           input.claimId,
@@ -1629,8 +1655,12 @@ export function createSqliteAdministrativeAutonomyStore(
       ) {
         throw new Error("Administrative Operation changed concurrently");
       }
+      const reason = input.deniedEvent.details.reason;
+      if (denyTask.run(reason, input.deniedAt, input.taskId).changes !== 1) {
+        throw new Error("Administrative Task changed concurrently");
+      }
       releaseMutationLane.run(input.operationId, input.claimId);
-      appendEvents(input.taskId, [input.terminatedEvent]);
+      appendEvents(input.taskId, [input.operationEvent, input.deniedEvent]);
       return loadRecord(requireTask(input.taskId));
     },
   );
@@ -1757,8 +1787,8 @@ export function createSqliteAdministrativeAutonomyStore(
     async completeOperation(input) {
       return completeOperationTransaction.immediate(input);
     },
-    async terminateDelegatedOperation(input) {
-      return terminateDelegatedOperationTransaction.immediate(input);
+    async settleClaimedOperationAndDenyTask(input) {
+      return settleClaimedOperationAndDenyTaskTransaction.immediate(input);
     },
     async completeLivePatchRollbackActivation(input) {
       return completeLivePatchRollbackActivationTransaction.immediate(input);

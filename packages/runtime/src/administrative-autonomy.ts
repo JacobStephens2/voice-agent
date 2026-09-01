@@ -56,7 +56,10 @@ import {
   type LivePatchRollbackActivationRequest,
   type AdministrativeLivePatchRollbackActivatorIdentity,
 } from "@voice-agent/contracts";
-import type { AdministrativeAutonomyStore } from "@voice-agent/durable-store";
+import type {
+  AdministrativeAutonomyStore,
+  AdministrativeOperationClaim,
+} from "@voice-agent/durable-store";
 import {
   administrativeAutonomyPolicyDefinition,
   authorizeAdministrativePlan,
@@ -341,7 +344,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     }
   };
   const now = () => administrativeTimestampSchema.parse(options.now());
-  const planningDeadlineTimer = options.planningDeadlineTimer ?? {
+  const systemDeadlineTimer = {
     arm(deadline: AdministrativeTimestamp, onDeadline: () => void) {
       const timer = setTimeout(
         onDeadline,
@@ -351,8 +354,10 @@ export function createAdministrativeAutonomyRuntime(options: {
       return () => clearTimeout(timer);
     },
   };
+  const planningDeadlineTimer =
+    options.planningDeadlineTimer ?? systemDeadlineTimer;
   const rollbackActivationDeadlineTimer =
-    options.rollbackActivationDeadlineTimer ?? planningDeadlineTimer;
+    options.rollbackActivationDeadlineTimer ?? systemDeadlineTimer;
   const executionManifestPresent =
     options.provider !== undefined && options.executor !== undefined;
   const livePatchManifestPresent = executionManifest.operationAdapters.some(
@@ -513,6 +518,62 @@ export function createAdministrativeAutonomyRuntime(options: {
         summary: "The Administrative Task failed closed before execution.",
       },
       taskId,
+    });
+    return { decision: "denied" as const, reason };
+  }
+
+  async function denyClaimedOperation(
+    claim: Extract<AdministrativeOperationClaim, { readonly decision: "claimed" }>,
+    reason: string,
+    result?: Extract<
+      AdministrativeOperationResult,
+      { readonly kind: "delegated-worktree.change" }
+    >,
+  ) {
+    const deniedAt = now();
+    const terminalStatus =
+      result !== undefined && result.delegation.status !== "completed"
+        ? result.delegation.status
+        : undefined;
+    await options.store.settleClaimedOperationAndDenyTask({
+      claimId: claim.claimId,
+      deniedAt,
+      deniedEvent: {
+        details: { reason },
+        id: options.identifiers.nextEventId(),
+        kind: "administrative.task.denied",
+        occurredAt: deniedAt,
+        summary: "The Administrative Task failed closed during execution.",
+      },
+      operationEvent:
+        terminalStatus === undefined || result === undefined
+          ? {
+              details: {
+                kind: claim.request.kind,
+                operationId: claim.request.operationId,
+                reason,
+              },
+              id: options.identifiers.nextEventId(),
+              kind: "administrative.operation.failed",
+              occurredAt: deniedAt,
+              summary: `The ${claim.request.kind} Operation failed closed.`,
+            }
+          : {
+              details: {
+                kind: result.kind,
+                operationId: result.operationId,
+                result,
+                terminalStatus,
+              },
+              id: options.identifiers.nextEventId(),
+              kind: "administrative.operation.terminated",
+              occurredAt: result.completedAt,
+              summary: `The delegated Operation ${terminalStatus} with bounded evidence.`,
+            },
+      operationId: claim.request.operationId,
+      operationStatus: terminalStatus ?? "failed",
+      ...(result === undefined ? {} : { result }),
+      taskId: claim.request.taskId,
     });
     return { decision: "denied" as const, reason };
   }
@@ -691,6 +752,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         const result = livePatchRollbackActivationResultSchema.parse(untrusted);
         const completedAt = now();
         if (
+          completedAt >= attemptDeadline ||
           result.operationId !== request.operationId ||
           result.taskId !== request.taskId ||
           result.target.environment !== request.target.environment ||
@@ -987,8 +1049,8 @@ export function createAdministrativeAutonomyRuntime(options: {
         claim.request.authority.executionManifest,
       )
     ) {
-      await denyPlannedTask(
-        taskId,
+      await denyClaimedOperation(
+        claim,
         "The active policy revision does not authorize the configured execution manifest.",
       );
       return true;
@@ -996,8 +1058,8 @@ export function createAdministrativeAutonomyRuntime(options: {
     try {
       await requireCurrentRegisteredCodebase(claim.request.target, now());
     } catch {
-      await denyPlannedTask(
-        taskId,
+      await denyClaimedOperation(
+        claim,
         "The Registered Codebase registration is unavailable or stale",
       );
       return true;
@@ -1127,7 +1189,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         const lossReason = claimMaintenance.lossReason();
         if (lossReason !== undefined) {
           if (lossReason.startsWith("Administrative Suspension")) return false;
-          await denyPlannedTask(taskId, lossReason);
+          await denyClaimedOperation(claim, lossReason);
           return true;
         }
         if (error instanceof AdministrativeEffectFenceError) {
@@ -1142,12 +1204,12 @@ export function createAdministrativeAutonomyRuntime(options: {
                   error.reason === "execution-manifest"
                 ? "Administrative Autonomy policy state is stale"
                 : "Administrative Operation claim was lost";
-          await denyPlannedTask(taskId, reason);
+          await denyClaimedOperation(claim, reason);
           return true;
         }
         if (now() >= claim.activeExecutionDeadline) {
-          await denyPlannedTask(
-            taskId,
+          await denyClaimedOperation(
+            claim,
             "Administrative Task active-execution deadline elapsed",
           );
           return true;
@@ -1163,13 +1225,13 @@ export function createAdministrativeAutonomyRuntime(options: {
       }
       const lossReason = claimMaintenance.lossReason();
       if (lossReason !== undefined) {
-        await denyPlannedTask(taskId, lossReason);
+        await denyClaimedOperation(claim, lossReason);
         return true;
       }
       const completedAt = now();
       if (completedAt >= claim.activeExecutionDeadline) {
-        await denyPlannedTask(
-          taskId,
+        await denyClaimedOperation(
+          claim,
           "Administrative Task active-execution deadline elapsed",
         );
         return true;
@@ -1187,8 +1249,8 @@ export function createAdministrativeAutonomyRuntime(options: {
           completedAt,
         );
       } catch {
-        await denyPlannedTask(
-          taskId,
+        await denyClaimedOperation(
+          claim,
           "Administrative executor returned incomplete or mismatched bounded proof",
         );
         return true;
@@ -1198,27 +1260,10 @@ export function createAdministrativeAutonomyRuntime(options: {
           result.kind === "delegated-worktree.change" &&
           result.delegation.status !== "completed"
         ) {
-          await options.store.terminateDelegatedOperation({
-            claimId: claim.claimId,
-            operationId: claim.request.operationId,
-            result,
-            taskId,
-            terminatedEvent: {
-              details: {
-                kind: result.kind,
-                operationId: result.operationId,
-                result,
-                terminalStatus: result.delegation.status,
-              },
-              id: options.identifiers.nextEventId(),
-              kind: "administrative.operation.terminated",
-              occurredAt: result.completedAt,
-              summary: `The delegated Operation ${result.delegation.status} with bounded evidence.`,
-            },
-          });
-          await denyPlannedTask(
-            taskId,
+          await denyClaimedOperation(
+            claim,
             `Administrative Delegation ${result.delegation.status}.`,
+            result,
           );
           return true;
         }
@@ -1253,8 +1298,8 @@ export function createAdministrativeAutonomyRuntime(options: {
             claim.request.authority.executionManifest,
           )
         ) {
-          await denyPlannedTask(
-            taskId,
+          await denyClaimedOperation(
+            claim,
             "Administrative Autonomy policy state is stale",
           );
           return true;
@@ -2032,8 +2077,7 @@ function validateDelegatedWorktreeResult(
     delegation.worktree.id !== expectedWorktree.id ||
     delegation.worktree.baseCommit !== expectedWorktree.baseCommit ||
     delegation.worktree.branch !== expectedWorktree.branch ||
-    delegation.worktree.path !== expectedWorktree.path ||
-    delegation.worktree.dirty;
+    delegation.worktree.path !== expectedWorktree.path;
   if (commonProofMismatch) {
     throw new Error(
       "Administrative Delegation Result is incomplete, mismatched, or unverified",
@@ -2053,11 +2097,15 @@ function validateDelegatedWorktreeResult(
         candidate.branch === delegation.branch &&
         candidate.commit === headCommit &&
         candidate.worktreeId === delegation.worktree.id);
+    const terminalEvidenceMatches =
+      delegation.status === "failed"
+        ? delegation.failure !== null && delegation.termination === null
+        : delegation.failure === null && delegation.termination !== null;
     if (
-      delegation.failure === null ||
       delegation.worktree.state !== delegation.status ||
       result.publication.kind !== "not-published" ||
       result.publication.reason !== expectedPublicationReason ||
+      !terminalEvidenceMatches ||
       !verificationIsBounded ||
       !candidateMatches
     ) {
@@ -2069,9 +2117,11 @@ function validateDelegatedWorktreeResult(
   }
   if (
     delegation.failure !== null ||
+    delegation.termination !== null ||
     delegation.changedFiles.length === 0 ||
     delegation.commits.length === 0 ||
     delegation.worktree.state !== "completed" ||
+    delegation.worktree.dirty ||
     candidate === null ||
     candidate.branch !== delegation.branch ||
     candidate.commit !== headCommit ||
