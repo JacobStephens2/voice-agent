@@ -11,6 +11,7 @@ import {
 } from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
+import { createAuthenticationScenario } from "../src/index.ts";
 import {
   createActivatedScenario,
   createScenarioDatabase,
@@ -51,7 +52,39 @@ test("Administrative Task, Operation, and claim identities cannot be cross-wired
 
 test("a Fresh Passkey Action activates the policy used by one confirmed repair plan", async () => {
   const { databasePath } = await createScenarioDatabase(temporaryDirectories);
+  const authentication = await createAuthenticationScenario({
+    authenticationChallenges: ["login-challenge", "fresh-action-challenge"],
+    bootstrapCodes: ["BOOTSTRAP-PRIMARY", "BOOTSTRAP-RECOVERY"],
+    challenges: ["register-primary", "register-recovery"],
+    csrfTokens: ["administrative-csrf-token"],
+    databasePath,
+    now: "2026-08-31T15:00:00.000Z",
+    ownerUserId: "owner",
+    recoveryCodes: ["RECOVERY-A", "RECOVERY-B"],
+    sessionTokens: ["administrative-session-token"],
+  });
+  const primaryBootstrap = await authentication.generateBootstrapCode();
+  await authentication.enrollBootstrapPasskey({
+    bootstrapCode: primaryBootstrap,
+    credentialId: "primary-passkey",
+    label: "Primary passkey",
+  });
+  const recoveryBootstrap = await authentication.generateBootstrapCode();
+  const recoveryEnrollment = await authentication.enrollBootstrapPasskey({
+    bootstrapCode: recoveryBootstrap,
+    credentialId: "recovery-passkey",
+    label: "Recovery passkey",
+  });
+  await authentication.confirmRecoveryCodes({
+    confirmationToken: recoveryEnrollment.recoveryConfirmationToken ?? "",
+  });
+  const session = await authentication.login("primary-passkey");
   const scenario = await createAdministrativeAutonomyScenario({
+    authentication,
+    authenticationSession: {
+      csrfToken: session.csrfToken,
+      sessionToken: session.sessionToken,
+    },
     databasePath,
     now: "2026-08-31T15:00:00.000Z",
     providerPlan: [
@@ -61,10 +94,37 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     ],
   });
 
+  const ordinarySession = await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+  });
+  const voice = await scenario.attemptPolicyActivation({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    source: "voice",
+  });
+  const ceremonyId = await authentication.beginFreshPasskeyAction({
+    csrfToken: session.csrfToken,
+    sessionToken: session.sessionToken,
+  });
+  const fresh = await authentication.finishFreshPasskeyAction({
+    ceremonyId,
+    credentialId: "recovery-passkey",
+    sessionToken: session.sessionToken,
+  });
   const activation = await scenario.activatePolicy({
     expectedActiveRevision: null,
     expectedStateVersion: 0,
-    freshPasskey: true,
+  });
+  authentication.setTime("2026-08-31T15:06:00.000Z");
+  const ordinaryRevision = await scenario.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 1,
+  });
+  const voiceRevision = await scenario.attemptPolicyActivation({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 1,
+    source: "voice",
   });
   const result = await scenario.confirmAndRunTask({
     confirmation: "confirmed",
@@ -85,12 +145,17 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
   expect({
     activation,
     executed: scenario.executedOperations,
+    fresh,
+    ordinaryRevision,
+    ordinarySession,
     result,
     runtimeStatus: await scenario.readAutonomyStatus(),
     task: record?.task,
     usedPolicyRevision: record?.evidence.find(
       (event) => event.kind === "administrative.plan.accepted",
     )?.details.policyRevision,
+    voice,
+    voiceRevision,
   }).toMatchObject({
     activation: {
       body: {
@@ -157,6 +222,15 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
         },
       },
     ],
+    fresh: { freshUntil: "2026-08-31T15:05:00.000Z" },
+    ordinarySession: {
+      body: { error: "Fresh Passkey Action required" },
+      statusCode: 403,
+    },
+    ordinaryRevision: {
+      body: { error: "Fresh Passkey Action required" },
+      statusCode: 403,
+    },
     result: {
       decision: "admitted",
       policyRevision: 1,
@@ -194,9 +268,18 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
       updatedAt: "2026-08-31T15:00:00.000Z",
     },
     usedPolicyRevision: 1,
+    voice: {
+      decision: "denied",
+      reason: "Voice cannot activate Administrative Autonomy",
+    },
+    voiceRevision: {
+      decision: "denied",
+      reason: "Voice cannot activate Administrative Autonomy",
+    },
   });
 
   await scenario.close();
+  await authentication.close();
 });
 
 test("voice and a Trusted Browser Session cannot activate a policy that survives restart", async () => {

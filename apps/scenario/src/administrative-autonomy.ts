@@ -11,6 +11,7 @@ import {
   administrativeTaskTargetFingerprint,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
+  credentialCustodyBoundaryPaths,
   delegationIdSchema,
   livePatchMutationProofSchema,
   livePatchRollbackActivationResultSchema,
@@ -30,11 +31,16 @@ import {
   type LivePatchRollbackActivationRequest,
   type RegisteredCodebaseId,
 } from "@voice-agent/contracts";
-import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
+import {
+  createTaskApi,
+  trustedSessionCookieName,
+  type EvidenceRecordAuthentication,
+} from "@voice-agent/api";
 import {
   createAdministrativeAutonomyRuntime,
   createTaskContinuityRuntime,
   type AdministrativeOperationExecution,
+  type AdministrativeRegisteredCodebasePathAuthority,
   type AdministrativeTaskAdmissionResult,
 } from "@voice-agent/runtime";
 import {
@@ -57,7 +63,7 @@ export interface AdministrativeAutonomyScenario {
     readonly expectedActiveRevision: number | null;
     readonly expectedExecutionManifestFingerprint?: string;
     readonly expectedStateVersion: number;
-    readonly freshPasskey: boolean;
+    readonly freshPasskey?: boolean;
   }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   attemptPolicyActivation(input: {
     readonly expectedActiveRevision: number | null;
@@ -330,6 +336,11 @@ function scenarioOperationResult(
 }
 
 export async function createAdministrativeAutonomyScenario(options: {
+  readonly authentication?: EvidenceRecordAuthentication;
+  readonly authenticationSession?: {
+    readonly csrfToken: string;
+    readonly sessionToken: string;
+  };
   readonly beforeOperationEffect?: (
     request: AdministrativeOperationRequest,
   ) => Promise<void>;
@@ -424,8 +435,19 @@ export async function createAdministrativeAutonomyScenario(options: {
     | "valid";
   readonly registeredCodebaseAvailability?: "available" | "unavailable";
   readonly registeredCodebaseExpiresAt?: string;
+  readonly registeredCodebase?: unknown;
+  readonly registeredCodebasePathAuthority?:
+    AdministrativeRegisteredCodebasePathAuthority;
   readonly registeredCodebaseRevisionByLookup?: readonly number[];
 }): Promise<AdministrativeAutonomyScenario> {
+  if (
+    (options.authentication === undefined) !==
+    (options.authenticationSession === undefined)
+  ) {
+    throw new Error(
+      "Administrative authentication and its Trusted Browser Session must be supplied together",
+    );
+  }
   let capabilitySequence = 0;
   let claimSequence = 0;
   let eventSequence = 0;
@@ -452,6 +474,10 @@ export async function createAdministrativeAutonomyScenario(options: {
     options.rollbackActivationTimeLedger ?? new Map();
   const identifierNamespace = options.identifierNamespace ?? "";
   const currentTime = () => options.clock?.current ?? options.now;
+  const authenticationSession = options.authenticationSession ?? {
+    csrfToken: scenarioCsrf,
+    sessionToken: scenarioSession,
+  };
   let registeredCodebaseLookup = 0;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
   const runtimeStore: ReturnType<
@@ -870,23 +896,39 @@ export async function createAdministrativeAutonomyScenario(options: {
                     Math.min(registeredCodebaseLookup, revisions.length - 1)
                   ] ?? 1;
                 registeredCodebaseLookup += 1;
-                return administrativeRegisteredCodebaseSchema.parse({
-                  expiresAt:
-                    options.registeredCodebaseExpiresAt ??
-                    "2100-01-01T00:00:00.000Z",
-                  initialProductionCommit: "1".repeat(40),
-                  liveCheckoutPath: "/srv/voice-agent",
-                  productionBranch: "main",
-                  registeredAt: "1990-01-01T00:00:00.000Z",
-                  registeredCodebaseId: "voice-agent",
-                  repository: "JacobStephens2/voice-agent",
-                  revision,
-                  sourceCheckoutRoot: "/srv/source/voice-agent",
-                  verificationCommands: ["pnpm typecheck", "pnpm test"],
-                  worktreeRoot: "/var/lib/voice-agent/worktrees/voice-agent",
-                });
+                return (
+                  options.registeredCodebase ??
+                  administrativeRegisteredCodebaseSchema.parse({
+                    expiresAt:
+                      options.registeredCodebaseExpiresAt ??
+                      "2100-01-01T00:00:00.000Z",
+                    initialProductionCommit: "1".repeat(40),
+                    liveCheckoutPath: "/srv/voice-agent",
+                    productionBranch: "main",
+                    registeredAt: "1990-01-01T00:00:00.000Z",
+                    registeredCodebaseId: "voice-agent",
+                    repository: "JacobStephens2/voice-agent",
+                    revision,
+                    sourceCheckoutRoot: "/srv/source/voice-agent",
+                    verificationCommands: ["pnpm typecheck", "pnpm test"],
+                    worktreeRoot:
+                      "/var/lib/voice-agent-worktrees/voice-agent",
+                  })
+                );
               },
             },
+            registeredCodebasePathAuthority:
+              options.registeredCodebasePathAuthority ?? {
+                allowedRoots: {
+                  liveCheckoutPath: ["/srv"],
+                  sourceCheckoutRoot: ["/srv/source"],
+                  worktreeRoot: ["/var/lib/voice-agent-worktrees"],
+                },
+                credentialCustodyBoundaryPaths,
+                async resolvePath(path) {
+                  return path;
+                },
+              },
             rollbackActivator,
           }),
       executionManifest,
@@ -981,17 +1023,19 @@ export async function createAdministrativeAutonomyScenario(options: {
   });
   const api = createTaskApi({
     administrativeControls: runtime,
-    authentication: {
-      async canChangeState({ csrfToken, sessionToken }) {
-        return csrfToken === scenarioCsrf && sessionToken === scenarioSession;
+    authentication:
+      options.authentication ??
+      {
+        async canChangeState({ csrfToken, sessionToken }) {
+          return csrfToken === scenarioCsrf && sessionToken === scenarioSession;
+        },
+        async canViewEvidence(sessionToken) {
+          return sessionToken === scenarioSession;
+        },
+        async hasFreshPasskeyAction(sessionToken) {
+          return sessionToken === scenarioSession && freshPasskey;
+        },
       },
-      async canViewEvidence(sessionToken) {
-        return sessionToken === scenarioSession;
-      },
-      async hasFreshPasskeyAction(sessionToken) {
-        return sessionToken === scenarioSession && freshPasskey;
-      },
-    },
     completionControls: continuity,
     origin: scenarioOrigin,
     records: {
@@ -1008,32 +1052,36 @@ export async function createAdministrativeAutonomyScenario(options: {
 
   return {
     async applyEvidenceLifecyclePolicy(input) {
-      freshPasskey = input.freshPasskey;
+      if (options.authentication === undefined) {
+        freshPasskey = input.freshPasskey;
+      }
       const response = await api.inject({
         headers: {
-          cookie: `${trustedSessionCookieName}=${scenarioSession}`,
+          cookie: `${trustedSessionCookieName}=${authenticationSession.sessionToken}`,
           origin: scenarioOrigin,
         },
         method: "POST",
-        payload: { csrfToken: scenarioCsrf },
+        payload: { csrfToken: authenticationSession.csrfToken },
         url: "/api/evidence/retention",
       });
-      freshPasskey = false;
+      if (options.authentication === undefined) freshPasskey = false;
       return {
         body: response.json<unknown>(),
         statusCode: response.statusCode,
       };
     },
     async activatePolicy(input) {
-      freshPasskey = input.freshPasskey;
+      if (options.authentication === undefined) {
+        freshPasskey = input.freshPasskey ?? false;
+      }
       const response = await api.inject({
         headers: {
-          cookie: `${trustedSessionCookieName}=${scenarioSession}`,
+          cookie: `${trustedSessionCookieName}=${authenticationSession.sessionToken}`,
           origin: scenarioOrigin,
         },
         method: "POST",
         payload: {
-          csrfToken: scenarioCsrf,
+          csrfToken: authenticationSession.csrfToken,
           expectation: {
             expectedActiveRevision: input.expectedActiveRevision,
             expectedExecutionManifestFingerprint:
@@ -1044,7 +1092,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         },
         url: "/api/administrative-autonomy/activate",
       });
-      freshPasskey = false;
+      if (options.authentication === undefined) freshPasskey = false;
       return {
         body: response.json<unknown>(),
         statusCode: response.statusCode,
@@ -1110,7 +1158,7 @@ export async function createAdministrativeAutonomyScenario(options: {
       if (input.limit !== undefined) query.set("limit", String(input.limit));
       const response = await api.inject({
         headers: {
-          cookie: `${trustedSessionCookieName}=${scenarioSession}`,
+          cookie: `${trustedSessionCookieName}=${authenticationSession.sessionToken}`,
         },
         method: "GET",
         url: `/api/administrative-autonomy/policy-evidence?${query.toString()}`,
@@ -1123,7 +1171,7 @@ export async function createAdministrativeAutonomyScenario(options: {
     async readAutonomyStatus() {
       const response = await api.inject({
         headers: {
-          cookie: `${trustedSessionCookieName}=${scenarioSession}`,
+          cookie: `${trustedSessionCookieName}=${authenticationSession.sessionToken}`,
         },
         method: "GET",
         url: "/api/administrative-autonomy",
@@ -1144,13 +1192,15 @@ export async function createAdministrativeAutonomyScenario(options: {
       const response = await api.inject({
         headers: {
           ...(input.authenticated
-            ? { cookie: `${trustedSessionCookieName}=${scenarioSession}` }
+            ? {
+                cookie: `${trustedSessionCookieName}=${authenticationSession.sessionToken}`,
+              }
             : {}),
           origin: scenarioOrigin,
         },
         method: "POST",
         payload: {
-          csrfToken: scenarioCsrf,
+          csrfToken: authenticationSession.csrfToken,
           expectation: {
             expectedRevision: input.expectedRevision,
             expectedStateVersion: input.expectedStateVersion,

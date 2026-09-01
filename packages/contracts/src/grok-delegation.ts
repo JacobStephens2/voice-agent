@@ -44,6 +44,24 @@ export const grokRootConfigurationPath = "/etc/voice-agent/grok/config.toml";
 /** The reviewed sandbox profile a model process is confined to. */
 export const grokSandboxProfile = "voice-agent-task";
 
+/** Host stores that remain broker-only under ADR-0048. */
+export const credentialCustodyBoundaryPaths = [
+  "/etc/ssh",
+  "/etc/voice-agent",
+  "/home",
+  "/root",
+  "/run/voice-agent-broker",
+  "/run/voice-agent-grok-auth",
+  "/run/voice-agent-keeplore-publisher",
+  "/run/voice-agent-subagent",
+  "/usr/local/libexec/voice-agent",
+  "/var/lib/voice-agent",
+  "/var/lib/voice-agent-broker",
+  "/var/lib/voice-agent-evidence",
+  "/var/lib/voice-codex",
+  "/var/lib/voice-grok-auth",
+] as const;
+
 export const grokContractDelegationCapabilities = [
   "delegated-worktree.read",
   "delegated-worktree.write",

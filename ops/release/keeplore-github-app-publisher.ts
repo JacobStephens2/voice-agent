@@ -100,6 +100,39 @@ export interface KeeploreCandidatePublisherDependencies {
   ): Promise<GitResult>;
 }
 
+/** Decode the immutable Delegation row at the installed publisher's SQLite seam. */
+export function createKeeplorePublisherDelegationReader(
+  databasePath: string,
+): (delegationId: string) => Promise<unknown> {
+  return async (delegationId) => {
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const row = database
+        .prepare(`
+          SELECT brief_json, status, stop_requested, worktree_json
+          FROM keeplore_delegations WHERE delegation_id = ?
+        `)
+        .get(delegationId) as
+        | {
+            readonly brief_json: string;
+            readonly status: string;
+            readonly stop_requested: number;
+            readonly worktree_json: string;
+          }
+        | undefined;
+      if (row === undefined) return undefined;
+      return {
+        brief: normalizeStoredPublisherBrief(JSON.parse(row.brief_json)),
+        status: row.status,
+        stopRequested: row.stop_requested === 1,
+        worktree: JSON.parse(row.worktree_json) as unknown,
+      };
+    } finally {
+      database.close();
+    }
+  };
+}
+
 interface RegisteredDelegation {
   readonly branch: string;
   readonly delegationId: string;
@@ -362,6 +395,7 @@ function parseRegisteredDelegation(
     codebase.registeredCodebaseId,
   );
   if (
+    "applicationId" in codebase ||
     record.status !== "running" ||
     record.stopRequested !== false ||
     brief.delegationId !== requestedDelegationId ||
@@ -389,6 +423,25 @@ function parseRegisteredDelegation(
     delegationId: requestedDelegationId,
     sourceCommit: codebase.sourceCommit,
     worktreePath: expectedPath,
+  };
+}
+
+function normalizeStoredPublisherBrief(input: unknown): unknown {
+  if (!isRecord(input) || !isRecord(input.registeredCodebase)) return input;
+  const registeredCodebase = input.registeredCodebase;
+  if (
+    "registeredCodebaseId" in registeredCodebase ||
+    !("applicationId" in registeredCodebase)
+  ) {
+    return input;
+  }
+  const { applicationId, ...canonicalCodebase } = registeredCodebase;
+  return {
+    ...input,
+    registeredCodebase: {
+      ...canonicalCodebase,
+      registeredCodebaseId: applicationId,
+    },
   };
 }
 
@@ -1068,33 +1121,8 @@ async function startProductionServer(): Promise<void> {
       await assertRootOwnedCredential(policyJournalPath, false);
       return readFile(policyJournalPath, "utf8");
     },
-    async readRegisteredDelegation(delegationId) {
-      const database = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        const row = database
-          .prepare(`
-            SELECT brief_json, status, stop_requested, worktree_json
-            FROM keeplore_delegations WHERE delegation_id = ?
-          `)
-          .get(delegationId) as
-          | {
-              readonly brief_json: string;
-              readonly status: string;
-              readonly stop_requested: number;
-              readonly worktree_json: string;
-            }
-          | undefined;
-        if (row === undefined) return undefined;
-        return {
-          brief: JSON.parse(row.brief_json) as unknown,
-          status: row.status,
-          stopRequested: row.stop_requested === 1,
-          worktree: JSON.parse(row.worktree_json) as unknown,
-        };
-      } finally {
-        database.close();
-      }
-    },
+    readRegisteredDelegation:
+      createKeeplorePublisherDelegationReader(databasePath),
     resolvePath: realpath,
     runGit: productionGit,
   });

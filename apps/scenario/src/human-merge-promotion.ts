@@ -12,6 +12,7 @@ import type {
 } from "@voice-agent/contracts";
 import {
   fixtureDeploymentContractSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
   selfPromotionVerificationChecks,
 } from "@voice-agent/contracts";
 import { createSelfPromotionRuntime } from "@voice-agent/runtime";
@@ -299,7 +300,9 @@ export async function createHumanMergePromotionScenario(
       const attempt = store.claimNext(options.now);
       if (attempt === undefined) return undefined;
       const contract = fixtureDeploymentContractSchema.parse(
-        JSON.parse(attempt.contract_json),
+        normalizeStoredRegisteredCodebaseIdentity(
+          JSON.parse(attempt.contract_json),
+        ),
       );
       const release = {
         commit: attempt.merge_commit,

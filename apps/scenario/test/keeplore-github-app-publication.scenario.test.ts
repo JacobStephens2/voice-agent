@@ -5,12 +5,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, request as requestHttp, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, test } from "vitest";
 
 import { registeredCodebaseIdSchema } from "@voice-agent/contracts";
 
 import {
   createKeeploreCandidatePublisher,
+  createKeeplorePublisherDelegationReader,
   handleKeeplorePublisherRequest,
   type KeeploreCandidatePublisherDependencies,
   type KeeplorePublisherJournalEntry,
@@ -254,6 +256,90 @@ test("the privileged publisher scopes one token and observes the App-authored pu
         invocation.path === "/repos/JacobStephens2/keeplore/pulls/101",
     ),
   ).toBe(true);
+});
+
+test("the installed publisher resumes a pre-upgrade running Delegation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-publisher-legacy-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const database = new DatabaseSync(databasePath);
+  database.exec(`
+    CREATE TABLE keeplore_delegations (
+      delegation_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      brief_json TEXT NOT NULL,
+      worktree_json TEXT NOT NULL,
+      stop_requested INTEGER NOT NULL
+    )
+  `);
+  const canonical = registeredDelegation() as {
+    readonly brief: {
+      readonly delegationId: string;
+      readonly registeredCodebase: Readonly<Record<string, unknown>>;
+    };
+    readonly worktree: unknown;
+  };
+  const { registeredCodebaseId, ...historicalCodebase } =
+    canonical.brief.registeredCodebase;
+  database
+    .prepare(`
+      INSERT INTO keeplore_delegations (
+        delegation_id, status, brief_json, worktree_json, stop_requested
+      ) VALUES (?, 'running', ?, ?, 0)
+    `)
+    .run(
+      delegationId,
+      JSON.stringify({
+        ...canonical.brief,
+        registeredCodebase: {
+          ...historicalCodebase,
+          applicationId: registeredCodebaseId,
+        },
+      }),
+      JSON.stringify(canonical.worktree),
+    );
+  database.close();
+
+  const publisher = createKeeploreCandidatePublisher({
+    ...boundaryDependencies(),
+    async github(request) {
+      if (request.path === "/app/installations/456/access_tokens") {
+        return {
+          body: installationTokenResponse(installationToken),
+          status: 201,
+        };
+      }
+      if (request.method === "GET" && request.path.includes("/pulls?")) {
+        return { body: [observedPullRequest()], status: 200 };
+      }
+      if (request.method === "GET" && request.path.endsWith("/pulls/101")) {
+        return { body: observedPullRequest(), status: 200 };
+      }
+      if (request.method === "DELETE" && request.path === "/installation/token") {
+        return { body: undefined, status: 204 };
+      }
+      throw new Error(
+        `Unexpected legacy publication request: ${request.method} ${request.path}`,
+      );
+    },
+    readRegisteredDelegation:
+      createKeeplorePublisherDelegationReader(databasePath),
+    async runGit(args) {
+      return args.includes("push")
+        ? { exitCode: 0, stderr: "", stdout: "published\n" }
+        : observedGit(args, headCommit);
+    },
+  });
+
+  await expect(publisher.publish(publicationRequest())).resolves.toMatchObject({
+    headCommit,
+    pullRequest: {
+      baseBranch: "main",
+      headBranch: branch,
+      state: "open",
+    },
+    repository: "JacobStephens2/keeplore",
+  });
 });
 
 test("request-controlled repositories, endpoints, and refspecs are rejected", async () => {

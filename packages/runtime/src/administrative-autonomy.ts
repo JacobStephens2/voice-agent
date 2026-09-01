@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { posix as path } from "node:path";
 
 import {
   administrativeActiveExecutionMilliseconds,
@@ -93,6 +94,17 @@ export interface AdministrativeRegisteredCodebaseRegistry {
   findRegisteredCodebase(
     registeredCodebaseId: RegisteredCodebaseId,
   ): Promise<unknown>;
+}
+
+/** Composition-owned filesystem authority for trusted registration snapshots. */
+export interface AdministrativeRegisteredCodebasePathAuthority {
+  readonly allowedRoots: {
+    readonly liveCheckoutPath: readonly string[];
+    readonly sourceCheckoutRoot: readonly string[];
+    readonly worktreeRoot: readonly string[];
+  };
+  readonly credentialCustodyBoundaryPaths: readonly string[];
+  resolvePath(path: string): Promise<string>;
 }
 
 export interface AdministrativePlanningDeadlineTimer {
@@ -296,6 +308,8 @@ export function createAdministrativeAutonomyRuntime(options: {
   readonly provider?: AdministrativePlanProvider;
   readonly reconciliationScheduler?: AdministrativeReconciliationScheduler;
   readonly registeredCodebases?: AdministrativeRegisteredCodebaseRegistry;
+  readonly registeredCodebasePathAuthority?:
+    AdministrativeRegisteredCodebasePathAuthority;
   readonly rollbackActivationDeadlineTimer?: AdministrativePlanningDeadlineTimer;
   readonly rollbackActivator?: AdministrativeLivePatchRollbackActivator;
   readonly store: AdministrativeAutonomyStore;
@@ -385,6 +399,14 @@ export function createAdministrativeAutonomyRuntime(options: {
   ) {
     throw new Error(
       "Administrative execution requires a trusted Registered Codebase registry",
+    );
+  }
+  if (
+    executionManifestPresent !==
+    (options.registeredCodebasePathAuthority !== undefined)
+  ) {
+    throw new Error(
+      "Administrative execution requires trusted Registered Codebase path authority",
     );
   }
   if (
@@ -484,12 +506,60 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
       return registration.registeredCodebaseId === registeredCodebaseId &&
         registration.registeredAt <= observedAt &&
-        observedAt < registration.expiresAt
+        observedAt < registration.expiresAt &&
+        (await registeredCodebasePathsAreAuthorized(registration))
         ? registration
         : undefined;
     } catch {
       return undefined;
     }
+  }
+
+  async function registeredCodebasePathsAreAuthorized(
+    registration: AdministrativeRegisteredCodebase,
+  ): Promise<boolean> {
+    const authority = options.registeredCodebasePathAuthority;
+    if (authority === undefined) return false;
+    const fields = [
+      ["liveCheckoutPath", registration.liveCheckoutPath],
+      ["sourceCheckoutRoot", registration.sourceCheckoutRoot],
+      ["worktreeRoot", registration.worktreeRoot],
+    ] as const;
+    const custodyPaths = authority.credentialCustodyBoundaryPaths;
+    if (
+      custodyPaths.some(
+        (custodyPath) => !isCanonicalAbsolutePath(custodyPath),
+      )
+    ) {
+      return false;
+    }
+    for (const [field, registeredPath] of fields) {
+      if (!isCanonicalAbsolutePath(registeredPath)) return false;
+      const resolvedPath = await authority.resolvePath(registeredPath);
+      if (!isCanonicalAbsolutePath(resolvedPath)) return false;
+      if (
+        custodyPaths.some(
+          (custodyPath) =>
+            isWithinPath(registeredPath, custodyPath) ||
+            isWithinPath(resolvedPath, custodyPath),
+        )
+      ) {
+        return false;
+      }
+      const allowedRoots = authority.allowedRoots[field];
+      if (allowedRoots.length === 0) return false;
+      let withinAllowedRoot = false;
+      for (const allowedRoot of allowedRoots) {
+        if (!isCanonicalAbsolutePath(allowedRoot)) return false;
+        const resolvedAllowedRoot = await authority.resolvePath(allowedRoot);
+        if (!isCanonicalAbsolutePath(resolvedAllowedRoot)) return false;
+        if (isWithinPath(resolvedPath, resolvedAllowedRoot)) {
+          withinAllowedRoot = true;
+        }
+      }
+      if (!withinAllowedRoot) return false;
+    }
+    return true;
   }
 
   async function requireCurrentRegisteredCodebase(
@@ -854,6 +924,14 @@ export function createAdministrativeAutonomyRuntime(options: {
     }
     if (options.provider === undefined || options.executor === undefined) {
       return denyPlannedTask(task.id, "Administrative execution is unavailable");
+    }
+    try {
+      await requireCurrentRegisteredCodebase(task.target, now());
+    } catch {
+      return denyPlannedTask(
+        task.id,
+        "The Registered Codebase registration is unavailable or stale",
+      );
     }
     let untrustedPlan: unknown;
     const planning = new AbortController();
@@ -1961,6 +2039,18 @@ function confirmedIntendedState(intendedState: string) {
     kind: "achieve-confirmed-intended-state" as const,
     targetSource: "confirmed-durable-task" as const,
   };
+}
+
+function isCanonicalAbsolutePath(candidate: string): boolean {
+  return (
+    candidate !== "/" &&
+    path.isAbsolute(candidate) &&
+    path.normalize(candidate) === candidate
+  );
+}
+
+function isWithinPath(candidate: string, root: string): boolean {
+  return candidate === root || candidate.startsWith(`${root}/`);
 }
 
 function operationRequest(

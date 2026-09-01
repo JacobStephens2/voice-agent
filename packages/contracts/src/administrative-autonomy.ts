@@ -625,12 +625,32 @@ export type AdministrativeTaskTargetRequestInput = z.input<
   typeof administrativeTaskTargetRequestSchema
 >;
 
+const administrativeRegisteredCodebasePathSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .startsWith("/")
+  .refine(
+    (candidate) =>
+      candidate !== "/" &&
+      !candidate.endsWith("/") &&
+      candidate
+        .split("/")
+        .slice(1)
+        .every(
+          (segment) => segment !== "" && segment !== "." && segment !== "..",
+        ),
+    "Registered Codebase paths must be canonical absolute paths below filesystem root",
+  );
+
 export const administrativeRegisteredCodebaseSchema =
   registeredCodebaseSchema.extend({
     expiresAt: timestampSchema,
+    liveCheckoutPath: administrativeRegisteredCodebasePathSchema,
     revision: z.number().int().positive(),
+    sourceCheckoutRoot: administrativeRegisteredCodebasePathSchema,
     verificationCommands: z.array(z.string().min(1).max(200)).min(1).max(10),
-    worktreeRoot: z.string().min(1).max(500).startsWith("/"),
+    worktreeRoot: administrativeRegisteredCodebasePathSchema,
   });
 export type AdministrativeRegisteredCodebase = z.infer<
   typeof administrativeRegisteredCodebaseSchema

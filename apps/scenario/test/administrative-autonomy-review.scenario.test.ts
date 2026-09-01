@@ -1,4 +1,5 @@
-import { rm } from "node:fs/promises";
+import { mkdir, realpath, rm, symlink, unlink } from "node:fs/promises";
+import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
@@ -22,7 +23,10 @@ import {
 } from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
-import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
+import {
+  createActivatedScenario,
+  createScenarioDatabase,
+} from "./administrative-autonomy.fixture.ts";
 
 const temporaryDirectories: string[] = [];
 const target = administrativeTaskTargetRequestSchema.parse({
@@ -89,6 +93,36 @@ test("Registered Codebase contracts expose only their branded domain identity", 
     "applicationId" in keeploreDelegationBriefSchema.shape.registeredCodebase
       .shape,
   ).toBe(false);
+});
+
+test("Registered Codebase contracts reject filesystem root and lexical traversal paths", () => {
+  const registration = {
+    expiresAt: "2100-01-01T00:00:00.000Z",
+    initialProductionCommit: "1".repeat(40),
+    liveCheckoutPath: "/srv/voice-agent",
+    productionBranch: "main",
+    registeredAt: "1990-01-01T00:00:00.000Z",
+    registeredCodebaseId: "voice-agent",
+    repository: "JacobStephens2/voice-agent",
+    revision: 1,
+    sourceCheckoutRoot: "/srv/source/voice-agent",
+    verificationCommands: ["pnpm typecheck", "pnpm test"],
+    worktreeRoot: "/var/lib/voice-agent-worktrees/voice-agent",
+  };
+
+  expect(
+    [
+      { ...registration, liveCheckoutPath: "/" },
+      {
+        ...registration,
+        sourceCheckoutRoot: "/srv/source/../credential-custody",
+      },
+      { ...registration, worktreeRoot: "/var/lib//voice-agent-worktrees" },
+    ].map(
+      (candidate) =>
+        administrativeRegisteredCodebaseSchema.safeParse(candidate).success,
+    ),
+  ).toEqual([false, false, false]);
 });
 
 test("an Administrative Execution Manifest cannot gain authority after Human Merge", async () => {
@@ -1106,6 +1140,175 @@ test("Administrative Tasks fail closed for unavailable, absent, expired, or drif
     drifted.scenario.close(),
     expiredDuringEffect.scenario.close(),
   ]);
+});
+
+test("Registered Codebase filesystem authority rejects roots, traversal, symlink escape, and custody stores", async () => {
+  const { directory } = await createScenarioDatabase(temporaryDirectories);
+  const allowed = {
+    liveCheckoutPath: join(directory, "allowed-live"),
+    sourceCheckoutRoot: join(directory, "allowed-source"),
+    worktreeRoot: join(directory, "allowed-worktrees"),
+  };
+  const outside = join(directory, "outside");
+  const custody = join(directory, "credential-custody");
+  await Promise.all(
+    [...Object.values(allowed), outside, join(custody, "registered")].map(
+      (path) => mkdir(path, { recursive: true }),
+    ),
+  );
+  const escapedWorktree = join(allowed.worktreeRoot, "escaped");
+  await symlink(outside, escapedWorktree);
+  const pathAuthority = {
+    allowedRoots: {
+      liveCheckoutPath: [directory],
+      sourceCheckoutRoot: [allowed.sourceCheckoutRoot],
+      worktreeRoot: [allowed.worktreeRoot],
+    },
+    credentialCustodyBoundaryPaths: [custody, "/root"],
+    resolvePath: realpath,
+  };
+  const validRegistration = {
+    expiresAt: "2100-01-01T00:00:00.000Z",
+    initialProductionCommit: "1".repeat(40),
+    liveCheckoutPath: allowed.liveCheckoutPath,
+    productionBranch: "main",
+    registeredAt: "1990-01-01T00:00:00.000Z",
+    registeredCodebaseId: "voice-agent",
+    repository: "JacobStephens2/voice-agent",
+    revision: 1,
+    sourceCheckoutRoot: allowed.sourceCheckoutRoot,
+    verificationCommands: ["pnpm typecheck", "pnpm test"],
+    worktreeRoot: allowed.worktreeRoot,
+  };
+  const cases = [
+    {
+      name: "filesystem root",
+      registration: { ...validRegistration, liveCheckoutPath: "/" },
+    },
+    {
+      name: "root home",
+      registration: { ...validRegistration, sourceCheckoutRoot: "/root" },
+    },
+    {
+      name: "lexical traversal",
+      registration: {
+        ...validRegistration,
+        sourceCheckoutRoot: `${allowed.sourceCheckoutRoot}/../outside`,
+      },
+    },
+    {
+      name: "symlink escape",
+      registration: { ...validRegistration, worktreeRoot: escapedWorktree },
+    },
+    {
+      name: "configured Credential Custody Boundary",
+      registration: {
+        ...validRegistration,
+        liveCheckoutPath: join(custody, "registered"),
+      },
+    },
+  ];
+
+  for (const boundaryCase of cases) {
+    const { scenario } = await createActivatedScenario(
+      {
+        now: "2026-10-02T11:50:00.000Z",
+        providerPlan: [{ kind: "delegated-worktree.change" }],
+        registeredCodebase: boundaryCase.registration,
+        registeredCodebasePathAuthority: pathAuthority,
+      },
+      temporaryDirectories,
+    );
+    const prepared = await scenario.prepareTask({
+      intendedState: `The ${boundaryCase.name} target is never admitted.`,
+      outcome: "propose",
+      ownerId: "owner",
+      requestId: `path-${boundaryCase.name}`,
+      target,
+    });
+    expect(prepared, boundaryCase.name).toEqual({
+      decision: "denied",
+      reason: "The Registered Codebase is unavailable or not current",
+    });
+    expect(scenario.executedOperations, boundaryCase.name).toEqual([]);
+    await scenario.close();
+  }
+});
+
+test("Registered Codebase symlink drift is rechecked before provider planning or effect", async () => {
+  const { directory } = await createScenarioDatabase(temporaryDirectories);
+  const liveRoot = join(directory, "live");
+  const sourceRoot = join(directory, "source");
+  const worktreeRoot = join(directory, "worktrees");
+  const registeredSource = join(sourceRoot, "registered");
+  const sourceAlias = join(sourceRoot, "current");
+  const outside = join(directory, "outside");
+  await Promise.all(
+    [liveRoot, registeredSource, worktreeRoot, outside].map((path) =>
+      mkdir(path, { recursive: true }),
+    ),
+  );
+  await symlink(registeredSource, sourceAlias);
+  const providerAttempts: string[] = [];
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-10-02T11:55:00.000Z",
+      providerAttempts,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+      registeredCodebase: {
+        expiresAt: "2100-01-01T00:00:00.000Z",
+        initialProductionCommit: "1".repeat(40),
+        liveCheckoutPath: liveRoot,
+        productionBranch: "main",
+        registeredAt: "1990-01-01T00:00:00.000Z",
+        registeredCodebaseId: "voice-agent",
+        repository: "JacobStephens2/voice-agent",
+        revision: 1,
+        sourceCheckoutRoot: sourceAlias,
+        verificationCommands: ["pnpm typecheck", "pnpm test"],
+        worktreeRoot,
+      },
+      registeredCodebasePathAuthority: {
+        allowedRoots: {
+          liveCheckoutPath: [liveRoot],
+          sourceCheckoutRoot: [sourceRoot],
+          worktreeRoot: [worktreeRoot],
+        },
+        credentialCustodyBoundaryPaths: [],
+        resolvePath: realpath,
+      },
+    },
+    temporaryDirectories,
+  );
+  const prepared = await scenario.prepareTask({
+    intendedState: "The verified candidate remains inside its registered roots.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "path-drift-before-effect",
+    target,
+  });
+  if (prepared.decision !== "prepared") {
+    throw new Error("The valid Registered Codebase fixture was not prepared");
+  }
+  await unlink(sourceAlias);
+  await symlink(outside, sourceAlias);
+
+  const admitted = await scenario.answerTask({
+    confirmation: "confirmed",
+    confirmationCapability: prepared.confirmationCapability,
+    ownerId: "owner",
+    taskId: prepared.taskId,
+  });
+
+  expect({ admitted, executed: scenario.executedOperations, providerAttempts }).toEqual({
+    admitted: {
+      decision: "denied",
+      reason: "The Registered Codebase registration is unavailable or stale",
+    },
+    executed: [],
+    providerAttempts: [],
+  });
+  await scenario.close();
 });
 
 test("a running plan cannot cross an execution-manifest change after restart", async () => {

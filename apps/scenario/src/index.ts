@@ -662,6 +662,10 @@ export interface AuthenticationScenario {
     readonly sessionToken: string;
   }): Promise<string>;
   beginLogin(): Promise<string>;
+  canChangeState(input: {
+    readonly csrfToken: string;
+    readonly sessionToken: string;
+  }): Promise<boolean>;
   canViewEvidence(sessionToken: string): Promise<boolean>;
   close(): Promise<void>;
   enrollBootstrapPasskey(input: {
@@ -864,6 +868,7 @@ export async function createAuthenticationScenario(
   return {
     beginFreshPasskeyAction,
     beginLogin,
+    canChangeState: (input) => authentication.canChangeState(input),
     canViewEvidence: (sessionToken) =>
       authentication.canViewEvidence(sessionToken),
     close: () => store.close(),
