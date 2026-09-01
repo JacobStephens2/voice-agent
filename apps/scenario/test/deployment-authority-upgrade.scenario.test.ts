@@ -24,7 +24,10 @@ import { promisify } from "node:util";
 
 import { afterEach, expect, test } from "vitest";
 
-import { readDeploymentAuthorityDrift } from "@voice-agent/scenario";
+import {
+  readDeploymentAuthorityDrift,
+  readPinnedAuthorityPaths,
+} from "@voice-agent/scenario";
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
@@ -900,24 +903,9 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
 async function copyReviewedAuthorityReleaseSources(
   release: string,
 ): Promise<ReadonlySet<string>> {
-  const manifest = join(
-    repositoryRoot,
-    "ops/release/deployment-authority-manifest.sh",
+  const sourcePaths = new Set(
+    (await readPinnedAuthorityPaths()).map(({ sourcePath }) => sourcePath),
   );
-  const { stdout } = await execFileAsync("bash", [
-    "-c",
-    'source "$1"\nvoice_agent_authority_pinned_paths',
-    "deployment-authority-fixture",
-    manifest,
-  ]);
-  const sourcePaths = new Set<string>();
-  for (const mapping of stdout.trimEnd().split("\n")) {
-    const separator = mapping.indexOf("\t");
-    if (separator <= 0) {
-      throw new Error(`Invalid deployment-authority mapping: ${mapping}`);
-    }
-    sourcePaths.add(mapping.slice(0, separator));
-  }
   await Promise.all(
     [...sourcePaths].map(async (sourcePath) => {
       const target = join(release, sourcePath);
