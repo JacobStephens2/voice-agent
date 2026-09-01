@@ -21,6 +21,7 @@ import { reviewedGrokInspection } from "../src/grok-runner-pin.ts";
 const executorPath = fileURLToPath(
   new URL("../src/grok-contract-executor.ts", import.meta.url),
 );
+const restrictedDirectories: string[] = [];
 const temporaryDirectories: string[] = [];
 
 const brief: GrokContractDelegationBrief = {
@@ -52,6 +53,11 @@ const envelope = {
 };
 
 afterEach(async () => {
+  await Promise.all(
+    restrictedDirectories
+      .splice(0)
+      .map((directory) => chmod(directory, 0o700)),
+  );
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -184,7 +190,7 @@ test("a login the runner could not renew pauses before the model is spawned", as
 
 test("a token broker the executor cannot execute pauses as crossing drift", async () => {
   const host = await stageHost({
-    brokerReachability: "unexecutable",
+    brokerReachability: "blocked-parent",
     inspection: "reviewed",
   });
 
@@ -307,7 +313,7 @@ interface StagedHost {
 
 async function stageHost(options: {
   readonly authLayer?: "another-broker";
-  readonly brokerReachability?: "unexecutable";
+  readonly brokerReachability?: "blocked-parent";
   readonly credential?: "expired" | "renewed" | "too-short";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
@@ -412,7 +418,9 @@ async function stageHost(options: {
   }
   // The broker answers with a status, never a token: this stands in for the
   // crossing to the custody identity, which the executor cannot make in a test.
-  const tokenBrokerPath = `${root}/grok-token-broker`;
+  const tokenBrokerDirectory = `${root}/broker-bin`;
+  await mkdir(tokenBrokerDirectory);
+  const tokenBrokerPath = `${tokenBrokerDirectory}/grok-token-broker`;
   await writeFile(
     tokenBrokerPath,
     [
@@ -426,10 +434,14 @@ async function stageHost(options: {
       "",
     ].join("\n"),
   );
-  await chmod(
-    tokenBrokerPath,
-    options.brokerReachability === "unexecutable" ? 0o644 : 0o755,
-  );
+  await chmod(tokenBrokerPath, 0o755);
+  if (options.brokerReachability === "blocked-parent") {
+    // Model the Agent Host fault itself: the broker remains executable, but
+    // the executor cannot traverse the directory that contains it. Restore
+    // access in afterEach before recursively removing the staged host.
+    await chmod(tokenBrokerDirectory, 0o600);
+    restrictedDirectories.push(tokenBrokerDirectory);
+  }
   const authLayerPath = `${root}/run-requirements.toml`;
   await writeFile(
     authLayerPath,

@@ -913,3 +913,10 @@ host, requires a Fresh Passkey Action and was not run; both files, and the
 directory mode, were put back afterwards. `/etc/grok/requirements.toml` and the
 sudoers rule were left installed - the one-time setup block in
 `docs/operations/grok-enrollment.md` installs both, and they were missing.
+
+**2026-08-31 follow-up for issue #168.** The directory was restored to
+`0755 root:root`, and `voice-grok` was independently verified able to traverse
+it. The broker and helper binaries remain absent, so the enrollment wizard has
+not been witnessed past its prerequisite stage. Installing those pinned
+binaries and completing that witness still require the attended Fresh Passkey
+deployment-authority upgrade after Human Merge.
