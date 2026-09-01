@@ -81,16 +81,21 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly beforeOperationEffect?: (
     request: AdministrativeOperationRequest,
   ) => Promise<void>;
+  readonly clock?: { readonly current: string };
   readonly crashAfterFirstEffect?: boolean;
   readonly databasePath: string;
   readonly effectLedger?: Set<string>;
   readonly executionAdapters?: "available" | "unavailable";
+  readonly holdOperationUntilAbort?: boolean;
   readonly identifierNamespace?: string;
   readonly now: string;
+  readonly onOperationStart?: () => void;
+  readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
   readonly providerAttempts?: string[];
   readonly providerFailures?: number;
   readonly providerPlan: AdministrativeProviderPlan | unknown;
+  readonly reportedCompletionTime?: string;
 }): Promise<AdministrativeAutonomyScenario> {
   let capabilitySequence = 0;
   let claimSequence = 0;
@@ -106,14 +111,29 @@ export async function createAdministrativeAutonomyScenario(options: {
   const operationAttempts: AdministrativeOperationRequest[] = [];
   const effectLedger = options.effectLedger ?? new Set<string>();
   const identifierNamespace = options.identifierNamespace ?? "";
+  const currentTime = () => options.clock?.current ?? options.now;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
   let runtime: ReturnType<typeof createAdministrativeAutonomyRuntime>;
   const executor = {
-    async execute(request: AdministrativeOperationRequest) {
+    async execute(execution: {
+      readonly fence: {
+        readonly activeExecutionDeadline: string;
+        readonly claimId: string;
+        readonly signal: AbortSignal;
+      };
+      readonly request: AdministrativeOperationRequest;
+    }) {
+      const { request } = execution;
+      const { activeExecutionDeadline, signal } = execution.fence;
       operationAttempts.push(request);
       options.operationAttempts?.push(request.operationId);
+      options.onOperationStart?.();
+      if (options.holdOperationUntilAbort) await waitForAbort(signal);
       if (!effectLedger.has(request.operationId)) {
         await options.beforeOperationEffect?.(request);
+        if (signal.aborted || currentTime() >= activeExecutionDeadline) {
+          throw new Error("The bounded administrative execution was aborted");
+        }
         effectLedger.add(request.operationId);
         executedOperations.push(request);
         if (revisePolicyAfterFirstOperation) {
@@ -134,7 +154,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
       }
       const common = {
-        completedAt: options.now,
+        completedAt: options.reportedCompletionTime ?? currentTime(),
         operationId: request.operationId,
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
@@ -145,18 +165,18 @@ export async function createAdministrativeAutonomyScenario(options: {
           mutationProof: {
             healthCheck: {
               kind: "registered-application-health" as const,
-              observedAt: options.now,
+              observedAt: currentTime(),
               status: "healthy" as const,
             },
             independentRollback: {
-              armedAt: options.now,
+              armedAt: currentTime(),
               kind: "independent-live-patch-rollback" as const,
               rollbackDeadline:
                 request.mutationBoundary.independentRollback.rollbackDeadline,
             },
             verification: {
               kind: "independent-application-health-proof" as const,
-              observedAt: options.now,
+              observedAt: currentTime(),
               status: "healthy" as const,
             },
           },
@@ -206,7 +226,10 @@ export async function createAdministrativeAutonomyScenario(options: {
       nextTaskId: () =>
         `${identifierNamespace}administrative-task-${(taskSequence += 1)}`,
     },
-    now: () => options.now,
+    now: currentTime,
+    ...(options.operationLeaseMilliseconds === undefined
+      ? {}
+      : { operationLeaseMilliseconds: options.operationLeaseMilliseconds }),
     store,
   });
   await runtime.reconcileOperations();
@@ -215,7 +238,7 @@ export async function createAdministrativeAutonomyScenario(options: {
     administrativeEvidenceRetention: runtime,
     nextId: () =>
       `${identifierNamespace}administrative-continuity-${(eventSequence += 1)}`,
-    now: () => options.now,
+    now: currentTime,
     store: createSqliteTaskContinuityStore(options.databasePath),
     tasks: ordinaryTaskStore,
   });
@@ -341,7 +364,7 @@ export async function createAdministrativeAutonomyScenario(options: {
       const suspended = await store.suspendPolicy({
         expectedRevision: policy.revision,
         expectedStateVersion: policy.stateVersion,
-        suspendedAt: options.now,
+        suspendedAt: currentTime(),
       });
       if (suspended === undefined) {
         throw new Error("Administrative Suspension state changed concurrently");
@@ -349,4 +372,16 @@ export async function createAdministrativeAutonomyScenario(options: {
       return suspended;
     },
   };
+}
+
+function waitForAbort(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const rejectForAbort = () =>
+      reject(new Error("The bounded administrative execution was aborted"));
+    if (signal.aborted) {
+      rejectForAbort();
+      return;
+    }
+    signal.addEventListener("abort", rejectForAbort, { once: true });
+  });
 }

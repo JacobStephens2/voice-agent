@@ -1499,3 +1499,157 @@ test("authenticated Evidence Lifecycle expiry prunes ordinary administrative eve
 
   await retentionProcess.close();
 });
+
+test("losing an Operation lease aborts the bounded executor before its effect", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const scenario = await createAdministrativeAutonomyScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    holdOperationUntilAbort: true,
+    now: "2026-10-01T09:00:00.000Z",
+    onOperationStart: () => markStarted?.(),
+    operationLeaseMilliseconds: 30,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const admission = scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The isolated branch contains the requested change.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "lost-lease-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  await started;
+  await scenario.suspendPolicyState();
+
+  expect({
+    admission: await admission,
+    executed: scenario.executedOperations,
+    task: await scenario.readTask("administrative-task-1"),
+  }).toMatchObject({
+    admission: {
+      decision: "denied",
+      reason: "Administrative Operation claim was lost",
+    },
+    executed: [],
+    task: {
+      task: {
+        conclusion: "Administrative Operation claim was lost",
+        status: "denied",
+      },
+    },
+  });
+
+  await scenario.close();
+});
+
+test("an in-flight bounded executor refuses to begin an effect at the six-hour deadline", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const clock = { current: "2026-10-01T10:00:00.000Z" };
+  const scenario = await createAdministrativeAutonomyScenario({
+    async beforeOperationEffect() {
+      clock.current = "2026-10-01T16:00:00.000Z";
+    },
+    clock,
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: clock.current,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The isolated branch contains the requested change.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "in-flight-deadline-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+
+  expect({
+    admission,
+    executed: scenario.executedOperations,
+    task: await scenario.readTask("administrative-task-1"),
+  }).toMatchObject({
+    admission: {
+      decision: "denied",
+      reason: "Administrative Task active-execution deadline elapsed",
+    },
+    executed: [],
+    task: {
+      task: {
+        conclusion: "Administrative Task active-execution deadline elapsed",
+        status: "denied",
+      },
+    },
+  });
+
+  await scenario.close();
+});
+
+test("Operation evidence uses the trusted runtime completion time", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const clock = { current: "2026-10-01T11:00:00.000Z" };
+  const scenario = await createAdministrativeAutonomyScenario({
+    async beforeOperationEffect() {
+      clock.current = "2026-10-01T11:01:00.000Z";
+    },
+    clock,
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: clock.current,
+    providerPlan: [{ kind: "production.observe" }],
+    reportedCompletionTime: "2026-10-01T10:00:00.000Z",
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const result = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The production application health is understood.",
+    outcome: "investigate",
+    ownerId: "owner",
+    requestId: "trusted-completion-time-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  if (result.decision !== "admitted") {
+    throw new Error("Trusted-completion-time fixture was not admitted");
+  }
+  const completed = (await scenario.readTask(result.taskId))?.evidence.find(
+    (event) => event.kind === "administrative.operation.completed",
+  );
+
+  expect(completed).toMatchObject({
+    details: {
+      result: { completedAt: "2026-10-01T11:01:00.000Z" },
+    },
+    occurredAt: "2026-10-01T11:01:00.000Z",
+  });
+
+  await scenario.close();
+});

@@ -43,12 +43,24 @@ export interface AdministrativePlanProvider {
 
 export interface AdministrativeOperationExecutor {
   /**
-   * The adapter must use request.operationId as its idempotency key and return
-   * the prior bounded result when the same Operation is recovered or retried.
+   * The adapter must use request.operationId as its idempotency key, carry the
+   * claim ID and deadline into its typed broker fence, and stop and settle
+   * before performing any further effect when signal aborts. The real broker
+   * adapter remains downstream; production exposes no executor until one can
+   * honor this contract.
    */
   execute(
-    request: AdministrativeOperationRequest,
+    execution: AdministrativeOperationExecution,
   ): Promise<AdministrativeOperationResult>;
+}
+
+export interface AdministrativeOperationExecution {
+  readonly fence: {
+    readonly activeExecutionDeadline: string;
+    readonly claimId: string;
+    readonly signal: AbortSignal;
+  };
+  readonly request: AdministrativeOperationRequest;
 }
 
 export interface AdministrativeIdentifiers {
@@ -120,10 +132,22 @@ export function createAdministrativeAutonomyRuntime(options: {
   readonly executor?: AdministrativeOperationExecutor;
   readonly identifiers: AdministrativeIdentifiers;
   readonly now: () => string;
+  readonly operationLeaseMilliseconds?: number;
   readonly provider?: AdministrativePlanProvider;
   readonly store: AdministrativeAutonomyStore;
 }): AdministrativeAutonomyRuntime {
-  const operationLeaseMilliseconds = 30_000;
+  const requestedOperationLeaseMilliseconds =
+    options.operationLeaseMilliseconds ?? 30_000;
+  if (
+    !Number.isSafeInteger(requestedOperationLeaseMilliseconds) ||
+    requestedOperationLeaseMilliseconds <= 0
+  ) {
+    throw new Error("Administrative Operation lease duration is invalid");
+  }
+  const operationLeaseMilliseconds = Math.min(
+    requestedOperationLeaseMilliseconds,
+    administrativeActiveExecutionMilliseconds,
+  );
   let closed = false;
   let reconciliationPromise: Promise<void> | undefined;
   let reconciliationRequested = false;
@@ -183,10 +207,37 @@ export function createAdministrativeAutonomyRuntime(options: {
     readonly activeExecutionDeadline: string;
     readonly claimId: string;
     readonly operationId: string;
-  }): () => void {
+  }): {
+    readonly lossReason: () => string | undefined;
+    readonly signal: AbortSignal;
+    readonly stop: () => void;
+  } {
+    const controller = new AbortController();
+    let reason: string | undefined;
+    let renewalInFlight = false;
+    const abort = (lossReason: string) => {
+      if (controller.signal.aborted) return;
+      reason = lossReason;
+      controller.abort(new Error(lossReason));
+    };
+    const deadlineDelay = Math.max(
+      0,
+      new Date(input.activeExecutionDeadline).getTime() -
+        new Date(options.now()).getTime(),
+    );
+    const deadline = setTimeout(() => {
+      abort("Administrative Task active-execution deadline elapsed");
+    }, deadlineDelay);
+    deadline.unref?.();
     const renewal = setInterval(() => {
+      if (renewalInFlight || controller.signal.aborted) return;
+      renewalInFlight = true;
       const renewedAt = options.now();
-      if (renewedAt >= input.activeExecutionDeadline) return;
+      if (renewedAt >= input.activeExecutionDeadline) {
+        abort("Administrative Task active-execution deadline elapsed");
+        renewalInFlight = false;
+        return;
+      }
       void options.store
         .renewOperationClaim({
           claimId: input.claimId,
@@ -198,10 +249,25 @@ export function createAdministrativeAutonomyRuntime(options: {
           operationId: input.operationId,
           renewedAt,
         })
-        .catch(() => undefined);
+        .then((renewed) => {
+          if (!renewed) abort("Administrative Operation claim was lost");
+        })
+        .catch(() => {
+          abort("Administrative Operation claim was lost");
+        })
+        .finally(() => {
+          renewalInFlight = false;
+        });
     }, operationLeaseMilliseconds / 3);
     renewal.unref?.();
-    return () => clearInterval(renewal);
+    return {
+      lossReason: () => reason,
+      signal: controller.signal,
+      stop() {
+        clearTimeout(deadline);
+        clearInterval(renewal);
+      },
+    };
   }
 
   async function planAdministrativeTask(
@@ -360,7 +426,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       await completeAdministrativeTask(taskId);
       return true;
     }
-    const stopMaintainingClaim = maintainOperationClaim({
+    const claimMaintenance = maintainOperationClaim({
       activeExecutionDeadline: claim.activeExecutionDeadline,
       claimId: claim.claimId,
       operationId: claim.request.operationId,
@@ -368,8 +434,27 @@ export function createAdministrativeAutonomyRuntime(options: {
     try {
       let untrustedResult: unknown;
       try {
-        untrustedResult = await options.executor.execute(claim.request);
+        untrustedResult = await options.executor.execute({
+          fence: {
+            activeExecutionDeadline: claim.activeExecutionDeadline,
+            claimId: claim.claimId,
+            signal: claimMaintenance.signal,
+          },
+          request: claim.request,
+        });
       } catch {
+        const lossReason = claimMaintenance.lossReason();
+        if (lossReason !== undefined) {
+          await denyPlannedTask(taskId, lossReason);
+          return true;
+        }
+        if (options.now() >= claim.activeExecutionDeadline) {
+          await denyPlannedTask(
+            taskId,
+            "Administrative Task active-execution deadline elapsed",
+          );
+          return true;
+        }
         scheduleReconciliation(
           boundedLeaseExpiry(
             claimedAt,
@@ -379,9 +464,22 @@ export function createAdministrativeAutonomyRuntime(options: {
         );
         return false;
       }
+      const lossReason = claimMaintenance.lossReason();
+      if (lossReason !== undefined) {
+        await denyPlannedTask(taskId, lossReason);
+        return true;
+      }
+      const completedAt = options.now();
+      if (completedAt >= claim.activeExecutionDeadline) {
+        await denyPlannedTask(
+          taskId,
+          "Administrative Task active-execution deadline elapsed",
+        );
+        return true;
+      }
       let result: AdministrativeOperationResult;
       try {
-        result = operationResult(claim.request, untrustedResult);
+        result = operationResult(claim.request, untrustedResult, completedAt);
       } catch {
         await denyPlannedTask(
           taskId,
@@ -419,7 +517,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         return false;
       }
     } finally {
-      stopMaintainingClaim();
+      claimMaintenance.stop();
     }
   }
 
@@ -731,8 +829,13 @@ function operationRequest(input: {
 function operationResult(
   request: AdministrativeOperationRequest,
   untrustedResult: unknown,
+  completedAt: string,
 ): AdministrativeOperationResult {
-  const result = administrativeOperationResultSchema.parse(untrustedResult);
+  const untrusted = administrativeOperationResultSchema.parse(untrustedResult);
+  const result = administrativeOperationResultSchema.parse({
+    ...untrusted,
+    completedAt,
+  });
   if (result.kind !== request.kind || result.operationId !== request.operationId) {
     throw new Error(
       "Administrative Operation result identity does not match its request",
