@@ -253,8 +253,8 @@ test("a versioned Deployment Contract is activated by a Fresh Passkey Action and
   expect(activated).toMatchObject({
     contract: {
       activatedBy: "fresh-passkey-action",
-      applicationId: "keeplore-production",
       health: { expectedStatus: 200, path: "/api/health" },
+      registeredCodebaseId: "keeplore-production",
       releaseRoot,
       retainedReleases: 2,
       revision: 1,

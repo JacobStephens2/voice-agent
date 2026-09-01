@@ -641,7 +641,10 @@ export const administrativeTaskTargetSchema =
     registeredCodebase: administrativeRegisteredCodebaseSchema,
   })
   .superRefine((target, context) => {
-    if (target.registeredCodebase.applicationId !== target.registeredCodebaseId) {
+    if (
+      target.registeredCodebase.registeredCodebaseId !==
+      target.registeredCodebaseId
+    ) {
       context.addIssue({
         code: "custom",
         message: "Registered Codebase snapshot does not match its identity",
@@ -662,6 +665,11 @@ export type AdministrativeTaskTargetFingerprint = z.infer<
   typeof administrativeTaskTargetFingerprintSchema
 >;
 
+export interface AdministrativeTaskTargetBinding {
+  readonly target: AdministrativeTaskTarget;
+  readonly targetFingerprint: AdministrativeTaskTargetFingerprint;
+}
+
 /** Exact identity of the complete Task target and trusted registration snapshot. */
 export function administrativeTaskTargetFingerprint(
   target: AdministrativeTaskTarget,
@@ -671,13 +679,45 @@ export function administrativeTaskTargetFingerprint(
   );
 }
 
+export function administrativeTaskTargetBinding(
+  target: AdministrativeTaskTarget,
+): AdministrativeTaskTargetBinding {
+  const trustedTarget = administrativeTaskTargetSchema.parse(target);
+  return {
+    target: trustedTarget,
+    targetFingerprint: administrativeTaskTargetFingerprint(trustedTarget),
+  };
+}
+
+export function isAdministrativeTaskTargetBinding(
+  binding: AdministrativeTaskTargetBinding,
+): boolean {
+  return (
+    binding.targetFingerprint ===
+    administrativeTaskTargetFingerprint(binding.target)
+  );
+}
+
+export function sameAdministrativeTaskTargetBinding(
+  left: AdministrativeTaskTargetBinding,
+  right: AdministrativeTaskTargetBinding,
+): boolean {
+  return (
+    isAdministrativeTaskTargetBinding(left) &&
+    isAdministrativeTaskTargetBinding(right) &&
+    left.targetFingerprint === right.targetFingerprint
+  );
+}
+
 export function sameAdministrativeTaskTarget(
   left: AdministrativeTaskTarget,
   right: AdministrativeTaskTarget,
 ): boolean {
   return (
-    administrativeTaskTargetFingerprint(left) ===
-    administrativeTaskTargetFingerprint(right)
+    sameAdministrativeTaskTargetBinding(
+      administrativeTaskTargetBinding(left),
+      administrativeTaskTargetBinding(right),
+    )
   );
 }
 
@@ -706,10 +746,7 @@ export const livePatchRollbackActivationRequestSchema = z
   })
   .strict()
   .superRefine((request, context) => {
-    if (
-      request.targetFingerprint !==
-      administrativeTaskTargetFingerprint(request.target)
-    ) {
+    if (!isAdministrativeTaskTargetBinding(request)) {
       context.addIssue({
         code: "custom",
         message: "Live Patch rollback request target fingerprint is invalid",
@@ -748,10 +785,7 @@ export const livePatchRollbackActivationResultSchema = z
   })
   .strict()
   .superRefine((result, context) => {
-    if (
-      result.targetFingerprint !==
-      administrativeTaskTargetFingerprint(result.target)
-    ) {
+    if (!isAdministrativeTaskTargetBinding(result)) {
       context.addIssue({
         code: "custom",
         message: "Live Patch rollback result target fingerprint is invalid",

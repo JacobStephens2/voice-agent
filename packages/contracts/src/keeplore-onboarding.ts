@@ -147,7 +147,7 @@ export const keeploreGitHubAppInstallationSchema = z
 /** The shared Deployment Contract, fixed to Keeplore and its Release retention. */
 export const keeploreDeploymentContractSchema = deploymentContractSchema
   .extend({
-    applicationId: z.literal(keeploreApplicationId),
+    registeredCodebaseId: z.literal(keeploreApplicationId),
     retainedReleases: z.number().int().min(1).max(20),
   })
   .strict();

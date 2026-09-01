@@ -209,10 +209,10 @@ function contract(): KeeploreDeploymentContract {
   return {
     activatedAt: "2026-08-20T08:05:00.000Z",
     activatedBy: "fresh-passkey-action",
-    applicationId: "keeplore-production",
     buildCommand: "php -l",
     health: { expectedStatus: 200, path: "/api/health" },
     preflightCommand: "php -l",
+    registeredCodebaseId: "keeplore-production",
     releaseRoot: "/opt/keeplore/releases",
     retainedReleases: 2,
     revision: 1,

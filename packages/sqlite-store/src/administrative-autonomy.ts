@@ -23,7 +23,7 @@ import {
   administrativePolicyStatusSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
-  administrativeTaskTargetFingerprint,
+  administrativeTaskTargetBinding,
   administrativeTaskSchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
@@ -34,7 +34,7 @@ import {
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeAuthoritySnapshot,
   sameAdministrativeExecutionManifest,
-  sameAdministrativeTaskTarget,
+  sameAdministrativeTaskTargetBinding,
   type AdministrativeAuthoritySnapshot,
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
@@ -1027,12 +1027,10 @@ export function createSqliteAdministrativeAutonomyStore(
         operationRequest.kind !== "live-patch.apply" ||
         operationRequest.operationId !== request.operationId ||
         operationRequest.taskId !== request.taskId ||
-        !sameAdministrativeTaskTarget(
-          operationRequest.target,
-          request.target,
+        !sameAdministrativeTaskTargetBinding(
+          administrativeTaskTargetBinding(operationRequest.target),
+          request,
         ) ||
-        request.targetFingerprint !==
-          administrativeTaskTargetFingerprint(operationRequest.target) ||
         !sameAdministrativeAuthoritySnapshot(
           operationRequest.authority,
           request.authority,
@@ -1151,12 +1149,10 @@ export function createSqliteAdministrativeAutonomyStore(
         if (
           window === undefined ||
           activationRequest.taskId !== input.taskId ||
-          !sameAdministrativeTaskTarget(
-            activationRequest.target,
-            request.target,
+          !sameAdministrativeTaskTargetBinding(
+            activationRequest,
+            administrativeTaskTargetBinding(request.target),
           ) ||
-          activationRequest.targetFingerprint !==
-            administrativeTaskTargetFingerprint(request.target) ||
           window.armedAt !== activationRequest.armedAt ||
           window.mutationStartedAt !== input.effectAt ||
           activationRequest.armedAt > window.mutationStartedAt ||
@@ -1221,8 +1217,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (
         request.operationId !== result.operationId ||
         request.taskId !== result.taskId ||
-        request.targetFingerprint !== result.targetFingerprint ||
-        !sameAdministrativeTaskTarget(request.target, result.target)
+        !sameAdministrativeTaskTargetBinding(request, result)
       ) {
         return false;
       }
@@ -1234,8 +1229,7 @@ export function createSqliteAdministrativeAutonomyStore(
         return (
           recorded.operationId === request.operationId &&
           recorded.taskId === request.taskId &&
-          recorded.targetFingerprint === request.targetFingerprint &&
-          sameAdministrativeTaskTarget(recorded.target, request.target)
+          sameAdministrativeTaskTargetBinding(recorded, request)
         );
       }
       if (
@@ -1612,9 +1606,9 @@ export function createSqliteAdministrativeAutonomyStore(
             result.mutationProof.mutationStartedAt ||
           activationRequest.rollbackDeadline !==
             result.mutationProof.independentRollback.rollbackDeadline ||
-          !sameAdministrativeTaskTarget(
-            activationRequest.target,
-            request.target,
+          !sameAdministrativeTaskTargetBinding(
+            activationRequest,
+            administrativeTaskTargetBinding(request.target),
           ) ||
           result.mutationProof.reconciliation.targetFingerprint !==
             activationRequest.targetFingerprint

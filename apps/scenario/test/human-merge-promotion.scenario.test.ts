@@ -44,14 +44,14 @@ test("a Human Merge promotes its exact commit through the active Deployment Cont
   const registration = await scenario.getRegistration();
   const contract = await scenario.getActiveContract();
   expect(registration).toMatchObject({
-    applicationId: "fixture-production",
     productionBranch: "main",
+    registeredCodebaseId: "fixture-production",
     repository: "JacobStephens2/fixture-application",
   });
   expect(contract).toMatchObject({
     activatedBy: "fresh-passkey-action",
-    applicationId: "fixture-production",
     health: { expectedStatus: 204, path: "/health" },
+    registeredCodebaseId: "fixture-production",
     revision: 1,
     source: "voice-agent-policy",
   });

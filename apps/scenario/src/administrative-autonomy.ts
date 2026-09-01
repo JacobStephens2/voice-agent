@@ -5,6 +5,7 @@ import {
   administrativeOperationIdSchema,
   administrativeRegisteredCodebaseSchema,
   administrativeTaskIdSchema,
+  administrativeTaskTargetBinding,
   administrativeTaskTargetFingerprint,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
@@ -739,8 +740,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         outcome:
           existingActivation === undefined ? "activated" : "already-activated",
         productionMutationRetained: false,
-        target: resultTarget,
-        targetFingerprint: administrativeTaskTargetFingerprint(resultTarget),
+        ...administrativeTaskTargetBinding(resultTarget),
         taskId: request.taskId,
         verifiedBy: "independent-live-patch-rollback-controller",
       });
@@ -797,7 +797,6 @@ export async function createAdministrativeAutonomyScenario(options: {
                   ] ?? 1;
                 registeredCodebaseLookup += 1;
                 return administrativeRegisteredCodebaseSchema.parse({
-                  applicationId: "voice-agent",
                   expiresAt:
                     options.registeredCodebaseExpiresAt ??
                     "2100-01-01T00:00:00.000Z",
@@ -805,6 +804,7 @@ export async function createAdministrativeAutonomyScenario(options: {
                   liveCheckoutPath: "/srv/voice-agent",
                   productionBranch: "main",
                   registeredAt: "1990-01-01T00:00:00.000Z",
+                  registeredCodebaseId: "voice-agent",
                   repository: "JacobStephens2/voice-agent",
                   revision,
                   sourceCheckoutRoot: "/srv/source/voice-agent",

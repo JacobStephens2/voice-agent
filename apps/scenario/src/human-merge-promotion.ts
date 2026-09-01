@@ -12,7 +12,6 @@ import type {
 } from "@voice-agent/contracts";
 import {
   fixtureDeploymentContractSchema,
-  registeredCodebaseIdSchema,
   selfPromotionVerificationChecks,
 } from "@voice-agent/contracts";
 import { createSelfPromotionRuntime } from "@voice-agent/runtime";
@@ -205,7 +204,7 @@ export async function createHumanMergePromotionScenario(
       const contract: FixtureDeploymentContract = {
         activatedAt: options.now,
         activatedBy: "fresh-passkey-action",
-        applicationId: registeredCodebaseIdSchema.parse(codebase.applicationId),
+        registeredCodebaseId: codebase.registeredCodebaseId,
         buildCommand: input.buildCommand,
         health: input.health,
         preflightCommand: input.preflightCommand,
@@ -304,8 +303,8 @@ export async function createHumanMergePromotionScenario(
       );
       const release = {
         commit: attempt.merge_commit,
-        id: `${codebase.applicationId}-${attempt.merge_commit}`,
-        path: `${contract.releaseRoot}/${codebase.applicationId}-${attempt.merge_commit}`,
+        id: `${codebase.registeredCodebaseId}-${attempt.merge_commit}`,
+        path: `${contract.releaseRoot}/${codebase.registeredCodebaseId}-${attempt.merge_commit}`,
       };
       const actualHealthStatus =
         options.healthStatusByCommit?.[attempt.merge_commit] ??

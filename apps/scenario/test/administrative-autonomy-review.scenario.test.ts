@@ -6,6 +6,7 @@ import {
   administrativeExecutionManifestSchema,
   administrativePlanProviderIdentitySchema,
   administrativePolicyEvidencePageSchema,
+  administrativeRegisteredCodebaseSchema,
   administrativeTaskTargetFingerprint,
   administrativeTaskTargetRequestSchema,
   administrativeTaskTargetSchema,
@@ -30,6 +31,27 @@ afterEach(async () => {
       rm(directory, { force: true, recursive: true }),
     ),
   );
+});
+
+test("Registered Codebase contracts expose only their branded domain identity", () => {
+  const registration = administrativeRegisteredCodebaseSchema.parse({
+    expiresAt: "2100-01-01T00:00:00.000Z",
+    initialProductionCommit: "1".repeat(40),
+    liveCheckoutPath: "/srv/voice-agent",
+    productionBranch: "main",
+    registeredAt: "1990-01-01T00:00:00.000Z",
+    registeredCodebaseId: "voice-agent",
+    repository: "JacobStephens2/voice-agent",
+    revision: 1,
+    sourceCheckoutRoot: "/srv/source/voice-agent",
+    verificationCommands: ["pnpm typecheck", "pnpm test"],
+    worktreeRoot: "/var/lib/voice-agent/worktrees/voice-agent",
+  });
+
+  expect(registration).toMatchObject({
+    registeredCodebaseId: "voice-agent",
+  });
+  expect("applicationId" in registration).toBe(false);
 });
 
 test("an Administrative Execution Manifest cannot gain authority after Human Merge", async () => {
@@ -513,7 +535,10 @@ test("a verified Delegation Result completes delegated work through the public t
             "human-merge-required",
           ],
           delegationId: "administrative-operation-1",
-          registeredCodebase: { applicationId: "voice-agent", revision: 1 },
+          registeredCodebase: {
+            registeredCodebaseId: "voice-agent",
+            revision: 1,
+          },
         },
       },
     },
@@ -2643,7 +2668,7 @@ const changedRegisteredCodebaseTargets = [
     "embedded Registered Codebase ID",
     (target: AdministrativeTaskTarget) => ({
       ...target.registeredCodebase,
-      applicationId: "substituted-voice-agent",
+      registeredCodebaseId: "substituted-voice-agent",
     }),
   ],
   [

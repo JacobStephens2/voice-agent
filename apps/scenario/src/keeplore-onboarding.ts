@@ -1,6 +1,7 @@
 import {
   keeploreApplicationId,
   keeploreOnboardingEvidenceRecordProjectionSchema,
+  registeredCodebaseIdSchema,
   type FixtureGitHubEvent,
   type KeeploreBranchProtection,
   type KeeploreDeploymentContract,
@@ -118,7 +119,9 @@ export async function createKeeploreOnboardingScenario(
     store: onboardingStore,
   });
   const codebase: PromotionCodebase = {
-    applicationId: keeploreApplicationId,
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      keeploreApplicationId,
+    ),
     // Keeplore is PHP served from files: a Release is linted, not built.
     buildCommand: keeploreReleaseLintCommand,
     health: { expectedStatus: 200, path: "/api/health" },

@@ -86,7 +86,7 @@ _Avoid_: Application directory, discovered repository, arbitrary path
 
 **Registered Codebase ID**:
 The durable identity used to look up one complete Registered Codebase registration; the ID never stands in for the registration snapshot whose paths, remote, branch, revision, verification scope, and lifetime carry authority.
-_Avoid_: Repository slug, generic identifier, application ID
+_Avoid_: Repository slug, generic identifier
 
 **Configuration Repository**:
 The private Registered Codebase that represents reproducible Agent Host packages, services, network policy, device setup, recovery inventory, and other Host Patch targets.

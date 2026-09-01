@@ -19,7 +19,10 @@ import type {
   KeeploreRegistration,
   KeeploreWorktree,
 } from "@voice-agent/contracts";
-import { keeploreProductionEvidenceRoot } from "@voice-agent/contracts";
+import {
+  keeploreProductionEvidenceRoot,
+  registeredCodebaseIdSchema,
+} from "@voice-agent/contracts";
 import {
   chooseKeeploreTrialCompletionNotice,
   decideKeeploreWorktreeLifecycle,
@@ -489,7 +492,8 @@ async function createKeeplorePromotionScenario(ids: readonly string[]) {
   temporaryDirectories.push(directory);
   return createHumanMergePromotionScenario({
     codebase: {
-      applicationId: "keeplore-production",
+      registeredCodebaseId:
+        registeredCodebaseIdSchema.parse("keeplore-production"),
       buildCommand: "composer install --no-dev",
       health: { expectedStatus: 200, path: "/health.php" },
       initialProductionCommit: previousCommit,

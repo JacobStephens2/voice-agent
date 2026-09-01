@@ -108,10 +108,10 @@ export function createKeeploreOnboardingControls(options: {
       const contract = keeploreDeploymentContractSchema.parse({
         activatedAt: options.now(),
         activatedBy: "fresh-passkey-action",
-        applicationId: "keeplore-production",
         buildCommand: input.buildCommand,
         health: input.health,
         preflightCommand: input.preflightCommand,
+        registeredCodebaseId: "keeplore-production",
         releaseRoot: input.releaseRoot,
         retainedReleases: input.retainedReleases,
         revision: input.revision,

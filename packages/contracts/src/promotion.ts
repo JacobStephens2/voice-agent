@@ -46,11 +46,11 @@ export const fixtureGitHubEventSchema = z
 
 export const registeredCodebaseSchema = z
   .object({
-    applicationId: registeredCodebaseIdSchema,
     initialProductionCommit: promotionCommitSchema,
     liveCheckoutPath: promotionPathSchema,
     productionBranch: promotionBranchSchema,
     registeredAt: promotionTimestampSchema,
+    registeredCodebaseId: registeredCodebaseIdSchema,
     repository: promotionRepositorySchema,
     sourceCheckoutRoot: promotionPathSchema,
   })
@@ -62,7 +62,6 @@ export const deploymentContractSchema = z
   .object({
     activatedAt: promotionTimestampSchema,
     activatedBy: z.literal("fresh-passkey-action"),
-    applicationId: registeredCodebaseIdSchema,
     buildCommand: promotionTextSchema,
     health: z
       .object({
@@ -71,6 +70,7 @@ export const deploymentContractSchema = z
       })
       .strict(),
     preflightCommand: promotionTextSchema,
+    registeredCodebaseId: registeredCodebaseIdSchema,
     releaseRoot: promotionPathSchema,
     revision: z.number().int().positive(),
     /**

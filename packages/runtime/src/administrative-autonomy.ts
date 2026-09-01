@@ -18,6 +18,7 @@ import {
   administrativeTimestampSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
+  administrativeTaskTargetBinding,
   administrativeTaskTargetFingerprint,
   administrativeTaskTargetSchema,
   administrativeTaskTargetRequestSchema,
@@ -29,7 +30,7 @@ import {
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
   sameAdministrativeRegisteredCodebase,
-  sameAdministrativeTaskTarget,
+  sameAdministrativeTaskTargetBinding,
   sameGrokRunnerPin,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
@@ -481,7 +482,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           registeredCodebaseId,
         ),
       );
-      return registration.applicationId === registeredCodebaseId &&
+      return registration.registeredCodebaseId === registeredCodebaseId &&
         registration.registeredAt <= observedAt &&
         observedAt < registration.expiresAt
         ? registration
@@ -759,8 +760,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           completedAt >= attemptDeadline ||
           result.operationId !== request.operationId ||
           result.taskId !== request.taskId ||
-          result.targetFingerprint !== request.targetFingerprint ||
-          !sameAdministrativeTaskTarget(result.target, request.target) ||
+          !sameAdministrativeTaskTargetBinding(result, request) ||
           result.activatedAt < policy.suspendedAt ||
           result.activatedAt > completedAt
         ) {
@@ -1090,10 +1090,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           kind: "activate-armed-live-patch-rollback",
           mutationAuthorizedAt: null,
           operationId: claim.request.operationId,
-          target: claim.request.target,
-          targetFingerprint: administrativeTaskTargetFingerprint(
-            claim.request.target,
-          ),
+          ...administrativeTaskTargetBinding(claim.request.target),
           taskId: claim.request.taskId,
         });
         if (
