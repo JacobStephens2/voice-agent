@@ -19,8 +19,8 @@
 # `./ops/upgrade-agent-host-deployment-authority.sh` would apply.
 #
 # Both functions read only the two directories they are handed and write no
-# files, so the comparison that a Promotion reports can be exercised without
-# root and without the live pinned-authority directory.
+# files, so the content-and-mode comparison that a Promotion reports can be
+# exercised without root and without the live pinned-authority directory.
 
 voice_agent_authority_drift_action=./ops/upgrade-agent-host-deployment-authority.sh
 voice_agent_authority_drift_none='{"diverged":false,"paths":[]}'
@@ -28,11 +28,13 @@ voice_agent_authority_drift_none='{"diverged":false,"paths":[]}'
 # voice_agent_authority_drift_paths <release-root> <pinned-root>
 #
 # Print, one per line in manifest order, the pinned-relative path of every
-# reviewed file whose Release content differs from the pinned copy. A file
-# missing from either side diverges as surely as one whose bytes changed.
+# reviewed file whose Release content or published mode differs from the pinned
+# copy. A file missing from either side diverges as surely as one whose bytes
+# changed.
 voice_agent_authority_drift_paths() {
   local release_root=$1 pinned_root=$2
-  local drift_manifest_directory pinned_path reported source_path
+  local actual_mode drift_manifest_directory expected_mode pinned_path reported
+  local source_path
   drift_manifest_directory=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   # shellcheck source=deployment-authority-manifest.sh
   source "$drift_manifest_directory/deployment-authority-manifest.sh"
@@ -42,11 +44,15 @@ voice_agent_authority_drift_paths() {
   # so each copy is compared on its own merits. This guard keeps a manifest that
   # later reached one pinned path twice from reporting it twice.
   reported=" "
-  while IFS=$'\t' read -r source_path pinned_path; do
+  while IFS=$'\t' read -r source_path pinned_path expected_mode; do
     if [[ -z $pinned_path ]]; then continue; fi
     if [[ $reported == *" $pinned_path "* ]]; then continue; fi
     reported+="$pinned_path "
-    if ! cmp -s "$release_root/$source_path" "$pinned_root/$pinned_path"; then
+    actual_mode=$(
+      voice_agent_authority_path_mode "$pinned_root/$pinned_path" 2>/dev/null
+    ) || actual_mode=
+    if ! cmp -s "$release_root/$source_path" "$pinned_root/$pinned_path" ||
+      [[ $actual_mode != "$expected_mode" ]]; then
       printf '%s\n' "$pinned_path"
     fi
   done < <(voice_agent_authority_pinned_paths)

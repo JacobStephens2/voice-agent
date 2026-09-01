@@ -15,6 +15,7 @@ const driftScript = join(
 
 /** One reviewed file: where the Release carries it, where a host pins it. */
 export interface PinnedAuthorityPath {
+  readonly mode: number;
   readonly pinnedPath: string;
   readonly sourcePath: string;
 }
@@ -38,8 +39,8 @@ export async function readPinnedAuthorityPaths(): Promise<
     .trimEnd()
     .split("\n")
     .map((line) => {
-      const [sourcePath = "", pinnedPath = ""] = line.split("\t");
-      return { pinnedPath, sourcePath };
+      const [sourcePath = "", pinnedPath = "", mode = ""] = line.split("\t");
+      return { mode: Number.parseInt(mode, 8), pinnedPath, sourcePath };
     });
 }
 

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -63,9 +64,10 @@ async function buildAuthorityPair(): Promise<{
   // Content is keyed by the Release path, not the pinned path: the Human Merge
   // verifier is one reviewed file pinned in two places, and both pinned copies
   // carry the bytes of that single source.
-  for (const { pinnedPath, sourcePath } of await readPinnedAuthorityPaths()) {
+  for (const { mode, pinnedPath, sourcePath } of await readPinnedAuthorityPaths()) {
     await writeFileAt(join(releaseRoot, sourcePath), `${sourcePath} reviewed\n`);
     await writeFileAt(join(pinnedRoot, pinnedPath), `${sourcePath} reviewed\n`);
+    await chmod(join(pinnedRoot, pinnedPath), mode);
   }
   return { pinnedRoot, releaseRoot };
 }
@@ -97,6 +99,20 @@ test("changed content diverges, not only a missing pinned file", async () => {
   await expect(driftPaths(releaseRoot, pinnedRoot)).resolves.toEqual([
     "promote-release.sh",
     "systemd/voice-agent-api.service",
+  ]);
+});
+
+test("a pinned program with the wrong publication mode diverges", async () => {
+  const { pinnedRoot, releaseRoot } = await buildAuthorityPair();
+  await chmod(join(pinnedRoot, "grok-token-broker"), 0o644);
+  await chmod(
+    join(pinnedRoot, "deployment-authority-authorization-verifier.mjs"),
+    0o755,
+  );
+
+  await expect(driftPaths(releaseRoot, pinnedRoot)).resolves.toEqual([
+    "deployment-authority-authorization-verifier.mjs",
+    "grok-token-broker",
   ]);
 });
 

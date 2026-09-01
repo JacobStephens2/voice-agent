@@ -8,13 +8,14 @@ import { grokSandboxProfile } from "@voice-agent/contracts";
  * this. These are the stores whose contents are reusable host authority
  * rather than source: the provider's own OAuth refresh credential, the token
  * helper's socket, the brokers, the publisher, the evidence store, and root's
- * and the Voice Agent's own state. Everything here is reachable only through
- * a typed broker.
+ * and the Voice Agent's own state. The intended contract is that reusable
+ * authority crosses only through a typed broker; the executable crossing path
+ * is the currently held exception described below.
  *
- * The list is used twice: the fixed executor refuses to stage a run inside any
- * of these, and the reviewed sandbox profile denies them to model-selected
- * tools. The parent runner still reads its own root-managed configuration
- * before the sandbox exists; the deny rules apply to what the model runs.
+ * The fixed executor refuses to stage a run inside these paths, and the direct
+ * custody probe enumerates the same list. The current sandbox does not deny the
+ * list to model-selected tools; the required parent/child split is held for a
+ * compensating boundary and canary rather than claimed by this inventory.
  */
 export const credentialCustodyBoundaryPaths = [
   "/etc/ssh",
@@ -60,14 +61,13 @@ export function assertOutsideCredentialCustody(
  * to start: after entering Bubblewrap it re-opens every read-deny path to
  * confirm the mask took effect, and a path the executor identity cannot open
  * at all answers `Permission denied`, which it reads as an unenforced deny
- * list. Every store in the boundary is root-owned or 0700 for exactly the
- * reason it is in the boundary, so listing them turns a defence-in-depth layer
- * into a runner that never runs.
+ * list. That experiment preceded the crossing directory's required 0755 mode:
+ * the executor can now list that member, so identity permissions do not hold
+ * the full boundary and this function is not a custody proof.
  *
- * Custody is therefore held where it is enforceable - the executor identity's
- * own permissions, and the systemd unit's InaccessiblePaths - and this profile
- * holds workspace confinement. `restrict_network` is unavailable on this host
- * for the same reason; see issue #161.
+ * This profile currently holds workspace confinement only. A child-specific
+ * custody control and `restrict_network` remain held decisions; see issue #161
+ * and docs/research/grok-auth-crossing-and-custody-boundary.md.
  */
 export function describeSandboxProfileDrift(
   profileText: string,

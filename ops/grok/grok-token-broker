@@ -12,9 +12,10 @@
 # the credential itself; this is the only crossing, and the sudoers rules
 # beside it permit exactly these two commands and no other argument.
 #
-# The model's sandbox denies /usr/local/libexec/voice-agent, so a
-# model-selected command cannot invoke this broker even though the runner it
-# runs under just did.
+# The current model sandbox does not deny /usr/local/libexec/voice-agent, and
+# model-selected commands share the runner's voice-grok identity. ADR-0068's
+# intended parent/child split is therefore held for a compensating boundary;
+# installing this crossing alone is not a Credential Custody Boundary witness.
 set -euo pipefail
 
 readonly HELPER=/usr/local/libexec/voice-agent/grok-token-helper

@@ -376,6 +376,12 @@ done
 for mapping in "${voice_agent_authority_programs[@]}"; do
   source_path=${mapping%%:*}
   target_path=${mapping#*:}
+  published_mode=${mapping##*:}
+  target_path=${target_path%%:*}
+  if sudo test -L "$ROOT_ORCHESTRATOR/$target_path"; then
+    warn "Pinned deployment authority is a symbolic link at $target_path; this wizard will not follow it."
+    exit 1
+  fi
   if sudo test -e "$ROOT_ORCHESTRATOR/$target_path" && \
     ! sudo cmp -s "$REPOSITORY_ROOT/$source_path" \
       "$ROOT_ORCHESTRATOR/$target_path"; then
@@ -383,8 +389,19 @@ for mapping in "${voice_agent_authority_programs[@]}"; do
     exit 1
   fi
   if ! sudo test -e "$ROOT_ORCHESTRATOR/$target_path"; then
-    sudo install -o root -g root -m 0644 \
+    sudo install -o root -g root -m "$published_mode" \
       "$REPOSITORY_ROOT/$source_path" "$ROOT_ORCHESTRATOR/$target_path"
+  fi
+  # An existing byte-identical pin may predate the manifest's mode contract.
+  # Initial setup may repair its metadata, but never its reviewed content.
+  sudo chown root:root "$ROOT_ORCHESTRATOR/$target_path"
+  sudo chmod "$published_mode" "$ROOT_ORCHESTRATOR/$target_path"
+  if [[ $(sudo stat -c %U "$ROOT_ORCHESTRATOR/$target_path") != root ]] || \
+    [[ $(sudo stat -c %G "$ROOT_ORCHESTRATOR/$target_path") != root ]] || \
+    [[ "0$(sudo stat -c %a "$ROOT_ORCHESTRATOR/$target_path")" != \
+      "$published_mode" ]]; then
+    warn "Pinned deployment authority has invalid metadata at $target_path."
+    exit 1
   fi
 done
 for mapping in "${voice_agent_authority_extras[@]}"; do
