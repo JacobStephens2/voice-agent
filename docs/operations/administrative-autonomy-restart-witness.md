@@ -26,26 +26,30 @@ cd /opt/voice-agent/current
 ./ops/acceptance/run-administrative-autonomy-restart-witness.sh
 ```
 
-The wizard first records the exact `revision` and `stateVersion` returned by the
-deployed authenticated `GET /api/administrative-autonomy` route. It then
-restarts `voice-agent-api.service` and `voice-agent-worker.service`, verifies
-both units, and records a second authenticated API observation. Before reboot,
-it appends a durable policy checkpoint and retains the current Linux boot ID in
-a root-only transient file. The wizard invokes a real `systemctl reboot` and
-ends. Reconnect and run the same command again; it refuses the host-restart
-observation unless Linux reports a different boot ID, then rechecks both units
-and the deployed authenticated API.
+The wizard creates or resumes one Release-scoped campaign in the fixed Voice
+Agent SQLite store. For each phase it opens the PWA with the campaign's current
+single-use challenge. The signed-in owner chooses **Record server
+observation**, and the authenticated API reads the exact policy revision,
+state version, Administrative Execution Manifest fingerprint, active immutable
+Release, API process instance, and Linux boot identity from its own composition
+boundary. The request can supply none of those values.
 
-Authentication remains entirely inside the owner browser and its Credential
-Custody Boundary. At each observation the wizard opens the deployed API route
-in that signed-in browser; the owner copies only the sanitized JSON response,
-which the CLI validates against the full public status schema. No session
-cookie or token enters the shell or acceptance record. The raw boot IDs are
-compared locally and removed after the observation. The append-only record
-retains only the Release commit, exact policy revision/state version, fixed
-authenticated API provenance, and sanitized pass/fail outcomes. Failed
-observations remain in its history and a later attended retry appends new
-evidence.
+After the baseline, the wizard restarts `voice-agent-api.service` and
+`voice-agent-worker.service`. The service-restart observation passes only for a
+new API process instance on the same Linux boot. The wizard then invokes a real
+`systemctl reboot` and ends. Reconnect and run the same command again; the
+host-reboot observation passes only when the API itself reads a changed Linux
+boot identity. A policy, manifest, state-version, or Release change fails the
+campaign.
+
+Authentication and CSRF proof remain entirely inside the owner browser and its
+Credential Custody Boundary. The shell receives only campaign, phase, and
+challenge identities from the server-owned store; it receives no API response,
+cookie, token, policy value, process identity, or boot identity. Every valid
+challenge is consumed once. A failed environmental check is appended as
+sanitized evidence and the server issues a new phase-scoped challenge for the
+retry. The CLI can only create/resume, inspect, evaluate, and export the
+server-recorded campaign through the fixed production database path.
 
 By default the record is:
 
@@ -58,13 +62,13 @@ The final machine check, also run by the wizard, is:
 ```bash
 sudo /usr/bin/env node --experimental-strip-types \
   /opt/voice-agent/current/apps/acceptance/src/administrative-autonomy-restart-cli.ts \
-  status \
-  --record /var/lib/voice-agent/acceptance/issue-83-administrative-autonomy-restart-<release-commit>.json
+  status
 ```
 
-It exits successfully only when both post-disruption observations are active,
-authenticated, schema-valid, and exactly match the pre-restart revision and
-state version, and when the reboot observation carries the real boot-identity
-change proof. Until this attended post-Promotion procedure runs successfully,
+It exits successfully only when the three server-recorded observations exactly
+match the baseline policy, manifest, state version, and Release, the service
+instance changed without a reboot, and the boot identity later changed. The
+`export` command creates the immutable sanitized JSON record only after those
+checks pass. Until this attended post-Promotion procedure runs successfully,
 the repository contains the acceptance contract and procedure but does not
 claim that a real Agent Host reboot has been witnessed.

@@ -45,6 +45,8 @@ import {
   administrativePolicyEvidencePageRequestSchema,
   administrativePolicyEvidencePageSchema,
   administrativePolicyStatusSchema,
+  administrativeRestartWitnessObservationRequestSchema,
+  administrativeRestartWitnessObservationSchema,
   suspendAdministrativePolicyRequestSchema,
   answerAdministrativeTaskConfirmationRequestSchema,
   prepareAdministrativeTaskConfirmationRequestSchema,
@@ -90,6 +92,8 @@ import {
   type AdministrativePolicyEvidencePageRequest,
   type AdministrativePolicySuspensionExpectation,
   type AdministrativeAutonomyStatus,
+  type AdministrativeRestartWitnessObservationIdentity,
+  type AdministrativeRestartWitnessObservationResponse,
   type AdministrativeRequestedOutcome,
   type AdministrativeTaskAdmissionResponse,
   type AdministrativeTaskId,
@@ -267,6 +271,13 @@ export interface AdministrativeAutonomyApiControls {
   >;
 }
 
+/** Composition-owned witness action; requests carry identity, never observations. */
+export interface AdministrativeRestartWitnessApiControls {
+  observe(
+    input: AdministrativeRestartWitnessObservationIdentity,
+  ): Promise<AdministrativeRestartWitnessObservationResponse>;
+}
+
 export interface TelephoneControls {
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
   registerTelephone(input: RegisteredTelephoneInput): Promise<RegisteredTelephone>;
@@ -323,6 +334,9 @@ export interface TaskApiOptions {
     requestResume(): Promise<string>;
   } | undefined;
   readonly records: EvidenceRecordReader;
+  readonly restartWitnessControls?:
+    | AdministrativeRestartWitnessApiControls
+    | undefined;
   readonly telephoneControls?: TelephoneControls | undefined;
 }
 
@@ -345,6 +359,9 @@ export interface VoiceApiOptions {
     requestResume(): Promise<string>;
   } | undefined;
   readonly records: EvidenceRecordReader;
+  readonly restartWitnessControls?:
+    | AdministrativeRestartWitnessApiControls
+    | undefined;
   readonly telephoneControls?: TelephoneControls | undefined;
 }
 
@@ -484,6 +501,17 @@ function createApi(options: TaskApiOptions): FastifyInstance {
     registerAdministrativeAutonomyRoutes(api, {
       authentication: options.authentication,
       controls: options.administrativeControls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
+  if (
+    options.restartWitnessControls !== undefined &&
+    options.origin !== undefined
+  ) {
+    registerAdministrativeRestartWitnessRoute(api, {
+      authentication: options.authentication,
+      controls: options.restartWitnessControls,
       origin: options.origin,
       records: options.records,
     });
@@ -672,6 +700,45 @@ function registerAdministrativeAutonomyRoutes(
     }
     return administrativePolicyStatusSchema.parse(result.policy);
   });
+}
+
+function registerAdministrativeRestartWitnessRoute(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: AdministrativeRestartWitnessApiControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.post(
+    "/api/administrative-autonomy/restart-witness/observations",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = administrativeRestartWitnessObservationRequestSchema.parse(
+        request.body,
+      );
+      const sessionToken = await authorizeStateChange(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (sessionToken === undefined) return;
+      const result = await options.controls.observe({
+        campaignId: body.campaignId,
+        challenge: body.challenge,
+        phase: body.phase,
+      });
+      if (result.decision === "denied") {
+        return reply.code(409).send({ reason: result.reason });
+      }
+      return administrativeRestartWitnessObservationSchema.parse(
+        result.observation,
+      );
+    },
+  );
 }
 
 function registerKeeploreOnboardingRoutes(

@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 
 import type {
   AdministrativeAutonomyStatus,
+  AdministrativeRestartWitnessObservationIdentity,
   BountywellRegistration,
   EvidenceRecordSummary,
   KeeploreLiveInspection,
@@ -208,6 +209,7 @@ export function TaskList(props: {
   busy: boolean;
   onAuthorizeDeploymentAuthorityUpgrade(): Promise<void>;
   onActivateAdministrativeAutonomy(): Promise<void>;
+  onRecordRestartWitnessObservation(): Promise<void>;
   onFresh(): Promise<void>;
   onApplyEvidenceRetention(): Promise<void>;
   onResumePromotions(): Promise<void>;
@@ -221,6 +223,9 @@ export function TaskList(props: {
   onChangeSpendingCeiling(ceilingMicrousd: number): Promise<void>;
   onUpdateNotificationPreference(input: NotificationPreferenceInput): Promise<void>;
   onRunBountywell(): Promise<void>;
+  restartWitnessObservation?:
+    | AdministrativeRestartWitnessObservationIdentity
+    | undefined;
 }) {
   return (
     <main className="task-page">
@@ -307,6 +312,27 @@ export function TaskList(props: {
             : "Activate Administrative Autonomy"}
         </button>
       </section>
+      {props.restartWitnessObservation === undefined ? null : (
+        <section
+          className="bountywell-control"
+          aria-labelledby="restart-witness-heading"
+        >
+          <p className="eyebrow">Attended acceptance</p>
+          <h2 id="restart-witness-heading">Agent Host Restart Witness</h2>
+          <p>
+            Record the <strong>{props.restartWitnessObservation.phase}</strong>{" "}
+            observation. The server reads the active policy, Administrative
+            Execution Manifest, immutable Release, API service instance, and
+            Linux boot identity from its fixed composition boundary.
+          </p>
+          <button
+            disabled={props.busy}
+            onClick={() => void props.onRecordRestartWitnessObservation()}
+          >
+            Record server observation
+          </button>
+        </section>
+      )}
       <section className="bountywell-control" aria-labelledby="retention-heading">
         <p className="eyebrow">Lifecycle policy</p>
         <h2 id="retention-heading">Evidence retention</h2>

@@ -6,6 +6,7 @@ import {
 import {
   createSqliteAuthenticationStore,
   createSqliteAdministrativeAutonomyStore,
+  createSqliteAdministrativeRestartWitnessStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteKeeploreOnboardingStore,
@@ -21,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import {
   administrativeOperationClaimIdSchema,
   administrativeOperationIdSchema,
+  administrativeRestartWitnessChallengeSchema,
   administrativeTaskIdSchema,
   administrativeUnavailableExecutionManifest,
 } from "@voice-agent/contracts";
@@ -39,6 +41,7 @@ import {
 import {
   createCallbackHandshakeRuntime,
   createAdministrativeAutonomyRuntime,
+  createAdministrativeRestartWitnessRuntime,
   createDurableTaskRuntime,
   createKeeploreOnboardingControls,
   createNodeKeeploreLiveInspector,
@@ -47,6 +50,7 @@ import {
   projectKeeplorePromotionEvidence,
   readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
+  createNodeAdministrativeRestartWitnessHost,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   formatTelephoneBoundaryPrometheusMetrics,
@@ -75,6 +79,7 @@ const taskStore = createSqliteDurableTaskStore(databasePath);
 // the Administrative Publisher App (#82), typed observation brokers (#90), and
 // the Live Patch broker (#92). Production therefore binds activation to the
 // unavailable manifest and reports that exact prerequisite through status.
+const administrativeStore = createSqliteAdministrativeAutonomyStore(databasePath);
 const administrativeRuntime = createAdministrativeAutonomyRuntime({
   executionManifest: administrativeUnavailableExecutionManifest,
   identifiers: {
@@ -92,9 +97,25 @@ const administrativeRuntime = createAdministrativeAutonomyRuntime({
       administrativeTaskIdSchema.parse(`administrative-task-${randomUUID()}`),
   },
   now: () => new Date().toISOString(),
-  store: createSqliteAdministrativeAutonomyStore(databasePath),
+  store: administrativeStore,
 });
 await administrativeRuntime.reconcileOperations();
+const administrativeRestartWitnessStore =
+  createSqliteAdministrativeRestartWitnessStore(databasePath);
+const administrativeRestartWitnessRuntime =
+  createAdministrativeRestartWitnessRuntime({
+    host: createNodeAdministrativeRestartWitnessHost({
+      serviceInstanceId: `administrative-api-service-instance-${randomUUID()}`,
+    }),
+    identifiers: {
+      nextChallenge: () =>
+        administrativeRestartWitnessChallengeSchema.parse(
+          `administrative-restart-challenge-${randomUUID()}`,
+        ),
+    },
+    now: () => new Date().toISOString(),
+    store: administrativeRestartWitnessStore,
+  });
 const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({
@@ -348,6 +369,7 @@ const api = createVoiceApi({
     },
     recordPolicyDenial: () => runtime.recordPolicyDenial(),
   },
+  restartWitnessControls: administrativeRestartWitnessRuntime,
   telephoneControls: callbackRuntime,
 });
 await api.register(staticFiles, {
@@ -358,6 +380,7 @@ const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
   await administrativeRuntime.close();
+  await administrativeRestartWitnessStore.close();
   await boundaries.close();
   await callbackRuntime.close();
   await continuityRuntime.close();

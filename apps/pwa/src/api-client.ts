@@ -9,6 +9,8 @@ import {
   authenticationStatusSchema,
   administrativeAutonomyStatusSchema,
   administrativePolicyStatusSchema,
+  administrativeRestartWitnessObservationIdentitySchema,
+  administrativeRestartWitnessObservationSchema,
   authorizeRawAudioDebugResultSchema,
   bountywellOutageInjectionSchema,
   bountywellRecoveryTimerProofSchema,
@@ -41,6 +43,8 @@ import {
   type AdministrativeAutonomyStatus,
   type AdministrativePolicyActivationExpectation,
   type AdministrativePolicyStatus,
+  type AdministrativeRestartWitnessObservation,
+  type AdministrativeRestartWitnessObservationIdentity,
   type TelephoneBoundaryStatus,
   type BountywellOutageInjection,
   type BountywellRecoveryTimer,
@@ -111,6 +115,52 @@ export async function activateAdministrativePolicy(
     );
   }
   return administrativePolicyStatusSchema.parse(await response.json());
+}
+
+export async function recordAdministrativeRestartWitnessObservation(
+  csrfToken: string,
+  identity: AdministrativeRestartWitnessObservationIdentity,
+): Promise<AdministrativeRestartWitnessObservation> {
+  const response = await fetch(
+    "/api/administrative-autonomy/restart-witness/observations",
+    {
+      body: JSON.stringify({ ...identity, csrfToken }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    },
+  );
+  if (!response.ok) {
+    throw new Error(
+      await denialReason(
+        response,
+        "The Agent Host Restart Witness observation was not recorded.",
+      ),
+    );
+  }
+  return administrativeRestartWitnessObservationSchema.parse(
+    await response.json(),
+  );
+}
+
+export function readAdministrativeRestartWitnessFragment(
+  hash = window.location.hash,
+): AdministrativeRestartWitnessObservationIdentity | undefined {
+  const prefix = "#administrative-restart-witness/";
+  if (!hash.startsWith(prefix)) return undefined;
+  let parts: string[];
+  try {
+    parts = hash.slice(prefix.length).split("/").map(decodeURIComponent);
+  } catch {
+    return undefined;
+  }
+  if (parts.length !== 3) return undefined;
+  const [campaignId, phase, challenge] = parts;
+  const parsed = administrativeRestartWitnessObservationIdentitySchema.safeParse({
+    campaignId,
+    challenge,
+    phase,
+  });
+  return parsed.success ? parsed.data : undefined;
 }
 
 export async function loadBountywellRegistration(): Promise<

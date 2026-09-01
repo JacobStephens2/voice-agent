@@ -1,169 +1,117 @@
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, realpath } from "node:fs/promises";
 
 import {
-  administrativePolicyObservationFromAuthenticatedApi,
-  appendAdministrativeAutonomyRestartEvent,
-  createAdministrativeAutonomyRestartRecord,
-  evaluateAdministrativeAutonomyRestartWitness,
-  parseAdministrativeAutonomyRestartRecord,
-  type AdministrativeAutonomyRestartRecord,
-} from "./index.ts";
-import {
-  parseOptions,
-  requireOnlyOptions,
-  requiredOption,
-} from "./cli-options.ts";
-import {
-  createRecordFile,
-  readRecordFile,
-  updateRecordFile,
-} from "./record-file.ts";
+  administrativeRestartWitnessCampaignIdSchema,
+  administrativeRestartWitnessChallengeSchema,
+  administrativeRestartWitnessRecord,
+  administrativeRestartWitnessRecordSchema,
+  administrativeTimestampSchema,
+} from "@voice-agent/contracts";
+import { createSqliteAdministrativeRestartWitnessStore } from "@voice-agent/sqlite-store";
+
+import { evaluateAdministrativeAutonomyRestartWitness } from "./index.ts";
+import { parseOptions, requireOnlyOptions } from "./cli-options.ts";
+import { createRecordFile, readRecordFile } from "./record-file.ts";
+
+const productionDatabasePath = "/var/lib/voice-agent/voice-agent.sqlite";
+const activeReleaseMarkerPath =
+  "/opt/voice-agent/current/.voice-agent-release";
+const activeReleaseLinkPath = "/opt/voice-agent/current";
 
 const command = process.argv[2];
 const options = parseOptions(process.argv.slice(3));
+requireOnlyOptions(options, []);
 
-if (command === "init") {
-  requireOnlyOptions(options, ["campaign-id", "record", "release-commit"]);
-  const recordPath = requiredOption(options, "record");
-  await createRecordFile(
-    recordPath,
-    createAdministrativeAutonomyRestartRecord({
-      campaignId: requiredOption(options, "campaign-id"),
-      releaseCommit: requiredOption(options, "release-commit"),
-    }),
-  );
-} else if (command === "record-baseline") {
-  requireOnlyOptions(options, ["record", "recorded-at", "status-file"]);
-  const policy = await readPolicyStatus(requiredOption(options, "status-file"));
-  await updateRecord(requiredOption(options, "record"), (record) =>
-    appendAdministrativeAutonomyRestartEvent(record, {
-      apiAuthentication: "trusted-browser-session",
-      apiPath: "/api/administrative-autonomy",
-      kind: "administrative-policy-baseline-observed",
-      policy,
-      recordedAt: requiredOption(options, "recorded-at"),
-    }),
-  );
-} else if (
-  command === "record-service-restart" ||
-  command === "record-host-reboot"
-) {
-  const hostReboot = command === "record-host-reboot";
-  requireOnlyOptions(options, [
-    "api-service",
-    ...(hostReboot ? ["boot-identity-changed"] : []),
-    "record",
-    "recorded-at",
-    "status-file",
-    "worker-service",
-  ]);
-  const policy = await readPolicyStatus(requiredOption(options, "status-file"));
-  await updateRecord(requiredOption(options, "record"), (record) =>
-    appendAdministrativeAutonomyRestartEvent(record, {
-      ...(hostReboot
-        ? {
-            agentHostBootIdentityChanged: requiredOption(
-              options,
-              "boot-identity-changed",
-            ),
-          }
-        : {}),
-      apiService: requiredOption(options, "api-service"),
-      kind: hostReboot
-        ? "administrative-policy-host-reboot-observed"
-        : "administrative-policy-service-restart-observed",
-      policyApi: {
-        apiAuthentication: "trusted-browser-session",
-        apiPath: "/api/administrative-autonomy",
-        outcome: "passed",
-        policy,
-      },
-      recordedAt: requiredOption(options, "recorded-at"),
-      workerService: requiredOption(options, "worker-service"),
-    }),
-  );
-} else if (
-  command === "record-service-restart-failure" ||
-  command === "record-host-reboot-failure"
-) {
-  const hostReboot = command === "record-host-reboot-failure";
-  requireOnlyOptions(options, [
-    "api-service",
-    ...(hostReboot ? ["boot-identity-changed"] : []),
-    "failure",
-    "record",
-    "recorded-at",
-    "worker-service",
-  ]);
-  await updateRecord(requiredOption(options, "record"), (record) =>
-    appendAdministrativeAutonomyRestartEvent(record, {
-      ...(hostReboot
-        ? {
-            agentHostBootIdentityChanged: requiredOption(
-              options,
-              "boot-identity-changed",
-            ),
-          }
-        : {}),
-      apiService: requiredOption(options, "api-service"),
-      kind: hostReboot
-        ? "administrative-policy-host-reboot-observed"
-        : "administrative-policy-service-restart-observed",
-      policyApi: {
-        failure: requiredOption(options, "failure"),
-        outcome: "failed",
-      },
-      recordedAt: requiredOption(options, "recorded-at"),
-      workerService: requiredOption(options, "worker-service"),
-    }),
-  );
-} else if (command === "arm-host-reboot") {
-  requireOnlyOptions(options, ["record", "recorded-at"]);
-  await updateRecord(requiredOption(options, "record"), (record) => {
-    const baseline = record.events[0];
-    if (baseline?.kind !== "administrative-policy-baseline-observed") {
-      throw new Error("Record the authenticated policy baseline first");
-    }
-    return appendAdministrativeAutonomyRestartEvent(record, {
-      expectedPolicy: baseline.policy,
-      kind: "administrative-policy-host-reboot-armed",
-      recordedAt: requiredOption(options, "recorded-at"),
+const releaseCommit = await readActiveReleaseCommit();
+const recordPath =
+  `/var/lib/voice-agent/acceptance/issue-83-administrative-autonomy-restart-${releaseCommit}.json`;
+const store = createSqliteAdministrativeRestartWitnessStore(
+  productionDatabasePath,
+);
+
+try {
+  if (command === "create") {
+    const campaign = await store.ensureCampaign({
+      campaignId: administrativeRestartWitnessCampaignIdSchema.parse(
+        `administrative-restart-campaign-${releaseCommit}`,
+      ),
+      createdAt: administrativeTimestampSchema.parse(new Date().toISOString()),
+      initialChallenge: nextChallenge(),
+      releaseCommit,
     });
-  });
-} else if (command === "status") {
-  requireOnlyOptions(options, ["record"]);
-  const evaluation = evaluateAdministrativeAutonomyRestartWitness(
-    await readRecord(requiredOption(options, "record")),
-  );
-  process.stdout.write(`${JSON.stringify(evaluation, null, 2)}\n`);
-  if (!evaluation.ready) process.exitCode = 1;
-} else {
-  throw new Error(
-    "Usage: administrative-autonomy-restart-cli.ts <init|record-baseline|record-service-restart|record-service-restart-failure|arm-host-reboot|record-host-reboot|record-host-reboot-failure|status> [options]",
+    writeJson(campaign);
+  } else if (command === "show") {
+    writeJson(await requireCampaign());
+  } else if (command === "export") {
+    const campaign = await requireCampaign();
+    if (campaign.status !== "completed") {
+      throw new Error("The server-recorded Restart Witness is not complete");
+    }
+    const record = administrativeRestartWitnessRecord(campaign);
+    try {
+      const existing = await readRecordFile(
+        recordPath,
+        (input) => administrativeRestartWitnessRecordSchema.parse(input),
+      );
+      if (JSON.stringify(existing) !== JSON.stringify(record)) {
+        throw new Error(
+          "The immutable Restart Witness export differs from durable evidence",
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+      await createRecordFile(recordPath, record);
+    }
+    writeJson({ recordPath, record });
+  } else if (command === "status") {
+    const evaluation = evaluateAdministrativeAutonomyRestartWitness(
+      administrativeRestartWitnessRecord(await requireCampaign()),
+    );
+    writeJson(evaluation);
+    if (!evaluation.ready) process.exitCode = 1;
+  } else {
+    throw new Error(
+      "Usage: administrative-autonomy-restart-cli.ts <create|show|export|status>",
+    );
+  }
+} finally {
+  await store.close();
+}
+
+async function requireCampaign() {
+  const campaign = await store.readCampaignForRelease(releaseCommit);
+  if (campaign === undefined) {
+    throw new Error("Create the server-recorded Restart Witness campaign first");
+  }
+  return campaign;
+}
+
+function nextChallenge() {
+  return administrativeRestartWitnessChallengeSchema.parse(
+    `administrative-restart-challenge-${randomUUID()}`,
   );
 }
 
-async function readPolicyStatus(statusPath: string) {
-  return administrativePolicyObservationFromAuthenticatedApi(
-    JSON.parse(await readFile(statusPath, "utf8")),
-  );
+async function readActiveReleaseCommit(): Promise<string> {
+  const [marker, releasePath] = await Promise.all([
+    readFile(activeReleaseMarkerPath, "utf8"),
+    realpath(activeReleaseLinkPath),
+  ]);
+  const commit = marker.trim();
+  if (
+    !/^[0-9a-f]{40}$/u.test(commit) ||
+    releasePath !== `/opt/voice-agent/releases/${commit}`
+  ) {
+    throw new Error(
+      "Run this only from the exact active immutable Agent Host Release",
+    );
+  }
+  return commit;
 }
 
-async function readRecord(
-  recordPath: string,
-): Promise<AdministrativeAutonomyRestartRecord> {
-  return readRecordFile(recordPath, parseAdministrativeAutonomyRestartRecord);
-}
-
-async function updateRecord(
-  recordPath: string,
-  update: (
-    record: AdministrativeAutonomyRestartRecord,
-  ) => AdministrativeAutonomyRestartRecord,
-): Promise<void> {
-  await updateRecordFile(
-    recordPath,
-    parseAdministrativeAutonomyRestartRecord,
-    update,
-  );
+function writeJson(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }

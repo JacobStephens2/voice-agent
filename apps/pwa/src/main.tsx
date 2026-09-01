@@ -7,6 +7,7 @@ import {
   administrativePolicyActivationExpectationSchema,
   type AuthenticationStatus,
   type AdministrativeAutonomyStatus,
+  type AdministrativeRestartWitnessObservationIdentity,
   type BountywellRegistration,
   type KeeploreLiveInspection,
   type KeeploreRegistration,
@@ -47,8 +48,10 @@ import {
   injectBountywellOutage,
   presentBountywellOutage,
   proveBountywellRecoveryTimer,
+  readAdministrativeRestartWitnessFragment,
   registerBountywell,
   registerTelephone,
+  recordAdministrativeRestartWitnessObservation,
   resumePromotionQueue,
   startRecovery,
   submitBountywellHealthInquiry,
@@ -109,6 +112,9 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [pendingBountywellRequestId, setPendingBountywellRequestId] =
     useState(readPendingBountywellRequestId);
+  const [restartWitnessObservation, setRestartWitnessObservation] = useState<
+    AdministrativeRestartWitnessObservationIdentity | undefined
+  >(readAdministrativeRestartWitnessFragment);
 
   const loadProtectedContent = useCallback(async () => {
     const taskId = new URLSearchParams(window.location.search).get("task");
@@ -311,6 +317,33 @@ function App() {
       });
       setMessage(
         `Administrative Autonomy Policy revision ${activated.revision} is active.`,
+      );
+    });
+  }
+
+  async function recordRestartWitnessObservation() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in before recording the Agent Host Restart Witness.");
+      return;
+    }
+    if (restartWitnessObservation === undefined) {
+      setMessage("The Restart Witness challenge is unavailable.");
+      return;
+    }
+    await run(async () => {
+      const observation =
+        await recordAdministrativeRestartWitnessObservation(
+          csrfToken,
+          restartWitnessObservation,
+        );
+      setRestartWitnessObservation(undefined);
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+      setMessage(
+        `The server recorded the ${observation.phase} Restart Witness observation.`,
       );
     });
   }
@@ -641,6 +674,8 @@ function App() {
       onChangeSpendingCeiling={saveSpendingCeiling}
       onUpdateNotificationPreference={saveNotificationPreference}
       onRunBountywell={runBountywellInquiry}
+      restartWitnessObservation={restartWitnessObservation}
+      onRecordRestartWitnessObservation={recordRestartWitnessObservation}
     />
   );
 }

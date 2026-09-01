@@ -26,6 +26,9 @@ importers:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@voice-agent/sqlite-store':
+        specifier: workspace:*
+        version: link:../../packages/sqlite-store
       zod:
         specifier: 4.4.3
         version: 4.4.3

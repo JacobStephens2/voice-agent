@@ -70,6 +70,7 @@ export * from "./keeplore-repository-policy-journal.ts";
 export * from "./recognized-speech-model.ts";
 export * from "./recognized-synthesis-model.ts";
 export * from "./administrative-autonomy.ts";
+export * from "./administrative-restart-witness.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":

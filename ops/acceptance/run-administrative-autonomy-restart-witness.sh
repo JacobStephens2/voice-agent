@@ -184,15 +184,12 @@ finish() {
 # This procedure resumes after a real reboot from its append-only record.
 # ──────────────────────────────────────────────────────────────────────────
 
-TOTAL_STAGES=5
+TOTAL_STAGES=4
 REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 ACCEPTANCE_CLI=$REPOSITORY_ROOT/apps/acceptance/src/administrative-autonomy-restart-cli.ts
 RELEASE_COMMIT=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
-ACCEPTANCE_RECORD=${ACCEPTANCE_RECORD:-/var/lib/voice-agent/acceptance/issue-83-administrative-autonomy-restart-$RELEASE_COMMIT.json}
-BOOT_CHECKPOINT=$ACCEPTANCE_RECORD.boot-id
-STATUS_FILE=$(mktemp)
 API_ORIGIN=${VOICE_AGENT_ORIGIN:-https://voice.stephens.page}
-trap 'rm -f "$STATUS_FILE"' EXIT
+REBOOT_MARKER=/var/lib/voice-agent/acceptance/issue-83-administrative-autonomy-reboot-requested-$RELEASE_COMMIT
 
 if [[ ! $RELEASE_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
   warn "The repository HEAD is not a Release commit."
@@ -204,135 +201,90 @@ if [[ ! -f /opt/voice-agent/current/.voice-agent-release ]] || \
   exit 1
 fi
 
-record_has() {
-  sudo test -f "$ACCEPTANCE_RECORD" && \
-    sudo jq -e "$1" "$ACCEPTANCE_RECORD" >/dev/null
+witness_cli() {
+  sudo -u voice-agent /usr/bin/env node --experimental-strip-types \
+    "$ACCEPTANCE_CLI" "$@"
 }
 
-capture_authenticated_policy() {
-  local api_status_json
-  open_url "$API_ORIGIN/api/administrative-autonomy"
-  step "Use the signed-in browser page; if it reports Authentication required, sign in to the PWA and reopen this URL."
-  step "In the browser, copy the complete JSON response and return here."
-  ask api_status_json "Paste the complete authenticated API JSON response:"
-  if [[ -z $api_status_json ]]; then return 1; fi
-  printf '%s\n' "$api_status_json" > "$STATUS_FILE"
-  unset api_status_json
+campaign_has_passed() {
+  witness_cli show | jq -e --arg phase "$1" \
+    '.observations[] | select(.phase == $phase and .outcome == "passed")' \
+    >/dev/null
 }
 
-service_state() {
-  if systemctl is-active --quiet "$1"; then printf active; else printf inactive; fi
-}
-
-record_failed_observation() {
-  local scope="$1" failure="$2" api_state worker_state boot_args=()
-  api_state=$(service_state voice-agent-api.service)
-  worker_state=$(service_state voice-agent-worker.service)
-  if [[ $scope == host-reboot ]]; then boot_args=(--boot-identity-changed passed); fi
-  sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" \
-    "record-$scope-failure" --record "$ACCEPTANCE_RECORD" \
-    --recorded-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
-    --api-service "$api_state" --worker-service "$worker_state" \
-    --failure "$failure" "${boot_args[@]}"
+record_current_observation() {
+  local campaign campaign_id challenge phase
+  campaign=$(witness_cli show)
+  campaign_id=$(jq -r '.campaignId' <<<"$campaign")
+  challenge=$(jq -r '.nextObservation.challenge' <<<"$campaign")
+  phase=$(jq -r '.nextObservation.phase' <<<"$campaign")
+  if [[ $campaign_id == null || $challenge == null || $phase == null ]]; then
+    warn "The server-recorded campaign has no pending observation."
+    return 1
+  fi
+  open_url "$API_ORIGIN/#administrative-restart-witness/$campaign_id/$phase/$challenge"
+  step "Use the signed-in PWA and choose Record server observation."
+  step "The browser sends only the campaign, phase, challenge, and its own CSRF proof; the server reads every witnessed value."
+  pause "Return after the PWA reports that the server observation was recorded."
+  if ! campaign_has_passed "$phase"; then
+    warn "The server rejected this phase and retained a sanitized failure event. Rerun to use its new single-use challenge."
+    return 1
+  fi
 }
 
 banner "Administrative Autonomy restart witness"
+sudo install -d -o voice-agent -g voice-agent -m 0750 \
+  /var/lib/voice-agent/acceptance
+witness_cli create >/dev/null
+note "The server-recorded campaign resumes safely across service restart and reboot."
 
-if sudo test -f "$ACCEPTANCE_RECORD" && \
-  sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" status \
-    --record "$ACCEPTANCE_RECORD" >/dev/null 2>&1; then
+if witness_cli status >/dev/null 2>&1; then
   note "This Release already has a complete Agent Host Restart Witness."
   exit 0
 fi
 
 stage "Authenticated pre-restart authority"
-if record_has '.events[] | select(.kind == "administrative-policy-baseline-observed")'; then
-  note "The append-only record already contains its pre-restart authority."
+if campaign_has_passed baseline; then
+  note "The server already recorded the baseline through its authenticated API."
 else
-  say "Open the active Voice Agent PWA and sign in with the owner Trusted Browser Session."
+  say "Sign in to the active Voice Agent PWA with the owner Trusted Browser Session."
   open_url "$API_ORIGIN"
-  capture_authenticated_policy
-  sudo install -d -m 0750 "$(dirname "$ACCEPTANCE_RECORD")"
-  sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" init \
-    --record "$ACCEPTANCE_RECORD" --campaign-id issue-83-restart-witness \
-    --release-commit "$RELEASE_COMMIT"
-  sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" record-baseline \
-    --record "$ACCEPTANCE_RECORD" --status-file "$STATUS_FILE" \
-    --recorded-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+  record_current_observation
 fi
 
 stage "Real API and worker service restart"
-if record_has '.events | map(select(.kind == "administrative-policy-service-restart-observed")) | last | .policyApi.outcome == "passed" and .apiService == "active" and .workerService == "active"'; then
-  note "A passing real service-restart observation is already recorded."
+if campaign_has_passed service-restart; then
+  note "The changed API service instance on the same Linux boot is already witnessed."
 else
   sudo systemctl restart voice-agent-api.service voice-agent-worker.service
-  step "Wait for both systemd units to settle before recording the authenticated API response."
-  if capture_authenticated_policy; then
-    if sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" record-service-restart \
-      --record "$ACCEPTANCE_RECORD" --status-file "$STATUS_FILE" \
-      --api-service "$(service_state voice-agent-api.service)" \
-      --worker-service "$(service_state voice-agent-worker.service)" \
-      --recorded-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"; then
-      :
-    else
-      record_failed_observation service-restart schema
-      warn "The invalid API response was retained as a schema failure; rerun to retry."
-      exit 1
-    fi
-  else
-    record_failed_observation service-restart request
-    warn "The failed authenticated API observation was retained; rerun to retry."
-    exit 1
-  fi
-fi
-
-stage "Durable pre-reboot checkpoint"
-if sudo test -f "$BOOT_CHECKPOINT"; then
-  note "A root-only pre-reboot boot identity is already armed."
-else
-  sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" arm-host-reboot \
-    --record "$ACCEPTANCE_RECORD" \
-    --recorded-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-  sudo sh -c 'umask 077; read -r boot_id < /proc/sys/kernel/random/boot_id; printf "%s\\n" "$boot_id" > "$1"' sh "$BOOT_CHECKPOINT"
+  step "Wait for both systemd units to settle, then sign in to the PWA again if needed."
+  record_current_observation
 fi
 
 stage "Real Agent Host reboot"
-PRE_REBOOT_BOOT_ID=$(sudo sed -n '1p' "$BOOT_CHECKPOINT")
-CURRENT_BOOT_ID=$(</proc/sys/kernel/random/boot_id)
-if [[ $PRE_REBOOT_BOOT_ID == "$CURRENT_BOOT_ID" ]]; then
+if campaign_has_passed host-reboot; then
+  note "The changed Linux boot identity is already witnessed."
+elif sudo test -f "$REBOOT_MARKER"; then
+  note "The wizard resumed after requesting a reboot; the server verifies the changed Linux boot identity."
+else
   warn "This step really reboots the Agent Host and ends the current shell."
   if ! confirm "Reboot now, then reconnect and run this same command again?"; then
     exit 1
   fi
+  sudo touch "$REBOOT_MARKER"
+  sudo chmod 0600 "$REBOOT_MARKER"
   sudo systemctl reboot
   exit 0
 fi
-note "Linux reports a different boot identity; the wizard is resuming after a real reboot."
 
-stage "Post-reboot authenticated verification"
-step "Sign back in to the deployed PWA before recording the authenticated API response."
-open_url "$API_ORIGIN"
-if capture_authenticated_policy; then
-  if sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" record-host-reboot \
-    --record "$ACCEPTANCE_RECORD" --status-file "$STATUS_FILE" \
-    --boot-identity-changed passed \
-    --api-service "$(service_state voice-agent-api.service)" \
-    --worker-service "$(service_state voice-agent-worker.service)" \
-    --recorded-at "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"; then
-    :
-  else
-    record_failed_observation host-reboot schema
-    warn "The invalid post-reboot API response was retained as a schema failure; rerun to retry."
-    exit 1
-  fi
-else
-  record_failed_observation host-reboot request
-  warn "The failed post-reboot API observation was retained; rerun to retry."
-  exit 1
+stage "Post-reboot authenticated observation"
+if ! campaign_has_passed host-reboot; then
+  step "Sign back in to the deployed PWA."
+  record_current_observation
 fi
-sudo rm -f "$BOOT_CHECKPOINT"
-sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" status \
-  --record "$ACCEPTANCE_RECORD"
-note "Preserve the sanitized append-only record at $ACCEPTANCE_RECORD as Release evidence."
+witness_cli status
+witness_cli export >/dev/null
+sudo rm -f "$REBOOT_MARKER"
+note "The CLI exported only the strict, sanitized, server-recorded durable Events for this immutable Release."
 
 finish

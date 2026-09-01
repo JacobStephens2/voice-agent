@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@voice-agent/contracts": "workspace:*",
+    "@voice-agent/sqlite-store": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

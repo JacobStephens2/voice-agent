@@ -12,6 +12,7 @@ export * from "./self-promotion.ts";
 export * from "./telephone-boundaries.ts";
 export * from "./task-continuity.ts";
 export * from "./administrative-autonomy.ts";
+export * from "./administrative-restart-witness.ts";
 
 export interface ApplicationRegistry {
   findBountywellRegistration(): Promise<BountywellRegistration | undefined>;
