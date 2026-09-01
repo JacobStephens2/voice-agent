@@ -406,6 +406,9 @@ export async function createAdministrativeAutonomyScenario(options: {
       { kind: "live-patch.apply" }
     >,
   ) => Promise<void>;
+  readonly afterOperationResultPersisted?: (
+    request: AdministrativeOperationRequest,
+  ) => Promise<void> | void;
   readonly clock?: { readonly current: string };
   readonly crashAfterFirstRollbackActivation?: boolean;
   readonly crashAfterFirstEffect?: boolean;
@@ -449,6 +452,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
   readonly operationRecoveryAttempts?: string[];
+  readonly operationResultLedger?: Map<string, AdministrativeOperationResult>;
   readonly operationCompletionReplay?: "exact" | "forged";
   readonly operationCompletionReplayOutcomes?: boolean[];
   readonly operationCompletionStoreAttempts?: string[];
@@ -523,6 +527,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   const executedOperations: AdministrativeOperationRequest[] = [];
   const operationAttempts: AdministrativeOperationRequest[] = [];
   const effectLedger = options.effectLedger ?? new Set<string>();
+  const operationResultLedger = options.operationResultLedger ?? new Map();
   const livePatchProofLedger = options.livePatchProofLedger ?? new Map();
   const rollbackActivationLedger = options.rollbackActivationLedger ?? new Set();
   const rollbackActivationTimeLedger =
@@ -731,43 +736,19 @@ export async function createAdministrativeAutonomyScenario(options: {
     ) {
       const { request } = recovery;
       options.operationRecoveryAttempts?.push(request.operationId);
-      if (!effectLedger.has(request.operationId)) {
+      const durableResult = operationResultLedger.get(request.operationId);
+      if (durableResult === undefined) {
         return { decision: "not-completed" as const };
       }
-      const livePatchProof =
-        request.kind === "live-patch.apply"
-          ? livePatchProofLedger.get(request.operationId)
-          : undefined;
-      if (request.kind === "live-patch.apply" && livePatchProof === undefined) {
-        throw new Error("The fake Live Patch broker lost its durable proof");
-      }
-      const result = scenarioOperationResult(request, {
-        common: {
-          completedAt: administrativeTimestampSchema.parse(currentTime()),
-          effect: {
-            kind: "idempotent-effect-replay" as const,
-            originallyStartedAt:
-              livePatchProof?.mutationStartedAt ??
-              recovery.fence.initialExecutionStartedAt,
-            replayedAt: recovery.fence.attemptStartedAt,
-          },
-          operationId: request.operationId,
-          summary: `The ${request.kind} Operation completed through the fake executor.`,
-        },
-        delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
-        livePatchProof,
-        omitLivePatchReconciliation:
-          options.omitLivePatchReconciliation ?? false,
-      });
       return {
         decision: "completed" as const,
         result:
           options.livePatchProofSubstitution?.seam === "runtime"
             ? substituteLivePatchProof(
-                result,
+                durableResult,
                 options.livePatchProofSubstitution.field,
               )
-            : result,
+            : durableResult,
       };
     },
     async execute(execution: AdministrativeOperationExecution) {
@@ -842,6 +823,28 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
         effectLedger.add(request.operationId);
         executedOperations.push(request);
+        const completedAt = administrativeTimestampSchema.parse(
+          options.reportedCompletionTime ?? currentTime(),
+        );
+        operationResultLedger.set(
+          request.operationId,
+          scenarioOperationResult(request, {
+            common: {
+              completedAt,
+              effect: {
+                kind: "effect-performed",
+                startedAt: livePatchProof?.mutationStartedAt ?? effectPerformedAt,
+              },
+              operationId: request.operationId,
+              summary: `The ${request.kind} Operation completed through the fake executor.`,
+            },
+            delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
+            livePatchProof,
+            omitLivePatchReconciliation:
+              options.omitLivePatchReconciliation ?? false,
+          }),
+        );
+        await options.afterOperationResultPersisted?.(request);
         if (revisePolicyAfterFirstOperation) {
           revisePolicyAfterFirstOperation = false;
           const policy = await runtime.getPolicyStatus();
@@ -866,32 +869,30 @@ export async function createAdministrativeAutonomyScenario(options: {
       if (request.kind === "live-patch.apply" && livePatchProof === undefined) {
         throw new Error("The fake Live Patch broker lost its durable proof");
       }
-      const common = {
-        completedAt: administrativeTimestampSchema.parse(
-          options.reportedCompletionTime ?? currentTime(),
-        ),
-        effect: effectWasAlreadyApplied
-          ? {
+      let result = operationResultLedger.get(request.operationId);
+      if (result === undefined) {
+        result = scenarioOperationResult(request, {
+          common: {
+            completedAt: administrativeTimestampSchema.parse(
+              options.reportedCompletionTime ?? currentTime(),
+            ),
+            effect: {
               kind: "idempotent-effect-replay" as const,
               originallyStartedAt:
                 livePatchProof?.mutationStartedAt ?? initialExecutionStartedAt,
               replayedAt: attemptStartedAt,
-            }
-          : {
-              kind: "effect-performed" as const,
-              startedAt: livePatchProof?.mutationStartedAt ?? effectPerformedAt,
             },
-        operationId: request.operationId,
-        summary: `The ${request.kind} Operation completed through the fake executor.`,
-      };
+            operationId: request.operationId,
+            summary: `The ${request.kind} Operation completed through the fake executor.`,
+          },
+          delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
+          livePatchProof,
+          omitLivePatchReconciliation:
+            options.omitLivePatchReconciliation ?? false,
+        });
+        operationResultLedger.set(request.operationId, result);
+      }
       await options.beforeExecutorResultReturn?.(request);
-      const result = scenarioOperationResult(request, {
-        common,
-        delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
-        livePatchProof,
-        omitLivePatchReconciliation:
-          options.omitLivePatchReconciliation ?? false,
-      });
       return options.livePatchProofSubstitution?.seam === "runtime"
         ? substituteLivePatchProof(
             result,
@@ -1271,7 +1272,6 @@ export async function createAdministrativeAutonomyScenario(options: {
         ),
         operationId: administrativeOperationIdSchema.parse(input.operationId),
         renewedAt: administrativeTimestampSchema.parse(input.renewedAt),
-        settlementOnly: false,
       }),
     attemptPolicyActivation: (input) =>
       runtime.activatePolicy({

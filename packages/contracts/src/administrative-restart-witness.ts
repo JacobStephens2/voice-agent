@@ -275,11 +275,13 @@ export const administrativeRestartWitnessCampaignSchema = z
     observations: z.array(administrativeRestartWitnessObservationSchema).max(100),
     releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
     schemaVersion: z.literal(3),
-    status: z.enum(["completed", "pending"]),
+    status: z.enum(["completed", "migration-required", "pending"]),
   })
   .strict()
   .superRefine((campaign, context) => {
-    if ((campaign.nextObservation === null) !== (campaign.status === "completed")) {
+    if (
+      (campaign.status === "pending") !== (campaign.nextObservation !== null)
+    ) {
       context.addIssue({
         code: "custom",
         message: "Restart Witness campaign status is inconsistent",
@@ -298,7 +300,7 @@ export const administrativeRestartWitnessRecordSchema = z
     observations: z.array(administrativeRestartWitnessObservationSchema).max(100),
     releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
     schemaVersion: z.literal(3),
-    status: z.enum(["completed", "pending"]),
+    status: z.enum(["completed", "migration-required", "pending"]),
   })
   .strict();
 export type AdministrativeRestartWitnessRecord = z.infer<

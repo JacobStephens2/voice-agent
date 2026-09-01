@@ -35,7 +35,9 @@ owner chooses **Record server
 observation**, and the authenticated API reads the exact policy revision,
 state version, Administrative Execution Manifest fingerprint, active immutable
 Release, API process instance, and Linux boot identity from its own composition
-boundary. The request can supply none of those values.
+boundary. It also reads the Release-bound worker startup fingerprint from the
+fixed store and checks the worker's fixed localhost health endpoint. The
+request can supply none of those values.
 
 The API captures its real entrypoint and Restart Witness module paths when the
 process is composed. Every observation requires those captured root-owned,
@@ -49,11 +51,13 @@ Release verifier through a path it has not already proved.
 
 After the baseline, the wizard restarts `voice-agent-api.service` and
 `voice-agent-worker.service`. The service-restart observation passes only for a
-new API process instance on the same Linux boot. The wizard then invokes a real
-`systemctl reboot` and ends. Reconnect and run the same command again; the
-host-reboot observation passes only when the API itself reads a changed Linux
-boot identity. A policy, manifest, state-version, or Release change fails the
-campaign.
+new API process instance and a new live worker process instance on the same
+Linux boot. The wizard then invokes a real `systemctl reboot` and ends.
+Reconnect and run the same command again; the host-reboot observation passes
+only when the API itself reads a changed Linux boot identity while the accepted
+post-service API and worker fingerprints remain stable. A skipped service
+restart, unavailable worker, policy, manifest, state-version, or Release change
+fails the campaign.
 
 Authentication and CSRF proof remain entirely inside the owner browser and its
 Credential Custody Boundary. The shell receives only campaign, phase, and
@@ -67,7 +71,9 @@ comparison projection. If a reboot request fails or the API still observes the
 old boot, the wizard clears its procedural reboot marker so the append-only
 campaign can resume with its new challenge and request another real reboot.
 The CLI can only create/resume, inspect, evaluate, and export the server-recorded
-campaign through the fixed production database path.
+campaign through the fixed production database path. Superseded startup
+fingerprints form a bounded private comparison projection; accepted phase
+observations remain append-only evidence.
 
 By default the record is:
 
@@ -84,8 +90,9 @@ sudo /usr/bin/env node --experimental-strip-types \
 ```
 
 It exits successfully only when the three server-recorded observations exactly
-match the baseline policy, manifest, state version, and Release, the service
-instance changed without a reboot, and the boot identity later changed. The
+match the baseline policy, manifest, state version, and Release, both service
+instances changed without a reboot and then stayed stable, and the boot
+identity later changed. The
 `export` command creates the immutable sanitized JSON record only after those
 checks pass. Until this attended post-Promotion procedure runs successfully,
 the repository contains the acceptance contract and procedure but does not

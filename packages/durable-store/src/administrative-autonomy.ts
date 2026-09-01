@@ -61,6 +61,7 @@ export type AdministrativeOperationClaim =
       readonly decision: "claimed";
       readonly activeExecutionDeadline: AdministrativeTimestamp;
       readonly initialExecutionStartedAt: AdministrativeTimestamp;
+      readonly leaseExpiresAt: AdministrativeTimestamp;
       readonly recovered: boolean;
       readonly request: AdministrativeOperationRequest;
       /** Stale authority may only recover a result already owned by the broker. */
@@ -93,6 +94,7 @@ export type AdministrativeEffectAuthority =
 
 /** Durable state behind the Administrative Autonomy runtime interface. */
 export interface AdministrativeAutonomyStore {
+  allOperationsCompleted(taskId: AdministrativeTaskId): Promise<boolean>;
   applyEvidenceRetention(input: {
     readonly cutoff: AdministrativeTimestamp;
   }): Promise<void>;
@@ -126,6 +128,13 @@ export interface AdministrativeAutonomyStore {
     readonly leaseExpiresAt: AdministrativeTimestamp;
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeOperationClaim>;
+  /** Claims only result reconciliation; it can never authorize an effect. */
+  claimOperationSettlement(input: {
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly claimedAt: AdministrativeTimestamp;
+    readonly leaseExpiresAt: AdministrativeTimestamp;
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeOperationClaim>;
   declineConfirmation(input: {
     readonly capabilityHash: string;
     readonly declinedAt: AdministrativeTimestamp;
@@ -138,6 +147,7 @@ export interface AdministrativeAutonomyStore {
     readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly operationId: AdministrativeOperationId;
     readonly result: AdministrativeOperationResult;
+    readonly settledAt: AdministrativeTimestamp;
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
   settleClaimedOperationAndDenyTask(input: {
@@ -205,7 +215,6 @@ export interface AdministrativeAutonomyStore {
     readonly leaseExpiresAt: AdministrativeTimestamp;
     readonly operationId: AdministrativeOperationId;
     readonly renewedAt: AdministrativeTimestamp;
-    readonly settlementOnly: boolean;
   }): Promise<boolean>;
   savePlan(input: {
     readonly operations: readonly AdministrativePlannedOperation[];

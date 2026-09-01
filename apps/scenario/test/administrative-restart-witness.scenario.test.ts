@@ -746,7 +746,7 @@ test("campaign challenges and observations remain append-only after restart", as
     database
       .prepare("DELETE FROM administrative_restart_witness_service_instances")
       .run(),
-  ).toThrow(/service instances are append-only/u);
+  ).toThrow(/current service instances are retained/u);
 
   expect(() =>
     database
@@ -774,6 +774,41 @@ test("campaign challenges and observations remain append-only after restart", as
     (await restarted.readCampaign(fixture.campaign.campaignId))?.observations,
   ).toHaveLength(2);
   await restarted.close();
+  await fixture.policyStore.close();
+});
+
+test("superseded service startup fingerprints retain a bounded current projection", async () => {
+  const fixture = await createFixture();
+  for (let restart = 0; restart < 24; restart += 1) {
+    await restartService(fixture, "api");
+    await restartService(fixture, "worker");
+  }
+  const current = await fixture.store.readServiceInstances({
+    bootIdentityFingerprint: fingerprint(
+      "agent-host-boot",
+      fixture.bootIdentity,
+    ),
+    releaseCommit,
+  });
+  expect(current).toEqual({
+    api: fingerprint("api-service-instance", fixture.identities.api),
+    worker: fingerprint("worker-service-instance", fixture.identities.worker),
+  });
+  await fixture.store.close();
+  const database = new Database(fixture.databasePath);
+  expect(
+    database
+      .prepare(
+        `SELECT service, COUNT(*) AS count
+         FROM administrative_restart_witness_service_instances
+         GROUP BY service ORDER BY service`,
+      )
+      .all(),
+  ).toEqual([
+    { count: 16, service: "api" },
+    { count: 16, service: "worker" },
+  ]);
+  database.close();
   await fixture.policyStore.close();
 });
 
@@ -874,6 +909,11 @@ test("a V2 campaign remains readable and resumes with a worker-bound V3 baseline
   legacy.close();
 
   const store = createSqliteAdministrativeRestartWitnessStore(databasePath);
+  expect(
+    (await store.readCampaign(
+      administrativeRestartWitnessCampaignIdSchema.parse(legacyCampaignId),
+    ))?.status,
+  ).toBe("migration-required");
   const campaign = await store.ensureCampaign({
     campaignId: administrativeRestartWitnessCampaignIdSchema.parse(
       legacyCampaignId,

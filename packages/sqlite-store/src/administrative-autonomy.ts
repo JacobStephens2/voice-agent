@@ -1583,8 +1583,7 @@ export function createSqliteAdministrativeAutonomyStore(
         return { decision: "denied", reason: "execution-manifest" };
       }
       const recovered = operation.status === "running";
-      const settlementOnly = !matchesAuthoritySnapshot(request.authority);
-      if (settlementOnly && !recovered) {
+      if (!matchesAuthoritySnapshot(request.authority)) {
         return { decision: "denied", reason: "stale-policy" };
       }
       if (
@@ -1650,9 +1649,109 @@ export function createSqliteAdministrativeAutonomyStore(
         initialExecutionStartedAt: administrativeTimestampSchema.parse(
           operation.initial_execution_started_at ?? input.claimedAt,
         ),
+        leaseExpiresAt: administrativeTimestampSchema.parse(
+          input.leaseExpiresAt,
+        ),
         recovered,
         request,
-        settlementOnly,
+        settlementOnly: false,
+      };
+    },
+  );
+
+  const claimOperationSettlementTransaction = database.transaction(
+    (
+      input: Parameters<
+        AdministrativeAutonomyStore["claimOperationSettlement"]
+      >[0],
+    ): AdministrativeOperationClaim => {
+      const task = readTask.get(input.taskId);
+      if (task === undefined || task.status !== "running") {
+        return { decision: "empty" };
+      }
+      const operation = readNextOperation.get(input.taskId);
+      if (operation === undefined || operation.status !== "running") {
+        return { decision: "empty" };
+      }
+      if (input.leaseExpiresAt <= input.claimedAt) {
+        return { decision: "denied", reason: "active-execution-deadline" };
+      }
+      if (
+        operation.lease_expires_at !== null &&
+        operation.lease_expires_at > input.claimedAt
+      ) {
+        return {
+          decision: "deferred",
+          retryAt: administrativeTimestampSchema.parse(
+            operation.lease_expires_at,
+          ),
+        };
+      }
+      const request = administrativeOperationRequestSchema.parse(
+        JSON.parse(operation.request_json),
+      );
+      const mutation = administrativeMutationOperationKinds.some(
+        (kind) => kind === request.kind,
+      );
+      if (mutation) {
+        const lane = readMutationLane.get();
+        if (lane === undefined) {
+          throw new Error("Administrative mutation lane is unavailable");
+        }
+        if (
+          lane.operation_id !== null &&
+          lane.operation_id !== operation.id &&
+          lane.lease_expires_at !== null &&
+          lane.lease_expires_at > input.claimedAt
+        ) {
+          return {
+            decision: "deferred",
+            retryAt: administrativeTimestampSchema.parse(lane.lease_expires_at),
+          };
+        }
+        if (
+          claimMutationLane.run(
+            operation.id,
+            input.claimId,
+            input.leaseExpiresAt,
+            input.claimedAt,
+            operation.id,
+          ).changes !== 1
+        ) {
+          return { decision: "deferred", retryAt: input.leaseExpiresAt };
+        }
+      }
+      if (
+        claimOperation.run(
+          input.claimId,
+          input.leaseExpiresAt,
+          input.claimedAt,
+          input.claimedAt,
+          operation.id,
+          input.taskId,
+          input.claimedAt,
+        ).changes !== 1
+      ) {
+        throw new Error("Administrative Operation changed concurrently");
+      }
+      if (task.active_execution_deadline === null) {
+        throw new Error("Administrative Task execution deadline is unavailable");
+      }
+      return {
+        activeExecutionDeadline: administrativeTimestampSchema.parse(
+          task.active_execution_deadline,
+        ),
+        claimId: input.claimId,
+        decision: "claimed",
+        initialExecutionStartedAt: administrativeTimestampSchema.parse(
+          operation.initial_execution_started_at ?? input.claimedAt,
+        ),
+        leaseExpiresAt: administrativeTimestampSchema.parse(
+          input.leaseExpiresAt,
+        ),
+        recovered: true,
+        request,
+        settlementOnly: true,
       };
     },
   );
@@ -1669,6 +1768,10 @@ export function createSqliteAdministrativeAutonomyStore(
       const submittedResult = administrativeOperationResultSchema.parse(
         input.result,
       );
+      const settledAt = administrativeTimestampSchema.parse(input.settledAt);
+      if (settledAt < submittedResult.completedAt) {
+        throw new Error("Administrative Operation settled before it completed");
+      }
       assertAdministrativeOperationCompletionEvidence(
         request,
         submittedResult,
@@ -1695,7 +1798,7 @@ export function createSqliteAdministrativeAutonomyStore(
       }
       if (
         operation.lease_expires_at === null ||
-        operation.lease_expires_at <= submittedResult.completedAt
+        operation.lease_expires_at <= settledAt
       ) {
         throw new Error("Administrative Operation claim is no longer leased");
       }
@@ -1708,7 +1811,7 @@ export function createSqliteAdministrativeAutonomyStore(
           lane?.operation_id !== input.operationId ||
           lane.claim_id !== input.claimId ||
           lane.lease_expires_at === null ||
-          lane.lease_expires_at <= submittedResult.completedAt
+          lane.lease_expires_at <= settledAt
         ) {
           throw new Error("Administrative mutation lane is no longer leased");
         }
@@ -1761,11 +1864,11 @@ export function createSqliteAdministrativeAutonomyStore(
       }
       const result = completeOperation.run(
         JSON.stringify(submittedResult),
-        submittedResult.completedAt,
+        settledAt,
         input.operationId,
         input.taskId,
         input.claimId,
-        submittedResult.completedAt,
+        settledAt,
       );
       if (result.changes !== 1) {
         throw new Error("Administrative Operation changed concurrently");
@@ -1905,7 +2008,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.renewedAt >= task.active_execution_deadline ||
         input.leaseExpiresAt <= input.renewedAt ||
         input.leaseExpiresAt > task.active_execution_deadline ||
-        (!matchesAuthoritySnapshot(request.authority) && !input.settlementOnly)
+        !matchesAuthoritySnapshot(request.authority)
       ) {
         return false;
       }
@@ -2000,6 +2103,9 @@ export function createSqliteAdministrativeAutonomyStore(
   }
 
   return {
+    async allOperationsCompleted(taskId) {
+      return (countIncompleteOperations.get(taskId)?.count ?? 0) === 0;
+    },
     async applyEvidenceRetention(input) {
       expireEvidenceTransaction.immediate(input.cutoff);
     },
@@ -2014,6 +2120,9 @@ export function createSqliteAdministrativeAutonomyStore(
     },
     async claimNextOperation(input) {
       return claimOperationTransaction.immediate(input);
+    },
+    async claimOperationSettlement(input) {
+      return claimOperationSettlementTransaction.immediate(input);
     },
     async close() {
       database.close();

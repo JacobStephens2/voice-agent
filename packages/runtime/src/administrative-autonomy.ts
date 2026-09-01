@@ -728,6 +728,7 @@ export function createAdministrativeAutonomyRuntime(options: {
   function maintainOperationClaim(input: {
     readonly activeExecutionDeadline: AdministrativeTimestamp;
     readonly claimId: AdministrativeOperationClaimId;
+    readonly leaseExpiresAt: AdministrativeTimestamp;
     readonly operationId: AdministrativeOperationId;
     readonly settlementOnly: boolean;
   }): {
@@ -744,16 +745,22 @@ export function createAdministrativeAutonomyRuntime(options: {
       reason = lossReason;
       controller.abort(new Error(lossReason));
     };
+    const claimDeadline = input.settlementOnly
+      ? input.leaseExpiresAt
+      : input.activeExecutionDeadline;
     const deadlineDelay = Math.max(
       0,
-      new Date(input.activeExecutionDeadline).getTime() -
-        new Date(now()).getTime(),
+      new Date(claimDeadline).getTime() - new Date(now()).getTime(),
     );
     const deadline = setTimeout(() => {
-      abort("Administrative Task active-execution deadline elapsed");
+      abort(
+        input.settlementOnly
+          ? "Administrative Operation settlement claim was lost"
+          : "Administrative Task active-execution deadline elapsed",
+      );
     }, deadlineDelay);
     deadline.unref?.();
-    const renewal = setInterval(() => {
+    const renewal = input.settlementOnly ? undefined : setInterval(() => {
       if (renewalInFlight || controller.signal.aborted) return;
       renewalInFlight = true;
       const renewedAt = now();
@@ -772,7 +779,6 @@ export function createAdministrativeAutonomyRuntime(options: {
           ),
           operationId: input.operationId,
           renewedAt,
-          settlementOnly: input.settlementOnly,
         })
         .then((renewed) => {
           if (!renewed) abort("Administrative Operation claim was lost");
@@ -784,14 +790,14 @@ export function createAdministrativeAutonomyRuntime(options: {
           renewalInFlight = false;
         });
     }, operationLeaseMilliseconds / 3);
-    renewal.unref?.();
+    renewal?.unref?.();
     return {
       abort,
       lossReason: () => reason,
       signal: controller.signal,
       stop() {
         clearTimeout(deadline);
-        clearInterval(renewal);
+        if (renewal !== undefined) clearInterval(renewal);
       },
     };
   }
@@ -1112,10 +1118,16 @@ export function createAdministrativeAutonomyRuntime(options: {
     };
   }
 
-  async function reconcileTask(taskId: AdministrativeTaskId): Promise<boolean> {
+  async function reconcileTask(
+    taskId: AdministrativeTaskId,
+    suppliedClaim?: Extract<
+      AdministrativeOperationClaim,
+      { readonly decision: "claimed" }
+    >,
+  ): Promise<boolean> {
     if (options.executor === undefined) return false;
     const record = await options.store.findTask(taskId);
-    if (record?.task.status === "planning") {
+    if (suppliedClaim === undefined && record?.task.status === "planning") {
       const admission = await planAdministrativeTask(record.task);
       if (admission.decision === "denied") return true;
       return (await options.store.findTask(taskId))?.task.status !== "planning";
@@ -1123,22 +1135,25 @@ export function createAdministrativeAutonomyRuntime(options: {
     if (record === undefined) return false;
     const claimedAt = now();
     const activeExecutionDeadline = record.task.activeExecutionDeadline;
-    const claim = await options.store.claimNextOperation({
-      authority: administrativeTaskAuthoritySnapshot(record.task),
-      claimId: administrativeOperationClaimIdSchema.parse(
-        options.identifiers.nextClaimId(),
-      ),
-      claimedAt,
-      leaseExpiresAt:
-        activeExecutionDeadline === null || activeExecutionDeadline === undefined
-          ? claimedAt
-          : boundedLeaseExpiry(
-              claimedAt,
-              activeExecutionDeadline,
-              operationLeaseMilliseconds,
-            ),
-      taskId,
-    });
+    const claim =
+      suppliedClaim ??
+      (await options.store.claimNextOperation({
+        authority: administrativeTaskAuthoritySnapshot(record.task),
+        claimId: administrativeOperationClaimIdSchema.parse(
+          options.identifiers.nextClaimId(),
+        ),
+        claimedAt,
+        leaseExpiresAt:
+          activeExecutionDeadline === null ||
+          activeExecutionDeadline === undefined
+            ? claimedAt
+            : boundedLeaseExpiry(
+                claimedAt,
+                activeExecutionDeadline,
+                operationLeaseMilliseconds,
+              ),
+        taskId,
+      }));
     if (claim.decision === "deferred") {
       scheduleReconciliation(claim.retryAt);
       return false;
@@ -1167,6 +1182,10 @@ export function createAdministrativeAutonomyRuntime(options: {
         claim.request.authority.executionManifest,
       )
     ) {
+      if (claim.settlementOnly) {
+        scheduleReconciliation(claim.leaseExpiresAt);
+        return false;
+      }
       await denyClaimedOperation(
         claim,
         "The active policy revision does not authorize the configured execution manifest.",
@@ -1176,12 +1195,14 @@ export function createAdministrativeAutonomyRuntime(options: {
     const claimMaintenance = maintainOperationClaim({
       activeExecutionDeadline: claim.activeExecutionDeadline,
       claimId: claim.claimId,
+      leaseExpiresAt: claim.leaseExpiresAt,
       operationId: claim.request.operationId,
       settlementOnly: claim.settlementOnly,
     });
     inFlightExecutions.set(claim.request.operationId, claimMaintenance);
     try {
       let untrustedResult: unknown;
+      let brokerRecoveredResult = false;
       const attemptStartedAt = now();
       const armLivePatchRollback = async (input: {
         readonly armedAt: AdministrativeTimestamp;
@@ -1296,7 +1317,13 @@ export function createAdministrativeAutonomyRuntime(options: {
           );
           if (recovered.decision === "completed") {
             untrustedResult = recovered.result;
+            brokerRecoveredResult = true;
           } else if (claim.settlementOnly) {
+            const policy = await options.store.readPolicyStatus();
+            if (policy.status === "suspended") {
+              scheduleReconciliation(claim.leaseExpiresAt);
+              return false;
+            }
             await denyClaimedOperation(
               claim,
               "Administrative Autonomy policy state is stale",
@@ -1347,6 +1374,10 @@ export function createAdministrativeAutonomyRuntime(options: {
           await denyClaimedOperation(claim, reason);
           return true;
         }
+        if (claim.settlementOnly) {
+          scheduleReconciliation(claim.leaseExpiresAt);
+          return false;
+        }
         if (now() >= claim.activeExecutionDeadline) {
           await denyClaimedOperation(
             claim,
@@ -1363,30 +1394,35 @@ export function createAdministrativeAutonomyRuntime(options: {
         );
         return false;
       }
-      const completedAt = now();
-      if (completedAt >= claim.activeExecutionDeadline) {
-        await denyClaimedOperation(
-          claim,
-          "Administrative Task active-execution deadline elapsed",
-        );
-        return true;
-      }
+      const settledAt = now();
       let result: AdministrativeOperationResult;
       try {
+        const reportedResult = administrativeOperationResultSchema.parse(
+          untrustedResult,
+        );
         result = operationResult(
           claim.request,
-          untrustedResult,
+          reportedResult,
           {
-            attemptStartedAt,
+            attemptStartedAt: brokerRecoveredResult
+              ? claim.initialExecutionStartedAt
+              : attemptStartedAt,
             initialExecutionStartedAt: claim.initialExecutionStartedAt,
-            recovered: claim.recovered,
+            recovered: brokerRecoveredResult ? false : claim.recovered,
           },
-          completedAt,
+          brokerRecoveredResult ? reportedResult.completedAt : settledAt,
         );
       } catch {
         await denyClaimedOperation(
           claim,
           "Administrative executor returned incomplete or mismatched bounded proof",
+        );
+        return true;
+      }
+      if (result.completedAt >= claim.activeExecutionDeadline) {
+        await denyClaimedOperation(
+          claim,
+          "Administrative Task active-execution deadline elapsed",
         );
         return true;
       }
@@ -1417,35 +1453,12 @@ export function createAdministrativeAutonomyRuntime(options: {
           },
           operationId: claim.request.operationId,
           result,
+          settledAt,
           taskId,
         });
         return true;
       } catch {
-        const policy = await options.store.readPolicyStatus();
-        if (policy.status === "suspended") return false;
-        if (
-          policy.status !== "active" ||
-          policy.revision !== claim.request.authority.policyRevision ||
-          policy.stateVersion !==
-            claim.request.authority.policyStateVersion ||
-          !sameAdministrativeExecutionManifest(
-            policy.executionManifest,
-            claim.request.authority.executionManifest,
-          )
-        ) {
-          await denyClaimedOperation(
-            claim,
-            "Administrative Autonomy policy state is stale",
-          );
-          return true;
-        }
-        scheduleReconciliation(
-          boundedLeaseExpiry(
-            claimedAt,
-            claim.activeExecutionDeadline,
-            operationLeaseMilliseconds,
-          ),
-        );
+        scheduleReconciliation(claim.leaseExpiresAt);
         return false;
       }
     } finally {
@@ -1454,6 +1467,90 @@ export function createAdministrativeAutonomyRuntime(options: {
       }
       claimMaintenance.stop();
     }
+  }
+
+  async function reconcileCompletedOperationSettlement(
+    taskId: AdministrativeTaskId,
+    policy: AdministrativePolicyStatus,
+  ): Promise<boolean> {
+    if (options.executor === undefined) return false;
+    const record = await options.store.findTask(taskId);
+    if (record?.task.status !== "running") return false;
+    const task = record.task;
+    const claimedAt = now();
+    if (!taskRequiresResultSettlement(task, policy, claimedAt)) {
+      return false;
+    }
+    const leaseExpiresAt = administrativeTimestampSchema.parse(
+      new Date(
+        new Date(claimedAt).getTime() + operationLeaseMilliseconds,
+      ).toISOString(),
+    );
+    const claim = await options.store.claimOperationSettlement({
+      claimId: administrativeOperationClaimIdSchema.parse(
+        options.identifiers.nextClaimId(),
+      ),
+      claimedAt,
+      leaseExpiresAt,
+      taskId,
+    });
+    if (claim.decision === "deferred") {
+      scheduleReconciliation(claim.retryAt);
+      return false;
+    }
+    if (claim.decision !== "claimed") {
+      if (claim.decision !== "empty") return false;
+      if (await options.store.allOperationsCompleted(taskId)) {
+        await completeAdministrativeTask(taskId);
+        return true;
+      }
+      if (policy.status === "active") {
+        await denyPlannedTask(
+          taskId,
+          claimedAt >= (task.activeExecutionDeadline ?? claimedAt)
+            ? "Administrative Task active-execution deadline elapsed"
+            : "Administrative Autonomy policy state is stale",
+        );
+        return true;
+      }
+      return false;
+    }
+    const progressed = await reconcileTask(taskId, claim);
+    const updated = await options.store.findTask(taskId);
+    if (updated?.task.status !== "running") return progressed;
+    if (await options.store.allOperationsCompleted(taskId)) {
+      await completeAdministrativeTask(taskId);
+      return true;
+    }
+    if (progressed && policy.status === "active") {
+      await denyPlannedTask(
+        taskId,
+        claimedAt >= (task.activeExecutionDeadline ?? claimedAt)
+          ? "Administrative Task active-execution deadline elapsed"
+          : "Administrative Autonomy policy state is stale",
+      );
+      return true;
+    }
+    return progressed;
+  }
+
+  function taskRequiresResultSettlement(
+    task: AdministrativeTask,
+    policy: AdministrativePolicyStatus,
+    at: AdministrativeTimestamp,
+  ): boolean {
+    return (
+      task.status === "running" &&
+      (task.activeExecutionDeadline === null ||
+        at >= task.activeExecutionDeadline ||
+        policy.status !== "active" ||
+        policy.revision !== task.authority.policyRevision ||
+        policy.stateVersion !== task.authority.policyStateVersion ||
+        !sameAdministrativeExecutionManifest(
+          policy.executionManifest,
+          task.authority.executionManifest,
+        ))
+    );
   }
 
   async function reconcileOperations(): Promise<void> {
@@ -1468,14 +1565,40 @@ export function createAdministrativeAutonomyRuntime(options: {
         if (policy.status === "suspended") {
           abortInFlightExecutions();
           await reconcileLivePatchRollbackActivations(policy);
+          if (options.executor !== undefined) {
+            const taskIds = await options.store.listRecoverableTaskIds();
+            await Promise.all(
+              taskIds.map((taskId) =>
+                reconcileCompletedOperationSettlement(taskId, policy),
+              ),
+            );
+          }
           return;
         }
         if (options.executor === undefined) return;
         const taskIds = await options.store.listRecoverableTaskIds();
-        const results = await Promise.all(
-          taskIds.map((taskId) => reconcileTask(taskId)),
+        const taskRecords = await Promise.all(
+          taskIds.map((taskId) => options.store.findTask(taskId)),
         );
-        progressed = results.some(Boolean);
+        const settlementTaskIds = taskIds.filter((_taskId, index) => {
+          const task = taskRecords[index]?.task;
+          return task === undefined
+            ? false
+            : taskRequiresResultSettlement(task, policy, now());
+        });
+        const executableTaskIds = taskIds.filter(
+          (taskId) => !settlementTaskIds.includes(taskId),
+        );
+        const settlementResults = await Promise.all(
+          settlementTaskIds.map((taskId) =>
+            reconcileCompletedOperationSettlement(taskId, policy),
+          ),
+        );
+        const results = await Promise.all(
+          executableTaskIds.map((taskId) => reconcileTask(taskId)),
+        );
+        progressed =
+          settlementResults.some(Boolean) || results.some(Boolean);
       } while (reconciliationRequested || progressed);
     })();
     try {

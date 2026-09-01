@@ -3678,6 +3678,7 @@ test.each(["captured", "removed"] as const)(
   const clock = { current: "2026-10-02T15:00:00.000Z" };
   const effectLedger = new Set<string>();
   const livePatchProofLedger = new Map();
+  const operationResultLedger = new Map();
   const operationAttempts: string[] = [];
   const operationRecoveryAttempts: string[] = [];
   const { databasePath, scenario: firstProcess } = await createActivatedScenario(
@@ -3689,6 +3690,7 @@ test.each(["captured", "removed"] as const)(
       livePatchProofLedger,
       now: clock.current,
       operationAttempts,
+      operationResultLedger,
       providerPlan: [{ kind: "live-patch.apply" }],
     },
     temporaryDirectories,
@@ -3714,6 +3716,7 @@ test.each(["captured", "removed"] as const)(
     now: clock.current,
     operationAttempts,
     operationRecoveryAttempts,
+    operationResultLedger,
     providerPlan: [{ kind: "live-patch.apply" }],
   });
   const record =
@@ -3739,9 +3742,8 @@ test.each(["captured", "removed"] as const)(
     operationRecoveryAttempts: ["administrative-operation-1"],
     result: {
       effect: {
-        kind: "idempotent-effect-replay",
-        originallyStartedAt: "2026-10-02T15:00:00.000Z",
-        replayedAt: "2026-10-02T15:01:00.000Z",
+        kind: "effect-performed",
+        startedAt: "2026-10-02T15:00:00.000Z",
       },
       mutationProof: {
         independentRollback: {

@@ -1006,6 +1006,7 @@ test("Task Confirmation presents the intended state and decline consumes its cap
 
 test("a crashed Operation is reconciled after restart with one stable idempotent effect", async () => {
   const effectLedger = new Set<string>();
+  const operationResultLedger = new Map();
   const operationAttempts: string[] = [];
   const operationRecoveryAttempts: string[] = [];
   const { databasePath, scenario: firstProcess } = await createActivatedScenario(
@@ -1014,6 +1015,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
       effectLedger,
       now: "2026-09-01T00:00:00.000Z",
       operationAttempts,
+      operationResultLedger,
       providerPlan: [{ kind: "delegated-worktree.change" }],
     },
     temporaryDirectories,
@@ -1040,6 +1042,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
     now: "2026-09-01T00:01:00.000Z",
     operationAttempts,
     operationRecoveryAttempts,
+    operationResultLedger,
     providerPlan: [{ kind: "production.observe" }],
   });
   const afterRestart = await restartedProcess.readTask("administrative-task-1");
@@ -1340,6 +1343,7 @@ test("a completed Delegation remains durable when policy changes before settleme
 
 test("a completed Delegation is recovered after policy revision and process loss before settlement", async () => {
   const effectLedger = new Set<string>();
+  const operationResultLedger = new Map();
   const firstProcessAttempts: string[] = [];
   const { databasePath, scenario: firstProcess } = await createActivatedScenario(
     {
@@ -1347,6 +1351,7 @@ test("a completed Delegation is recovered after policy revision and process loss
       effectLedger,
       now: "2026-09-01T02:40:00.000Z",
       operationAttempts: firstProcessAttempts,
+      operationResultLedger,
       providerPlan: [{ kind: "delegated-worktree.change" }],
     },
     temporaryDirectories,
@@ -1380,6 +1385,7 @@ test("a completed Delegation is recovered after policy revision and process loss
     now: "2026-09-01T02:41:00.000Z",
     operationAttempts: restartedExecutionAttempts,
     operationRecoveryAttempts: recoveryAttempts,
+    operationResultLedger,
     providerPlan: [{ kind: "delegated-worktree.change" }],
   });
   const record = await restarted.readTask("administrative-task-1");
@@ -1409,7 +1415,7 @@ test("a completed Delegation is recovered after policy revision and process loss
               ],
             },
           },
-          effect: { kind: "idempotent-effect-replay" },
+          effect: { kind: "effect-performed" },
           operationId: "administrative-operation-1",
         },
       },
@@ -1481,7 +1487,7 @@ test("a suspended Live Patch preserves its completed effect proof beside rollbac
       { details: { operationId: "administrative-operation-1" } },
     ],
     rollbackActivationEffects: ["administrative-operation-1"],
-    status: "running",
+    status: "completed",
   });
 
   await runningScenario.close();
@@ -1499,6 +1505,123 @@ test("a suspended Live Patch preserves its completed effect proof beside rollbac
     ),
   ).toHaveLength(1);
   expect(rollbackActivationEffects).toEqual(["administrative-operation-1"]);
+  await restarted.close();
+});
+
+test("a suspended Live Patch recovers its broker-owned result after process loss without repeating mutation or rollback", async () => {
+  const clock = { current: "2026-09-01T02:50:00.000Z" };
+  const effectLedger = new Set<string>();
+  const livePatchProofLedger = new Map();
+  const operationResultLedger = new Map();
+  const operationRecoveryAttempts: string[] = [];
+  const rollbackActivationEffects: string[] = [];
+  const rollbackActivationLedger = new Set<string>();
+  const rollbackActivationTimeLedger = new Map();
+  let runningScenario: Awaited<
+    ReturnType<typeof createActivatedScenario>
+  >["scenario"] | undefined;
+  const activated = await createActivatedScenario(
+    {
+      afterOperationResultPersisted: async (request) => {
+        if (request.kind === "live-patch.apply") {
+          await runningScenario?.suspendPolicyState();
+        }
+      },
+      clock,
+      crashAfterFirstEffect: true,
+      effectLedger,
+      livePatchProofLedger,
+      now: clock.current,
+      operationResultLedger,
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationEffects,
+      rollbackActivationLedger,
+      rollbackActivationTimeLedger,
+    },
+    temporaryDirectories,
+  );
+  runningScenario = activated.scenario;
+
+  const admission = await runningScenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState:
+      "The bounded production response is restored and compensated on suspension.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "live-patch-suspension-settlement-crash",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const beforeRestart = await runningScenario.readTask("administrative-task-1");
+  await runningScenario.close();
+
+  clock.current = "2026-09-01T02:51:00.000Z";
+  const restartedExecutionAttempts: string[] = [];
+  const restarted = await createAdministrativeAutonomyScenario({
+    clock,
+    databasePath: activated.databasePath,
+    effectLedger,
+    identifierNamespace: "suspended-live-patch-settlement-",
+    livePatchProofLedger,
+    now: clock.current,
+    operationAttempts: restartedExecutionAttempts,
+    operationRecoveryAttempts,
+    operationResultLedger,
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationEffects,
+    rollbackActivationLedger,
+    rollbackActivationTimeLedger,
+  });
+  await restarted.reconcileOperations();
+  await restarted.reconcileOperations();
+  const record = await restarted.readTask("administrative-task-1");
+
+  expect({
+    admission,
+    beforeRestartStatus: beforeRestart?.task.status,
+    completed: record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    effectCount: effectLedger.size,
+    operationRecoveryAttempts,
+    restartedExecutionAttempts,
+    rollbackActivated: record?.evidence.filter(
+      (event) =>
+        event.kind === "administrative.live-patch.rollback-activated",
+    ),
+    rollbackActivationEffects,
+    taskStatus: record?.task.status,
+  }).toMatchObject({
+    admission: { decision: "admitted" },
+    beforeRestartStatus: "running",
+    completed: [
+      {
+        details: {
+          result: {
+            effect: { kind: "effect-performed" },
+            kind: "live-patch.apply",
+            mutationProof: {
+              reconciliation: {
+                kind: "captured-as-isolated-pull-request",
+                productionMutationRetained: true,
+              },
+            },
+          },
+        },
+      },
+    ],
+    effectCount: 1,
+    operationRecoveryAttempts: ["administrative-operation-1"],
+    restartedExecutionAttempts: [],
+    rollbackActivated: [
+      { details: { operationId: "administrative-operation-1" } },
+    ],
+    rollbackActivationEffects: ["administrative-operation-1"],
+    taskStatus: "completed",
+  });
+
   await restarted.close();
 });
 
@@ -1749,6 +1872,7 @@ test("an accepted task stranded during planning resumes idempotently after resta
 
 test("the persisted six-hour execution deadline stops Operation recovery after restart", async () => {
   const effectLedger = new Set<string>();
+  const operationResultLedger = new Map();
   const operationAttempts: string[] = [];
   const { databasePath, scenario: firstProcess } = await createActivatedScenario(
     {
@@ -1756,6 +1880,7 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
       effectLedger,
       now: "2026-10-01T08:00:00.000Z",
       operationAttempts,
+      operationResultLedger,
       providerPlan: [{ kind: "delegated-worktree.change" }],
     },
     temporaryDirectories,
@@ -1792,6 +1917,7 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
     identifierNamespace: "expired-recovery-",
     now: "2026-10-01T14:00:00.000Z",
     operationAttempts,
+    operationResultLedger,
     providerPlan: [{ kind: "production.observe" }],
   });
   const restartedRecord = await restartedProcess.readTask(
@@ -1809,22 +1935,14 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
     task: restartedRecord?.task,
   }).toMatchObject({
     attempts: ["administrative-operation-1"],
-    failedOperations: [
-      {
-        details: {
-          kind: "delegated-worktree.change",
-          operationId: "administrative-operation-1",
-          reason: "Administrative Task active-execution deadline elapsed",
-        },
-      },
-    ],
+    failedOperations: [],
     renewalAtDeadline: false,
     renewalPastDeadline: false,
     restartedEffects: [],
     task: {
       activeExecutionDeadline: "2026-10-01T14:00:00.000Z",
-      conclusion: "Administrative Task active-execution deadline elapsed",
-      status: "denied",
+      conclusion: "The confirmed administrative plan completed.",
+      status: "completed",
     },
   });
 
@@ -1833,7 +1951,7 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
     (await restartedProcess.readTask("administrative-task-1"))?.evidence.filter(
       (event) => event.kind === "administrative.operation.failed",
     ),
-  ).toHaveLength(1);
+  ).toHaveLength(0);
 
   await restartedProcess.close();
 });

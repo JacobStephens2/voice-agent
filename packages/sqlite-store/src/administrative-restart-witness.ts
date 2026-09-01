@@ -72,6 +72,7 @@ interface PolicyAuthorityRow {
 }
 
 const maximumObservationAttempts = 100;
+const maximumServiceInstancesPerReleaseAndService = 16;
 const orderedPhases = [
   "baseline",
   "service-restart",
@@ -210,10 +211,20 @@ export function createSqliteAdministrativeRestartWitnessStore(
       boot_identity_fingerprint, registered_at
     ) VALUES (?, ?, ?, ?, ?)
   `);
+  const pruneSupersededServiceInstances = database.prepare(`
+    DELETE FROM administrative_restart_witness_service_instances
+    WHERE sequence IN (
+      SELECT sequence
+      FROM administrative_restart_witness_service_instances
+      WHERE release_commit = ? AND service = ?
+      ORDER BY sequence DESC
+      LIMIT -1 OFFSET ${maximumServiceInstancesPerReleaseAndService}
+    )
+  `);
 
   function projectCampaign(row: CampaignRow): AdministrativeRestartWitnessCampaign {
-    const observations = readObservations
-      .all(row.campaign_id)
+    const allObservations = readObservations.all(row.campaign_id);
+    const observations = allObservations
       .slice(-maximumObservationAttempts)
       .map(projectObservation);
     const currentChallenge = readCurrentChallenge.get(row.campaign_id);
@@ -224,6 +235,17 @@ export function createSqliteAdministrativeRestartWitnessStore(
             challenge: currentChallenge.challenge,
             phase: currentChallenge.phase,
           };
+    const currentPassedCount = allObservations.filter(
+      (observation) =>
+        observation.witness_version === 3 &&
+        observation.outcome === "passed",
+    ).length;
+    const status =
+      nextObservation !== null
+        ? "pending"
+        : currentPassedCount === orderedPhases.length
+          ? "completed"
+          : "migration-required";
     return administrativeRestartWitnessCampaignSchema.parse({
       campaignId: row.campaign_id,
       createdAt: row.created_at,
@@ -231,7 +253,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
       observations,
       releaseCommit: row.release_commit,
       schemaVersion: 3,
-      status: nextObservation === null ? "completed" : "pending",
+      status,
     });
   }
 
@@ -592,6 +614,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
         bootIdentityFingerprint,
         registeredAt,
       );
+      pruneSupersededServiceInstances.run(releaseCommit, service);
       return instanceFingerprint;
     },
   );
@@ -885,10 +908,22 @@ function createSchema(database: Database.Database): void {
       SELECT RAISE(ABORT, 'Restart Witness service instances are immutable');
     END;
 
-    CREATE TRIGGER IF NOT EXISTS administrative_restart_service_instances_no_delete
+    DROP TRIGGER IF EXISTS administrative_restart_service_instances_no_delete;
+
+    CREATE TRIGGER IF NOT EXISTS administrative_restart_service_instances_retention_delete_only
     BEFORE DELETE ON administrative_restart_witness_service_instances
+    WHEN (
+      SELECT COUNT(*)
+      FROM administrative_restart_witness_service_instances AS newer
+      WHERE newer.release_commit = OLD.release_commit
+        AND newer.service = OLD.service
+        AND newer.sequence > OLD.sequence
+    ) < ${maximumServiceInstancesPerReleaseAndService}
     BEGIN
-      SELECT RAISE(ABORT, 'Restart Witness service instances are append-only');
+      SELECT RAISE(
+        ABORT,
+        'Restart Witness current service instances are retained'
+      );
     END;
   `);
   const observationColumns = database
