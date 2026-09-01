@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 
 import {
   administrativeRestartWitnessCampaignIdSchema,
+  administrativeRestartWitnessReleaseCommitSchema,
   administrativeTimestampSchema,
   type AdministrativeRestartWitnessRecord,
 } from "@voice-agent/contracts";
@@ -11,7 +12,9 @@ import {
   parseAdministrativeAutonomyRestartRecord,
 } from "../src/index.ts";
 
-const releaseCommit = "a".repeat(40);
+const releaseCommit = administrativeRestartWitnessReleaseCommitSchema.parse(
+  "a".repeat(40),
+);
 const campaignId = administrativeRestartWitnessCampaignIdSchema.parse(
   "administrative-restart-campaign-release-a",
 );
@@ -37,6 +40,18 @@ test("a server-recorded three-phase campaign satisfies the restart witness", () 
   expect(
     parseAdministrativeAutonomyRestartRecord(JSON.parse(JSON.stringify(record))),
   ).toEqual(record);
+});
+
+test("the immutable Release commit is a validated witness identity", () => {
+  expect(
+    administrativeRestartWitnessReleaseCommitSchema.safeParse("a".repeat(40))
+      .success,
+  ).toBe(true);
+  expect(
+    administrativeRestartWitnessReleaseCommitSchema.safeParse(
+      `${"a".repeat(40)}-dirty`,
+    ).success,
+  ).toBe(false);
 });
 
 test("the acceptance contract rejects caller provenance, challenges, and raw host identities", () => {

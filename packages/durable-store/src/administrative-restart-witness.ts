@@ -5,6 +5,7 @@ import type {
   AdministrativeRestartWitnessHostObservation,
   AdministrativeRestartWitnessObservationIdentity,
   AdministrativeRestartWitnessObservationResponse,
+  AdministrativeRestartWitnessReleaseCommit,
   AdministrativeTimestamp,
 } from "@voice-agent/contracts";
 
@@ -14,7 +15,7 @@ export interface AdministrativeRestartWitnessStore {
     readonly campaignId: AdministrativeRestartWitnessCampaignId;
     readonly createdAt: AdministrativeTimestamp;
     readonly initialChallenge: AdministrativeRestartWitnessChallenge;
-    readonly releaseCommit: string;
+    readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
   }): Promise<AdministrativeRestartWitnessCampaign>;
   observe(input: {
     readonly identity: AdministrativeRestartWitnessObservationIdentity;
@@ -31,6 +32,6 @@ export interface AdministrativeRestartWitnessStore {
     campaignId: AdministrativeRestartWitnessCampaignId,
   ): Promise<AdministrativeRestartWitnessCampaign | undefined>;
   readCampaignForRelease(
-    releaseCommit: string,
+    releaseCommit: AdministrativeRestartWitnessReleaseCommit,
   ): Promise<AdministrativeRestartWitnessCampaign | undefined>;
 }

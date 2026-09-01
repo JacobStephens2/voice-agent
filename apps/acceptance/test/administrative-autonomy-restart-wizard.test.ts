@@ -35,7 +35,15 @@ test("every observation is invoked by the signed-in browser and exported from th
 });
 
 test("the witness is post-Promotion, resumable, and records no raw credential or boot identity", () => {
-  expect(wizard).toContain("/opt/voice-agent/current/.voice-agent-release");
+  expect(wizard).toContain(
+    "ACTIVE_RELEASE=$(readlink -f /opt/voice-agent/current)",
+  );
+  expect(wizard).toContain('ACCEPTANCE_CLI=$ACTIVE_RELEASE/apps/acceptance/src/administrative-autonomy-restart-cli.ts');
+  expect(wizard).toContain('[[ $REPOSITORY_ROOT != "$ACTIVE_RELEASE" ]]');
+  expect(wizard).toContain(
+    'voice_agent_release_tree_is_immutable "$ACTIVE_RELEASE"',
+  );
+  expect(wizard).toContain('"$ACTIVE_RELEASE/.voice-agent-release"');
   expect(wizard).toContain("Run this only post-Promotion");
   expect(wizard).toContain("The server-recorded campaign resumes");
   expect(wizard).not.toContain("__Host-voice_agent_session");
@@ -43,4 +51,14 @@ test("the witness is post-Promotion, resumable, and records no raw credential or
   expect(wizard).not.toContain("--session-cookie");
   expect(wizard).not.toContain("/proc/sys/kernel/random/boot_id");
   expect(wizard).not.toMatch(/--boot-id(?:\s|$)/u);
+});
+
+test("an unchanged-boot observation cannot strand reboot recovery", () => {
+  expect(wizard).toContain('if ! sudo systemctl reboot; then');
+  expect(wizard).toMatch(
+    /if ! record_current_observation; then[\s\S]*sudo rm -f "\$REBOOT_MARKER"/u,
+  );
+  expect(wizard).toContain(
+    "The reboot was not observed; its marker was cleared so rerunning can request another real reboot.",
+  );
 });

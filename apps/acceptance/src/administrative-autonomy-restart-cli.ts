@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { readFile, realpath } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 import {
   administrativeRestartWitnessCampaignIdSchema,
   administrativeRestartWitnessChallengeSchema,
   administrativeRestartWitnessRecord,
   administrativeRestartWitnessRecordSchema,
+  administrativeRestartWitnessReleaseCommitSchema,
   administrativeTimestampSchema,
 } from "@voice-agent/contracts";
 import { createSqliteAdministrativeRestartWitnessStore } from "@voice-agent/sqlite-store";
@@ -95,15 +97,20 @@ function nextChallenge() {
   );
 }
 
-async function readActiveReleaseCommit(): Promise<string> {
-  const [marker, releasePath] = await Promise.all([
+async function readActiveReleaseCommit() {
+  const [marker, releasePath, runningCliPath] = await Promise.all([
     readFile(activeReleaseMarkerPath, "utf8"),
     realpath(activeReleaseLinkPath),
+    realpath(fileURLToPath(import.meta.url)),
   ]);
-  const commit = marker.trim();
+  const commit = administrativeRestartWitnessReleaseCommitSchema.parse(
+    marker.trim(),
+  );
+  const expectedCliPath =
+    `${releasePath}/apps/acceptance/src/administrative-autonomy-restart-cli.ts`;
   if (
-    !/^[0-9a-f]{40}$/u.test(commit) ||
-    releasePath !== `/opt/voice-agent/releases/${commit}`
+    releasePath !== `/opt/voice-agent/releases/${commit}` ||
+    runningCliPath !== expectedCliPath
   ) {
     throw new Error(
       "Run this only from the exact active immutable Agent Host Release",

@@ -185,19 +185,26 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 
 TOTAL_STAGES=4
-REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-ACCEPTANCE_CLI=$REPOSITORY_ROOT/apps/acceptance/src/administrative-autonomy-restart-cli.ts
-RELEASE_COMMIT=$(git -C "$REPOSITORY_ROOT" rev-parse HEAD)
+REPOSITORY_ROOT=$(cd "$(dirname "$0")/../.." && pwd -P)
+ACTIVE_RELEASE=$(readlink -f /opt/voice-agent/current)
+RELEASE_COMMIT=$(basename "$ACTIVE_RELEASE")
+ACCEPTANCE_CLI=$ACTIVE_RELEASE/apps/acceptance/src/administrative-autonomy-restart-cli.ts
 API_ORIGIN=${VOICE_AGENT_ORIGIN:-https://voice.stephens.page}
 REBOOT_MARKER=/var/lib/voice-agent/acceptance/issue-83-administrative-autonomy-reboot-requested-$RELEASE_COMMIT
 
-if [[ ! $RELEASE_COMMIT =~ ^[0-9a-f]{40}$ ]]; then
-  warn "The repository HEAD is not a Release commit."
+if [[ ! $ACTIVE_RELEASE =~ ^/opt/voice-agent/releases/[0-9a-f]{40}$ ]] || \
+  [[ $REPOSITORY_ROOT != "$ACTIVE_RELEASE" ]]; then
+  warn "Run this only post-Promotion from inside the exact active immutable Agent Host Release."
   exit 1
 fi
-if [[ ! -f /opt/voice-agent/current/.voice-agent-release ]] || \
-  [[ $(</opt/voice-agent/current/.voice-agent-release) != "$RELEASE_COMMIT" ]]; then
+if [[ ! -f "$ACTIVE_RELEASE/.voice-agent-release" ]] || \
+  [[ $(<"$ACTIVE_RELEASE/.voice-agent-release") != "$RELEASE_COMMIT" ]]; then
   warn "Run this only post-Promotion from the exact active immutable Agent Host Release."
+  exit 1
+fi
+source "$ACTIVE_RELEASE/ops/release/release-immutability.sh"
+if ! voice_agent_release_tree_is_immutable "$ACTIVE_RELEASE"; then
+  warn "The active Agent Host Release tree is not immutable."
   exit 1
 fi
 
@@ -273,14 +280,22 @@ else
   fi
   sudo touch "$REBOOT_MARKER"
   sudo chmod 0600 "$REBOOT_MARKER"
-  sudo systemctl reboot
+  if ! sudo systemctl reboot; then
+    sudo rm -f "$REBOOT_MARKER"
+    warn "The reboot request failed; its marker was cleared so rerunning can retry."
+    exit 1
+  fi
   exit 0
 fi
 
 stage "Post-reboot authenticated observation"
 if ! campaign_has_passed host-reboot; then
   step "Sign back in to the deployed PWA."
-  record_current_observation
+  if ! record_current_observation; then
+    sudo rm -f "$REBOOT_MARKER"
+    warn "The reboot was not observed; its marker was cleared so rerunning can request another real reboot."
+    exit 1
+  fi
 fi
 witness_cli status
 witness_cli export >/dev/null

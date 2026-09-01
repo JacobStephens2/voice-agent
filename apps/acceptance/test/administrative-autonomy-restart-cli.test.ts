@@ -22,4 +22,7 @@ test("the attended CLI reads only the fixed composition-owned witness store", ()
   expect(cli).not.toContain("apiAuthentication");
   expect(cli).not.toContain('requiredOption(options, "database")');
   expect(cli).not.toContain('requiredOption(options, "record")');
+  expect(cli).toContain("fileURLToPath(import.meta.url)");
+  expect(cli).toContain("expectedCliPath");
+  expect(cli).toContain("administrativeRestartWitnessReleaseCommitSchema");
 });

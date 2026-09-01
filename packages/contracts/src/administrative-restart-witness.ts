@@ -5,7 +5,13 @@ import {
   administrativeTimestampSchema,
 } from "./administrative-autonomy.ts";
 
-const releaseCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
+export const administrativeRestartWitnessReleaseCommitSchema = z
+  .string()
+  .regex(/^[0-9a-f]{40}$/u)
+  .brand<"AdministrativeRestartWitnessReleaseCommit">();
+export type AdministrativeRestartWitnessReleaseCommit = z.infer<
+  typeof administrativeRestartWitnessReleaseCommitSchema
+>;
 
 export const administrativeRestartWitnessCampaignIdSchema = z
   .string()
@@ -55,7 +61,7 @@ export type AgentHostBootIdentity = z.infer<
 export const administrativeRestartWitnessHostObservationSchema = z
   .object({
     bootIdentity: agentHostBootIdentitySchema,
-    releaseCommit: releaseCommitSchema,
+    releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
     serviceInstanceId: administrativeRestartWitnessServiceInstanceIdSchema,
   })
   .strict();
@@ -102,7 +108,7 @@ const passingObservationFields = {
   ...commonObservationFields,
   outcome: z.literal("passed"),
   policy: policyObservationSchema,
-  releaseCommit: releaseCommitSchema,
+  releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
 };
 
 const passedObservationSchema = z.discriminatedUnion("phase", [
@@ -195,7 +201,7 @@ export const administrativeRestartWitnessCampaignSchema = z
     createdAt: administrativeTimestampSchema,
     nextObservation: nextObservationSchema.nullable(),
     observations: z.array(administrativeRestartWitnessObservationSchema).max(100),
-    releaseCommit: releaseCommitSchema,
+    releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
     schemaVersion: z.literal(2),
     status: z.enum(["completed", "pending"]),
   })
@@ -218,7 +224,7 @@ export const administrativeRestartWitnessRecordSchema = z
     campaignId: administrativeRestartWitnessCampaignIdSchema,
     createdAt: administrativeTimestampSchema,
     observations: z.array(administrativeRestartWitnessObservationSchema).max(100),
-    releaseCommit: releaseCommitSchema,
+    releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
     schemaVersion: z.literal(2),
     status: z.enum(["completed", "pending"]),
   })

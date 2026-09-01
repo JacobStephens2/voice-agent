@@ -6,6 +6,7 @@ import {
   administrativeRestartWitnessHostObservationSchema,
   administrativeRestartWitnessObservationIdentitySchema,
   administrativeRestartWitnessObservationResponseSchema,
+  administrativeRestartWitnessReleaseCommitSchema,
   administrativeRestartWitnessServiceInstanceIdSchema,
   administrativeTimestampSchema,
   type AdministrativeRestartWitnessChallenge,
@@ -87,9 +88,10 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
         readFile("/opt/voice-agent/current/.voice-agent-release", "utf8"),
         realpath("/opt/voice-agent/current"),
       ]);
-      const releaseCommit = marker.trim();
+      const releaseCommit = administrativeRestartWitnessReleaseCommitSchema.parse(
+        marker.trim(),
+      );
       if (
-        !/^[0-9a-f]{40}$/u.test(releaseCommit) ||
         activeReleasePath !== `/opt/voice-agent/releases/${releaseCommit}`
       ) {
         throw new Error("The active immutable Voice Agent Release is invalid");

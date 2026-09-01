@@ -27,8 +27,11 @@ cd /opt/voice-agent/current
 ```
 
 The wizard creates or resumes one Release-scoped campaign in the fixed Voice
-Agent SQLite store. For each phase it opens the PWA with the campaign's current
-single-use challenge. The signed-in owner chooses **Record server
+Agent SQLite store. The wizard and its standalone acceptance CLI refuse to run
+from a branch worktree or another checkout at the same commit: their resolved
+source path must be the active, root-owned immutable Release. For each phase it
+opens the PWA with the campaign's current single-use challenge. The signed-in
+owner chooses **Record server
 observation**, and the authenticated API reads the exact policy revision,
 state version, Administrative Execution Manifest fingerprint, active immutable
 Release, API process instance, and Linux boot identity from its own composition
@@ -48,8 +51,13 @@ challenge identities from the server-owned store; it receives no API response,
 cookie, token, policy value, process identity, or boot identity. Every valid
 challenge is consumed once. A failed environmental check is appended as
 sanitized evidence and the server issues a new phase-scoped challenge for the
-retry. The CLI can only create/resume, inspect, evaluate, and export the
-server-recorded campaign through the fixed production database path.
+retry. Raw API service and Linux boot identities are never durable evidence;
+the store retains only domain-separated one-way fingerprints in its private
+comparison projection. If a reboot request fails or the API still observes the
+old boot, the wizard clears its procedural reboot marker so the append-only
+campaign can resume with its new challenge and request another real reboot.
+The CLI can only create/resume, inspect, evaluate, and export the server-recorded
+campaign through the fixed production database path.
 
 By default the record is:
 

@@ -9,7 +9,9 @@ import {
   administrativeRestartWitnessCampaignIdSchema,
   administrativeRestartWitnessChallengeSchema,
   administrativeExecutionManifestFingerprint,
+  administrativeRestartWitnessRecord,
   administrativeRestartWitnessHostObservationSchema,
+  administrativeRestartWitnessReleaseCommitSchema,
   administrativeRestartWitnessServiceInstanceIdSchema,
   administrativeTimestampSchema,
   agentHostBootIdentitySchema,
@@ -17,6 +19,7 @@ import {
   type AdministrativeRestartWitnessCampaign,
   type AdministrativeRestartWitnessHostObservation,
 } from "@voice-agent/contracts";
+import { evaluateAdministrativeAutonomyRestartWitness } from "@voice-agent/acceptance";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import { administrativeAutonomyPolicyDefinition } from "@voice-agent/policy";
 import { createAdministrativeRestartWitnessRuntime } from "@voice-agent/runtime";
@@ -26,7 +29,9 @@ import {
 } from "@voice-agent/sqlite-store";
 
 const origin = "https://voice.stephens.page";
-const releaseCommit = "a".repeat(40);
+const releaseCommit = administrativeRestartWitnessReleaseCommitSchema.parse(
+  "a".repeat(40),
+);
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -151,6 +156,23 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
   expect(campaign?.observations.filter(({ outcome }) => outcome === "passed"))
     .toHaveLength(3);
   expect(campaign?.observations).toHaveLength(5);
+  if (campaign === undefined) {
+    throw new Error("The completed campaign was not persisted");
+  }
+  expect(
+    evaluateAdministrativeAutonomyRestartWitness(
+      administrativeRestartWitnessRecord(campaign),
+    ),
+  ).toEqual({
+    errors: [],
+    observedExecutionManifestFingerprint:
+      administrativeExecutionManifestFingerprint(
+        administrativeUnavailableExecutionManifest,
+      ),
+    observedPolicyRevision: 1,
+    observedPolicyStateVersion: 1,
+    ready: true,
+  });
 
   await api.close();
   await fixture.store.close();
@@ -236,8 +258,55 @@ test("an unavailable composition observation is durable and consumes its challen
 test("campaign challenges and observations remain append-only after restart", async () => {
   const fixture = await createFixture();
   await fixture.runtime.observe(identity(requestBody(fixture.campaign)));
+  const afterBaseline = await fixture.store.readCampaign(
+    fixture.campaign.campaignId,
+  );
+  if (afterBaseline === undefined || afterBaseline.nextObservation === null) {
+    throw new Error("The service-restart challenge was not issued");
+  }
+  expect(
+    await fixture.runtime.observe({
+      campaignId: fixture.campaign.campaignId,
+      ...afterBaseline.nextObservation,
+    }),
+  ).toEqual({
+    decision: "denied",
+    reason: "service-instance-unchanged",
+  });
   await fixture.store.close();
   const database = new Database(fixture.databasePath);
+
+  const columns = database
+    .prepare("PRAGMA table_info(administrative_restart_witness_observations)")
+    .all() as ReadonlyArray<{ readonly name: string }>;
+  expect(columns.map(({ name }) => name)).toContain(
+    "service_instance_fingerprint",
+  );
+  expect(columns.map(({ name }) => name)).toContain("boot_identity_fingerprint");
+  expect(columns.map(({ name }) => name)).not.toContain("service_instance_id");
+  expect(columns.map(({ name }) => name)).not.toContain("boot_identity");
+  const privateComparisons = database
+    .prepare(
+      `SELECT service_instance_fingerprint, boot_identity_fingerprint
+       FROM administrative_restart_witness_observations
+       ORDER BY sequence`,
+    )
+    .all() as ReadonlyArray<{
+    readonly boot_identity_fingerprint: string | null;
+    readonly service_instance_fingerprint: string | null;
+  }>;
+  expect(privateComparisons[0]?.service_instance_fingerprint).toMatch(
+    /^[0-9a-f]{64}$/u,
+  );
+  expect(privateComparisons[0]?.boot_identity_fingerprint).toMatch(
+    /^[0-9a-f]{64}$/u,
+  );
+  expect(privateComparisons[1]).toEqual({
+    boot_identity_fingerprint: null,
+    service_instance_fingerprint: null,
+  });
+  expect(JSON.stringify(privateComparisons)).not.toContain("service-baseline");
+  expect(JSON.stringify(privateComparisons)).not.toContain("boot-baseline");
 
   expect(() =>
     database
@@ -263,7 +332,7 @@ test("campaign challenges and observations remain append-only after restart", as
   );
   expect(
     (await restarted.readCampaign(fixture.campaign.campaignId))?.observations,
-  ).toHaveLength(1);
+  ).toHaveLength(2);
   await restarted.close();
   await fixture.policyStore.close();
 });

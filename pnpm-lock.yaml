@@ -106,6 +106,9 @@ importers:
 
   apps/scenario:
     dependencies:
+      '@voice-agent/acceptance':
+        specifier: workspace:*
+        version: link:../acceptance
       '@voice-agent/api':
         specifier: workspace:*
         version: link:../api
