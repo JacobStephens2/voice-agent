@@ -170,6 +170,30 @@ export interface AdministrativeImplementationCatalog {
   ): unknown;
 }
 
+interface AdministrativeIdentitySchema<Identity> {
+  safeParse(value: unknown):
+    | { readonly data: Identity; readonly success: true }
+    | { readonly success: false };
+}
+
+function resolveTrustedImplementationIdentity<Implementation, Identity>(
+  catalog: AdministrativeImplementationCatalog | undefined,
+  implementation: Implementation | undefined,
+  identify: (
+    catalog: AdministrativeImplementationCatalog,
+    implementation: Implementation,
+  ) => unknown,
+  schema: AdministrativeIdentitySchema<Identity>,
+): Identity | undefined {
+  if (catalog === undefined || implementation === undefined) return undefined;
+  try {
+    const parsed = schema.safeParse(identify(catalog, implementation));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface AdministrativeOperationExecution {
   readonly fence: {
     readonly activeExecutionDeadline: AdministrativeTimestamp;
@@ -337,51 +361,28 @@ export function createAdministrativeAutonomyRuntime(options: {
   const executionManifest = administrativeExecutionManifestSchema.parse(
     options.executionManifest,
   );
-  const trustedProviderIdentity = () => {
-    if (options.provider === undefined || options.implementationCatalog === undefined) {
-      return undefined;
-    }
-    try {
-      const parsed = administrativePlanProviderIdentitySchema.safeParse(
-        options.implementationCatalog.identifyProvider(options.provider),
-      );
-      return parsed.success ? parsed.data : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const trustedExecutorIdentity = () => {
-    if (options.executor === undefined || options.implementationCatalog === undefined) {
-      return undefined;
-    }
-    try {
-      const parsed = administrativeOperationExecutorIdentitySchema.safeParse(
-        options.implementationCatalog.identifyExecutor(options.executor),
-      );
-      return parsed.success ? parsed.data : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const trustedRollbackActivatorIdentity = () => {
-    if (
-      options.rollbackActivator === undefined ||
-      options.implementationCatalog === undefined
-    ) {
-      return undefined;
-    }
-    try {
-      const parsed =
-        administrativeLivePatchRollbackActivatorIdentitySchema.safeParse(
-          options.implementationCatalog.identifyRollbackActivator(
-            options.rollbackActivator,
-          ),
-        );
-      return parsed.success ? parsed.data : undefined;
-    } catch {
-      return undefined;
-    }
-  };
+  const trustedProviderIdentity = () =>
+    resolveTrustedImplementationIdentity(
+      options.implementationCatalog,
+      options.provider,
+      (catalog, provider) => catalog.identifyProvider(provider),
+      administrativePlanProviderIdentitySchema,
+    );
+  const trustedExecutorIdentity = () =>
+    resolveTrustedImplementationIdentity(
+      options.implementationCatalog,
+      options.executor,
+      (catalog, executor) => catalog.identifyExecutor(executor),
+      administrativeOperationExecutorIdentitySchema,
+    );
+  const trustedRollbackActivatorIdentity = () =>
+    resolveTrustedImplementationIdentity(
+      options.implementationCatalog,
+      options.rollbackActivator,
+      (catalog, rollbackActivator) =>
+        catalog.identifyRollbackActivator(rollbackActivator),
+      administrativeLivePatchRollbackActivatorIdentitySchema,
+    );
   const now = () => administrativeTimestampSchema.parse(options.now());
   const systemDeadlineTimer = {
     arm(deadline: AdministrativeTimestamp, onDeadline: () => void) {
