@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 
 import {
+  administrativeActiveExecutionMilliseconds,
   administrativeEvidenceEventSchema,
   administrativeEvidenceRecordSchema,
   administrativeMutationOperationKinds,
@@ -34,6 +35,7 @@ interface PolicyRevisionRow {
 }
 
 interface AdministrativeTaskRow {
+  readonly active_execution_deadline: string | null;
   readonly capability_consumed_at: string | null;
   readonly capability_hash: string;
   readonly conclusion: string;
@@ -72,6 +74,30 @@ interface AdministrativeMutationLaneRow {
   readonly claim_id: string | null;
   readonly lease_expires_at: string | null;
   readonly operation_id: string | null;
+}
+
+type AdministrativeConfirmationDenialReason = Extract<
+  AdministrativeConfirmationClaim,
+  { readonly decision: "denied" }
+>["reason"];
+
+function confirmationDenialReason(
+  task: AdministrativeTaskRow | undefined,
+  input: {
+    readonly capabilityHash: string;
+    readonly ownerId: string;
+  },
+): AdministrativeConfirmationDenialReason | undefined {
+  if (task === undefined) return "task-unavailable";
+  if (task.owner_id !== input.ownerId) return "identity-mismatch";
+  if (task.capability_hash !== input.capabilityHash) return "invalid-capability";
+  if (
+    task.capability_consumed_at !== null ||
+    task.status !== "awaiting-confirmation"
+  ) {
+    return "confirmation-replayed";
+  }
+  return undefined;
 }
 
 export function createSqliteAdministrativeAutonomyStore(
@@ -121,11 +147,25 @@ export function createSqliteAdministrativeAutonomyStore(
     ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const readTask = database.prepare<[taskId: string], AdministrativeTaskRow>(`
-    SELECT id, owner_id, capability_hash, capability_consumed_at, outcome,
+    SELECT id, owner_id, capability_hash, capability_consumed_at,
+      active_execution_deadline, outcome,
       policy_revision, state_version, status, question, conclusion,
       intended_state, target_json, created_at, updated_at
     FROM administrative_tasks
     WHERE id = ?
+  `);
+  const readTaskByOperationId = database.prepare<
+    [operationId: string],
+    AdministrativeTaskRow
+  >(`
+    SELECT tasks.id, tasks.owner_id, tasks.capability_hash,
+      tasks.capability_consumed_at, tasks.active_execution_deadline,
+      tasks.outcome, tasks.policy_revision, tasks.state_version, tasks.status,
+      tasks.question, tasks.conclusion, tasks.intended_state, tasks.target_json,
+      tasks.created_at, tasks.updated_at
+    FROM administrative_tasks AS tasks
+    JOIN administrative_operations AS operations ON operations.task_id = tasks.id
+    WHERE operations.id = ?
   `);
   const readEvents = database.prepare<
     [taskId: string],
@@ -153,7 +193,8 @@ export function createSqliteAdministrativeAutonomyStore(
   `);
   const consumeConfirmation = database.prepare(`
     UPDATE administrative_tasks
-    SET capability_consumed_at = ?, status = 'planning', updated_at = ?
+    SET capability_consumed_at = ?, active_execution_deadline = ?,
+      status = 'planning', updated_at = ?
     WHERE id = ? AND capability_consumed_at IS NULL
       AND status = 'awaiting-confirmation'
   `);
@@ -266,7 +307,8 @@ export function createSqliteAdministrativeAutonomyStore(
     )
   `);
   const listTasks = database.prepare<[], AdministrativeTaskRow>(`
-    SELECT id, owner_id, capability_hash, capability_consumed_at, outcome,
+    SELECT id, owner_id, capability_hash, capability_consumed_at,
+      active_execution_deadline, outcome,
       policy_revision, state_version, status, question, conclusion,
       intended_state, target_json, created_at, updated_at
     FROM administrative_tasks
@@ -276,8 +318,20 @@ export function createSqliteAdministrativeAutonomyStore(
   const listRecoverableTaskIds = database.prepare<[], { readonly task_id: string }>(`
     SELECT id AS task_id
     FROM administrative_tasks
-    WHERE status = 'running'
+    WHERE status IN ('planning', 'running')
     ORDER BY id
+  `);
+  const tombstoneExpiredRequests = database.prepare(`
+    INSERT OR IGNORE INTO administrative_expired_request_ids (
+      request_id, expired_at
+    )
+    SELECT request_id, ?
+    FROM administrative_tasks
+    WHERE created_at < ?
+  `);
+  const deleteExpiredEvidence = database.prepare(`
+    DELETE FROM administrative_evidence_events
+    WHERE occurred_at < ?
   `);
 
   function policyStatus(row = requirePolicyState()): AdministrativePolicyStatus {
@@ -368,6 +422,7 @@ export function createSqliteAdministrativeAutonomyStore(
 
   function taskProjection(task: AdministrativeTaskRow): AdministrativeTask {
     return administrativeTaskSchema.parse({
+      activeExecutionDeadline: task.active_execution_deadline,
       conclusion: task.conclusion,
       createdAt: task.created_at,
       id: task.id,
@@ -390,6 +445,7 @@ export function createSqliteAdministrativeAutonomyStore(
         current.status === "inactive" ? null : current.active_revision;
       if (
         activeRevision !== input.expectedActiveRevision ||
+        current.state_version !== input.expectedStateVersion ||
         input.revision.revision !== (activeRevision ?? 0) + 1 ||
         input.stateVersion !== current.state_version + 1
       ) {
@@ -464,20 +520,21 @@ export function createSqliteAdministrativeAutonomyStore(
   const claimTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["claimConfirmation"]>[0]): AdministrativeConfirmationClaim => {
       const task = readTask.get(input.taskId);
-      if (task === undefined) {
-        return { decision: "denied", reason: "task-unavailable" };
-      }
-      if (task.owner_id !== input.ownerId) {
-        return { decision: "denied", reason: "identity-mismatch" };
-      }
-      if (task.capability_hash !== input.capabilityHash) {
-        return { decision: "denied", reason: "invalid-capability" };
-      }
+      const denial = confirmationDenialReason(task, input);
+      if (denial !== undefined) return { decision: "denied", reason: denial };
+      if (task === undefined) throw new Error("Administrative Task is unavailable");
+      const activeExecutionDeadline = new Date(
+        new Date(input.acceptedAt).getTime() +
+          administrativeActiveExecutionMilliseconds,
+      ).toISOString();
       if (
-        task.capability_consumed_at !== null ||
-        task.status !== "awaiting-confirmation"
+        input.acceptedEvent.kind !== "administrative.confirmation.accepted" ||
+        input.acceptedEvent.details.activeExecutionDeadline !==
+          activeExecutionDeadline
       ) {
-        return { decision: "denied", reason: "confirmation-replayed" };
+        throw new Error(
+          "Task Confirmation evidence has an invalid active-execution deadline",
+        );
       }
       const policy = requirePolicyState();
       if (
@@ -489,6 +546,7 @@ export function createSqliteAdministrativeAutonomyStore(
       }
       const result = consumeConfirmation.run(
         input.acceptedAt,
+        activeExecutionDeadline,
         input.acceptedAt,
         input.taskId,
       );
@@ -506,21 +564,8 @@ export function createSqliteAdministrativeAutonomyStore(
   const declineTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["declineConfirmation"]>[0]): AdministrativeConfirmationClaim => {
       const task = readTask.get(input.taskId);
-      if (task === undefined) {
-        return { decision: "denied", reason: "task-unavailable" };
-      }
-      if (task.owner_id !== input.ownerId) {
-        return { decision: "denied", reason: "identity-mismatch" };
-      }
-      if (task.capability_hash !== input.capabilityHash) {
-        return { decision: "denied", reason: "invalid-capability" };
-      }
-      if (
-        task.capability_consumed_at !== null ||
-        task.status !== "awaiting-confirmation"
-      ) {
-        return { decision: "denied", reason: "confirmation-replayed" };
-      }
+      const denial = confirmationDenialReason(task, input);
+      if (denial !== undefined) return { decision: "denied", reason: denial };
       const result = declineConfirmation.run(
         input.declinedAt,
         input.declinedAt,
@@ -545,13 +590,21 @@ export function createSqliteAdministrativeAutonomyStore(
     }) => {
       const task = requireTask(input.taskId);
       if (task.status !== "planning") {
-        throw new Error("Administrative Task is not ready for an Operation plan");
+        return task.status === "running" || task.status === "completed"
+          ? loadRecord(task)
+          : undefined;
       }
       const policy = requirePolicyState();
       if (
         policy.status !== "active" ||
         policy.active_revision !== task.policy_revision ||
         policy.state_version !== task.state_version
+      ) {
+        return undefined;
+      }
+      if (
+        task.active_execution_deadline === null ||
+        input.planEvent.occurredAt >= task.active_execution_deadline
       ) {
         return undefined;
       }
@@ -597,6 +650,14 @@ export function createSqliteAdministrativeAutonomyStore(
       }
       const operation = readNextOperation.get(input.taskId);
       if (operation === undefined) return { decision: "empty" };
+      if (
+        task.active_execution_deadline === null ||
+        input.claimedAt >= task.active_execution_deadline ||
+        input.leaseExpiresAt > task.active_execution_deadline ||
+        input.leaseExpiresAt <= input.claimedAt
+      ) {
+        return { decision: "denied", reason: "active-execution-deadline" };
+      }
       const request = administrativeOperationRequestSchema.parse(
         JSON.parse(operation.request_json),
       );
@@ -667,6 +728,7 @@ export function createSqliteAdministrativeAutonomyStore(
         throw new Error("Administrative Operation changed concurrently");
       }
       return {
+        activeExecutionDeadline: task.active_execution_deadline,
         claimId: input.claimId,
         decision: "claimed",
         recovered: operation.status === "running",
@@ -686,6 +748,13 @@ export function createSqliteAdministrativeAutonomyStore(
       }
       if (operation.claim_id !== input.claimId) {
         throw new Error("Administrative Operation claim changed concurrently");
+      }
+      const task = requireTask(input.taskId);
+      if (
+        task.active_execution_deadline === null ||
+        input.result.completedAt >= task.active_execution_deadline
+      ) {
+        throw new Error("Administrative Task active-execution deadline elapsed");
       }
       const result = completeOperation.run(
         JSON.stringify(input.result),
@@ -716,6 +785,21 @@ export function createSqliteAdministrativeAutonomyStore(
       const request = administrativeOperationRequestSchema.parse(
         JSON.parse(operation.request_json),
       );
+      const task = requireTask(operation.task_id);
+      const policy = requirePolicyState();
+      if (
+        task.active_execution_deadline === null ||
+        operation.lease_expires_at === null ||
+        operation.lease_expires_at <= input.renewedAt ||
+        input.renewedAt >= task.active_execution_deadline ||
+        input.leaseExpiresAt <= input.renewedAt ||
+        input.leaseExpiresAt > task.active_execution_deadline ||
+        policy.status !== "active" ||
+        policy.active_revision !== request.policyRevision ||
+        policy.state_version !== request.policyStateVersion
+      ) {
+        return false;
+      }
       const mutation = administrativeMutationOperationKinds.some(
         (kind) => kind === request.kind,
       );
@@ -780,6 +864,11 @@ export function createSqliteAdministrativeAutonomyStore(
     },
   );
 
+  const expireEvidenceTransaction = database.transaction((cutoff: string) => {
+    tombstoneExpiredRequests.run(cutoff, cutoff);
+    deleteExpiredEvidence.run(cutoff);
+  });
+
   function requireTask(taskId: string): AdministrativeTaskRow {
     const task = readTask.get(taskId);
     if (task === undefined) throw new Error("Administrative Task is unavailable");
@@ -787,6 +876,9 @@ export function createSqliteAdministrativeAutonomyStore(
   }
 
   return {
+    async applyEvidenceRetention(input) {
+      expireEvidenceTransaction.immediate(input.cutoff);
+    },
     async activatePolicy(input) {
       return activateTransaction.immediate(input);
     },
@@ -816,6 +908,10 @@ export function createSqliteAdministrativeAutonomyStore(
       return state.status !== "active" || state.active_revision === null
         ? undefined
         : requirePolicyRevision(state.active_revision);
+    },
+    async findTaskByOperationId(operationId) {
+      const task = readTaskByOperationId.get(operationId);
+      return task === undefined ? undefined : loadRecord(task);
     },
     async findTask(taskId) {
       const task = readTask.get(taskId);
@@ -875,6 +971,7 @@ function createSchema(database: Database.Database): void {
       owner_id TEXT NOT NULL,
       capability_hash TEXT NOT NULL UNIQUE,
       capability_consumed_at TEXT,
+      active_execution_deadline TEXT,
       outcome TEXT NOT NULL,
       policy_revision INTEGER NOT NULL,
       state_version INTEGER NOT NULL,
@@ -932,6 +1029,11 @@ function createSchema(database: Database.Database): void {
       FOREIGN KEY (task_id) REFERENCES administrative_tasks(id)
     );
 
+    CREATE TABLE IF NOT EXISTS administrative_expired_request_ids (
+      request_id TEXT PRIMARY KEY,
+      expired_at TEXT NOT NULL
+    );
+
     CREATE TRIGGER IF NOT EXISTS administrative_policy_revisions_no_update
     BEFORE UPDATE ON administrative_policy_revisions
     BEGIN
@@ -950,10 +1052,23 @@ function createSchema(database: Database.Database): void {
       SELECT RAISE(ABORT, 'Administrative Evidence Events are immutable');
     END;
 
-    CREATE TRIGGER IF NOT EXISTS administrative_evidence_no_delete
+    DROP TRIGGER IF EXISTS administrative_evidence_no_delete;
+
+    CREATE TRIGGER IF NOT EXISTS administrative_evidence_retention_delete_only
     BEFORE DELETE ON administrative_evidence_events
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM administrative_tasks
+      JOIN administrative_expired_request_ids
+        ON administrative_expired_request_ids.request_id =
+          administrative_tasks.request_id
+      WHERE administrative_tasks.id = OLD.task_id
+    )
     BEGIN
-      SELECT RAISE(ABORT, 'Administrative Evidence Events are immutable');
+      SELECT RAISE(
+        ABORT,
+        'Administrative Evidence Events are append-only until retention expiry'
+      );
     END;
   `);
   ensureColumn(
@@ -961,6 +1076,12 @@ function createSchema(database: Database.Database): void {
     "administrative_tasks",
     "intended_state",
     "TEXT NOT NULL DEFAULT 'The intended state was not recorded by the legacy schema.'",
+  );
+  ensureColumn(
+    database,
+    "administrative_tasks",
+    "active_execution_deadline",
+    "TEXT",
   );
   ensureColumn(database, "administrative_operations", "claim_id", "TEXT");
   ensureColumn(

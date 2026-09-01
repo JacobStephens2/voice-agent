@@ -124,6 +124,7 @@ const boundaries = createTelephoneBoundaryRuntime({
 });
 await boundaries.cleanupExpiredRawAudio();
 const continuityRuntime = createTaskContinuityRuntime({
+  administrativeEvidenceRetention: administrativeRuntime,
   callbackEvidenceRetention: callbackStore,
   evidenceOrigin: origin,
   nextId: randomUUID,

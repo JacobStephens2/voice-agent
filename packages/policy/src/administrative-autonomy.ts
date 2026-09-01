@@ -26,6 +26,7 @@ export type AdministrativePolicyDecision =
 export function authorizeAdministrativePolicyActivation(input: {
   readonly current: AdministrativePolicyStatus;
   readonly expectedActiveRevision: number | null;
+  readonly expectedStateVersion: number;
   readonly source: AdministrativePolicyActivationSource;
 }): AdministrativePolicyDecision {
   if (input.source !== "fresh-passkey-action") {
@@ -41,7 +42,10 @@ export function authorizeAdministrativePolicyActivation(input: {
   }
   const activeRevision =
     input.current.status === "inactive" ? null : input.current.revision;
-  if (input.expectedActiveRevision !== activeRevision) {
+  if (
+    input.expectedActiveRevision !== activeRevision ||
+    input.expectedStateVersion !== input.current.stateVersion
+  ) {
     return {
       decision: "deny",
       reason: "Administrative Autonomy policy state is stale",

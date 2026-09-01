@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  administrativeActiveExecutionMilliseconds,
   administrativeOperationRequestSchema,
   administrativeOperationResultSchema,
   administrativeProviderPlanSchema,
@@ -28,6 +29,10 @@ import {
 } from "@voice-agent/policy";
 
 export interface AdministrativePlanProvider {
+  /**
+   * taskId is the durable planning idempotency key. A provider may receive the
+   * same accepted task again after a transient failure or process restart.
+   */
   choosePlan(input: {
     readonly outcome: AdministrativeTaskOutcome;
     readonly intendedState: string;
@@ -81,8 +86,10 @@ export type AdministrativeTaskAdmissionResult =
   | { readonly decision: "denied"; readonly reason: string };
 
 export interface AdministrativeAutonomyRuntime {
+  applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedStateVersion: number;
     readonly source: AdministrativePolicyActivationSource;
   }): Promise<AdministrativePolicyActivationResult>;
   answerTaskConfirmation(input: {
@@ -95,6 +102,9 @@ export interface AdministrativeAutonomyRuntime {
   getPolicyStatus(): Promise<AdministrativePolicyStatus>;
   getStatus(): Promise<AdministrativeAutonomyStatus>;
   getTask(taskId: string): Promise<AdministrativeEvidenceRecord | undefined>;
+  getTaskByOperationId(
+    operationId: string,
+  ): Promise<AdministrativeEvidenceRecord | undefined>;
   listTasks(): ReturnType<AdministrativeAutonomyStore["listTasks"]>;
   reconcileOperations(): Promise<void>;
   prepareTaskConfirmation(input: {
@@ -170,17 +180,21 @@ export function createAdministrativeAutonomyRuntime(options: {
   }
 
   function maintainOperationClaim(input: {
+    readonly activeExecutionDeadline: string;
     readonly claimId: string;
     readonly operationId: string;
   }): () => void {
     const renewal = setInterval(() => {
       const renewedAt = options.now();
+      if (renewedAt >= input.activeExecutionDeadline) return;
       void options.store
         .renewOperationClaim({
           claimId: input.claimId,
-          leaseExpiresAt: new Date(
-            new Date(renewedAt).getTime() + operationLeaseMilliseconds,
-          ).toISOString(),
+          leaseExpiresAt: boundedLeaseExpiry(
+            renewedAt,
+            input.activeExecutionDeadline,
+            operationLeaseMilliseconds,
+          ),
           operationId: input.operationId,
           renewedAt,
         })
@@ -190,15 +204,141 @@ export function createAdministrativeAutonomyRuntime(options: {
     return () => clearInterval(renewal);
   }
 
+  async function planAdministrativeTask(
+    task: AdministrativeTask,
+  ): Promise<AdministrativeTaskAdmissionResult> {
+    if (
+      task.activeExecutionDeadline === null ||
+      options.now() >= task.activeExecutionDeadline
+    ) {
+      return denyPlannedTask(
+        task.id,
+        "Administrative Task active-execution deadline elapsed",
+      );
+    }
+    const policy = await options.store.findActivePolicy();
+    if (policy === undefined || policy.revision !== task.policyRevision) {
+      return denyPlannedTask(
+        task.id,
+        "Administrative Autonomy policy state is stale",
+      );
+    }
+    if (options.provider === undefined || options.executor === undefined) {
+      return denyPlannedTask(task.id, "Administrative execution is unavailable");
+    }
+    let untrustedPlan: unknown;
+    try {
+      untrustedPlan = await options.provider.choosePlan({
+        intendedState: task.intendedState,
+        outcome: task.outcome,
+        target: task.target,
+        taskId: task.id,
+      });
+    } catch {
+      scheduleReconciliation(
+        boundedLeaseExpiry(
+          options.now(),
+          task.activeExecutionDeadline,
+          operationLeaseMilliseconds,
+        ),
+      );
+      return {
+        decision: "admitted",
+        policyRevision: task.policyRevision,
+        taskId: task.id,
+      };
+    }
+    const parsedPlan = administrativeProviderPlanSchema.safeParse(untrustedPlan);
+    if (!parsedPlan.success) {
+      return denyPlannedTask(
+        task.id,
+        "Provider instructions did not describe a permitted typed Operation plan",
+      );
+    }
+    const planAuthorization = authorizeAdministrativePlan({
+      definition: policy.definition,
+      outcome: task.outcome,
+      plan: parsedPlan.data,
+    });
+    if (planAuthorization.decision === "deny") {
+      return denyPlannedTask(task.id, planAuthorization.reason);
+    }
+    const plannedAt = options.now();
+    const operations = parsedPlan.data.map((operation) => {
+      const request = operationRequest({
+        kind: operation.kind,
+        operationId: options.identifiers.nextOperationId(),
+        plannedAt,
+        policyRevision: policy.revision,
+        policyStateVersion: task.policyStateVersion,
+        target: task.target,
+        taskId: task.id,
+      });
+      return {
+        acceptedEvent: {
+          details: {
+            kind: request.kind,
+            operationId: request.operationId,
+            policyRevision: request.policyRevision,
+            stateVersion: request.policyStateVersion,
+          },
+          id: options.identifiers.nextEventId(),
+          kind: "administrative.operation.accepted" as const,
+          occurredAt: plannedAt,
+          summary: `The ${request.kind} Operation was accepted by policy.`,
+        },
+        request,
+      };
+    });
+    const savedPlan = await options.store.savePlan({
+      operations,
+      planEvent: {
+        details: {
+          operations: parsedPlan.data.map((operation) => operation.kind),
+          policyRevision: policy.revision,
+          stateVersion: task.policyStateVersion,
+        },
+        id: options.identifiers.nextEventId(),
+        kind: "administrative.plan.accepted",
+        occurredAt: plannedAt,
+        summary: "The confirmed outcome admitted a bounded Operation plan.",
+      },
+      taskId: task.id,
+    });
+    if (savedPlan === undefined) {
+      return denyPlannedTask(
+        task.id,
+        "Administrative Autonomy policy state is stale",
+      );
+    }
+    return {
+      decision: "admitted",
+      policyRevision: task.policyRevision,
+      taskId: task.id,
+    };
+  }
+
   async function reconcileTask(taskId: string): Promise<boolean> {
     if (options.executor === undefined) return false;
+    const record = await options.store.findTask(taskId);
+    if (record?.task.status === "planning") {
+      const admission = await planAdministrativeTask(record.task);
+      if (admission.decision === "denied") return true;
+      return (await options.store.findTask(taskId))?.task.status !== "planning";
+    }
     const claimedAt = options.now();
+    const activeExecutionDeadline = record?.task.activeExecutionDeadline;
     const claim = await options.store.claimNextOperation({
       claimId: options.identifiers.nextClaimId(),
       claimedAt,
-      leaseExpiresAt: new Date(
-        new Date(claimedAt).getTime() + operationLeaseMilliseconds,
-      ).toISOString(),
+      leaseExpiresAt:
+        activeExecutionDeadline === null || activeExecutionDeadline === undefined
+          ? claimedAt
+          : boundedLeaseExpiry(
+              claimedAt,
+              activeExecutionDeadline,
+              operationLeaseMilliseconds,
+            ),
       taskId,
     });
     if (claim.decision === "deferred") {
@@ -210,7 +350,9 @@ export function createAdministrativeAutonomyRuntime(options: {
         taskId,
         claim.reason === "stale-policy"
           ? "Administrative Autonomy policy state is stale"
-          : "Live Patch rollback deadline elapsed before mutation",
+          : claim.reason === "active-execution-deadline"
+            ? "Administrative Task active-execution deadline elapsed"
+            : "Live Patch rollback deadline elapsed before mutation",
       );
       return true;
     }
@@ -219,6 +361,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       return true;
     }
     const stopMaintainingClaim = maintainOperationClaim({
+      activeExecutionDeadline: claim.activeExecutionDeadline,
       claimId: claim.claimId,
       operationId: claim.request.operationId,
     });
@@ -228,9 +371,11 @@ export function createAdministrativeAutonomyRuntime(options: {
         untrustedResult = await options.executor.execute(claim.request);
       } catch {
         scheduleReconciliation(
-          new Date(
-            new Date(claimedAt).getTime() + operationLeaseMilliseconds,
-          ).toISOString(),
+          boundedLeaseExpiry(
+            claimedAt,
+            claim.activeExecutionDeadline,
+            operationLeaseMilliseconds,
+          ),
         );
         return false;
       }
@@ -265,9 +410,11 @@ export function createAdministrativeAutonomyRuntime(options: {
         return true;
       } catch {
         scheduleReconciliation(
-          new Date(
-            new Date(claimedAt).getTime() + operationLeaseMilliseconds,
-          ).toISOString(),
+          boundedLeaseExpiry(
+            claimedAt,
+            claim.activeExecutionDeadline,
+            operationLeaseMilliseconds,
+          ),
         );
         return false;
       }
@@ -300,11 +447,13 @@ export function createAdministrativeAutonomyRuntime(options: {
   }
 
   return {
+    applyEvidenceRetention: (input) => options.store.applyEvidenceRetention(input),
     async activatePolicy(input) {
       const current = await options.store.readPolicyStatus();
       const authorization = authorizeAdministrativePolicyActivation({
         current,
         expectedActiveRevision: input.expectedActiveRevision,
+        expectedStateVersion: input.expectedStateVersion,
         source: input.source,
       });
       if (authorization.decision === "deny") {
@@ -315,6 +464,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       const activatedAt = options.now();
       const activated = await options.store.activatePolicy({
         expectedActiveRevision: input.expectedActiveRevision,
+        expectedStateVersion: input.expectedStateVersion,
         revision: {
           activatedAt,
           activatedBy: "fresh-passkey-action",
@@ -357,10 +507,15 @@ export function createAdministrativeAutonomyRuntime(options: {
         return { decision: "denied", reason: confirmation.reason };
       }
       const acceptedAt = options.now();
+      const activeExecutionDeadline = new Date(
+        new Date(acceptedAt).getTime() +
+          administrativeActiveExecutionMilliseconds,
+      ).toISOString();
       const claim = await options.store.claimConfirmation({
         acceptedAt,
         acceptedEvent: {
           details: {
+            activeExecutionDeadline,
             policyRevision:
               (await options.store.findTask(input.taskId))?.task
                 .policyRevision ?? 1,
@@ -378,87 +533,10 @@ export function createAdministrativeAutonomyRuntime(options: {
         return { decision: "denied", reason: describeClaimDenial(claim.reason) };
       }
       const task = claim.record.task;
-      const policy = await options.store.findActivePolicy();
-      if (policy === undefined || policy.revision !== task.policyRevision) {
-        return denyPlannedTask(
-          task.id,
-          "Administrative Autonomy policy state is stale",
-        );
-      }
-      if (options.provider === undefined || options.executor === undefined) {
-        return denyPlannedTask(
-          task.id,
-          "Administrative execution is unavailable",
-        );
-      }
-      const untrustedPlan = await options.provider.choosePlan({
-        intendedState: task.intendedState,
-        outcome: task.outcome,
-        target: task.target,
-        taskId: task.id,
-      });
-      const parsedPlan = administrativeProviderPlanSchema.safeParse(untrustedPlan);
-      if (!parsedPlan.success) {
-        return denyPlannedTask(
-          task.id,
-          "Provider instructions did not describe a permitted typed Operation plan",
-        );
-      }
-      const planAuthorization = authorizeAdministrativePlan({
-        definition: policy.definition,
-        outcome: task.outcome,
-        plan: parsedPlan.data,
-      });
-      if (planAuthorization.decision === "deny") {
-        return denyPlannedTask(task.id, planAuthorization.reason);
-      }
-      const plannedAt = options.now();
-      const operations = parsedPlan.data.map((operation) => {
-        const request = operationRequest({
-          kind: operation.kind,
-          operationId: options.identifiers.nextOperationId(),
-          plannedAt,
-          policyRevision: policy.revision,
-          policyStateVersion: task.policyStateVersion,
-          target: task.target,
-          taskId: task.id,
-        });
-        return {
-          acceptedEvent: {
-            details: {
-              kind: request.kind,
-              operationId: request.operationId,
-              policyRevision: request.policyRevision,
-              stateVersion: request.policyStateVersion,
-            },
-            id: options.identifiers.nextEventId(),
-            kind: "administrative.operation.accepted" as const,
-            occurredAt: plannedAt,
-            summary: `The ${request.kind} Operation was accepted by policy.`,
-          },
-          request,
-        };
-      });
-      const savedPlan = await options.store.savePlan({
-        operations,
-        planEvent: {
-          details: {
-            operations: parsedPlan.data.map((operation) => operation.kind),
-            policyRevision: policy.revision,
-            stateVersion: task.policyStateVersion,
-          },
-          id: options.identifiers.nextEventId(),
-          kind: "administrative.plan.accepted",
-          occurredAt: plannedAt,
-          summary: "The confirmed outcome admitted a bounded Operation plan.",
-        },
-        taskId: task.id,
-      });
-      if (savedPlan === undefined) {
-        return denyPlannedTask(
-          task.id,
-          "Administrative Autonomy policy state is stale",
-        );
+      const admission = await planAdministrativeTask(task);
+      if (admission.decision === "denied") return admission;
+      if ((await options.store.findTask(task.id))?.task.status === "planning") {
+        return admission;
       }
       await reconcileOperations();
       const reconciled = await options.store.findTask(task.id);
@@ -470,7 +548,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       }
       return {
         decision: "admitted",
-        policyRevision: policy.revision,
+        policyRevision: task.policyRevision,
         taskId: task.id,
       };
     },
@@ -494,6 +572,8 @@ export function createAdministrativeAutonomyRuntime(options: {
       };
     },
     getTask: (taskId) => options.store.findTask(taskId),
+    getTaskByOperationId: (operationId) =>
+      options.store.findTaskByOperationId(operationId),
     listTasks: () => options.store.listTasks(),
     reconcileOperations,
     async prepareTaskConfirmation(input) {
@@ -541,6 +621,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         requestId: input.requestId,
         stateVersion: policy.stateVersion,
         task: {
+          activeExecutionDeadline: null,
           conclusion: "Administrative Task confirmation is pending.",
           createdAt: preparedAt,
           id: taskId,
@@ -574,6 +655,17 @@ export function createAdministrativeAutonomyRuntime(options: {
 
 function hashCapability(capability: string): string {
   return createHash("sha256").update(capability).digest("hex");
+}
+
+function boundedLeaseExpiry(
+  claimedAt: string,
+  activeExecutionDeadline: string,
+  leaseMilliseconds: number,
+): string {
+  const requested = new Date(claimedAt).getTime() + leaseMilliseconds;
+  return new Date(
+    Math.min(requested, new Date(activeExecutionDeadline).getTime()),
+  ).toISOString();
 }
 
 function confirmationQuestion(

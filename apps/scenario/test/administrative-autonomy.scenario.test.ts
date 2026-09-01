@@ -34,6 +34,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
 
   const activation = await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   const result = await scenario.confirmAndRunTask({
@@ -141,6 +142,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
       statusCode: 200,
     },
     task: {
+      activeExecutionDeadline: "2026-08-31T21:00:00.000Z",
       conclusion: "The confirmed administrative plan completed.",
       createdAt: "2026-08-31T15:00:00.000Z",
       id: "administrative-task-1",
@@ -176,14 +178,17 @@ test("voice and a Trusted Browser Session cannot activate a policy that survives
 
   const trustedBrowser = await firstProcess.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: false,
   });
   const voice = await firstProcess.attemptPolicyActivation({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     source: "voice",
   });
   const activated = await firstProcess.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   await firstProcess.close();
@@ -196,6 +201,7 @@ test("voice and a Trusted Browser Session cannot activate a policy that survives
   const afterRestart = await restartedProcess.readPolicyStatus();
   const revised = await restartedProcess.activatePolicy({
     expectedActiveRevision: 1,
+    expectedStateVersion: 1,
     freshPasskey: true,
   });
 
@@ -256,6 +262,7 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
 
@@ -292,7 +299,11 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
   if (staleTask.decision !== "prepared") {
     throw new Error("Stale-policy fixture was not prepared");
   }
-  await scenario.activatePolicy({ expectedActiveRevision: 1, freshPasskey: true });
+  await scenario.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 1,
+    freshPasskey: true,
+  });
   const stale = await scenario.answerTask({
     confirmation: "confirmed",
     confirmationCapability: staleTask.confirmationCapability,
@@ -412,6 +423,7 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
     });
     await scenario.activatePolicy({
       expectedActiveRevision: null,
+      expectedStateVersion: 0,
       freshPasskey: true,
     });
     const result = await scenario.confirmAndRunTask({
@@ -538,14 +550,17 @@ test("provider instructions cannot invent administrative authority or persist ra
   });
   const providerActivation = await scenario.attemptPolicyActivation({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     source: "provider",
   });
   const repositoryActivation = await scenario.attemptPolicyActivation({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     source: "repository",
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   const result = await scenario.confirmAndRunTask({
@@ -600,6 +615,7 @@ test("a policy revision interleaved with plan admission prevents every Operation
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   scenario.interleavePolicyRevisionBeforePlanAdmission();
@@ -648,6 +664,7 @@ test("Live Patch requests carry the complete pre-mutation safety boundary", asyn
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
 
@@ -751,6 +768,7 @@ test("Task Confirmation presents the intended state and decline consumes its cap
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   const prepared = await scenario.prepareTask({
@@ -806,6 +824,7 @@ test("Task Confirmation presents the intended state and decline consumes its cap
       reason: "Task Confirmation capability was already used",
     },
     task: {
+      activeExecutionDeadline: null,
       conclusion: "Task Confirmation was declined.",
       createdAt: "2026-08-31T23:00:00.000Z",
       id: "administrative-task-1",
@@ -844,6 +863,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
   });
   await firstProcess.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
 
@@ -890,6 +910,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
     ],
     statusBeforeRestart: "running",
     taskAfterRestart: {
+      activeExecutionDeadline: "2026-09-01T06:00:00.000Z",
       conclusion: "The confirmed administrative plan completed.",
       createdAt: "2026-09-01T00:00:00.000Z",
       id: "administrative-task-1",
@@ -945,6 +966,7 @@ test("administrative mutation plans share one durable global execution lane", as
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
 
@@ -1014,6 +1036,7 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   scenario.interleavePolicyRevisionAfterFirstOperation();
@@ -1066,6 +1089,7 @@ test("deployed policy activation does not imply unavailable task execution", asy
   });
   await scenario.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
 
@@ -1123,6 +1147,7 @@ test("policy state has no TTL and the #86 suspension seam persists without a sch
   });
   await firstProcess.activatePolicy({
     expectedActiveRevision: null,
+    expectedStateVersion: 0,
     freshPasskey: true,
   });
   await firstProcess.close();
@@ -1156,6 +1181,7 @@ test("policy state has no TTL and the #86 suspension seam persists without a sch
   });
   const reactivated = await restartedProcess.activatePolicy({
     expectedActiveRevision: 1,
+    expectedStateVersion: 2,
     freshPasskey: true,
   });
 
@@ -1202,4 +1228,274 @@ test("policy state has no TTL and the #86 suspension seam persists without a sch
   });
 
   await restartedProcess.close();
+});
+
+test("an activation prepared before Administrative Suspension cannot reactivate stale state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const scenario = await createAdministrativeAutonomyScenario({
+    databasePath: join(directory, "voice-agent.sqlite"),
+    now: "2026-10-01T06:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  await scenario.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  await scenario.suspendPolicyState();
+
+  const staleActivation = await scenario.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 1,
+    freshPasskey: true,
+  });
+
+  expect({
+    policy: await scenario.readPolicyStatus(),
+    staleActivation,
+  }).toEqual({
+    policy: {
+      revision: 1,
+      stateVersion: 2,
+      status: "suspended",
+      suspendedAt: "2026-10-01T06:00:00.000Z",
+    },
+    staleActivation: {
+      body: { error: "Administrative Autonomy policy state is stale" },
+      statusCode: 409,
+    },
+  });
+
+  await scenario.close();
+});
+
+test("an accepted task stranded during planning resumes idempotently after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const providerAttempts: string[] = [];
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    now: "2026-10-01T07:00:00.000Z",
+    providerAttempts,
+    providerFailures: 1,
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const prepared = await firstProcess.prepareTask({
+    intendedState: "The production application health is understood.",
+    outcome: "investigate",
+    ownerId: "owner",
+    requestId: "planning-restart-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  if (prepared.decision !== "prepared") {
+    throw new Error("Planning-restart fixture was not prepared");
+  }
+  await expect(
+    firstProcess.answerTask({
+      confirmation: "confirmed",
+      confirmationCapability: prepared.confirmationCapability,
+      ownerId: "owner",
+      taskId: prepared.taskId,
+    }),
+  ).resolves.toMatchObject({
+    decision: "admitted",
+    taskId: prepared.taskId,
+  });
+  expect((await firstProcess.readTask(prepared.taskId))?.task.status).toBe(
+    "planning",
+  );
+  await firstProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "planning-restart-",
+    now: "2026-10-01T07:01:00.000Z",
+    providerAttempts,
+    providerPlan: [{ kind: "production.observe" }],
+  });
+
+  expect({
+    executed: restartedProcess.executedOperations,
+    providerAttempts,
+    task: (await restartedProcess.readTask(prepared.taskId))?.task,
+  }).toMatchObject({
+    executed: [
+      {
+        kind: "production.observe",
+        taskId: "administrative-task-1",
+      },
+    ],
+    providerAttempts: ["administrative-task-1", "administrative-task-1"],
+    task: {
+      id: "administrative-task-1",
+      status: "completed",
+    },
+  });
+
+  await restartedProcess.close();
+});
+
+test("the persisted six-hour execution deadline stops Operation recovery after restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const effectLedger = new Set<string>();
+  const operationAttempts: string[] = [];
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    crashAfterFirstEffect: true,
+    databasePath,
+    effectLedger,
+    now: "2026-10-01T08:00:00.000Z",
+    operationAttempts,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const result = await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The isolated branch contains the requested change.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "expired-recovery-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  expect(result).toMatchObject({ decision: "admitted" });
+  const renewalPastDeadline = await firstProcess.attemptOperationClaimRenewal({
+    claimId: "administrative-claim-1",
+    leaseExpiresAt: "2026-10-01T14:00:00.001Z",
+    operationId: "administrative-operation-1",
+    renewedAt: "2026-10-01T08:00:00.010Z",
+  });
+  const renewalAtDeadline = await firstProcess.attemptOperationClaimRenewal({
+    claimId: "administrative-claim-1",
+    leaseExpiresAt: "2026-10-01T14:00:00.001Z",
+    operationId: "administrative-operation-1",
+    renewedAt: "2026-10-01T14:00:00.000Z",
+  });
+  await firstProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    effectLedger,
+    identifierNamespace: "expired-recovery-",
+    now: "2026-10-01T14:00:00.000Z",
+    operationAttempts,
+    providerPlan: [{ kind: "production.observe" }],
+  });
+
+  expect({
+    attempts: operationAttempts,
+    renewalAtDeadline,
+    renewalPastDeadline,
+    restartedEffects: restartedProcess.executedOperations,
+    task: (await restartedProcess.readTask("administrative-task-1"))?.task,
+  }).toMatchObject({
+    attempts: ["administrative-operation-1"],
+    renewalAtDeadline: false,
+    renewalPastDeadline: false,
+    restartedEffects: [],
+    task: {
+      activeExecutionDeadline: "2026-10-01T14:00:00.000Z",
+      conclusion: "Administrative Task active-execution deadline elapsed",
+      status: "denied",
+    },
+  });
+
+  await restartedProcess.close();
+});
+
+test("authenticated Evidence Lifecycle expiry prunes ordinary administrative events only", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const workProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    now: "2000-01-01T00:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  await workProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const result = await workProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The production application health is understood.",
+    outcome: "investigate",
+    ownerId: "owner",
+    requestId: "administrative-retention-request",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  if (result.decision !== "admitted") {
+    throw new Error("Administrative retention fixture was not admitted");
+  }
+  await workProcess.close();
+
+  const retentionProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "retention-",
+    now: "2026-10-01T00:00:00.000Z",
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  const before = await retentionProcess.readTask(result.taskId);
+  const unauthenticated = await retentionProcess.applyEvidenceLifecyclePolicy({
+    freshPasskey: false,
+  });
+  const afterDenied = await retentionProcess.readTask(result.taskId);
+  const authenticated = await retentionProcess.applyEvidenceLifecyclePolicy({
+    freshPasskey: true,
+  });
+  const afterExpiry = await retentionProcess.readTask(result.taskId);
+  const operationIdentity = await retentionProcess.readTaskByOperationId(
+    "administrative-operation-1",
+  );
+
+  expect({
+    afterDeniedEvidence: afterDenied?.evidence.length,
+    afterExpiry,
+    authenticated,
+    beforeEvidence: before?.evidence.length,
+    operationIdentity: operationIdentity?.task.id,
+    unauthenticated,
+  }).toEqual({
+    afterDeniedEvidence: 6,
+    afterExpiry: {
+      evidence: [],
+      task: expect.objectContaining({
+        id: "administrative-task-1",
+        status: "completed",
+      }),
+    },
+    authenticated: {
+      body: { cutoff: "2026-07-03T00:00:00.000Z" },
+      statusCode: 200,
+    },
+    beforeEvidence: 6,
+    operationIdentity: "administrative-task-1",
+    unauthenticated: {
+      body: { error: "Fresh Passkey Action required" },
+      statusCode: 403,
+    },
+  });
+
+  await retentionProcess.close();
 });

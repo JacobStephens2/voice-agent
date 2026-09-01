@@ -3,6 +3,9 @@ import { z } from "zod";
 const identifierSchema = z.string().min(1).max(120);
 const timestampSchema = z.iso.datetime();
 
+export const administrativeActiveExecutionMilliseconds =
+  6 * 60 * 60 * 1_000;
+
 export const administrativePolicyActivationSourceSchema = z.enum([
   "fresh-passkey-action",
   "trusted-browser-session",
@@ -132,6 +135,7 @@ export const activateAdministrativePolicyRequestSchema = z
   .object({
     csrfToken: z.string().min(16).max(200),
     expectedActiveRevision: z.number().int().positive().nullable(),
+    expectedStateVersion: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -307,6 +311,7 @@ export type AdministrativeOperationResult = z.infer<
 
 export const administrativeTaskSchema = z
   .object({
+    activeExecutionDeadline: timestampSchema.nullable(),
     conclusion: z.string().min(1).max(240),
     createdAt: timestampSchema,
     id: identifierSchema,
@@ -350,7 +355,10 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...eventFields,
-    details: z.object({ policyRevision: z.number().int().positive() }),
+    details: z.object({
+      activeExecutionDeadline: timestampSchema,
+      policyRevision: z.number().int().positive(),
+    }),
     kind: z.literal("administrative.confirmation.accepted"),
   }),
   z.object({

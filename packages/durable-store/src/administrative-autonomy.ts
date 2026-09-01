@@ -45,20 +45,26 @@ export type AdministrativeOperationClaim =
   | {
       readonly claimId: string;
       readonly decision: "claimed";
+      readonly activeExecutionDeadline: string;
       readonly recovered: boolean;
       readonly request: AdministrativeOperationRequest;
     }
   | { readonly decision: "deferred"; readonly retryAt: string }
   | {
       readonly decision: "denied";
-      readonly reason: "stale-policy" | "unsafe-live-patch-deadline";
+      readonly reason:
+        | "active-execution-deadline"
+        | "stale-policy"
+        | "unsafe-live-patch-deadline";
     }
   | { readonly decision: "empty" };
 
 /** Durable state behind the Administrative Autonomy runtime interface. */
 export interface AdministrativeAutonomyStore {
+  applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedStateVersion: number;
     readonly revision: AdministrativePolicyRevision;
     readonly stateVersion: number;
   }): Promise<AdministrativePolicyStatus | undefined>;
@@ -100,6 +106,9 @@ export interface AdministrativeAutonomyStore {
     readonly taskId: string;
   }): Promise<AdministrativeEvidenceRecord>;
   findActivePolicy(): Promise<AdministrativePolicyRevision | undefined>;
+  findTaskByOperationId(
+    operationId: string,
+  ): Promise<AdministrativeEvidenceRecord | undefined>;
   findTask(taskId: string): Promise<AdministrativeEvidenceRecord | undefined>;
   listRecoverableTaskIds(): Promise<readonly string[]>;
   listTasks(): Promise<readonly AdministrativeTask[]>;

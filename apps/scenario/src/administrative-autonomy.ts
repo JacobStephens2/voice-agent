@@ -10,9 +10,14 @@ import {
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAdministrativeAutonomyRuntime,
+  createTaskContinuityRuntime,
   type AdministrativeTaskAdmissionResult,
 } from "@voice-agent/runtime";
-import { createSqliteAdministrativeAutonomyStore } from "@voice-agent/sqlite-store";
+import {
+  createSqliteAdministrativeAutonomyStore,
+  createSqliteDurableTaskStore,
+  createSqliteTaskContinuityStore,
+} from "@voice-agent/sqlite-store";
 
 const scenarioOrigin = "https://voice.stephens.page";
 const scenarioSession = "scenario-trusted-session";
@@ -21,16 +26,27 @@ const scenarioCsrf = "scenario-csrf-token-0001";
 export interface AdministrativeAutonomyScenario {
   readonly executedOperations: AdministrativeOperationRequest[];
   readonly operationAttempts: AdministrativeOperationRequest[];
+  applyEvidenceLifecyclePolicy(input: {
+    readonly freshPasskey: boolean;
+  }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedStateVersion: number;
     readonly freshPasskey: boolean;
   }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   attemptPolicyActivation(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedStateVersion: number;
     readonly source: AdministrativePolicyActivationSource;
   }): ReturnType<
     ReturnType<typeof createAdministrativeAutonomyRuntime>["activatePolicy"]
   >;
+  attemptOperationClaimRenewal(input: {
+    readonly claimId: string;
+    readonly leaseExpiresAt: string;
+    readonly operationId: string;
+    readonly renewedAt: string;
+  }): Promise<boolean>;
   close(): Promise<void>;
   confirmAndRunTask(input: {
     readonly confirmation: "ambiguous" | "confirmed" | "declined";
@@ -49,6 +65,9 @@ export interface AdministrativeAutonomyScenario {
     typeof createAdministrativeAutonomyRuntime
   >["prepareTaskConfirmation"];
   readTask(taskId: string): Promise<AdministrativeEvidenceRecord | undefined>;
+  readTaskByOperationId(
+    operationId: string,
+  ): Promise<AdministrativeEvidenceRecord | undefined>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
   readAutonomyStatus(): Promise<{
     readonly body: unknown;
@@ -69,6 +88,8 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly identifierNamespace?: string;
   readonly now: string;
   readonly operationAttempts?: string[];
+  readonly providerAttempts?: string[];
+  readonly providerFailures?: number;
   readonly providerPlan: AdministrativeProviderPlan | unknown;
 }): Promise<AdministrativeAutonomyScenario> {
   let capabilitySequence = 0;
@@ -80,6 +101,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   let crashedAfterEffect = false;
   let revisePolicyAfterFirstOperation = false;
   let revisePolicyBeforePlanAdmission = false;
+  let providerFailuresRemaining = options.providerFailures ?? 0;
   const executedOperations: AdministrativeOperationRequest[] = [];
   const operationAttempts: AdministrativeOperationRequest[] = [];
   const effectLedger = options.effectLedger ?? new Set<string>();
@@ -102,6 +124,7 @@ export async function createAdministrativeAutonomyScenario(options: {
           }
           await runtime.activatePolicy({
             expectedActiveRevision: policy.revision,
+            expectedStateVersion: policy.stateVersion,
             source: "fresh-passkey-action",
           });
         }
@@ -146,7 +169,12 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
   };
   const provider = {
-    async choosePlan() {
+    async choosePlan(input: { readonly taskId: string }) {
+      options.providerAttempts?.push(input.taskId);
+      if (providerFailuresRemaining > 0) {
+        providerFailuresRemaining -= 1;
+        throw new Error("Simulated provider failure during planning");
+      }
       if (revisePolicyBeforePlanAdmission) {
         revisePolicyBeforePlanAdmission = false;
         const policy = await runtime.getPolicyStatus();
@@ -155,6 +183,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
         await runtime.activatePolicy({
           expectedActiveRevision: policy.revision,
+          expectedStateVersion: policy.stateVersion,
           source: "fresh-passkey-action",
         });
       }
@@ -181,6 +210,15 @@ export async function createAdministrativeAutonomyScenario(options: {
     store,
   });
   await runtime.reconcileOperations();
+  const ordinaryTaskStore = createSqliteDurableTaskStore(options.databasePath);
+  const continuity = createTaskContinuityRuntime({
+    administrativeEvidenceRetention: runtime,
+    nextId: () =>
+      `${identifierNamespace}administrative-continuity-${(eventSequence += 1)}`,
+    now: () => options.now,
+    store: createSqliteTaskContinuityStore(options.databasePath),
+    tasks: ordinaryTaskStore,
+  });
   const api = createTaskApi({
     administrativeControls: runtime,
     authentication: {
@@ -194,6 +232,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         return sessionToken === scenarioSession && freshPasskey;
       },
     },
+    completionControls: continuity,
     origin: scenarioOrigin,
     records: {
       getEvidenceRecord: (taskId) => runtime.getTask(taskId),
@@ -203,6 +242,23 @@ export async function createAdministrativeAutonomyScenario(options: {
   });
 
   return {
+    async applyEvidenceLifecyclePolicy(input) {
+      freshPasskey = input.freshPasskey;
+      const response = await api.inject({
+        headers: {
+          cookie: `${trustedSessionCookieName}=${scenarioSession}`,
+          origin: scenarioOrigin,
+        },
+        method: "POST",
+        payload: { csrfToken: scenarioCsrf },
+        url: "/api/evidence/retention",
+      });
+      freshPasskey = false;
+      return {
+        body: response.json<unknown>(),
+        statusCode: response.statusCode,
+      };
+    },
     async activatePolicy(input) {
       freshPasskey = input.freshPasskey;
       const response = await api.inject({
@@ -214,6 +270,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         payload: {
           csrfToken: scenarioCsrf,
           expectedActiveRevision: input.expectedActiveRevision,
+          expectedStateVersion: input.expectedStateVersion,
         },
         url: "/api/administrative-autonomy/activate",
       });
@@ -225,8 +282,12 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
     async close() {
       await api.close();
+      await continuity.close();
+      await ordinaryTaskStore.close();
       await runtime.close();
     },
+    attemptOperationClaimRenewal: (input) =>
+      store.renewOperationClaim(input),
     attemptPolicyActivation: (input) => runtime.activatePolicy(input),
     async confirmAndRunTask(input) {
       const prepared = await runtime.prepareTaskConfirmation({
@@ -269,6 +330,8 @@ export async function createAdministrativeAutonomyScenario(options: {
       };
     },
     readTask: (taskId) => runtime.getTask(taskId),
+    readTaskByOperationId: (operationId) =>
+      runtime.getTaskByOperationId(operationId),
     reconcileOperations: () => runtime.reconcileOperations(),
     async suspendPolicyState() {
       const policy = await store.readPolicyStatus();

@@ -16,6 +16,7 @@ import {
   createUnixSocketKeeploreSubagentRunner,
 } from "@voice-agent/runtime";
 import {
+  createSqliteAdministrativeAutonomyStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteKeeploreDelegationStore,
@@ -75,7 +76,10 @@ const telephoneBoundaries = createTelephoneBoundaryRuntime({
 });
 const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
+const administrativeEvidenceStore =
+  createSqliteAdministrativeAutonomyStore(databasePath);
 const continuityRuntime = createTaskContinuityRuntime({
+  administrativeEvidenceRetention: administrativeEvidenceStore,
   callbackEvidenceRetention: callbackStore,
   nextId: randomUUID,
   now: () => new Date().toISOString(),
@@ -301,6 +305,7 @@ await serverRun;
 await callbackRuntime.close();
 await telephoneBoundaries.close();
 await continuityRuntime.close();
+await administrativeEvidenceStore.close();
 await runtime.close();
 keeploreDelegationStore?.close();
 keeploreOnboardingStore.close();

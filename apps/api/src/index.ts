@@ -213,6 +213,7 @@ export interface KeeploreOnboardingApiControls {
 export interface AdministrativeAutonomyApiControls {
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedStateVersion: number;
     readonly source: "fresh-passkey-action";
   }): Promise<
     | {
@@ -526,6 +527,7 @@ function registerAdministrativeAutonomyRoutes(
     }
     const result = await options.controls.activatePolicy({
       expectedActiveRevision: body.expectedActiveRevision,
+      expectedStateVersion: body.expectedStateVersion,
       source: "fresh-passkey-action",
     });
     if (result.decision === "denied") {

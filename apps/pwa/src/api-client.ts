@@ -90,9 +90,14 @@ export async function loadAdministrativeAutonomyStatus(): Promise<
 export async function activateAdministrativePolicy(
   csrfToken: string,
   expectedActiveRevision: number | null,
+  expectedStateVersion: number,
 ): Promise<AdministrativePolicyStatus> {
   const response = await fetch("/api/administrative-autonomy/activate", {
-    body: JSON.stringify({ csrfToken, expectedActiveRevision }),
+    body: JSON.stringify({
+      csrfToken,
+      expectedActiveRevision,
+      expectedStateVersion,
+    }),
     headers: { "Content-Type": "application/json" },
     method: "POST",
   });

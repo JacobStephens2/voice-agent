@@ -274,6 +274,7 @@ function App() {
       const activated = await activateAdministrativePolicy(
         csrfToken,
         expectedActiveRevision,
+        administrativeAutonomy?.policy.stateVersion ?? 0,
       );
       setAdministrativeAutonomy((current) => ({
         policy: activated,
