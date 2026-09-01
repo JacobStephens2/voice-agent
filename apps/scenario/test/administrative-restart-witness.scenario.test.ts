@@ -59,6 +59,43 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
   });
 
   const baselineRequest = requestBody(fixture.campaign);
+  const otherCampaign = await fixture.store.ensureCampaign({
+    campaignId: administrativeRestartWitnessCampaignIdSchema.parse(
+      "administrative-restart-campaign-release-b",
+    ),
+    createdAt: administrativeTimestampSchema.parse(
+      "2026-09-01T14:00:02.000Z",
+    ),
+    initialChallenge: administrativeRestartWitnessChallengeSchema.parse(
+      "administrative-restart-challenge-other-campaign",
+    ),
+    releaseCommit: administrativeRestartWitnessReleaseCommitSchema.parse(
+      "b".repeat(40),
+    ),
+  });
+  expect(
+    await observe(api, {
+      ...baselineRequest,
+      challenge: administrativeRestartWitnessChallengeSchema.parse(
+        "administrative-restart-challenge-unknown",
+      ),
+    }),
+  ).toMatchObject({
+    body: { reason: "challenge-mismatch" },
+    statusCode: 409,
+  });
+  if (otherCampaign.nextObservation === null) {
+    throw new Error("The other campaign challenge was not issued");
+  }
+  expect(
+    await observe(api, {
+      ...baselineRequest,
+      challenge: otherCampaign.nextObservation.challenge,
+    }),
+  ).toMatchObject({
+    body: { reason: "challenge-mismatch" },
+    statusCode: 409,
+  });
   expect((await observe(api, baselineRequest, null)).statusCode).toBe(401);
   expect(
     (await observe(api, baselineRequest, "wrong-session", "owner-csrf"))
@@ -101,7 +138,10 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
     ...serviceRequest,
     phase: "host-reboot",
   });
-  expect(wrongPhase.statusCode).toBe(409);
+  expect(wrongPhase).toMatchObject({
+    body: { reason: "phase-out-of-order" },
+    statusCode: 409,
+  });
 
   const unchangedService = await observe(api, serviceRequest);
   expect(unchangedService).toMatchObject({
