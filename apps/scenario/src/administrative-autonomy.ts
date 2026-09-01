@@ -333,7 +333,9 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly beforeOperationEffect?: (
     request: AdministrativeOperationRequest,
   ) => Promise<void>;
-  readonly beforeExecutorResultReturn?: () => Promise<void> | void;
+  readonly beforeExecutorResultReturn?: (
+    request: AdministrativeOperationRequest,
+  ) => Promise<void> | void;
   readonly beforeProviderPlanReturn?: (input: {
     readonly signal?: AbortSignal;
   }) => Promise<void>;
@@ -471,7 +473,8 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
       : {}),
     ...(options.operationCompletionEvidenceForgery !== undefined ||
-    options.operationCompletionReplay !== undefined
+    options.operationCompletionReplay !== undefined ||
+    options.operationCompletionStoreAttempts !== undefined
       ? {
           async completeOperation(input) {
             if (
@@ -702,7 +705,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         operationId: request.operationId,
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
-      await options.beforeExecutorResultReturn?.();
+      await options.beforeExecutorResultReturn?.(request);
       return scenarioOperationResult(request, {
         common,
         delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",

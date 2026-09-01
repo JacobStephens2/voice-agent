@@ -475,6 +475,7 @@ export function createSqliteAdministrativeAutonomyStore(
     SET status = 'completed', result_json = ?, updated_at = ?,
       claim_id = NULL, lease_expires_at = NULL
     WHERE id = ? AND task_id = ? AND status = 'running' AND claim_id = ?
+      AND lease_expires_at > ?
   `);
   const settleClaimedOperationAndDenyTask = database.prepare(`
     UPDATE administrative_operations
@@ -856,6 +857,50 @@ export function createSqliteAdministrativeAutonomyStore(
     }
   }
 
+  function expireVerifiedMaturedLivePatchRollbackWindows(
+    untrustedExpiredAt: string,
+  ): void {
+    const expiredAt = administrativeTimestampSchema.parse(untrustedExpiredAt);
+    const maturedRollbacks = listMaturedLivePatchRollbacks.all(expiredAt);
+    const expired = expireMaturedLivePatchRollbacks.run(expiredAt, expiredAt);
+    if (expired.changes !== maturedRollbacks.length) {
+      throw new Error("Live Patch rollback expiry projection changed concurrently");
+    }
+    for (const rollback of maturedRollbacks) {
+      const request = livePatchRollbackActivationRequestSchema.parse(
+        JSON.parse(rollback.request_json),
+      );
+      const completedOperation = administrativeOperationResultSchema.parse(
+        JSON.parse(rollback.operation_result_json),
+      );
+      if (
+        completedOperation.kind !== "live-patch.apply" ||
+        completedOperation.operationId !== request.operationId ||
+        completedOperation.mutationProof.reconciliation.registeredCodebaseId !==
+          request.target.registeredCodebaseId ||
+        completedOperation.mutationProof.reconciliation.targetFingerprint !==
+          request.targetFingerprint
+      ) {
+        throw new Error(
+          "A Live Patch rollback can expire only after its verified Operation completed",
+        );
+      }
+      appendEvents(request.taskId, [
+        {
+          details: {
+            operationId: request.operationId,
+            reconciledAt: expiredAt,
+            rollbackDeadline: request.rollbackDeadline,
+          },
+          id: rollbackWindowExpiryEventId(request.operationId),
+          kind: "administrative.live-patch.rollback-window-expired",
+          occurredAt: expiredAt,
+          summary: "The armed Live Patch rollback window expired normally.",
+        },
+      ]);
+    }
+  }
+
   function settleOutstandingTaskOperations(
     taskId: string,
     reason: string,
@@ -928,49 +973,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.expectation,
       );
       const current = requirePolicyState();
-      const maturedRollbacks = listMaturedLivePatchRollbacks.all(
-        input.revision.activatedAt,
-      );
-      const expired = expireMaturedLivePatchRollbacks.run(
-        input.revision.activatedAt,
-        input.revision.activatedAt,
-      );
-      if (expired.changes !== maturedRollbacks.length) {
-        throw new Error("Live Patch rollback expiry projection changed concurrently");
-      }
-      for (const rollback of maturedRollbacks) {
-        const request = livePatchRollbackActivationRequestSchema.parse(
-          JSON.parse(rollback.request_json),
-        );
-        const completedOperation = administrativeOperationResultSchema.parse(
-          JSON.parse(rollback.operation_result_json),
-        );
-        if (
-          completedOperation.kind !== "live-patch.apply" ||
-          completedOperation.operationId !== request.operationId ||
-          completedOperation.mutationProof.reconciliation.registeredCodebaseId !==
-            request.target.registeredCodebaseId ||
-          completedOperation.mutationProof.reconciliation.targetFingerprint !==
-            request.targetFingerprint
-        ) {
-          throw new Error(
-            "A Live Patch rollback can expire only after its verified Operation completed",
-          );
-        }
-        appendEvents(request.taskId, [
-          {
-            details: {
-              operationId: request.operationId,
-              reconciledAt: input.revision.activatedAt,
-              rollbackDeadline: request.rollbackDeadline,
-            },
-            id: rollbackWindowExpiryEventId(request.operationId),
-            kind: "administrative.live-patch.rollback-window-expired",
-            occurredAt: input.revision.activatedAt,
-            summary: "The armed Live Patch rollback window expired normally.",
-          },
-        ]);
-      }
+      expireVerifiedMaturedLivePatchRollbackWindows(input.revision.activatedAt);
       const activeRevision =
         current.status === "inactive" ? null : current.active_revision;
       if (
@@ -1023,6 +1026,7 @@ export function createSqliteAdministrativeAutonomyStore(
         current.active_revision === expectation.expectedRevision &&
         current.state_version === expectation.expectedStateVersion + 1
       ) {
+        expireVerifiedMaturedLivePatchRollbackWindows(input.suspendedAt);
         markArmedRollbacksPending.run(input.suspendedAt, input.suspendedAt);
         return policyStatus(current);
       }
@@ -1051,6 +1055,7 @@ export function createSqliteAdministrativeAutonomyStore(
         suspensionEvent.summary,
         JSON.stringify(suspensionEvent.details),
       );
+      expireVerifiedMaturedLivePatchRollbackWindows(input.suspendedAt);
       markArmedRollbacksPending.run(input.suspendedAt, input.suspendedAt);
       return policyStatus();
     },
@@ -1653,6 +1658,26 @@ export function createSqliteAdministrativeAutonomyStore(
       if (operation.claim_id !== input.claimId) {
         throw new Error("Administrative Operation claim changed concurrently");
       }
+      if (
+        operation.lease_expires_at === null ||
+        operation.lease_expires_at <= submittedResult.completedAt
+      ) {
+        throw new Error("Administrative Operation claim is no longer leased");
+      }
+      const mutation = administrativeMutationOperationKinds.some(
+        (kind) => kind === request.kind,
+      );
+      if (mutation) {
+        const lane = readMutationLane.get();
+        if (
+          lane?.operation_id !== input.operationId ||
+          lane.claim_id !== input.claimId ||
+          lane.lease_expires_at === null ||
+          lane.lease_expires_at <= submittedResult.completedAt
+        ) {
+          throw new Error("Administrative mutation lane is no longer leased");
+        }
+      }
       const task = requireTask(input.taskId);
       if (
         task.active_execution_deadline === null ||
@@ -1697,6 +1722,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.operationId,
         input.taskId,
         input.claimId,
+        submittedResult.completedAt,
       );
       if (result.changes !== 1) {
         throw new Error("Administrative Operation changed concurrently");

@@ -836,6 +836,145 @@ test("a verified Delegation completion remains valid when trusted receipt time a
   await scenario.close();
 });
 
+test("a stalled mutation cannot complete after its lease and global lane are reclaimed", async () => {
+  const clock = { current: "2026-10-02T11:40:00.000Z" };
+  let reportStalledResult: (() => void) | undefined;
+  const stalledResult = new Promise<void>((resolve) => {
+    reportStalledResult = resolve;
+  });
+  let releaseStalledResult: (() => void) | undefined;
+  const stalledResultRelease = new Promise<void>((resolve) => {
+    releaseStalledResult = resolve;
+  });
+  let reportReplacementEffect: (() => void) | undefined;
+  const replacementEffect = new Promise<void>((resolve) => {
+    reportReplacementEffect = resolve;
+  });
+  let releaseReplacementEffect: (() => void) | undefined;
+  const replacementEffectRelease = new Promise<void>((resolve) => {
+    releaseReplacementEffect = resolve;
+  });
+  const firstReconciliations: Array<() => Promise<void>> = [];
+  const completionStoreAttempts: string[] = [];
+  const { databasePath, scenario: stalledProcess } = await createActivatedScenario(
+    {
+      beforeExecutorResultReturn: async (request) => {
+        if (request.operationId !== "z-stalled-administrative-operation-1") {
+          return;
+        }
+        reportStalledResult?.();
+        await stalledResultRelease;
+      },
+      clock,
+      identifierNamespace: "z-stalled-",
+      now: clock.current,
+      operationCompletionStoreAttempts: completionStoreAttempts,
+      operationLeaseMilliseconds: 30_000,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+      reconciliationCallbacks: firstReconciliations,
+    },
+    temporaryDirectories,
+  );
+  const replacementProcess = await createAdministrativeAutonomyScenario({
+    async beforeOperationEffect(request) {
+      if (request.operationId !== "a-replacement-administrative-operation-1") {
+        return;
+      }
+      reportReplacementEffect?.();
+      await replacementEffectRelease;
+    },
+    clock,
+    databasePath,
+    identifierNamespace: "a-replacement-",
+    now: clock.current,
+    operationLeaseMilliseconds: 30_000,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  const stalledAdmission = stalledProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The first verified candidate exists in its worktree.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "stalled-mutation-completion",
+    target,
+  });
+  await stalledResult;
+
+  clock.current = "2026-10-02T11:40:30.000Z";
+  const replacementAdmission = replacementProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The replacement verified candidate exists in its worktree.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "replacement-mutation-completion",
+    target,
+  });
+  await replacementEffect;
+  releaseStalledResult?.();
+  const firstAdmission = await stalledAdmission;
+  const stalledRecord = await stalledProcess.readTask(
+    "z-stalled-administrative-task-1",
+  );
+
+  expect({
+    completionStoreAttempts,
+    firstAdmission,
+    firstCompletionEvents: stalledRecord?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    firstReconciliationCount: firstReconciliations.length,
+    firstTask: stalledRecord?.task,
+  }).toMatchObject({
+    completionStoreAttempts: ["unmodified"],
+    firstAdmission: { decision: "admitted" },
+    firstCompletionEvents: [],
+    firstReconciliationCount: 1,
+    firstTask: { status: "running" },
+  });
+
+  releaseReplacementEffect?.();
+  expect(await replacementAdmission).toMatchObject({ decision: "admitted" });
+  await stalledProcess.close();
+  await replacementProcess.close();
+});
+
+test("a mutation completion one millisecond before both lease deadlines remains valid", async () => {
+  const clock = { current: "2026-10-02T11:42:00.000Z" };
+  const completionStoreAttempts: string[] = [];
+  const { scenario } = await createActivatedScenario(
+    {
+      beforeExecutorResultReturn() {
+        clock.current = "2026-10-02T11:42:29.999Z";
+      },
+      clock,
+      now: clock.current,
+      operationCompletionStoreAttempts: completionStoreAttempts,
+      operationLeaseMilliseconds: 30_000,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The verified candidate exists immediately before lease expiry.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "pre-expiry-mutation-completion",
+    target,
+  });
+
+  expect({
+    admission,
+    completionStoreAttempts,
+    task: await scenario.readTask("administrative-task-1"),
+  }).toMatchObject({
+    admission: { decision: "admitted" },
+    completionStoreAttempts: ["unmodified"],
+    task: { task: { status: "completed" } },
+  });
+  await scenario.close();
+});
+
 test("Administrative Tasks fail closed for unavailable, absent, expired, or drifted Registered Codebases", async () => {
   const unavailable = await createActivatedScenario(
     {
@@ -2410,6 +2549,95 @@ test("a matured Live Patch rollback window is durably disarmed before a racing d
   expect(raced.filter((result) => result.decision === "activated")).toHaveLength(1);
   expect(raced.filter((result) => result.decision === "denied")).toHaveLength(1);
 
+  await restarted.close();
+});
+
+test("Administrative Suspension expires a matured completed Live Patch before selecting rollback work", async () => {
+  const clock = { current: "2026-10-02T16:35:00.000Z" };
+  const rollbackActivationEffects: string[] = [];
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      clock,
+      now: clock.current,
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationEffects,
+    },
+    temporaryDirectories,
+  );
+  await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "matured-window-suspension",
+    target,
+  });
+
+  clock.current = "2026-10-02T17:06:00.000Z";
+  const suspension = await firstProcess.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  await firstProcess.close();
+
+  const restarted = await createAdministrativeAutonomyScenario({
+    clock,
+    databasePath,
+    identifierNamespace: "matured-suspension-restart-",
+    now: clock.current,
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationEffects,
+  });
+  const replayedSuspension = await restarted.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  const record = await restarted.readTask("administrative-task-1");
+  const expiryEvidence = record?.evidence.filter(
+    (event) =>
+      event.kind === "administrative.live-patch.rollback-window-expired",
+  );
+
+  expect({
+    expiryEvidence,
+    replayedSuspension,
+    rollbackActivationEffects,
+    suspension,
+  }).toMatchObject({
+    expiryEvidence: [
+      {
+        details: {
+          operationId: "administrative-operation-1",
+          reconciledAt: "2026-10-02T17:06:00.000Z",
+          rollbackDeadline: "2026-10-02T17:05:00.000Z",
+        },
+      },
+    ],
+    replayedSuspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: [],
+          pendingOperationIds: [],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+    rollbackActivationEffects: [],
+    suspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: [],
+          pendingOperationIds: [],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+  });
+  expect(expiryEvidence).toHaveLength(1);
   await restarted.close();
 });
 
