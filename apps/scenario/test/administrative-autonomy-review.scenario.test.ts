@@ -8,6 +8,7 @@ import {
   administrativePlanProviderIdentitySchema,
   administrativePolicyEvidencePageSchema,
   administrativeRegisteredCodebaseSchema,
+  livePatchMutationProofSchema,
   administrativeTaskTargetFingerprint,
   administrativeTaskTargetRequestSchema,
   administrativeTaskTargetSchema,
@@ -22,7 +23,10 @@ import {
   type RegisteredCodebaseId,
 } from "@voice-agent/contracts";
 
-import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
+import {
+  createAdministrativeAutonomyScenario,
+  type LivePatchProofSubstitution,
+} from "../src/administrative-autonomy.ts";
 import {
   createActivatedScenario,
   createScenarioDatabase,
@@ -123,6 +127,113 @@ test("Registered Codebase contracts reject filesystem root and lexical traversal
         administrativeRegisteredCodebaseSchema.safeParse(candidate).success,
     ),
   ).toEqual([false, false, false]);
+});
+
+test("Live Patch proof contracts carry exact baseline, verification, patch, and capture identities", () => {
+  const exactTarget = administrativeTaskTargetSchema.parse({
+    environment: "production",
+    registeredCodebase: {
+      expiresAt: "2100-01-01T00:00:00.000Z",
+      initialProductionCommit: "1".repeat(40),
+      liveCheckoutPath: "/srv/voice-agent",
+      productionBranch: "main",
+      registeredAt: "1990-01-01T00:00:00.000Z",
+      registeredCodebaseId: "voice-agent",
+      repository: "JacobStephens2/voice-agent",
+      revision: 1,
+      sourceCheckoutRoot: "/srv/source/voice-agent",
+      verificationCommands: ["pnpm typecheck", "pnpm test"],
+      worktreeRoot: "/var/lib/voice-agent-worktrees/voice-agent",
+    },
+    registeredCodebaseId: "voice-agent",
+  });
+  const targetFingerprint = administrativeTaskTargetFingerprint(exactTarget);
+  const patchIdentity = {
+    intendedState: "The production behavior is restored.",
+    operationId: "administrative-operation-contract-proof",
+    registeredCodebaseId: "voice-agent",
+    targetFingerprint,
+  };
+  const candidate = {
+    branch:
+      "administrative/live-patch-administrative-operation-contract-proof",
+    commit: "a".repeat(40),
+    kind: "isolated-live-patch-candidate",
+    patch: patchIdentity,
+    repository: "JacobStephens2/voice-agent",
+  };
+  const common = {
+    candidate,
+    healthCheck: {
+      kind: "registered-application-health",
+      observedAt: "2026-10-03T10:00:00.000Z",
+      registeredCodebaseId: "voice-agent",
+      status: "healthy",
+      targetFingerprint,
+    },
+    independentRollback: {
+      armedAt: "2026-10-03T10:00:00.000Z",
+      armedBeforeMutation: true,
+      kind: "independent-live-patch-rollback",
+      rollbackDeadline: "2026-10-03T10:30:00.000Z",
+    },
+    mutationStartedAt: "2026-10-03T10:00:00.000Z",
+    verification: {
+      kind: "independent-application-health-proof",
+      observedAt: "2026-10-03T10:01:00.000Z",
+      registeredCodebaseId: "voice-agent",
+      status: "healthy",
+      targetFingerprint,
+    },
+  };
+  const captured = {
+    ...common,
+    reconciliation: {
+      capture: {
+        baseBranch: "main",
+        baseCommit: "1".repeat(40),
+        candidate,
+        kind: "isolated-live-patch-capture",
+        pullRequestNumber: 83,
+        pullRequestUrl:
+          "https://github.com/JacobStephens2/voice-agent/pull/83",
+        repository: "JacobStephens2/voice-agent",
+        state: "open",
+      },
+      kind: "captured-as-isolated-pull-request",
+      observedAt: "2026-10-03T10:02:00.000Z",
+      productionMutationRetained: true,
+      verifiedBy: "independent-reconciliation-observer",
+    },
+  };
+  const removed = {
+    ...common,
+    reconciliation: {
+      candidate,
+      kind: "removed-from-production",
+      observedAt: "2026-10-03T10:02:00.000Z",
+      productionBranch: "main",
+      productionCommit: "1".repeat(40),
+      productionMutationRetained: false,
+      verifiedBy: "independent-reconciliation-observer",
+    },
+  };
+
+  expect({
+    captured: livePatchMutationProofSchema.safeParse(captured).success,
+    capturedWithUnknownField: livePatchMutationProofSchema.safeParse({
+      ...captured,
+      reconciliation: {
+        ...captured.reconciliation,
+        unrelatedPullRequest: true,
+      },
+    }).success,
+    removed: livePatchMutationProofSchema.safeParse(removed).success,
+  }).toEqual({
+    captured: true,
+    capturedWithUnknownField: false,
+    removed: true,
+  });
 });
 
 test("an Administrative Execution Manifest cannot gain authority after Human Merge", async () => {
@@ -1537,13 +1648,29 @@ test("a delayed Live Patch arms a fresh thirty-minute rollback and must reconcil
               rollbackDeadline: "2026-10-02T12:50:00.000Z",
             },
             reconciliation: {
-              baseBranch: "registered-production-branch",
+              capture: {
+                baseBranch: "main",
+                baseCommit: "1".repeat(40),
+                candidate: {
+                  branch:
+                    "administrative/live-patch-administrative-operation-1",
+                  commit: "a".repeat(40),
+                  patch: {
+                    intendedState:
+                      "The urgent production behavior is restored.",
+                    operationId: "administrative-operation-1",
+                    registeredCodebaseId: "voice-agent",
+                  },
+                  repository: "JacobStephens2/voice-agent",
+                },
+                pullRequestUrl:
+                  "https://github.com/JacobStephens2/voice-agent/pull/83",
+                repository: "JacobStephens2/voice-agent",
+                state: "open",
+              },
               kind: "captured-as-isolated-pull-request",
               observedAt: "2026-10-02T12:20:00.000Z",
               productionMutationRetained: true,
-              reconciledPatch: "accepted-live-patch-diff",
-              registeredCodebaseId: "voice-agent",
-              state: "open",
               verifiedBy: "independent-reconciliation-observer",
             },
           },
@@ -3321,6 +3448,126 @@ test.each(changedRegisteredCodebaseTargets)(
   },
 );
 
+const capturedLivePatchProofSubstitutions = [
+  "baseline-registered-codebase-id",
+  "baseline-target-fingerprint",
+  "verification-registered-codebase-id",
+  "verification-target-fingerprint",
+  "capture-repository",
+  "capture-base-branch",
+  "capture-base-commit",
+  "capture-candidate-repository",
+  "capture-head-branch",
+  "capture-head-commit",
+  "capture-operation-id",
+  "capture-pull-request-number",
+  "capture-pull-request-url",
+  "capture-registered-codebase-id",
+  "capture-target-fingerprint",
+] as const satisfies readonly LivePatchProofSubstitution[];
+
+const removedLivePatchProofSubstitutions = [
+  "baseline-registered-codebase-id",
+  "baseline-target-fingerprint",
+  "verification-registered-codebase-id",
+  "verification-target-fingerprint",
+  "removal-repository",
+  "removal-production-branch",
+  "removal-production-commit",
+  "removal-operation-id",
+  "removal-registered-codebase-id",
+  "removal-target-fingerprint",
+] as const satisfies readonly LivePatchProofSubstitution[];
+
+const livePatchProofSubstitutionCases = [
+  ...capturedLivePatchProofSubstitutions.map(
+    (field) => ["captured", field] as const,
+  ),
+  ...removedLivePatchProofSubstitutions.map(
+    (field) => ["removed", field] as const,
+  ),
+];
+
+test.each(livePatchProofSubstitutionCases)(
+  "runtime rejects a %s Live Patch proof with substituted %s identity",
+  async (livePatchReconciliation, field) => {
+    const { scenario } = await createActivatedScenario(
+      {
+        livePatchProofSubstitution: { field, seam: "runtime" },
+        livePatchReconciliation,
+        now: "2026-10-02T14:52:00.000Z",
+        providerPlan: [{ kind: "live-patch.apply" }],
+      },
+      temporaryDirectories,
+    );
+    const admission = await scenario.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState: "The exact trusted application state is restored.",
+      outcome: "restore",
+      ownerId: "owner",
+      requestId: `runtime-live-patch-substitution-${livePatchReconciliation}-${field}`,
+      target,
+    });
+    const record = await scenario.readTask("administrative-task-1");
+
+    expect({
+      admission,
+      completedEvidence: record?.evidence.filter(
+        (event) => event.kind === "administrative.operation.completed",
+      ),
+      taskStatus: record?.task.status,
+    }).toMatchObject({
+      admission: { decision: "denied" },
+      completedEvidence: [],
+      taskStatus: "denied",
+    });
+
+    await scenario.close();
+  },
+);
+
+test.each(livePatchProofSubstitutionCases)(
+  "SQLite rejects a %s Live Patch proof with substituted %s identity before immutable completion evidence",
+  async (livePatchReconciliation, field) => {
+    const operationCompletionStoreAttempts: string[] = [];
+    const { scenario } = await createActivatedScenario(
+      {
+        livePatchProofSubstitution: { field, seam: "store" },
+        livePatchReconciliation,
+        now: "2026-10-02T14:53:00.000Z",
+        operationCompletionStoreAttempts,
+        providerPlan: [{ kind: "live-patch.apply" }],
+      },
+      temporaryDirectories,
+    );
+    const admission = await scenario.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState: "The exact trusted application state is restored.",
+      outcome: "restore",
+      ownerId: "owner",
+      requestId: `store-live-patch-substitution-${livePatchReconciliation}-${field}`,
+      target,
+    });
+    const record = await scenario.readTask("administrative-task-1");
+
+    expect({
+      admission,
+      completedEvidence: record?.evidence.filter(
+        (event) => event.kind === "administrative.operation.completed",
+      ),
+      operationCompletionStoreAttempts,
+      taskStatus: record?.task.status,
+    }).toMatchObject({
+      admission: { decision: "admitted" },
+      completedEvidence: [],
+      operationCompletionStoreAttempts: [field],
+      taskStatus: "running",
+    });
+
+    await scenario.close();
+  },
+);
+
 test.each(
   [
     "details-kind",
@@ -3372,15 +3619,21 @@ test.each(
 });
 
 test.each([
-  ["exact", true],
-  ["forged", false],
+  ["captured", "exact", true],
+  ["removed", "exact", true],
+  ["captured", "forged", false],
 ] as const)(
-  "SQLite accepts %s Live Patch completion replay only when it matches the durable result",
-  async (operationCompletionReplay, expectedReplayOutcome) => {
+  "SQLite accepts an exact %s Live Patch completion replay and rejects a %s mismatch",
+  async (
+    livePatchReconciliation,
+    operationCompletionReplay,
+    expectedReplayOutcome,
+  ) => {
     const operationCompletionReplayOutcomes: boolean[] = [];
     const { scenario } = await createActivatedScenario(
       {
         now: "2026-10-02T14:57:00.000Z",
+        livePatchReconciliation,
         operationCompletionReplay,
         operationCompletionReplayOutcomes,
         providerPlan: [{ kind: "live-patch.apply" }],
@@ -3392,7 +3645,7 @@ test.each([
       intendedState: "The urgent production behavior is restored.",
       outcome: "restore",
       ownerId: "owner",
-      requestId: `live-patch-completion-replay-${operationCompletionReplay}`,
+      requestId: `live-patch-completion-replay-${livePatchReconciliation}-${operationCompletionReplay}`,
       target,
     });
     const completedEvents = (
@@ -3419,7 +3672,9 @@ test.each([
   },
 );
 
-test("a Live Patch crash after its effect replays the original durable safety proof", async () => {
+test.each(["captured", "removed"] as const)(
+  "a Live Patch crash after its effect replays the original durable %s safety proof",
+  async (livePatchReconciliation) => {
   const clock = { current: "2026-10-02T15:00:00.000Z" };
   const effectLedger = new Set<string>();
   const livePatchProofLedger = new Map();
@@ -3429,6 +3684,7 @@ test("a Live Patch crash after its effect replays the original durable safety pr
       clock,
       crashAfterFirstEffect: true,
       effectLedger,
+      livePatchReconciliation,
       livePatchProofLedger,
       now: clock.current,
       operationAttempts,
@@ -3441,7 +3697,7 @@ test("a Live Patch crash after its effect replays the original durable safety pr
     intendedState: "The urgent production behavior is restored.",
     outcome: "restore",
     ownerId: "owner",
-    requestId: "live-patch-post-effect-crash-request",
+    requestId: `live-patch-post-effect-crash-${livePatchReconciliation}`,
     target,
   });
   await firstProcess.close();
@@ -3453,6 +3709,7 @@ test("a Live Patch crash after its effect replays the original durable safety pr
     effectLedger,
     identifierNamespace: "live-restart-",
     livePatchProofLedger,
+    livePatchReconciliation,
     now: clock.current,
     operationAttempts,
     providerPlan: [{ kind: "live-patch.apply" }],
@@ -3497,4 +3754,5 @@ test("a Live Patch crash after its effect replays the original durable safety pr
   });
 
   await restartedProcess.close();
-});
+  },
+);

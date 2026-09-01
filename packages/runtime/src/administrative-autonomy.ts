@@ -20,13 +20,13 @@ import {
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
   administrativeTaskTargetBinding,
-  administrativeTaskTargetFingerprint,
   administrativeTaskTargetSchema,
   administrativeTaskTargetRequestSchema,
   delegationIdSchema,
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
   livePatchRollbackActivationAttemptMilliseconds,
+  isLivePatchMutationProofBoundToRequest,
   administrativeLivePatchRollbackActivatorIdentitySchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
@@ -2296,10 +2296,7 @@ function validateLivePatchResult(
     verificationObserved > reconciliationObserved ||
     reconciliationObserved > timing.completed ||
     timing.completed >= rollbackDeadline ||
-    proof.reconciliation.registeredCodebaseId !==
-      request.target.registeredCodebaseId ||
-    proof.reconciliation.targetFingerprint !==
-      administrativeTaskTargetFingerprint(request.target)
+    !isLivePatchMutationProofBoundToRequest(request, result)
   ) {
     throw new Error("Live Patch safety proof is not in a valid time order");
   }

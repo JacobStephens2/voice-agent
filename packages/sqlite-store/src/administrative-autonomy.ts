@@ -30,6 +30,7 @@ import {
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationFailureReasonSchema,
   livePatchRollbackActivationResultSchema,
+  isLivePatchMutationProofBoundToRequest,
   pendingLivePatchRollbackActivationSchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeAuthoritySnapshot,
@@ -171,6 +172,7 @@ interface LivePatchRollbackRow {
 }
 
 interface MaturedLivePatchRollbackRow extends LivePatchRollbackRow {
+  readonly operation_request_json: string;
   readonly operation_result_json: string;
 }
 
@@ -231,10 +233,7 @@ function validateLivePatchCompletion(
   if (request.kind !== "live-patch.apply") return;
   if (
     result.kind !== request.kind ||
-    result.mutationProof.reconciliation.registeredCodebaseId !==
-      request.target.registeredCodebaseId ||
-    result.mutationProof.reconciliation.targetFingerprint !==
-      administrativeTaskTargetBinding(request.target).targetFingerprint
+    !isLivePatchMutationProofBoundToRequest(request, result)
   ) {
     throw new Error("Live Patch completion changed its trusted target");
   }
@@ -590,6 +589,7 @@ export function createSqliteAdministrativeAutonomyStore(
     SELECT rollbacks.operation_id, rollbacks.task_id, rollbacks.status,
       rollbacks.request_json, rollbacks.result_json, rollbacks.attempt_count,
       rollbacks.last_error, rollbacks.next_attempt_at,
+      operations.request_json AS operation_request_json,
       operations.result_json AS operation_result_json
     FROM administrative_live_patch_rollbacks AS rollbacks
     JOIN administrative_operations AS operations
@@ -867,32 +867,40 @@ export function createSqliteAdministrativeAutonomyStore(
       throw new Error("Live Patch rollback expiry projection changed concurrently");
     }
     for (const rollback of maturedRollbacks) {
-      const request = livePatchRollbackActivationRequestSchema.parse(
+      const rollbackRequest = livePatchRollbackActivationRequestSchema.parse(
         JSON.parse(rollback.request_json),
+      );
+      const operationRequest = administrativeOperationRequestSchema.parse(
+        JSON.parse(rollback.operation_request_json),
       );
       const completedOperation = administrativeOperationResultSchema.parse(
         JSON.parse(rollback.operation_result_json),
       );
       if (
+        operationRequest.kind !== "live-patch.apply" ||
         completedOperation.kind !== "live-patch.apply" ||
-        completedOperation.operationId !== request.operationId ||
-        completedOperation.mutationProof.reconciliation.registeredCodebaseId !==
-          request.target.registeredCodebaseId ||
-        completedOperation.mutationProof.reconciliation.targetFingerprint !==
-          request.targetFingerprint
+        completedOperation.operationId !== rollbackRequest.operationId ||
+        !isLivePatchMutationProofBoundToRequest(
+          operationRequest,
+          completedOperation,
+        ) ||
+        !sameAdministrativeTaskTargetBinding(
+          rollbackRequest,
+          administrativeTaskTargetBinding(operationRequest.target),
+        )
       ) {
         throw new Error(
           "A Live Patch rollback can expire only after its verified Operation completed",
         );
       }
-      appendEvents(request.taskId, [
+      appendEvents(rollbackRequest.taskId, [
         {
           details: {
-            operationId: request.operationId,
+            operationId: rollbackRequest.operationId,
             reconciledAt: expiredAt,
-            rollbackDeadline: request.rollbackDeadline,
+            rollbackDeadline: rollbackRequest.rollbackDeadline,
           },
-          id: rollbackWindowExpiryEventId(request.operationId),
+          id: rollbackWindowExpiryEventId(rollbackRequest.operationId),
           kind: "administrative.live-patch.rollback-window-expired",
           occurredAt: expiredAt,
           summary: "The armed Live Patch rollback window expired normally.",
@@ -1709,9 +1717,7 @@ export function createSqliteAdministrativeAutonomyStore(
           !sameAdministrativeTaskTargetBinding(
             activationRequest,
             administrativeTaskTargetBinding(request.target),
-          ) ||
-          result.mutationProof.reconciliation.targetFingerprint !==
-            activationRequest.targetFingerprint
+          )
         ) {
           throw new Error("Live Patch rollback proof changed after arming");
         }

@@ -345,7 +345,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
   await authentication.close();
 });
 
-test("voice and a Trusted Browser Session cannot activate a policy that survives restart", async () => {
+test("voice and a Trusted Browser Session cannot activate a policy that survives simulated service-process recovery", async () => {
   const { databasePath } = await createScenarioDatabase(temporaryDirectories);
   const firstProcess = await createAdministrativeAutonomyScenario({
     databasePath,

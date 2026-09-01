@@ -9,13 +9,16 @@ import {
   administrativeTaskIdSchema,
   administrativeTaskTargetBinding,
   administrativeTaskTargetFingerprint,
+  administrativeTaskTargetFingerprintSchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
   credentialCustodyBoundaryPaths,
   delegationIdSchema,
   livePatchMutationProofSchema,
+  livePatchCaptureBranch,
   livePatchRollbackActivationResultSchema,
   livePatchRollbackWindowMilliseconds,
+  registeredCodebaseIdSchema,
   type AdministrativeEvidenceRecord,
   type AdministrativeExecutionManifest,
   type AdministrativeOperationRequest,
@@ -160,6 +163,29 @@ interface ScenarioOperationResultContext {
   readonly livePatchProof: LivePatchMutationProof | undefined;
   readonly omitLivePatchReconciliation: boolean;
 }
+
+export type LivePatchProofSubstitution =
+  | "baseline-registered-codebase-id"
+  | "baseline-target-fingerprint"
+  | "capture-base-branch"
+  | "capture-base-commit"
+  | "capture-candidate-repository"
+  | "capture-head-branch"
+  | "capture-head-commit"
+  | "capture-operation-id"
+  | "capture-pull-request-number"
+  | "capture-pull-request-url"
+  | "capture-registered-codebase-id"
+  | "capture-repository"
+  | "capture-target-fingerprint"
+  | "removal-operation-id"
+  | "removal-production-branch"
+  | "removal-production-commit"
+  | "removal-registered-codebase-id"
+  | "removal-repository"
+  | "removal-target-fingerprint"
+  | "verification-registered-codebase-id"
+  | "verification-target-fingerprint";
 
 type ScenarioOperationRequestFor<
   Kind extends AdministrativeOperationRequest["kind"],
@@ -410,6 +436,11 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly livePatchRollbackArmLeadMilliseconds?: number;
   readonly livePatchRollbackDurationMilliseconds?: number;
   readonly livePatchProofLedger?: Map<string, LivePatchMutationProof>;
+  readonly livePatchProofSubstitution?: {
+    readonly field: LivePatchProofSubstitution;
+    readonly seam: "runtime" | "store";
+  };
+  readonly livePatchReconciliation?: "captured" | "removed";
   readonly loseFirstOperationSettlementResponse?: boolean;
   readonly now: string;
   readonly onOperationStart?: () => void;
@@ -542,6 +573,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
       : {}),
     ...(options.operationCompletionEvidenceForgery !== undefined ||
+    options.livePatchProofSubstitution?.seam === "store" ||
     options.operationCompletionReplay !== undefined ||
     options.operationCompletionStoreAttempts !== undefined
       ? {
@@ -557,21 +589,41 @@ export async function createAdministrativeAutonomyScenario(options: {
             const forgedResult = forgeAdministrativeOperationResult(
               input.result,
             );
+            const substitutedResult =
+              options.livePatchProofSubstitution?.seam === "store"
+                ? substituteLivePatchProof(
+                    input.result,
+                    options.livePatchProofSubstitution.field,
+                  )
+                : input.result;
+            const inputWithSubstitution = {
+              ...input,
+              completedEvent: {
+                ...input.completedEvent,
+                details: {
+                  ...input.completedEvent.details,
+                  result: substitutedResult,
+                },
+              },
+              result: substitutedResult,
+            };
             const submittedInput =
               options.operationCompletionEvidenceForgery !== undefined &&
               !forgedOperationCompletionEvidence
                 ? {
-                    ...input,
+                    ...inputWithSubstitution,
                     completedEvent: forgeAdministrativeCompletionEvent(
-                      input.completedEvent,
+                      inputWithSubstitution.completedEvent,
                       forgedResult,
                       options.operationCompletionEvidenceForgery,
                     ),
                   }
-                : input;
+                : inputWithSubstitution;
             forgedOperationCompletionEvidence = true;
             options.operationCompletionStoreAttempts?.push(
-              options.operationCompletionEvidenceForgery ?? "unmodified",
+              options.operationCompletionEvidenceForgery ??
+                options.livePatchProofSubstitution?.field ??
+                "unmodified",
             );
             const record = await store.completeOperation(submittedInput);
             if (options.operationCompletionReplay !== undefined) {
@@ -717,6 +769,7 @@ export async function createAdministrativeAutonomyScenario(options: {
             armedAt,
             effectPerformedAt,
             rollbackDeadline,
+            options.livePatchReconciliation ?? "captured",
           );
           await execution.fence.activateLivePatchRollbackWindow({
             armedAt,
@@ -775,13 +828,19 @@ export async function createAdministrativeAutonomyScenario(options: {
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
       await options.beforeExecutorResultReturn?.(request);
-      return scenarioOperationResult(request, {
+      const result = scenarioOperationResult(request, {
         common,
         delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
         livePatchProof,
         omitLivePatchReconciliation:
           options.omitLivePatchReconciliation ?? false,
       });
+      return options.livePatchProofSubstitution?.seam === "runtime"
+        ? substituteLivePatchProof(
+            result,
+            options.livePatchProofSubstitution.field,
+          )
+        : result;
     },
   };
   const provider = {
@@ -1318,12 +1377,30 @@ function createLivePatchProof(
   armedAt: AdministrativeTimestamp,
   mutationStartedAt: AdministrativeTimestamp,
   rollbackDeadline: AdministrativeTimestamp,
+  reconciliationKind: "captured" | "removed",
 ): LivePatchMutationProof {
+  const targetFingerprint = administrativeTaskTargetFingerprint(request.target);
+  const patch = {
+    intendedState: request.patch.intendedState,
+    operationId: request.operationId,
+    registeredCodebaseId: request.target.registeredCodebaseId,
+    targetFingerprint,
+  };
+  const candidate = {
+    branch: livePatchCaptureBranch(request.operationId),
+    commit: "a".repeat(40),
+    kind: "isolated-live-patch-candidate",
+    patch,
+    repository: request.target.registeredCodebase.repository,
+  };
   return livePatchMutationProofSchema.parse({
+    candidate,
     healthCheck: {
       kind: "registered-application-health",
       observedAt: armedAt,
+      registeredCodebaseId: request.target.registeredCodebaseId,
       status: "healthy",
+      targetFingerprint,
     },
     independentRollback: {
       armedBeforeMutation: true,
@@ -1332,22 +1409,154 @@ function createLivePatchProof(
       rollbackDeadline,
     },
     mutationStartedAt,
-    reconciliation: {
-      baseBranch: "registered-production-branch",
-      kind: "captured-as-isolated-pull-request",
-      observedAt: mutationStartedAt,
-      productionMutationRetained: true,
-      reconciledPatch: "accepted-live-patch-diff",
-      registeredCodebaseId: request.target.registeredCodebaseId,
-      state: "open",
-      targetFingerprint: administrativeTaskTargetFingerprint(request.target),
-      verifiedBy: "independent-reconciliation-observer",
-    },
+    reconciliation:
+      reconciliationKind === "captured"
+        ? {
+            capture: {
+              baseBranch: request.target.registeredCodebase.productionBranch,
+              baseCommit:
+                request.target.registeredCodebase.initialProductionCommit,
+              candidate,
+              kind: "isolated-live-patch-capture",
+              pullRequestNumber: 83,
+              pullRequestUrl: `https://github.com/${request.target.registeredCodebase.repository}/pull/83`,
+              repository: request.target.registeredCodebase.repository,
+              state: "open",
+            },
+            kind: "captured-as-isolated-pull-request",
+            observedAt: mutationStartedAt,
+            productionMutationRetained: true,
+            verifiedBy: "independent-reconciliation-observer",
+          }
+        : {
+            candidate,
+            kind: "removed-from-production",
+            observedAt: mutationStartedAt,
+            productionBranch:
+              request.target.registeredCodebase.productionBranch,
+            productionCommit:
+              request.target.registeredCodebase.initialProductionCommit,
+            productionMutationRetained: false,
+            verifiedBy: "independent-reconciliation-observer",
+          },
     verification: {
       kind: "independent-application-health-proof",
       observedAt: mutationStartedAt,
+      registeredCodebaseId: request.target.registeredCodebaseId,
       status: "healthy",
+      targetFingerprint,
     },
+  });
+}
+
+function substituteLivePatchProof(
+  result: AdministrativeOperationResult,
+  field: LivePatchProofSubstitution,
+): AdministrativeOperationResult {
+  if (result.kind !== "live-patch.apply") return result;
+  const proof = structuredClone(result.mutationProof);
+  const foreignFingerprint = administrativeTaskTargetFingerprintSchema.parse(
+    "f".repeat(64),
+  );
+  switch (field) {
+    case "baseline-registered-codebase-id":
+      proof.healthCheck.registeredCodebaseId =
+        registeredCodebaseIdSchema.parse("other-codebase");
+      break;
+    case "baseline-target-fingerprint":
+      proof.healthCheck.targetFingerprint = foreignFingerprint;
+      break;
+    case "verification-registered-codebase-id":
+      proof.verification.registeredCodebaseId =
+        registeredCodebaseIdSchema.parse("other-codebase");
+      break;
+    case "verification-target-fingerprint":
+      proof.verification.targetFingerprint = foreignFingerprint;
+      break;
+    default: {
+      const reconciliation = proof.reconciliation;
+      if (reconciliation.kind === "captured-as-isolated-pull-request") {
+        const { capture } = reconciliation;
+        switch (field) {
+          case "capture-base-branch":
+            capture.baseBranch = "other";
+            break;
+          case "capture-base-commit":
+            capture.baseCommit = "b".repeat(40);
+            break;
+          case "capture-head-branch":
+            capture.candidate.branch = "administrative/other";
+            break;
+          case "capture-head-commit":
+            capture.candidate.commit = "b".repeat(40);
+            break;
+          case "capture-operation-id":
+            capture.candidate.patch.operationId =
+              administrativeOperationIdSchema.parse(
+                "administrative-operation-other",
+              );
+            break;
+          case "capture-pull-request-number":
+            capture.pullRequestNumber = 84;
+            break;
+          case "capture-pull-request-url":
+            capture.pullRequestUrl =
+              "https://github.com/JacobStephens2/voice-agent/pull/84";
+            break;
+          case "capture-registered-codebase-id":
+            capture.candidate.patch.registeredCodebaseId =
+              registeredCodebaseIdSchema.parse("other-codebase");
+            break;
+          case "capture-candidate-repository":
+            capture.candidate.repository = "JacobStephens2/other";
+            break;
+          case "capture-repository":
+            capture.repository = "JacobStephens2/other";
+            break;
+          case "capture-target-fingerprint":
+            capture.candidate.patch.targetFingerprint = foreignFingerprint;
+            break;
+          default:
+            throw new Error(
+              `The ${field} substitution requires a removed reconciliation`,
+            );
+        }
+      } else {
+        switch (field) {
+          case "removal-operation-id":
+            reconciliation.candidate.patch.operationId =
+              administrativeOperationIdSchema.parse(
+                "administrative-operation-other",
+              );
+            break;
+          case "removal-production-branch":
+            reconciliation.productionBranch = "other";
+            break;
+          case "removal-production-commit":
+            reconciliation.productionCommit = "b".repeat(40);
+            break;
+          case "removal-registered-codebase-id":
+            reconciliation.candidate.patch.registeredCodebaseId =
+              registeredCodebaseIdSchema.parse("other-codebase");
+            break;
+          case "removal-repository":
+            reconciliation.candidate.repository = "JacobStephens2/other";
+            break;
+          case "removal-target-fingerprint":
+            reconciliation.candidate.patch.targetFingerprint =
+              foreignFingerprint;
+            break;
+          default:
+            throw new Error(
+              `The ${field} substitution requires a captured reconciliation`,
+            );
+        }
+      }
+    }
+  }
+  return administrativeOperationResultSchema.parse({
+    ...result,
+    mutationProof: proof,
   });
 }
 
@@ -1359,8 +1568,8 @@ function forgeAdministrativeOperationResult(
     ...result,
     mutationProof: {
       ...result.mutationProof,
-      reconciliation: {
-        ...result.mutationProof.reconciliation,
+      healthCheck: {
+        ...result.mutationProof.healthCheck,
         targetFingerprint: "0".repeat(64),
       },
     },

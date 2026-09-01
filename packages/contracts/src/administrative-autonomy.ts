@@ -1084,12 +1084,53 @@ const administrativeOperationResultFields = {
   summary: z.string().min(1).max(240),
 };
 
+const livePatchTargetProofFields = {
+  registeredCodebaseId: registeredCodebaseIdSchema,
+  targetFingerprint: administrativeTaskTargetFingerprintSchema,
+};
+
+const livePatchIdentitySchema = z
+  .object({
+    intendedState: administrativeIntendedStateSchema,
+    operationId: administrativeOperationIdSchema,
+    ...livePatchTargetProofFields,
+  })
+  .strict();
+
+const livePatchCandidateSchema = z
+  .object({
+    branch: z.string().min(1).max(200),
+    commit: delegationCommitSchema,
+    kind: z.literal("isolated-live-patch-candidate"),
+    patch: livePatchIdentitySchema,
+    repository: administrativeRegisteredCodebaseSchema.shape.repository,
+  })
+  .strict();
+
+const isolatedLivePatchCaptureSchema = z
+  .object({
+    baseBranch: z.string().min(1).max(200),
+    baseCommit: delegationCommitSchema,
+    candidate: livePatchCandidateSchema,
+    kind: z.literal("isolated-live-patch-capture"),
+    pullRequestNumber: z.number().int().positive(),
+    pullRequestUrl: z
+      .url()
+      .startsWith("https://github.com/")
+      .max(500),
+    repository: administrativeRegisteredCodebaseSchema.shape.repository,
+    state: z.literal("open"),
+  })
+  .strict();
+
 export const livePatchMutationProofSchema = z
   .object({
+    candidate: livePatchCandidateSchema,
     healthCheck: z
       .object({
         kind: z.literal("registered-application-health"),
         observedAt: timestampSchema,
+        ...livePatchTargetProofFields,
         status: z.literal("healthy"),
       })
       .strict(),
@@ -1105,24 +1146,22 @@ export const livePatchMutationProofSchema = z
     reconciliation: z.discriminatedUnion("kind", [
       z
         .object({
-          baseBranch: z.literal("registered-production-branch"),
+          capture: isolatedLivePatchCaptureSchema,
           kind: z.literal("captured-as-isolated-pull-request"),
           observedAt: timestampSchema,
           productionMutationRetained: z.literal(true),
-          reconciledPatch: z.literal("accepted-live-patch-diff"),
-          registeredCodebaseId: registeredCodebaseIdSchema,
-          state: z.literal("open"),
-          targetFingerprint: administrativeTaskTargetFingerprintSchema,
           verifiedBy: z.literal("independent-reconciliation-observer"),
         })
         .strict(),
       z
         .object({
+          candidate: livePatchCandidateSchema,
           kind: z.literal("removed-from-production"),
           observedAt: timestampSchema,
+          productionBranch:
+            administrativeRegisteredCodebaseSchema.shape.productionBranch,
+          productionCommit: delegationCommitSchema,
           productionMutationRetained: z.literal(false),
-          registeredCodebaseId: registeredCodebaseIdSchema,
-          targetFingerprint: administrativeTaskTargetFingerprintSchema,
           verifiedBy: z.literal("independent-reconciliation-observer"),
         })
         .strict(),
@@ -1131,6 +1170,7 @@ export const livePatchMutationProofSchema = z
       .object({
         kind: z.literal("independent-application-health-proof"),
         observedAt: timestampSchema,
+        ...livePatchTargetProofFields,
         status: z.literal("healthy"),
       })
       .strict(),
@@ -1203,6 +1243,74 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
 export type AdministrativeOperationResult = z.infer<
   typeof administrativeOperationResultSchema
 >;
+
+export function livePatchCaptureBranch(
+  operationId: AdministrativeOperationId,
+): string {
+  return `administrative/live-patch-${operationId}`;
+}
+
+/** Match every independently observed proof identity to one immutable request. */
+export function isLivePatchMutationProofBoundToRequest(
+  request: Extract<AdministrativeOperationRequest, { kind: "live-patch.apply" }>,
+  result: Extract<AdministrativeOperationResult, { kind: "live-patch.apply" }>,
+): boolean {
+  const { registeredCodebase } = request.target;
+  const targetFingerprint = administrativeTaskTargetFingerprint(request.target);
+  const { candidate, healthCheck, reconciliation, verification } =
+    result.mutationProof;
+  const targetProofMatches = (
+    proof: Pick<
+      typeof healthCheck,
+      "registeredCodebaseId" | "targetFingerprint"
+    >,
+  ) =>
+    proof.registeredCodebaseId === request.target.registeredCodebaseId &&
+    proof.targetFingerprint === targetFingerprint;
+  const reconciledCandidate =
+    reconciliation.kind === "captured-as-isolated-pull-request"
+      ? reconciliation.capture.candidate
+      : reconciliation.candidate;
+  const candidateMatchesRequest = (value: typeof candidate) =>
+    value.branch === livePatchCaptureBranch(request.operationId) &&
+    value.repository === registeredCodebase.repository &&
+    value.patch.intendedState === request.patch.intendedState &&
+    value.patch.operationId === request.operationId &&
+    targetProofMatches(value.patch);
+  const candidateMatches =
+    candidateMatchesRequest(candidate) &&
+    candidateMatchesRequest(reconciledCandidate) &&
+    candidate.branch === reconciledCandidate.branch &&
+    candidate.commit === reconciledCandidate.commit &&
+    candidate.repository === reconciledCandidate.repository;
+  if (
+    result.operationId !== request.operationId ||
+    !targetProofMatches(healthCheck) ||
+    !targetProofMatches(verification) ||
+    !candidateMatches
+  ) {
+    return false;
+  }
+  if (reconciliation.kind === "removed-from-production") {
+    return (
+      reconciliation.productionBranch ===
+        registeredCodebase.productionBranch &&
+      reconciliation.productionCommit ===
+        registeredCodebase.initialProductionCommit
+    );
+  }
+  const pullRequestPrefix = `https://github.com/${registeredCodebase.repository}/pull/`;
+  const expectedHeadBranch = livePatchCaptureBranch(request.operationId);
+  const { capture } = reconciliation;
+  return (
+    capture.baseBranch === registeredCodebase.productionBranch &&
+    capture.baseCommit === registeredCodebase.initialProductionCommit &&
+    capture.candidate.branch === expectedHeadBranch &&
+    capture.candidate.repository === registeredCodebase.repository &&
+    capture.repository === registeredCodebase.repository &&
+    capture.pullRequestUrl === `${pullRequestPrefix}${capture.pullRequestNumber}`
+  );
+}
 
 export const administrativeTaskSchema = z
   .object({
