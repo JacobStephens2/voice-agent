@@ -196,8 +196,9 @@ RECORD=/var/lib/voice-agent-evidence/grok-enrollment.json
 BRIEF_DIR=/var/lib/voice-grok/brief
 RUN_ROOT=/var/lib/voice-grok/run
 EVIDENCE=/var/lib/voice-agent-evidence
-TOKEN_BROKER=/usr/local/libexec/voice-agent/grok-token-broker
-TOKEN_HELPER=/usr/local/libexec/voice-agent/grok-token-helper
+TOKEN_BROKER_DIRECTORY=/usr/local/libexec/voice-agent
+TOKEN_BROKER=$TOKEN_BROKER_DIRECTORY/grok-token-broker
+TOKEN_HELPER=$TOKEN_BROKER_DIRECTORY/grok-token-helper
 
 if [[ ! -e /opt/voice-agent/current ]]; then
   warn "Run this wizard on the Agent Host after promoting the reviewed Voice Agent release."
@@ -273,6 +274,19 @@ require() {
   REQUIREMENTS_MISSING=$((REQUIREMENTS_MISSING + 1))
 }
 
+# Execute the Auth Crossing as the identity that has to reach it, before a
+# credential is required. Zero means the probe answered; 10-14 are the
+# helper's documented credential and crossing statuses. Any other status means
+# the executor did not reach a broker/helper pair implementing this contract.
+token_broker_is_reachable() {
+  local status=0
+  sudo -u voice-grok "$TOKEN_BROKER" --probe >/dev/null 2>&1 || status=$?
+  case "$status" in
+    0|10|11|12|13|14) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 stage "Verify the enrollment boundary"
 say "The reviewed release owns provisioning; this stage verifies it without broadening authority."
 SETUP_REMEDY="Run the one-time setup block at the top of docs/operations/grok-enrollment.md as root."
@@ -284,8 +298,9 @@ require "the pinned Grok Build runner is installed at $GROK" \
   sudo test -x "$GROK"
 require "the reviewed requirements layer is installed at $GROK_REQUIREMENTS" \
   "$SETUP_REMEDY" sudo test -r "$GROK_REQUIREMENTS"
-require "the token broker is pinned at $TOKEN_BROKER" "$AUTHORITY_REMEDY" \
-  sudo test -x "$TOKEN_BROKER"
+require "voice-grok can execute the token broker through $TOKEN_BROKER_DIRECTORY" \
+  "Restore the reviewed directory mode with: sudo chmod 0755 /usr/local/libexec/voice-agent. If the broker is absent, $AUTHORITY_REMEDY" \
+  token_broker_is_reachable
 require "the token helper is pinned at $TOKEN_HELPER" "$AUTHORITY_REMEDY" \
   sudo test -x "$TOKEN_HELPER"
 require "the contract unit is installed" "$AUTHORITY_REMEDY" \

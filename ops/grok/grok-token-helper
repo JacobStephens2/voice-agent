@@ -8,7 +8,9 @@
 # Delegation has a credential to run on without ever holding one.
 #
 # Installed at /usr/local/libexec/voice-agent/grok-token-helper, owned by root,
-# mode 0755. Reached only through grok-token-broker under one sudoers rule.
+# mode 0755, inside a root-owned /usr/local/libexec/voice-agent directory with
+# mode 0755 so the voice-grok executor can traverse it. Reached only through
+# grok-token-broker under one sudoers rule.
 #
 # There is no first-party command that prints a token: grok 1.0.13 has no
 # `auth` subcommand at all. The credential file is the interface, and its shape

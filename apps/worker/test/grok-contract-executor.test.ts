@@ -182,6 +182,22 @@ test("a login the runner could not renew pauses before the model is spawned", as
   await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
 });
 
+test("a token broker the executor cannot execute pauses as crossing drift", async () => {
+  const host = await stageHost({
+    brokerReachability: "unexecutable",
+    inspection: "reviewed",
+  });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining(
+      "executor identity could not execute the token broker",
+    ),
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/login`, "utf8")).rejects.toThrow();
+});
+
 test("an auth crossing that is not the reviewed one pauses before any request", async () => {
   const host = await stageHost({ authLayer: "another-broker", inspection: "reviewed" });
 
@@ -291,6 +307,7 @@ interface StagedHost {
 
 async function stageHost(options: {
   readonly authLayer?: "another-broker";
+  readonly brokerReachability?: "unexecutable";
   readonly credential?: "expired" | "renewed" | "too-short";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
@@ -409,7 +426,10 @@ async function stageHost(options: {
       "",
     ].join("\n"),
   );
-  await chmod(tokenBrokerPath, 0o755);
+  await chmod(
+    tokenBrokerPath,
+    options.brokerReachability === "unexecutable" ? 0o644 : 0o755,
+  );
   const authLayerPath = `${root}/run-requirements.toml`;
   await writeFile(
     authLayerPath,

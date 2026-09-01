@@ -41,3 +41,20 @@ test("the wizard files each Enrollment Event through the reviewed CLI", () => {
 test("the wizard runs the contract test under the purpose that does not need a proof", () => {
   expect(wizard).toContain('"purpose": "contract-test"');
 });
+
+test("the wizard proves the executor can reach the token broker before enrollment", () => {
+  const prerequisites = wizard.slice(
+    wizard.indexOf('stage "Verify the enrollment boundary"'),
+    wizard.indexOf('stage "Pin the runner"'),
+  );
+
+  expect(wizard).toContain(
+    'sudo -u voice-grok "$TOKEN_BROKER" --probe',
+  );
+  expect(wizard).toContain("0|10|11|12|13|14");
+  expect(prerequisites).toContain("token_broker_is_reachable");
+  expect(prerequisites).toContain("/usr/local/libexec/voice-agent");
+  expect(prerequisites).toContain(
+    "sudo chmod 0755 /usr/local/libexec/voice-agent",
+  );
+});

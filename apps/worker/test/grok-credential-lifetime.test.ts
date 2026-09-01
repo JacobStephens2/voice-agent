@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import {
   describeCredentialRefusal,
   describeCredentialSeedingRefusal,
+  describeUnreachableAuthCrossing,
   grokCredentialProbeExitCodes,
 } from "../src/grok-credential-lifetime.ts";
 
@@ -105,6 +106,16 @@ test("an exit code this contract does not recognise still pauses", () => {
     describeCredentialRefusal({ ...answered, exitCode: 1, timedOut: false }),
   ).toMatchObject({
     reason: "provider-authentication",
+    state: "paused",
+  });
+});
+
+test("an unexecutable broker is crossing drift, not a custody refusal", () => {
+  expect(describeUnreachableAuthCrossing()).toEqual({
+    detail:
+      "The executor identity could not execute the token broker; the task waits for the Auth Crossing's executable and parent-directory modes to be restored.",
+    evidence: null,
+    reason: "provider-contract-drift",
     state: "paused",
   });
 });
