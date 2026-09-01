@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  chown,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -301,6 +310,10 @@ test("a provider that refused the subscription's usage pauses the task", async (
 interface StagedHost {
   readonly authLayerPath: string;
   readonly enrollmentPath: string;
+  readonly executorIdentity: {
+    readonly gid: number;
+    readonly uid: number;
+  } | null;
   readonly tokenBrokerPath: string;
   readonly evidenceRoot: string;
   readonly grokExecutable: string;
@@ -452,9 +465,25 @@ async function stageHost(options: {
   const evidenceRoot = `${root}/evidence`;
   await mkdir(runRoot, { recursive: true });
   await mkdir(evidenceRoot, { recursive: true });
+  // A root-run test process would otherwise traverse a 0600 directory through
+  // DAC override and turn the security scenario into a false success. Drop the
+  // executor child to a fixed unprivileged identity and give that identity the
+  // rest of its staged host. This stays local rather than sharing the wizard's
+  // fixture: that one tests shell-stage output through a sudo boundary, while
+  // this one tests the executor's durable outcome and writable run lifecycle.
+  const executorIdentity =
+    process.getuid?.() === 0 ? { gid: 65_534, uid: 65_534 } : null;
+  if (executorIdentity !== null) {
+    await changeTreeOwnership(
+      root,
+      executorIdentity.uid,
+      executorIdentity.gid,
+    );
+  }
   return {
     authLayerPath,
     enrollmentPath,
+    executorIdentity,
     evidenceRoot,
     grokExecutable,
     pin: installedPin,
@@ -484,6 +513,7 @@ function runExecutor(host: StagedHost, override: Partial<GrokContractDelegationB
         VOICE_AGENT_GROK_TOKEN_BROKER: host.tokenBrokerPath,
       },
       input: JSON.stringify({ ...brief, ...override }),
+      ...(host.executorIdentity ?? {}),
     },
   );
   expect(spawned.stderr).toBe("");
@@ -530,4 +560,20 @@ function provedEnrollment(runner: GrokRunnerPin) {
 
 async function digestOf(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+async function changeTreeOwnership(
+  path: string,
+  uid: number,
+  gid: number,
+): Promise<void> {
+  const entries = await readdir(path, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) await changeTreeOwnership(child, uid, gid);
+      await chown(child, uid, gid);
+    }),
+  );
+  await chown(path, uid, gid);
 }

@@ -14,6 +14,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -224,6 +225,7 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
     },
   });
 
+  expect((await stat(fixture.authority)).mode & 0o777).toBe(0o755);
   await expect(
     readFile(join(fixture.authority, "promote-release.sh"), "utf8"),
   ).resolves.toBe(fixture.reviewedPromoter);
