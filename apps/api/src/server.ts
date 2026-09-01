@@ -18,6 +18,8 @@ import { rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
+import { administrativeUnavailableExecutionManifest } from "@voice-agent/contracts";
+
 import {
   createUnixSocketBountywellController,
   createUnixSocketBountywellObserver,
@@ -63,10 +65,12 @@ const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
 // Issue #83's acceptance gate uses a fake provider/executor at the scenario
-// seam. ADR-0048 keeps real effects behind typed brokers delivered by #84,
-// #88, #90, and #92, so production truthfully exposes policy activation while
-// reporting administrative task execution unavailable until those adapters exist.
+// seam. ADR-0048 keeps real planning and effects behind Grok enrollment (#80),
+// the Administrative Publisher App (#82), typed observation brokers (#90), and
+// the Live Patch broker (#92). Production therefore binds activation to the
+// unavailable manifest and reports that exact prerequisite through status.
 const administrativeRuntime = createAdministrativeAutonomyRuntime({
+  executionManifest: administrativeUnavailableExecutionManifest,
   identifiers: {
     nextCapability: randomUUID,
     nextClaimId: randomUUID,

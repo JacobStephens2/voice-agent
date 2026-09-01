@@ -2,18 +2,22 @@ import { createHash } from "node:crypto";
 
 import {
   administrativeActiveExecutionMilliseconds,
+  administrativeExecutionManifestSchema,
   administrativeOperationRequestSchema,
   administrativeOperationResultSchema,
   administrativeProviderPlanSchema,
   administrativeIntendedStateSchema,
   administrativeRequestedOutcomeSchema,
   administrativeTaskTargetSchema,
+  livePatchRollbackWindowMilliseconds,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
+  type AdministrativeExecutionManifest,
   type AdministrativeOperationRequest,
   type AdministrativeOperationResult,
   type AdministrativePolicyActivationSource,
   type AdministrativePolicyStatus,
+  type AdministrativePublicationIntent,
   type AdministrativeRequestedOutcome,
   type AdministrativeTask,
   type AdministrativeTaskOutcome,
@@ -25,7 +29,7 @@ import {
   authorizeAdministrativePlan,
   authorizeAdministrativePolicyActivation,
   authorizeAdministrativeTaskConfirmation,
-  canonicalAdministrativeOutcome,
+  canonicalAdministrativeIntent,
 } from "@voice-agent/policy";
 
 export interface AdministrativePlanProvider {
@@ -58,6 +62,7 @@ export interface AdministrativeOperationExecution {
   readonly fence: {
     readonly activeExecutionDeadline: string;
     readonly claimId: string;
+    readonly executionStartedAt: string;
     readonly signal: AbortSignal;
   };
   readonly request: AdministrativeOperationRequest;
@@ -74,6 +79,13 @@ export interface AdministrativeIdentifiers {
 export type AdministrativePolicyActivationResult =
   | {
       readonly decision: "activated";
+      readonly policy: AdministrativePolicyStatus;
+    }
+  | { readonly decision: "denied"; readonly reason: string };
+
+export type AdministrativePolicySuspensionResult =
+  | {
+      readonly decision: "suspended";
       readonly policy: AdministrativePolicyStatus;
     }
   | { readonly decision: "denied"; readonly reason: string };
@@ -126,9 +138,14 @@ export interface AdministrativeAutonomyRuntime {
     readonly requestId: string;
     readonly target: AdministrativeTaskTarget;
   }): Promise<AdministrativeTaskPreparationResult>;
+  suspendPolicy(input: {
+    readonly expectedRevision: number;
+    readonly expectedStateVersion: number;
+  }): Promise<AdministrativePolicySuspensionResult>;
 }
 
 export function createAdministrativeAutonomyRuntime(options: {
+  readonly executionManifest: AdministrativeExecutionManifest;
   readonly executor?: AdministrativeOperationExecutor;
   readonly identifiers: AdministrativeIdentifiers;
   readonly now: () => string;
@@ -136,6 +153,24 @@ export function createAdministrativeAutonomyRuntime(options: {
   readonly provider?: AdministrativePlanProvider;
   readonly store: AdministrativeAutonomyStore;
 }): AdministrativeAutonomyRuntime {
+  const executionManifest = administrativeExecutionManifestSchema.parse(
+    options.executionManifest,
+  );
+  const adaptersConfigured =
+    options.provider !== undefined && options.executor !== undefined;
+  if ((options.provider === undefined) !== (options.executor === undefined)) {
+    throw new Error(
+      "Administrative planning and execution adapters must be configured together",
+    );
+  }
+  if (
+    adaptersConfigured ===
+    (executionManifest.provider.kind === "unavailable")
+  ) {
+    throw new Error(
+      "Administrative execution adapters do not match their capability manifest",
+    );
+  }
   const requestedOperationLeaseMilliseconds =
     options.operationLeaseMilliseconds ?? 30_000;
   if (
@@ -289,6 +324,15 @@ export function createAdministrativeAutonomyRuntime(options: {
         "Administrative Autonomy policy state is stale",
       );
     }
+    if (
+      !sameExecutionManifest(policy.executionManifest, task.executionManifest) ||
+      !sameExecutionManifest(policy.executionManifest, executionManifest)
+    ) {
+      return denyPlannedTask(
+        task.id,
+        "The active policy revision does not authorize the configured execution manifest.",
+      );
+    }
     if (options.provider === undefined || options.executor === undefined) {
       return denyPlannedTask(task.id, "Administrative execution is unavailable");
     }
@@ -329,14 +373,28 @@ export function createAdministrativeAutonomyRuntime(options: {
     if (planAuthorization.decision === "deny") {
       return denyPlannedTask(task.id, planAuthorization.reason);
     }
+    const unavailableKind = parsedPlan.data.find(
+      (operation) =>
+        !executionManifest.operationAdapters.some(
+          (adapter) => adapter.kind === operation.kind,
+        ),
+    );
+    if (unavailableKind !== undefined) {
+      return denyPlannedTask(
+        task.id,
+        `${unavailableKind.kind} is not present in the activated execution manifest`,
+      );
+    }
     const plannedAt = options.now();
     const operations = parsedPlan.data.map((operation) => {
       const request = operationRequest({
+        executionManifest,
+        intendedState: task.intendedState,
         kind: operation.kind,
         operationId: options.identifiers.nextOperationId(),
-        plannedAt,
         policyRevision: policy.revision,
         policyStateVersion: task.policyStateVersion,
+        publicationIntent: task.publicationIntent,
         target: task.target,
         taskId: task.id,
       });
@@ -397,6 +455,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     const claim = await options.store.claimNextOperation({
       claimId: options.identifiers.nextClaimId(),
       claimedAt,
+      executionManifest,
       leaseExpiresAt:
         activeExecutionDeadline === null || activeExecutionDeadline === undefined
           ? claimedAt
@@ -416,14 +475,23 @@ export function createAdministrativeAutonomyRuntime(options: {
         taskId,
         claim.reason === "stale-policy"
           ? "Administrative Autonomy policy state is stale"
-          : claim.reason === "active-execution-deadline"
-            ? "Administrative Task active-execution deadline elapsed"
-            : "Live Patch rollback deadline elapsed before mutation",
+          : claim.reason === "execution-manifest"
+            ? "The active policy revision does not authorize the configured execution manifest."
+            : "Administrative Task active-execution deadline elapsed",
       );
       return true;
     }
     if (claim.decision === "empty") {
       await completeAdministrativeTask(taskId);
+      return true;
+    }
+    if (
+      !sameExecutionManifest(claim.request.executionManifest, executionManifest)
+    ) {
+      await denyPlannedTask(
+        taskId,
+        "The active policy revision does not authorize the configured execution manifest.",
+      );
       return true;
     }
     const claimMaintenance = maintainOperationClaim({
@@ -433,11 +501,13 @@ export function createAdministrativeAutonomyRuntime(options: {
     });
     try {
       let untrustedResult: unknown;
+      const executionStartedAt = options.now();
       try {
         untrustedResult = await options.executor.execute({
           fence: {
             activeExecutionDeadline: claim.activeExecutionDeadline,
             claimId: claim.claimId,
+            executionStartedAt,
             signal: claimMaintenance.signal,
           },
           request: claim.request,
@@ -479,7 +549,12 @@ export function createAdministrativeAutonomyRuntime(options: {
       }
       let result: AdministrativeOperationResult;
       try {
-        result = operationResult(claim.request, untrustedResult, completedAt);
+        result = operationResult(
+          claim.request,
+          untrustedResult,
+          executionStartedAt,
+          completedAt,
+        );
       } catch {
         await denyPlannedTask(
           taskId,
@@ -567,6 +642,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           activatedAt,
           activatedBy: "fresh-passkey-action",
           definition: administrativeAutonomyPolicyDefinition,
+          executionManifest,
           revision,
         },
         stateVersion: current.stateVersion + 1,
@@ -657,12 +733,24 @@ export function createAdministrativeAutonomyRuntime(options: {
     },
     getPolicyStatus: () => options.store.readPolicyStatus(),
     async getStatus() {
+      const policy = await options.store.readPolicyStatus();
+      const manifestMismatch =
+        policy.status !== "inactive" &&
+        !sameExecutionManifest(policy.executionManifest, executionManifest);
       return {
-        policy: await options.store.readPolicyStatus(),
-        taskExecution:
-          options.provider !== undefined && options.executor !== undefined
-            ? { status: "adapters-configured" }
+        policy,
+        taskExecution: manifestMismatch
+          ? {
+              activeExecutionManifest: policy.executionManifest,
+              reason:
+                "The active policy revision does not authorize the configured execution manifest.",
+              runtimeExecutionManifest: executionManifest,
+              status: "activation-required",
+            }
+          : adaptersConfigured
+            ? { executionManifest, status: "adapters-configured" }
             : {
+                executionManifest,
                 reason:
                   "Typed administrative task execution adapters are not configured.",
                 status: "unavailable",
@@ -685,7 +773,8 @@ export function createAdministrativeAutonomyRuntime(options: {
       const requestedOutcome = administrativeRequestedOutcomeSchema.parse(
         input.outcome,
       );
-      const outcome = canonicalAdministrativeOutcome(requestedOutcome);
+      const { outcome, publicationIntent } =
+        canonicalAdministrativeIntent(requestedOutcome);
       const intendedState = administrativeIntendedStateSchema.parse(
         input.intendedState,
       );
@@ -697,6 +786,13 @@ export function createAdministrativeAutonomyRuntime(options: {
           reason: "Administrative Autonomy is not active",
         };
       }
+      if (!sameExecutionManifest(policy.executionManifest, executionManifest)) {
+        return {
+          decision: "denied",
+          reason:
+            "The active policy revision does not authorize the configured execution manifest.",
+        };
+      }
       const taskId = options.identifiers.nextTaskId();
       const confirmationCapability = options.identifiers.nextCapability();
       const preparedAt = options.now();
@@ -706,6 +802,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           details: {
             intendedState,
             outcome,
+            publicationIntent,
             policyRevision: policy.revision,
             requestId: input.requestId,
             stateVersion: policy.stateVersion,
@@ -726,9 +823,16 @@ export function createAdministrativeAutonomyRuntime(options: {
           intendedState,
           kind: "administrative.work",
           outcome,
+          executionManifest,
           policyRevision: policy.revision,
           policyStateVersion: policy.stateVersion,
-          question: confirmationQuestion(intendedState, outcome, target),
+          publicationIntent,
+          question: confirmationQuestion(
+            intendedState,
+            outcome,
+            publicationIntent,
+            target,
+          ),
           status: "awaiting-confirmation",
           target,
           updatedAt: preparedAt,
@@ -747,6 +851,19 @@ export function createAdministrativeAutonomyRuntime(options: {
             task: saved.task,
             taskId,
           };
+    },
+    async suspendPolicy(input) {
+      const suspended = await options.store.suspendPolicy({
+        expectedRevision: input.expectedRevision,
+        expectedStateVersion: input.expectedStateVersion,
+        suspendedAt: options.now(),
+      });
+      return suspended === undefined
+        ? {
+            decision: "denied",
+            reason: "Administrative Autonomy policy state is stale",
+          }
+        : { decision: "suspended", policy: suspended };
     },
   };
 }
@@ -769,6 +886,7 @@ function boundedLeaseExpiry(
 function confirmationQuestion(
   intendedState: string,
   outcome: AdministrativeTaskOutcome,
+  publicationIntent: AdministrativePublicationIntent,
   target: AdministrativeTaskTarget,
 ): string {
   const subject = `${target.registeredCodebaseId} in ${target.environment}`;
@@ -776,31 +894,61 @@ function confirmationQuestion(
     return `Confirm observing ${subject} to establish this intended state: ${intendedState}`;
   }
   if (outcome === "proposal") {
-    return `Confirm branch-only work for ${subject} toward this intended state: ${intendedState}`;
+    return publicationIntent === "open-pull-request"
+      ? `Confirm isolated branch work and opening a pull request for ${subject} toward this intended state: ${intendedState}`
+      : `Confirm branch-only work for ${subject} toward this intended state: ${intendedState}`;
   }
   return `Confirm changing ${subject} to this intended state: ${intendedState}`;
 }
 
 function operationRequest(input: {
+  readonly executionManifest: AdministrativeExecutionManifest;
+  readonly intendedState: string;
   readonly kind: AdministrativeOperationRequest["kind"];
   readonly operationId: string;
-  readonly plannedAt: string;
   readonly policyRevision: number;
   readonly policyStateVersion: number;
+  readonly publicationIntent: AdministrativePublicationIntent;
   readonly target: AdministrativeTaskTarget;
   readonly taskId: string;
 }): AdministrativeOperationRequest {
   const common = {
+    executionManifest: input.executionManifest,
     operationId: input.operationId,
     policyRevision: input.policyRevision,
     policyStateVersion: input.policyStateVersion,
     target: input.target,
     taskId: input.taskId,
   };
-  if (input.kind !== "live-patch.apply") {
+  const intendedState = {
+    intendedState: input.intendedState,
+    kind: "achieve-confirmed-intended-state" as const,
+    targetSource: "confirmed-durable-task" as const,
+  };
+  if (input.kind === "production.observe") {
     return administrativeOperationRequestSchema.parse({
       ...common,
       kind: input.kind,
+      observation: {
+        intendedState: input.intendedState,
+        kind: "registered-application-health",
+        targetSource: "confirmed-durable-task",
+      },
+    });
+  }
+  if (input.kind === "delegated-worktree.change") {
+    return administrativeOperationRequestSchema.parse({
+      ...common,
+      change: intendedState,
+      kind: input.kind,
+      publication:
+        input.publicationIntent === "open-pull-request"
+          ? {
+              baseBranch: "registered-production-branch",
+              kind: "open-pull-request",
+              productionMutation: false,
+            }
+          : { kind: "branch-only", productionMutation: false },
     });
   }
   return administrativeOperationRequestSchema.parse({
@@ -814,21 +962,29 @@ function operationRequest(input: {
       independentRollback: {
         armedBeforeMutation: true,
         kind: "independent-live-patch-rollback",
-        rollbackDeadline: new Date(
-          new Date(input.plannedAt).getTime() + 30 * 60 * 1_000,
-        ).toISOString(),
+        rollbackWindowMilliseconds: livePatchRollbackWindowMilliseconds,
+      },
+      reconciliation: {
+        acceptedOutcomes: [
+          "captured-as-isolated-pull-request",
+          "removed-from-production",
+        ],
+        kind: "live-patch-reconciliation",
+        requiredBeforeTaskCompletion: true,
       },
       verification: {
         kind: "independent-application-health-proof",
         requiredAfterMutation: true,
       },
     },
+    patch: intendedState,
   });
 }
 
 function operationResult(
   request: AdministrativeOperationRequest,
   untrustedResult: unknown,
+  executionStartedAt: string,
   completedAt: string,
 ): AdministrativeOperationResult {
   const untrusted = administrativeOperationResultSchema.parse(untrustedResult);
@@ -842,25 +998,63 @@ function operationResult(
     );
   }
   if (
-    request.kind === "live-patch.apply" &&
-    result.kind === "live-patch.apply" &&
-    result.mutationProof.independentRollback.rollbackDeadline !==
-      request.mutationBoundary.independentRollback.rollbackDeadline
+    request.kind === "delegated-worktree.change" &&
+    result.kind === request.kind
   ) {
-    throw new Error("Live Patch rollback proof does not match its request");
+    const matchingPublication =
+      (request.publication.kind === "branch-only" &&
+        result.publication.kind === "isolated-branch-prepared") ||
+      (request.publication.kind === "open-pull-request" &&
+        result.publication.kind === "isolated-pull-request-opened" &&
+        result.publication.registeredCodebaseId ===
+          request.target.registeredCodebaseId);
+    if (!matchingPublication) {
+      throw new Error(
+        "Administrative publication proof does not match its request",
+      );
+    }
   }
   if (request.kind === "live-patch.apply" && result.kind === "live-patch.apply") {
     const proof = result.mutationProof;
+    const executionStarted = new Date(executionStartedAt).getTime();
+    const healthObserved = new Date(proof.healthCheck.observedAt).getTime();
+    const rollbackArmed = new Date(proof.independentRollback.armedAt).getTime();
+    const rollbackDeadline = new Date(
+      proof.independentRollback.rollbackDeadline,
+    ).getTime();
+    const mutationStarted = new Date(proof.mutationStartedAt).getTime();
+    const verificationObserved = new Date(
+      proof.verification.observedAt,
+    ).getTime();
+    const reconciliationObserved = new Date(
+      proof.reconciliation.observedAt,
+    ).getTime();
+    const completed = new Date(result.completedAt).getTime();
     if (
-      proof.healthCheck.observedAt > proof.independentRollback.armedAt ||
-      proof.independentRollback.armedAt > proof.verification.observedAt ||
-      proof.verification.observedAt > result.completedAt ||
-      result.completedAt > proof.independentRollback.rollbackDeadline
+      healthObserved < executionStarted ||
+      healthObserved > rollbackArmed ||
+      rollbackDeadline - rollbackArmed !==
+        request.mutationBoundary.independentRollback.rollbackWindowMilliseconds ||
+      rollbackArmed > mutationStarted ||
+      mutationStarted >= rollbackDeadline ||
+      mutationStarted > verificationObserved ||
+      verificationObserved > reconciliationObserved ||
+      reconciliationObserved > completed ||
+      completed >= rollbackDeadline ||
+      proof.reconciliation.registeredCodebaseId !==
+        request.target.registeredCodebaseId
     ) {
       throw new Error("Live Patch safety proof is not in a valid time order");
     }
   }
   return result;
+}
+
+function sameExecutionManifest(
+  left: AdministrativeExecutionManifest,
+  right: AdministrativeExecutionManifest,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function describeClaimDenial(

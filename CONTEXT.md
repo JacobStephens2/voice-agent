@@ -133,6 +133,10 @@ A Fresh-Passkey-activated Standing Autonomy Policy that permits broad multi-code
 Its authenticated revision remains active until Administrative Suspension or another Fresh Passkey Action revises it.
 _Avoid_: YOLO mode, always approve, unrestricted root
 
+**Administrative Execution Manifest**:
+The exact reviewed Grok provider pin and typed Operation-adapter implementations bound into an Administrative Autonomy Policy revision by its Fresh Passkey Action; a different configured manifest has no authority until another Fresh Passkey Action activates a new revision.
+_Avoid_: Adapters configured, latent authority, install-time authority
+
 **Administrative Suspension**:
 An owner-triggered state that refuses new administrative Operations, activates every armed Live Patch and Host Patch rollback, and preserves Delegated Worktrees and Evidence Records until a Fresh Passkey Action reactivates Administrative Autonomy.
 _Avoid_: Task stop, service shutdown, rollback deletion

@@ -4,11 +4,14 @@ import {
   administrativeActiveExecutionMilliseconds,
   administrativeEvidenceEventSchema,
   administrativeEvidenceRecordSchema,
+  administrativeExecutionManifestSchema,
   administrativeMutationOperationKinds,
   administrativeOperationRequestSchema,
   administrativePolicyRevisionSchema,
   administrativePolicyStatusSchema,
   administrativeTaskSchema,
+  administrativeUnavailableExecutionManifest,
+  type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
   type AdministrativeEvidenceRecord,
   type AdministrativePolicyStatus,
@@ -40,11 +43,13 @@ interface AdministrativeTaskRow {
   readonly capability_hash: string;
   readonly conclusion: string;
   readonly created_at: string;
+  readonly execution_manifest_json: string | null;
   readonly id: string;
   readonly intended_state: string;
   readonly outcome: AdministrativeTask["outcome"];
   readonly owner_id: string;
   readonly policy_revision: number;
+  readonly publication_intent: AdministrativeTask["publicationIntent"];
   readonly question: string;
   readonly state_version: number;
   readonly status: AdministrativeTask["status"];
@@ -142,14 +147,16 @@ export function createSqliteAdministrativeAutonomyStore(
   const insertTask = database.prepare(`
     INSERT INTO administrative_tasks (
       id, request_id, owner_id, capability_hash, capability_consumed_at,
-      outcome, policy_revision, state_version, status, question, intended_state, conclusion,
+      outcome, publication_intent, execution_manifest_json, policy_revision,
+      state_version, status, question, intended_state, conclusion,
       target_json, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const readTask = database.prepare<[taskId: string], AdministrativeTaskRow>(`
     SELECT id, owner_id, capability_hash, capability_consumed_at,
       active_execution_deadline, outcome,
-      policy_revision, state_version, status, question, conclusion,
+      publication_intent, execution_manifest_json, policy_revision,
+      state_version, status, question, conclusion,
       intended_state, target_json, created_at, updated_at
     FROM administrative_tasks
     WHERE id = ?
@@ -160,7 +167,8 @@ export function createSqliteAdministrativeAutonomyStore(
   >(`
     SELECT tasks.id, tasks.owner_id, tasks.capability_hash,
       tasks.capability_consumed_at, tasks.active_execution_deadline,
-      tasks.outcome, tasks.policy_revision, tasks.state_version, tasks.status,
+      tasks.outcome, tasks.publication_intent, tasks.execution_manifest_json,
+      tasks.policy_revision, tasks.state_version, tasks.status,
       tasks.question, tasks.conclusion, tasks.intended_state, tasks.target_json,
       tasks.created_at, tasks.updated_at
     FROM administrative_tasks AS tasks
@@ -309,7 +317,8 @@ export function createSqliteAdministrativeAutonomyStore(
   const listTasks = database.prepare<[], AdministrativeTaskRow>(`
     SELECT id, owner_id, capability_hash, capability_consumed_at,
       active_execution_deadline, outcome,
-      policy_revision, state_version, status, question, conclusion,
+      publication_intent, execution_manifest_json, policy_revision,
+      state_version, status, question, conclusion,
       intended_state, target_json, created_at, updated_at
     FROM administrative_tasks
     ORDER BY updated_at DESC, id DESC
@@ -350,6 +359,8 @@ export function createSqliteAdministrativeAutonomyStore(
         throw new Error("Administrative Suspension has no timestamp");
       }
       return administrativePolicyStatusSchema.parse({
+        executionManifest: requirePolicyRevision(row.active_revision)
+          .executionManifest,
         revision: row.active_revision,
         stateVersion: row.state_version,
         status: "suspended",
@@ -360,6 +371,7 @@ export function createSqliteAdministrativeAutonomyStore(
     return administrativePolicyStatusSchema.parse({
       activatedAt: revision.activatedAt,
       activatedBy: revision.activatedBy,
+      executionManifest: revision.executionManifest,
       revision: revision.revision,
       stateVersion: row.state_version,
       status: "active",
@@ -381,6 +393,36 @@ export function createSqliteAdministrativeAutonomyStore(
     }
     return administrativePolicyRevisionSchema.parse(
       JSON.parse(row.definition_json),
+    );
+  }
+
+  function taskExecutionManifest(
+    task: AdministrativeTaskRow,
+  ): AdministrativeExecutionManifest {
+    return task.execution_manifest_json === null
+      ? administrativeUnavailableExecutionManifest
+      : administrativeExecutionManifestSchema.parse(
+          JSON.parse(task.execution_manifest_json),
+        );
+  }
+
+  function matchesAuthoritySnapshot(input: {
+    readonly executionManifest: AdministrativeExecutionManifest;
+    readonly policyRevision: number;
+    readonly stateVersion: number;
+  }): boolean {
+    const policy = requirePolicyState();
+    if (
+      policy.status !== "active" ||
+      policy.active_revision !== input.policyRevision ||
+      policy.state_version !== input.stateVersion
+    ) {
+      return false;
+    }
+    const active = requirePolicyRevision(input.policyRevision);
+    return (
+      JSON.stringify(active.executionManifest) ===
+      JSON.stringify(input.executionManifest)
     );
   }
 
@@ -429,8 +471,10 @@ export function createSqliteAdministrativeAutonomyStore(
       intendedState: task.intended_state,
       kind: "administrative.work",
       outcome: task.outcome,
+      executionManifest: taskExecutionManifest(task),
       policyRevision: task.policy_revision,
       policyStateVersion: task.state_version,
+      publicationIntent: task.publication_intent,
       question: task.question,
       status: task.status,
       target: JSON.parse(task.target_json) as unknown,
@@ -483,12 +527,11 @@ export function createSqliteAdministrativeAutonomyStore(
 
   const prepareTransaction = database.transaction(
     (input: AdministrativePreparedTaskPersistence) => {
-      const policy = requirePolicyState();
-      if (
-        policy.status !== "active" ||
-        policy.active_revision !== input.task.policyRevision ||
-        policy.state_version !== input.stateVersion
-      ) {
+      if (!matchesAuthoritySnapshot({
+        executionManifest: input.task.executionManifest,
+        policyRevision: input.task.policyRevision,
+        stateVersion: input.stateVersion,
+      })) {
         return undefined;
       }
       try {
@@ -498,6 +541,8 @@ export function createSqliteAdministrativeAutonomyStore(
           input.ownerId,
           input.capabilityHash,
           input.task.outcome,
+          input.task.publicationIntent,
+          JSON.stringify(input.task.executionManifest),
           input.task.policyRevision,
           input.stateVersion,
           input.task.status,
@@ -536,12 +581,11 @@ export function createSqliteAdministrativeAutonomyStore(
           "Task Confirmation evidence has an invalid active-execution deadline",
         );
       }
-      const policy = requirePolicyState();
-      if (
-        policy.status !== "active" ||
-        policy.active_revision !== task.policy_revision ||
-        policy.state_version !== task.state_version
-      ) {
+      if (!matchesAuthoritySnapshot({
+        executionManifest: taskExecutionManifest(task),
+        policyRevision: task.policy_revision,
+        stateVersion: task.state_version,
+      })) {
         return { decision: "denied", reason: "stale-policy" };
       }
       const result = consumeConfirmation.run(
@@ -594,12 +638,11 @@ export function createSqliteAdministrativeAutonomyStore(
           ? loadRecord(task)
           : undefined;
       }
-      const policy = requirePolicyState();
-      if (
-        policy.status !== "active" ||
-        policy.active_revision !== task.policy_revision ||
-        policy.state_version !== task.state_version
-      ) {
+      if (!matchesAuthoritySnapshot({
+        executionManifest: taskExecutionManifest(task),
+        policyRevision: task.policy_revision,
+        stateVersion: task.state_version,
+      })) {
         return undefined;
       }
       if (
@@ -616,7 +659,9 @@ export function createSqliteAdministrativeAutonomyStore(
         if (
           request.taskId !== input.taskId ||
           request.policyRevision !== task.policy_revision ||
-          request.policyStateVersion !== task.state_version
+          request.policyStateVersion !== task.state_version ||
+          JSON.stringify(request.executionManifest) !==
+            JSON.stringify(taskExecutionManifest(task))
         ) {
           throw new Error(
             "Administrative Operation authority does not match its Durable Task",
@@ -661,23 +706,18 @@ export function createSqliteAdministrativeAutonomyStore(
       const request = administrativeOperationRequestSchema.parse(
         JSON.parse(operation.request_json),
       );
-      const policy = requirePolicyState();
       if (
-        policy.status !== "active" ||
-        policy.active_revision !== request.policyRevision ||
-        policy.state_version !== request.policyStateVersion
+        JSON.stringify(request.executionManifest) !==
+        JSON.stringify(input.executionManifest)
       ) {
-        return { decision: "denied", reason: "stale-policy" };
+        return { decision: "denied", reason: "execution-manifest" };
       }
-      if (
-        request.kind === "live-patch.apply" &&
-        request.mutationBoundary.independentRollback.rollbackDeadline <=
-          input.claimedAt
-      ) {
-        return {
-          decision: "denied",
-          reason: "unsafe-live-patch-deadline",
-        };
+      if (!matchesAuthoritySnapshot({
+        executionManifest: request.executionManifest,
+        policyRevision: request.policyRevision,
+        stateVersion: request.policyStateVersion,
+      })) {
+        return { decision: "denied", reason: "stale-policy" };
       }
       if (
         operation.status === "running" &&
@@ -786,7 +826,6 @@ export function createSqliteAdministrativeAutonomyStore(
         JSON.parse(operation.request_json),
       );
       const task = requireTask(operation.task_id);
-      const policy = requirePolicyState();
       if (
         task.active_execution_deadline === null ||
         operation.lease_expires_at === null ||
@@ -794,9 +833,11 @@ export function createSqliteAdministrativeAutonomyStore(
         input.renewedAt >= task.active_execution_deadline ||
         input.leaseExpiresAt <= input.renewedAt ||
         input.leaseExpiresAt > task.active_execution_deadline ||
-        policy.status !== "active" ||
-        policy.active_revision !== request.policyRevision ||
-        policy.state_version !== request.policyStateVersion
+        !matchesAuthoritySnapshot({
+          executionManifest: request.executionManifest,
+          policyRevision: request.policyRevision,
+          stateVersion: request.policyStateVersion,
+        })
       ) {
         return false;
       }
@@ -973,6 +1014,8 @@ function createSchema(database: Database.Database): void {
       capability_consumed_at TEXT,
       active_execution_deadline TEXT,
       outcome TEXT NOT NULL,
+      publication_intent TEXT NOT NULL DEFAULT 'branch-only',
+      execution_manifest_json TEXT,
       policy_revision INTEGER NOT NULL,
       state_version INTEGER NOT NULL,
       status TEXT NOT NULL,
@@ -1081,6 +1124,18 @@ function createSchema(database: Database.Database): void {
     database,
     "administrative_tasks",
     "active_execution_deadline",
+    "TEXT",
+  );
+  ensureColumn(
+    database,
+    "administrative_tasks",
+    "publication_intent",
+    "TEXT NOT NULL DEFAULT 'branch-only'",
+  );
+  ensureColumn(
+    database,
+    "administrative_tasks",
+    "execution_manifest_json",
     "TEXT",
   );
   ensureColumn(database, "administrative_operations", "claim_id", "TEXT");

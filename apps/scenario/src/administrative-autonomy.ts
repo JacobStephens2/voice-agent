@@ -1,6 +1,11 @@
 import {
+  administrativeExecutionManifestSchema,
+  administrativeUnavailableExecutionManifest,
+  livePatchRollbackWindowMilliseconds,
   type AdministrativeEvidenceRecord,
+  type AdministrativeExecutionManifest,
   type AdministrativeOperationRequest,
+  type AdministrativeOperationResult,
   type AdministrativePolicyActivationSource,
   type AdministrativePolicyStatus,
   type AdministrativeProviderPlan,
@@ -74,6 +79,11 @@ export interface AdministrativeAutonomyScenario {
     readonly statusCode: number;
   }>;
   reconcileOperations(): Promise<void>;
+  suspendPolicy(input: {
+    readonly authenticated: boolean;
+    readonly expectedRevision: number;
+    readonly expectedStateVersion: number;
+  }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   suspendPolicyState(): Promise<AdministrativePolicyStatus>;
 }
 
@@ -85,13 +95,17 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly crashAfterFirstEffect?: boolean;
   readonly databasePath: string;
   readonly effectLedger?: Set<string>;
+  readonly executorFailures?: number;
   readonly executionAdapters?: "available" | "unavailable";
+  readonly executionManifestVersion?: 1 | 2;
   readonly holdOperationUntilAbort?: boolean;
   readonly identifierNamespace?: string;
+  readonly livePatchRollbackDurationMilliseconds?: number;
   readonly now: string;
   readonly onOperationStart?: () => void;
   readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
+  readonly omitLivePatchReconciliation?: boolean;
   readonly providerAttempts?: string[];
   readonly providerFailures?: number;
   readonly providerPlan: AdministrativeProviderPlan | unknown;
@@ -107,27 +121,38 @@ export async function createAdministrativeAutonomyScenario(options: {
   let revisePolicyAfterFirstOperation = false;
   let revisePolicyBeforePlanAdmission = false;
   let providerFailuresRemaining = options.providerFailures ?? 0;
+  let executorFailuresRemaining = options.executorFailures ?? 0;
   const executedOperations: AdministrativeOperationRequest[] = [];
   const operationAttempts: AdministrativeOperationRequest[] = [];
   const effectLedger = options.effectLedger ?? new Set<string>();
   const identifierNamespace = options.identifierNamespace ?? "";
   const currentTime = () => options.clock?.current ?? options.now;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
+  const executionManifest =
+    options.executionAdapters === "unavailable"
+      ? administrativeUnavailableExecutionManifest
+      : createScenarioExecutionManifest(options.executionManifestVersion ?? 1);
   let runtime: ReturnType<typeof createAdministrativeAutonomyRuntime>;
   const executor = {
     async execute(execution: {
       readonly fence: {
         readonly activeExecutionDeadline: string;
         readonly claimId: string;
+        readonly executionStartedAt: string;
         readonly signal: AbortSignal;
       };
       readonly request: AdministrativeOperationRequest;
     }) {
       const { request } = execution;
-      const { activeExecutionDeadline, signal } = execution.fence;
+      const { activeExecutionDeadline, executionStartedAt, signal } =
+        execution.fence;
       operationAttempts.push(request);
       options.operationAttempts?.push(request.operationId);
       options.onOperationStart?.();
+      if (executorFailuresRemaining > 0) {
+        executorFailuresRemaining -= 1;
+        throw new Error("Simulated executor failure before the Operation effect");
+      }
       if (options.holdOperationUntilAbort) await waitForAbort(signal);
       if (!effectLedger.has(request.operationId)) {
         await options.beforeOperationEffect?.(request);
@@ -159,20 +184,36 @@ export async function createAdministrativeAutonomyScenario(options: {
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
       if (request.kind === "live-patch.apply") {
-        return {
+        const rollbackDeadline = new Date(
+          new Date(executionStartedAt).getTime() +
+            (options.livePatchRollbackDurationMilliseconds ??
+              livePatchRollbackWindowMilliseconds),
+        ).toISOString();
+        const result = {
           ...common,
           kind: request.kind,
           mutationProof: {
             healthCheck: {
               kind: "registered-application-health" as const,
-              observedAt: currentTime(),
+              observedAt: executionStartedAt,
               status: "healthy" as const,
             },
             independentRollback: {
-              armedAt: currentTime(),
+              armedBeforeMutation: true as const,
+              armedAt: executionStartedAt,
               kind: "independent-live-patch-rollback" as const,
-              rollbackDeadline:
-                request.mutationBoundary.independentRollback.rollbackDeadline,
+              rollbackDeadline,
+            },
+            mutationStartedAt: executionStartedAt,
+            reconciliation: {
+              baseBranch: "registered-production-branch" as const,
+              kind: "captured-as-isolated-pull-request" as const,
+              observedAt: currentTime(),
+              productionMutationRetained: true as const,
+              reconciledPatch: "accepted-live-patch-diff" as const,
+              registeredCodebaseId: request.target.registeredCodebaseId,
+              state: "open" as const,
+              verifiedBy: "independent-reconciliation-observer" as const,
             },
             verification: {
               kind: "independent-application-health-proof" as const,
@@ -181,11 +222,47 @@ export async function createAdministrativeAutonomyScenario(options: {
             },
           },
         };
+        if (options.omitLivePatchReconciliation) {
+          const incompleteProof = {
+            healthCheck: result.mutationProof.healthCheck,
+            independentRollback: result.mutationProof.independentRollback,
+            mutationStartedAt: result.mutationProof.mutationStartedAt,
+            verification: result.mutationProof.verification,
+          };
+          return {
+            ...result,
+            mutationProof: incompleteProof,
+          } as unknown as AdministrativeOperationResult;
+        }
+        return result;
       }
       if (request.kind === "production.observe") {
-        return { ...common, kind: request.kind };
+        return {
+          ...common,
+          kind: request.kind,
+          observation: {
+            kind: "registered-application-health" as const,
+            status: "healthy" as const,
+          },
+        };
       }
-      return { ...common, kind: request.kind };
+      return {
+        ...common,
+        kind: request.kind,
+        publication:
+          request.publication.kind === "open-pull-request"
+            ? {
+                baseBranch: "registered-production-branch" as const,
+                kind: "isolated-pull-request-opened" as const,
+                productionMutation: false as const,
+                registeredCodebaseId: request.target.registeredCodebaseId,
+                state: "open" as const,
+              }
+            : {
+                kind: "isolated-branch-prepared" as const,
+                productionMutation: false as const,
+              },
+      };
     },
   };
   const provider = {
@@ -214,6 +291,7 @@ export async function createAdministrativeAutonomyScenario(options: {
     ...(options.executionAdapters === "unavailable"
       ? {}
       : { executor, provider }),
+    executionManifest,
     identifiers: {
       nextCapability: () =>
         `${identifierNamespace}administrative-confirmation-capability-${(capabilitySequence += 1)}`,
@@ -356,6 +434,27 @@ export async function createAdministrativeAutonomyScenario(options: {
     readTaskByOperationId: (operationId) =>
       runtime.getTaskByOperationId(operationId),
     reconcileOperations: () => runtime.reconcileOperations(),
+    async suspendPolicy(input) {
+      const response = await api.inject({
+        headers: {
+          ...(input.authenticated
+            ? { cookie: `${trustedSessionCookieName}=${scenarioSession}` }
+            : {}),
+          origin: scenarioOrigin,
+        },
+        method: "POST",
+        payload: {
+          csrfToken: scenarioCsrf,
+          expectedRevision: input.expectedRevision,
+          expectedStateVersion: input.expectedStateVersion,
+        },
+        url: "/api/administrative-autonomy/suspend",
+      });
+      return {
+        body: response.json<unknown>(),
+        statusCode: response.statusCode,
+      };
+    },
     async suspendPolicyState() {
       const policy = await store.readPolicyStatus();
       if (policy.status !== "active") {
@@ -372,6 +471,33 @@ export async function createAdministrativeAutonomyScenario(options: {
       return suspended;
     },
   };
+}
+
+function createScenarioExecutionManifest(
+  version: 1 | 2,
+): AdministrativeExecutionManifest {
+  const offset = version === 1 ? 0 : 4;
+  return administrativeExecutionManifestSchema.parse({
+    operationAdapters: [
+      {
+        implementationDigest: String(1 + offset).repeat(64),
+        kind: "production.observe",
+      },
+      {
+        implementationDigest: String(2 + offset).repeat(64),
+        kind: "delegated-worktree.change",
+      },
+      {
+        implementationDigest: String(3 + offset).repeat(64),
+        kind: "live-patch.apply",
+      },
+    ],
+    provider: {
+      implementationDigest: String(4 + offset).repeat(64),
+      kind: "scenario-fake",
+    },
+    schemaVersion: 1,
+  });
 }
 
 function waitForAbort(signal: AbortSignal): Promise<never> {

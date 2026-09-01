@@ -5,6 +5,7 @@ const timestampSchema = z.iso.datetime();
 
 export const administrativeActiveExecutionMilliseconds =
   6 * 60 * 60 * 1_000;
+export const livePatchRollbackWindowMilliseconds = 30 * 60 * 1_000;
 
 export const administrativePolicyActivationSourceSchema = z.enum([
   "fresh-passkey-action",
@@ -25,6 +26,72 @@ export const administrativeOperationKindSchema = z.enum([
 export type AdministrativeOperationKind = z.infer<
   typeof administrativeOperationKindSchema
 >;
+
+const implementationDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+
+const administrativeExecutionProviderSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unavailable") }).strict(),
+  z
+    .object({
+      implementationDigest: implementationDigestSchema,
+      kind: z.literal("scenario-fake"),
+    })
+    .strict(),
+  z
+    .object({
+      enrollmentId: identifierSchema,
+      kind: z.literal("grok-build"),
+      runnerPin: implementationDigestSchema,
+    })
+    .strict(),
+]);
+
+export const administrativeExecutionManifestSchema = z
+  .object({
+    operationAdapters: z
+      .array(
+        z
+          .object({
+            implementationDigest: implementationDigestSchema,
+            kind: administrativeOperationKindSchema,
+          })
+          .strict(),
+      )
+      .max(3),
+    provider: administrativeExecutionProviderSchema,
+    schemaVersion: z.literal(1),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    const kinds = manifest.operationAdapters.map((adapter) => adapter.kind);
+    if (new Set(kinds).size !== kinds.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Execution manifest Operation adapters must be unique",
+        path: ["operationAdapters"],
+      });
+    }
+    if (
+      manifest.provider.kind === "unavailable" &&
+      manifest.operationAdapters.length > 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "An unavailable provider cannot authorize Operation adapters",
+        path: ["operationAdapters"],
+      });
+    }
+  });
+export type AdministrativeExecutionManifest = z.infer<
+  typeof administrativeExecutionManifestSchema
+>;
+
+export const administrativeUnavailableExecutionManifest: AdministrativeExecutionManifest =
+  administrativeExecutionManifestSchema.parse({
+    operationAdapters: [],
+    provider: { kind: "unavailable" },
+    schemaVersion: 1,
+  });
 
 export const administrativeMutationOperationKinds = [
   "delegated-worktree.change",
@@ -69,6 +136,9 @@ export const administrativePolicyRevisionSchema = z
     activatedAt: timestampSchema,
     activatedBy: z.literal("fresh-passkey-action"),
     definition: administrativePolicyDefinitionSchema,
+    executionManifest: administrativeExecutionManifestSchema.default(
+      administrativeUnavailableExecutionManifest,
+    ),
     revision: z.number().int().positive(),
   })
   .strict();
@@ -87,11 +157,13 @@ export const administrativePolicyStatusSchema = z.discriminatedUnion(
     z.object({
       activatedAt: timestampSchema,
       activatedBy: z.literal("fresh-passkey-action"),
+      executionManifest: administrativeExecutionManifestSchema,
       revision: z.number().int().positive(),
       stateVersion: z.number().int().positive(),
       status: z.literal("active"),
     }),
     z.object({
+      executionManifest: administrativeExecutionManifestSchema,
       revision: z.number().int().positive(),
       stateVersion: z.number().int().positive(),
       status: z.literal("suspended"),
@@ -106,13 +178,29 @@ export type AdministrativePolicyStatus = z.infer<
 export const administrativeTaskExecutionStatusSchema = z.discriminatedUnion(
   "status",
   [
-    z.object({ status: z.literal("adapters-configured") }).strict(),
     z
       .object({
+        executionManifest: administrativeExecutionManifestSchema,
+        status: z.literal("adapters-configured"),
+      })
+      .strict(),
+    z
+      .object({
+        executionManifest: administrativeExecutionManifestSchema,
         reason: z.literal(
           "Typed administrative task execution adapters are not configured.",
         ),
         status: z.literal("unavailable"),
+      })
+      .strict(),
+    z
+      .object({
+        activeExecutionManifest: administrativeExecutionManifestSchema,
+        reason: z.literal(
+          "The active policy revision does not authorize the configured execution manifest.",
+        ),
+        runtimeExecutionManifest: administrativeExecutionManifestSchema,
+        status: z.literal("activation-required"),
       })
       .strict(),
   ],
@@ -139,6 +227,14 @@ export const activateAdministrativePolicyRequestSchema = z
   })
   .strict();
 
+export const suspendAdministrativePolicyRequestSchema = z
+  .object({
+    csrfToken: z.string().min(16).max(200),
+    expectedRevision: z.number().int().positive(),
+    expectedStateVersion: z.number().int().positive(),
+  })
+  .strict();
+
 export const administrativeRequestedOutcomeSchema = z.enum([
   "fix",
   "repair",
@@ -158,6 +254,14 @@ export const administrativeTaskOutcomeSchema = z.enum([
 ]);
 export type AdministrativeTaskOutcome = z.infer<
   typeof administrativeTaskOutcomeSchema
+>;
+
+export const administrativePublicationIntentSchema = z.enum([
+  "branch-only",
+  "open-pull-request",
+]);
+export type AdministrativePublicationIntent = z.infer<
+  typeof administrativePublicationIntentSchema
 >;
 
 export const administrativeIntendedStateSchema = z.string().min(1).max(240);
@@ -187,6 +291,7 @@ export type AdministrativeProviderPlan = z.infer<
 >;
 
 const administrativeOperationRequestFields = {
+  executionManifest: administrativeExecutionManifestSchema,
   operationId: identifierSchema,
   policyRevision: z.number().int().positive(),
   policyStateVersion: z.number().int().positive(),
@@ -206,7 +311,19 @@ export const livePatchMutationBoundarySchema = z
       .object({
         armedBeforeMutation: z.literal(true),
         kind: z.literal("independent-live-patch-rollback"),
-        rollbackDeadline: timestampSchema,
+        rollbackWindowMilliseconds: z.literal(
+          livePatchRollbackWindowMilliseconds,
+        ),
+      })
+      .strict(),
+    reconciliation: z
+      .object({
+        acceptedOutcomes: z.tuple([
+          z.literal("captured-as-isolated-pull-request"),
+          z.literal("removed-from-production"),
+        ]),
+        kind: z.literal("live-patch-reconciliation"),
+        requiredBeforeTaskCompletion: z.literal(true),
       })
       .strict(),
     verification: z
@@ -228,12 +345,41 @@ export const administrativeOperationRequestSchema = z.discriminatedUnion(
       .object({
         ...administrativeOperationRequestFields,
         kind: z.literal("production.observe"),
+        observation: z
+          .object({
+            intendedState: administrativeIntendedStateSchema,
+            kind: z.literal("registered-application-health"),
+            targetSource: z.literal("confirmed-durable-task"),
+          })
+          .strict(),
       })
       .strict(),
     z
       .object({
         ...administrativeOperationRequestFields,
+        change: z
+          .object({
+            intendedState: administrativeIntendedStateSchema,
+            kind: z.literal("achieve-confirmed-intended-state"),
+            targetSource: z.literal("confirmed-durable-task"),
+          })
+          .strict(),
         kind: z.literal("delegated-worktree.change"),
+        publication: z.discriminatedUnion("kind", [
+          z
+            .object({
+              kind: z.literal("branch-only"),
+              productionMutation: z.literal(false),
+            })
+            .strict(),
+          z
+            .object({
+              baseBranch: z.literal("registered-production-branch"),
+              kind: z.literal("open-pull-request"),
+              productionMutation: z.literal(false),
+            })
+            .strict(),
+        ]),
       })
       .strict(),
     z
@@ -241,6 +387,13 @@ export const administrativeOperationRequestSchema = z.discriminatedUnion(
         ...administrativeOperationRequestFields,
         kind: z.literal("live-patch.apply"),
         mutationBoundary: livePatchMutationBoundarySchema,
+        patch: z
+          .object({
+            intendedState: administrativeIntendedStateSchema,
+            kind: z.literal("achieve-confirmed-intended-state"),
+            targetSource: z.literal("confirmed-durable-task"),
+          })
+          .strict(),
       })
       .strict(),
   ],
@@ -266,11 +419,36 @@ export const livePatchMutationProofSchema = z
       .strict(),
     independentRollback: z
       .object({
+        armedBeforeMutation: z.literal(true),
         armedAt: timestampSchema,
         kind: z.literal("independent-live-patch-rollback"),
         rollbackDeadline: timestampSchema,
       })
       .strict(),
+    mutationStartedAt: timestampSchema,
+    reconciliation: z.discriminatedUnion("kind", [
+      z
+        .object({
+          baseBranch: z.literal("registered-production-branch"),
+          kind: z.literal("captured-as-isolated-pull-request"),
+          observedAt: timestampSchema,
+          productionMutationRetained: z.literal(true),
+          reconciledPatch: z.literal("accepted-live-patch-diff"),
+          registeredCodebaseId: identifierSchema,
+          state: z.literal("open"),
+          verifiedBy: z.literal("independent-reconciliation-observer"),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal("removed-from-production"),
+          observedAt: timestampSchema,
+          productionMutationRetained: z.literal(false),
+          registeredCodebaseId: identifierSchema,
+          verifiedBy: z.literal("independent-reconciliation-observer"),
+        })
+        .strict(),
+    ]),
     verification: z
       .object({
         kind: z.literal("independent-application-health-proof"),
@@ -288,12 +466,35 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
       .object({
         ...administrativeOperationResultFields,
         kind: z.literal("production.observe"),
+        observation: z
+          .object({
+            kind: z.literal("registered-application-health"),
+            status: z.enum(["healthy", "unhealthy"]),
+          })
+          .strict(),
       })
       .strict(),
     z
       .object({
         ...administrativeOperationResultFields,
         kind: z.literal("delegated-worktree.change"),
+        publication: z.discriminatedUnion("kind", [
+          z
+            .object({
+              kind: z.literal("isolated-branch-prepared"),
+              productionMutation: z.literal(false),
+            })
+            .strict(),
+          z
+            .object({
+              baseBranch: z.literal("registered-production-branch"),
+              kind: z.literal("isolated-pull-request-opened"),
+              productionMutation: z.literal(false),
+              registeredCodebaseId: identifierSchema,
+              state: z.literal("open"),
+            })
+            .strict(),
+        ]),
       })
       .strict(),
     z
@@ -318,8 +519,10 @@ export const administrativeTaskSchema = z
     intendedState: administrativeIntendedStateSchema,
     kind: z.literal("administrative.work"),
     outcome: administrativeTaskOutcomeSchema,
+    executionManifest: administrativeExecutionManifestSchema,
     policyRevision: z.number().int().positive(),
     policyStateVersion: z.number().int().positive(),
+    publicationIntent: administrativePublicationIntentSchema,
     question: z.string().min(1).max(500),
     status: z.enum([
       "awaiting-confirmation",
@@ -347,6 +550,7 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
     details: z.object({
       intendedState: administrativeIntendedStateSchema,
       outcome: administrativeTaskOutcomeSchema,
+      publicationIntent: administrativePublicationIntentSchema,
       policyRevision: z.number().int().positive(),
       requestId: identifierSchema,
       stateVersion: z.number().int().positive(),

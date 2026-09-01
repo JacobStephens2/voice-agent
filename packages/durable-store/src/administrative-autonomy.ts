@@ -1,6 +1,7 @@
 import type {
   AdministrativeEvidenceEvent,
   AdministrativeEvidenceRecord,
+  AdministrativeExecutionManifest,
   AdministrativeOperationRequest,
   AdministrativeOperationResult,
   AdministrativePolicyRevision,
@@ -54,8 +55,8 @@ export type AdministrativeOperationClaim =
       readonly decision: "denied";
       readonly reason:
         | "active-execution-deadline"
-        | "stale-policy"
-        | "unsafe-live-patch-deadline";
+        | "execution-manifest"
+        | "stale-policy";
     }
   | { readonly decision: "empty" };
 
@@ -78,6 +79,7 @@ export interface AdministrativeAutonomyStore {
   claimNextOperation(input: {
     readonly claimId: string;
     readonly claimedAt: string;
+    readonly executionManifest: AdministrativeExecutionManifest;
     readonly leaseExpiresAt: string;
     readonly taskId: string;
   }): Promise<AdministrativeOperationClaim>;
@@ -128,9 +130,8 @@ export interface AdministrativeAutonomyStore {
     input: AdministrativePreparedTaskPersistence,
   ): Promise<AdministrativeEvidenceRecord | undefined>;
   /**
-   * Persistence seam for #86: active policy has no TTL, and this CAS transition
-   * can suspend it without a schema change. Task-lifetime behavior and the
-   * authenticated PWA trigger remain owned by #86.
+   * Durable CAS behind the authenticated #83 suspension control. Active policy
+   * has no TTL. #86 owns PWA exposure, task lifetime, and compensation.
    */
   suspendPolicy(input: {
     readonly expectedRevision: number;

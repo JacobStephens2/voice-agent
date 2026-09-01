@@ -40,6 +40,7 @@ import {
   activateAdministrativePolicyRequestSchema,
   administrativeAutonomyStatusSchema,
   administrativePolicyStatusSchema,
+  suspendAdministrativePolicyRequestSchema,
   enrollKeeploreRequestSchema,
   keeploreDeploymentContractSchema,
   keeploreLiveInspectionSchema,
@@ -223,6 +224,16 @@ export interface AdministrativeAutonomyApiControls {
     | { readonly decision: "denied"; readonly reason: string }
   >;
   getStatus(): Promise<AdministrativeAutonomyStatus>;
+  suspendPolicy(input: {
+    readonly expectedRevision: number;
+    readonly expectedStateVersion: number;
+  }): Promise<
+    | {
+        readonly decision: "suspended";
+        readonly policy: AdministrativePolicyStatus;
+      }
+    | { readonly decision: "denied"; readonly reason: string }
+  >;
 }
 
 export interface TelephoneControls {
@@ -529,6 +540,28 @@ function registerAdministrativeAutonomyRoutes(
       expectedActiveRevision: body.expectedActiveRevision,
       expectedStateVersion: body.expectedStateVersion,
       source: "fresh-passkey-action",
+    });
+    if (result.decision === "denied") {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(409).send({ error: result.reason });
+    }
+    return administrativePolicyStatusSchema.parse(result.policy);
+  });
+
+  api.post("/api/administrative-autonomy/suspend", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = suspendAdministrativePolicyRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    const result = await options.controls.suspendPolicy({
+      expectedRevision: body.expectedRevision,
+      expectedStateVersion: body.expectedStateVersion,
     });
     if (result.decision === "denied") {
       await options.records.recordPolicyDenial?.();

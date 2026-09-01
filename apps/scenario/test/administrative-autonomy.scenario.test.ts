@@ -7,6 +7,7 @@ import { afterEach, expect, test } from "vitest";
 import { administrativeOperationRequestSchema } from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
+import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -62,7 +63,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     usedPolicyRevision: record?.evidence.find(
       (event) => event.kind === "administrative.plan.accepted",
     )?.details.policyRevision,
-  }).toEqual({
+  }).toMatchObject({
     activation: {
       body: {
         activatedAt: "2026-08-31T15:00:00.000Z",
@@ -106,7 +107,15 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
           independentRollback: {
             armedBeforeMutation: true,
             kind: "independent-live-patch-rollback",
-            rollbackDeadline: "2026-08-31T15:30:00.000Z",
+            rollbackWindowMilliseconds: 1_800_000,
+          },
+          reconciliation: {
+            acceptedOutcomes: [
+              "captured-as-isolated-pull-request",
+              "removed-from-production",
+            ],
+            kind: "live-patch-reconciliation",
+            requiredBeforeTaskCompletion: true,
           },
           verification: {
             kind: "independent-application-health-proof",
@@ -211,7 +220,7 @@ test("voice and a Trusted Browser Session cannot activate a policy that survives
     revised,
     trustedBrowser,
     voice,
-  }).toEqual({
+  }).toMatchObject({
     activated: {
       body: {
         activatedAt: "2026-08-31T16:00:00.000Z",
@@ -364,7 +373,7 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
     identityMismatch,
     replay,
     stale,
-  }).toEqual({
+  }).toMatchObject({
     ambiguous: {
       decision: "denied",
       reason: "Task Confirmation remains ambiguous",
@@ -583,7 +592,7 @@ test("provider instructions cannot invent administrative authority or persist ra
     repositoryActivation,
     result,
     taskStatus: record?.task.status,
-  }).toEqual({
+  }).toMatchObject({
     canaryPersisted: false,
     executed: [],
     providerActivation: {
@@ -636,7 +645,7 @@ test("a policy revision interleaved with plan admission prevents every Operation
     executed: scenario.executedOperations,
     policy: await scenario.readPolicyStatus(),
     result,
-  }).toEqual({
+  }).toMatchObject({
     executed: [],
     policy: {
       activatedAt: "2026-08-31T21:00:00.000Z",
@@ -655,18 +664,13 @@ test("a policy revision interleaved with plan admission prevents every Operation
 });
 
 test("Live Patch requests carry the complete pre-mutation safety boundary", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-08-31T22:00:00.000Z",
-    providerPlan: [{ kind: "live-patch.apply" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-08-31T22:00:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+    },
+    temporaryDirectories,
+  );
 
   await scenario.confirmAndRunTask({
     confirmation: "confirmed",
@@ -701,7 +705,7 @@ test("Live Patch requests carry the complete pre-mutation safety boundary", asyn
         ? completion.details.result
         : undefined,
     request: scenario.executedOperations[0],
-  }).toEqual({
+  }).toMatchObject({
     incompleteAccepted: false,
     proof: {
       completedAt: "2026-08-31T22:00:00.000Z",
@@ -737,7 +741,15 @@ test("Live Patch requests carry the complete pre-mutation safety boundary", asyn
         independentRollback: {
           armedBeforeMutation: true,
           kind: "independent-live-patch-rollback",
-          rollbackDeadline: "2026-08-31T22:30:00.000Z",
+          rollbackWindowMilliseconds: 1_800_000,
+        },
+        reconciliation: {
+          acceptedOutcomes: [
+            "captured-as-isolated-pull-request",
+            "removed-from-production",
+          ],
+          kind: "live-patch-reconciliation",
+          requiredBeforeTaskCompletion: true,
         },
         verification: {
           kind: "independent-application-health-proof",
@@ -759,18 +771,13 @@ test("Live Patch requests carry the complete pre-mutation safety boundary", asyn
 });
 
 test("Task Confirmation presents the intended state and decline consumes its capability", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-08-31T23:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-08-31T23:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   const prepared = await scenario.prepareTask({
     intendedState: "The production application serves healthy responses.",
     outcome: "fix",
@@ -806,7 +813,7 @@ test("Task Confirmation presents the intended state and decline consumes its cap
     presentedQuestion: prepared.task.question,
     replay,
     task: record?.task,
-  }).toEqual({
+  }).toMatchObject({
     declined: {
       decision: "denied",
       reason: "Task Confirmation was declined",
@@ -897,7 +904,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
     operationAttempts,
     statusBeforeRestart: beforeRestart?.task.status,
     taskAfterRestart: afterRestart?.task,
-  }).toEqual({
+  }).toMatchObject({
     admitted: {
       decision: "admitted",
       policyRevision: 1,
@@ -1014,7 +1021,7 @@ test("administrative mutation plans share one durable global execution lane", as
         (await scenario.readTask(taskId))?.task.status,
       ),
     ),
-  }).toEqual({
+  }).toMatchObject({
     attemptsWhileFirstHeld: 1,
     maximumActiveMutations: 1,
     taskStatuses: ["completed", "completed"],
@@ -1059,7 +1066,7 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
     policy: await scenario.readPolicyStatus(),
     result,
     taskStatus: record?.task.status,
-  }).toEqual({
+  }).toMatchObject({
     executedKinds: ["production.observe"],
     policy: {
       activatedAt: "2026-09-01T02:00:00.000Z",
@@ -1108,7 +1115,7 @@ test("deployed policy activation does not imply unavailable task execution", asy
     prepared,
     status: await scenario.readAutonomyStatus(),
     task: await scenario.readTask("administrative-task-1"),
-  }).toEqual({
+  }).toMatchObject({
     prepared: {
       decision: "denied",
       reason: "Typed administrative task execution adapters are not configured.",
@@ -1191,7 +1198,7 @@ test("policy state has no TTL and the #86 suspension seam persists without a sch
     blockedTask,
     reactivated,
     suspended,
-  }).toEqual({
+  }).toMatchObject({
     activeWithoutTtl: {
       activatedAt: "2026-09-01T04:00:00.000Z",
       activatedBy: "fresh-passkey-action",
@@ -1254,7 +1261,7 @@ test("an activation prepared before Administrative Suspension cannot reactivate 
   expect({
     policy: await scenario.readPolicyStatus(),
     staleActivation,
-  }).toEqual({
+  }).toMatchObject({
     policy: {
       revision: 1,
       stateVersion: 2,

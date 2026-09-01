@@ -5,6 +5,7 @@ import {
   type AdministrativePolicyActivationSource,
   type AdministrativePolicyDefinition,
   type AdministrativePolicyStatus,
+  type AdministrativePublicationIntent,
   type AdministrativeProviderPlan,
   type AdministrativeRequestedOutcome,
   type AdministrativeTaskOutcome,
@@ -88,6 +89,19 @@ export function canonicalAdministrativeOutcome(
     return "proposal";
   }
   return "investigation";
+}
+
+export function canonicalAdministrativeIntent(
+  requested: AdministrativeRequestedOutcome,
+): {
+  readonly outcome: AdministrativeTaskOutcome;
+  readonly publicationIntent: AdministrativePublicationIntent;
+} {
+  return {
+    outcome: canonicalAdministrativeOutcome(requested),
+    publicationIntent:
+      requested === "open-pull-request" ? "open-pull-request" : "branch-only",
+  };
 }
 
 export function authorizeAdministrativePlan(input: {

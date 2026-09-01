@@ -284,6 +284,13 @@ export function TaskList(props: {
             Typed task-execution adapters are configured, but administrative
             effects remain blocked while the policy is not active.
           </p>
+        ) : props.administrativeAutonomy?.taskExecution.status ===
+          "activation-required" ? (
+          <p>
+            The configured provider or typed adapter manifest differs from the
+            active policy revision. A new Fresh Passkey Action is required
+            before task execution.
+          </p>
         ) : (
           <p>
             Task execution is unavailable because the typed provider and broker

@@ -276,17 +276,24 @@ function App() {
         expectedActiveRevision,
         administrativeAutonomy?.policy.stateVersion ?? 0,
       );
-      setAdministrativeAutonomy((current) => ({
-        policy: activated,
-        taskExecution: current?.taskExecution ?? {
-          reason:
-            "Typed administrative task execution adapters are not configured.",
-          status: "unavailable",
-        },
-      }));
       if (activated.status !== "active") {
         throw new Error("Administrative Autonomy did not become active.");
       }
+      setAdministrativeAutonomy({
+        policy: activated,
+        taskExecution:
+          activated.executionManifest.provider.kind === "unavailable"
+            ? {
+                executionManifest: activated.executionManifest,
+                reason:
+                  "Typed administrative task execution adapters are not configured.",
+                status: "unavailable",
+              }
+            : {
+                executionManifest: activated.executionManifest,
+                status: "adapters-configured",
+              },
+      });
       setMessage(
         `Administrative Autonomy Policy revision ${activated.revision} is active.`,
       );
