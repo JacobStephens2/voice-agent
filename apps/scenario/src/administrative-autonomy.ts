@@ -383,6 +383,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly operationAttempts?: string[];
   readonly operationCompletionReplay?: "exact" | "forged";
   readonly operationCompletionReplayOutcomes?: boolean[];
+  readonly operationCompletionStoreAttempts?: string[];
   readonly omitLivePatchReconciliation?: boolean;
   readonly providerAttempts?: string[];
   readonly providerFailures?: number;
@@ -497,6 +498,9 @@ export async function createAdministrativeAutonomyScenario(options: {
                   }
                 : input;
             forgedOperationCompletionEvidence = true;
+            options.operationCompletionStoreAttempts?.push(
+              options.operationCompletionEvidenceForgery ?? "unmodified",
+            );
             const record = await store.completeOperation(submittedInput);
             if (options.operationCompletionReplay !== undefined) {
               try {
@@ -1272,7 +1276,7 @@ function forgeAdministrativeCompletionEvent(
               ? {
                   operationId:
                     administrativeOperationIdSchema.parse(
-                      "administrative-task-1-operation-2",
+                      "forged-administrative-operation-2",
                     ),
                 }
               : {}),

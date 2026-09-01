@@ -2857,10 +2857,12 @@ test.each(
 )("SQLite refuses forged Live Patch completion %s evidence", async (
   operationCompletionEvidenceForgery,
 ) => {
+  const operationCompletionStoreAttempts: string[] = [];
   const { scenario } = await createActivatedScenario(
     {
       now: "2026-10-02T14:55:00.000Z",
       operationCompletionEvidenceForgery,
+      operationCompletionStoreAttempts,
       providerPlan: [{ kind: "live-patch.apply" }],
     },
     temporaryDirectories,
@@ -2880,12 +2882,14 @@ test.each(
     completedEvents: record?.evidence.filter(
       (event) => event.kind === "administrative.operation.completed",
     ),
+    operationCompletionStoreAttempts,
     task: record?.task,
   }).toMatchObject({
     admission: {
       decision: "admitted",
     },
     completedEvents: [],
+    operationCompletionStoreAttempts: [operationCompletionEvidenceForgery],
     task: { status: "running" },
   });
 

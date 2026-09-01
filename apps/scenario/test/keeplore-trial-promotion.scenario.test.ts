@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, expect, test } from "vitest";
 
 import {
@@ -29,6 +30,8 @@ import {
   evaluateKeeploreProductionAppearance,
 } from "@voice-agent/policy";
 import { projectKeeploreButtonTrialEvidenceRecord } from "@voice-agent/runtime";
+
+import { createPromotionStore } from "../src/human-merge-promotion-store.ts";
 
 const temporaryDirectories: string[] = [];
 const now = "2026-08-25T14:00:00.000Z";
@@ -487,28 +490,77 @@ test("a duplicate webhook and a reconciliation of the same merge deploy once", a
   await scenario.close();
 });
 
+test("legacy Promotion registration and contract identity survive store restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-promotion-legacy-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const codebase = keeplorePromotionCodebase();
+  const initial = createPromotionStore(databasePath, codebase);
+  initial.activateInitialPolicy(now);
+  initial.close();
+
+  const database = new Database(databasePath);
+  database.exec("DROP TRIGGER promotion_contracts_no_update");
+  for (const table of ["promotion_registrations", "promotion_contracts"]) {
+    const rows = database
+      .prepare(`SELECT rowid, definition_json FROM ${table}`)
+      .all() as Array<{
+      readonly definition_json: string;
+      readonly rowid: number;
+    }>;
+    for (const row of rows) {
+      const parsed = JSON.parse(row.definition_json) as Readonly<
+        Record<string, unknown>
+      >;
+      const { registeredCodebaseId, ...legacy } = parsed;
+      database
+        .prepare(`UPDATE ${table} SET definition_json = ? WHERE rowid = ?`)
+        .run(
+          JSON.stringify({ ...legacy, applicationId: registeredCodebaseId }),
+          row.rowid,
+        );
+    }
+  }
+  database.close();
+
+  const restarted = createPromotionStore(databasePath, codebase);
+  const registration = restarted.findRegistration();
+  const contract = restarted.findActiveContract();
+  expect({ contract, registration }).toMatchObject({
+    contract: { registeredCodebaseId: "keeplore-production" },
+    registration: { registeredCodebaseId: "keeplore-production" },
+  });
+  expect(registration).not.toHaveProperty("applicationId");
+  expect(contract).not.toHaveProperty("applicationId");
+  restarted.close();
+});
+
 async function createKeeplorePromotionScenario(ids: readonly string[]) {
   const directory = await mkdtemp(join(tmpdir(), "keeplore-trial-promotion-"));
   temporaryDirectories.push(directory);
   return createHumanMergePromotionScenario({
-    codebase: {
-      registeredCodebaseId:
-        registeredCodebaseIdSchema.parse("keeplore-production"),
-      buildCommand: "composer install --no-dev",
-      health: { expectedStatus: 200, path: "/health.php" },
-      initialProductionCommit: previousCommit,
-      liveCheckoutPath: "/var/www/keeplore.app",
-      preflightCommand: "vendor/bin/phpunit",
-      productionBranch: "main",
-      releaseRoot: "/opt/keeplore/releases",
-      repository: "JacobStephens2/keeplore",
-      sourceCheckoutRoot: "/var/lib/keeplore-source",
-    },
+    codebase: keeplorePromotionCodebase(),
     databasePath: join(directory, "voice-agent.sqlite"),
     ids: [...ids],
     now,
     webhookSecret,
   });
+}
+
+function keeplorePromotionCodebase() {
+  return {
+    registeredCodebaseId:
+      registeredCodebaseIdSchema.parse("keeplore-production"),
+    buildCommand: "composer install --no-dev",
+    health: { expectedStatus: 200, path: "/health.php" },
+    initialProductionCommit: previousCommit,
+    liveCheckoutPath: "/var/www/keeplore.app",
+    preflightCommand: "vendor/bin/phpunit",
+    productionBranch: "main",
+    releaseRoot: "/opt/keeplore/releases",
+    repository: "JacobStephens2/keeplore",
+    sourceCheckoutRoot: "/var/lib/keeplore-source",
+  };
 }
 
 function deliver(
