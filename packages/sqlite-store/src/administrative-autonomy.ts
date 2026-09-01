@@ -37,6 +37,7 @@ import {
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
   type AdministrativeEvidenceRecord,
+  type AdministrativeOperationKind,
   type AdministrativePolicyStatus,
   type AdministrativePolicyEvidenceEvent,
   type AdministrativeTask,
@@ -136,6 +137,11 @@ interface AdministrativeOperationRow {
   readonly result_json: string | null;
   readonly status: "accepted" | "completed" | "failed" | "running" | "stopped";
   readonly task_id: string;
+}
+
+interface AdministrativeAcceptedOperationRow {
+  readonly id: string;
+  readonly kind: AdministrativeOperationKind;
 }
 
 interface AdministrativeMutationLaneRow {
@@ -420,6 +426,20 @@ export function createSqliteAdministrativeAutonomyStore(
     SET status = ?, result_json = ?, updated_at = ?,
       claim_id = NULL, lease_expires_at = NULL
     WHERE id = ? AND task_id = ? AND status = 'running' AND claim_id = ?
+  `);
+  const listAcceptedOperations = database.prepare<
+    [taskId: string],
+    AdministrativeAcceptedOperationRow
+  >(`
+    SELECT id, kind
+    FROM administrative_operations
+    WHERE task_id = ? AND status = 'accepted'
+    ORDER BY ordinal
+  `);
+  const settleAcceptedOperations = database.prepare(`
+    UPDATE administrative_operations
+    SET status = 'failed', updated_at = ?
+    WHERE task_id = ? AND status = 'accepted'
   `);
   const countIncompleteOperations = database.prepare<
     [taskId: string],
@@ -778,6 +798,30 @@ export function createSqliteAdministrativeAutonomyStore(
         JSON.stringify(event.details),
       );
     }
+  }
+
+  function settleUnstartedOperations(
+    taskId: string,
+    reason: string,
+    failedAt: string,
+  ): readonly Omit<AdministrativeEvidenceEvent, "sequence">[] {
+    const occurredAt = administrativeTimestampSchema.parse(failedAt);
+    const accepted = listAcceptedOperations.all(taskId);
+    if (accepted.length === 0) return [];
+    if (settleAcceptedOperations.run(failedAt, taskId).changes !== accepted.length) {
+      throw new Error("Accepted Administrative Operations changed concurrently");
+    }
+    return accepted.map((operation) => ({
+      details: {
+        kind: operation.kind,
+        operationId: operation.id,
+        reason,
+      },
+      id: operationFailureEventId(operation.id),
+      kind: "administrative.operation.failed" as const,
+      occurredAt,
+      summary: `The unstarted ${operation.kind} Operation failed closed with its Task.`,
+    }));
   }
 
   function loadRecord(task: AdministrativeTaskRow): AdministrativeEvidenceRecord {
@@ -1590,6 +1634,14 @@ export function createSqliteAdministrativeAutonomyStore(
         operation.result_json === encodedResult &&
         task.status === "denied"
       ) {
+        const unstartedEvents = settleUnstartedOperations(
+          input.taskId,
+          input.deniedEvent.kind === "administrative.task.denied"
+            ? input.deniedEvent.details.reason
+            : "Administrative Task denied.",
+          input.deniedAt,
+        );
+        appendEvents(input.taskId, unstartedEvents);
         return loadRecord(task);
       }
       if (
@@ -1659,8 +1711,17 @@ export function createSqliteAdministrativeAutonomyStore(
       if (denyTask.run(reason, input.deniedAt, input.taskId).changes !== 1) {
         throw new Error("Administrative Task changed concurrently");
       }
+      const unstartedEvents = settleUnstartedOperations(
+        input.taskId,
+        reason,
+        input.deniedAt,
+      );
       releaseMutationLane.run(input.operationId, input.claimId);
-      appendEvents(input.taskId, [input.operationEvent, input.deniedEvent]);
+      appendEvents(input.taskId, [
+        input.operationEvent,
+        ...unstartedEvents,
+        input.deniedEvent,
+      ]);
       return loadRecord(requireTask(input.taskId));
     },
   );
@@ -1745,11 +1806,22 @@ export function createSqliteAdministrativeAutonomyStore(
       const result = denyTask.run(reason, input.deniedAt, input.taskId);
       if (result.changes !== 1) {
         const task = requireTask(input.taskId);
-        if (task.status === "denied") return loadRecord(task);
+        if (task.status === "denied") {
+          appendEvents(
+            input.taskId,
+            settleUnstartedOperations(input.taskId, reason, input.deniedAt),
+          );
+          return loadRecord(task);
+        }
         throw new Error("Administrative Task cannot be denied from its current state");
       }
+      const unstartedEvents = settleUnstartedOperations(
+        input.taskId,
+        reason,
+        input.deniedAt,
+      );
       releaseTaskMutationLane.run(input.taskId);
-      appendEvents(input.taskId, [input.deniedEvent]);
+      appendEvents(input.taskId, [...unstartedEvents, input.deniedEvent]);
       return loadRecord(requireTask(input.taskId));
     },
   );
@@ -2147,6 +2219,11 @@ function ensureColumn(
 function rollbackWindowExpiryEventId(operationId: string): string {
   const digest = createHash("sha256").update(operationId).digest("hex");
   return `administrative-rollback-window-expired-${digest}`;
+}
+
+function operationFailureEventId(operationId: string): string {
+  const digest = createHash("sha256").update(operationId).digest("hex");
+  return `administrative-operation-failed-${digest}`;
 }
 
 function isSqliteConstraint(error: unknown): boolean {

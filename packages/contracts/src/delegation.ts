@@ -85,6 +85,23 @@ export const delegationResultOutcomeSchema = z.discriminatedUnion("status", [
   z.object({ failure: z.null(), status: z.literal("stopped") }),
 ]);
 
+export function delegationEvidenceDirectory(delegationId: string): string {
+  return `/var/lib/voice-agent-evidence/${delegationId}`;
+}
+
+export function isOwnedDelegationEvidencePath(
+  delegationId: string,
+  evidencePath: string,
+): boolean {
+  const directory = delegationEvidenceDirectory(delegationId);
+  const suffix = evidencePath.slice(directory.length + 1);
+  return (
+    evidencePath.startsWith(`${directory}/`) &&
+    suffix.length > 0 &&
+    !suffix.split("/").some((segment) => segment === "" || segment === "..")
+  );
+}
+
 export const delegationAutomatedVerificationResultsSchema = z
   .array(delegationAutomaticVerificationSchema)
   .max(10);
@@ -119,6 +136,20 @@ export const delegationResultCoreSchema = z
         message:
           "Stopped Delegations retain termination proof; completed and failed Delegations do not",
         path: ["termination"],
+      });
+    }
+    const evidencePaths =
+      result.failure?.evidencePaths ?? result.termination?.evidencePaths ?? [];
+    if (
+      !evidencePaths.every((evidencePath) =>
+        isOwnedDelegationEvidencePath(result.delegationId, evidencePath),
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Delegation failure and termination evidence must stay in the owning Delegation evidence directory",
+        path: [result.failure === null ? "termination" : "failure", "evidencePaths"],
       });
     }
     const headCommit = result.commits.at(-1);

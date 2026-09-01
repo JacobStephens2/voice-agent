@@ -1023,7 +1023,7 @@ test("administrative mutation plans share one durable global execution lane", as
 });
 
 test("a policy revision after one effect blocks every not-yet-started Operation", async () => {
-  const { scenario } = await createActivatedScenario(
+  const { databasePath, scenario } = await createActivatedScenario(
     {
       now: "2026-09-01T02:00:00.000Z",
       providerPlan: [
@@ -1050,11 +1050,30 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
 
   expect({
     executedKinds: scenario.executedOperations.map((operation) => operation.kind),
+    failedOperations: record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.failed",
+    ),
     policy: await scenario.readPolicyStatus(),
     result,
     taskStatus: record?.task.status,
   }).toMatchObject({
     executedKinds: ["production.observe"],
+    failedOperations: [
+      {
+        details: {
+          kind: "production.observe",
+          operationId: "administrative-operation-1",
+          reason: "Administrative Autonomy policy state is stale",
+        },
+      },
+      {
+        details: {
+          kind: "delegated-worktree.change",
+          operationId: "administrative-operation-2",
+          reason: "Administrative Autonomy policy state is stale",
+        },
+      },
+    ],
     policy: {
       activatedAt: "2026-09-01T02:00:00.000Z",
       activatedBy: "fresh-passkey-action",
@@ -1070,6 +1089,22 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
   });
 
   await scenario.close();
+  const restarted = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "policy-race-restart-",
+    now: "2026-09-01T02:01:00.000Z",
+    providerPlan: [
+      { kind: "production.observe" },
+      { kind: "delegated-worktree.change" },
+    ],
+  });
+  await restarted.reconcileOperations();
+  expect(
+    (await restarted.readTask("administrative-task-1"))?.evidence.filter(
+      (event) => event.kind === "administrative.operation.failed",
+    ),
+  ).toHaveLength(2);
+  await restarted.close();
 });
 
 test("deployed policy activation does not imply unavailable task execution", async () => {

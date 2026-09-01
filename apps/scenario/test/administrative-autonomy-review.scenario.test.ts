@@ -525,6 +525,8 @@ test.each([
   "mismatched-candidate",
   "mismatched-publication",
   "failed-verification",
+  "foreign-evidence",
+  "traversal-evidence",
 ] as const)(
   "a %s Delegation Result cannot complete its Operation or Task",
   async (delegatedWorktreeProof) => {

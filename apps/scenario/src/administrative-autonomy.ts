@@ -112,11 +112,13 @@ interface ScenarioOperationResultContext {
   readonly delegatedWorktreeProof:
     | "failed"
     | "failed-verification"
+    | "foreign-evidence"
     | "mismatched"
     | "mismatched-candidate"
     | "mismatched-publication"
     | "missing"
     | "terminated"
+    | "traversal-evidence"
     | "valid";
   readonly livePatchProof: LivePatchMutationProof | undefined;
   readonly omitLivePatchReconciliation: boolean;
@@ -145,9 +147,11 @@ type ScenarioOperationResultHandlerRegistry = {
 const scenarioOperationResultHandlers = {
   "delegated-worktree.change": (request, context) => {
     const terminalStatus =
-      context.delegatedWorktreeProof === "terminated"
+      context.delegatedWorktreeProof === "terminated" ||
+      context.delegatedWorktreeProof === "traversal-evidence"
         ? ("stopped" as const)
-        : context.delegatedWorktreeProof === "failed"
+        : context.delegatedWorktreeProof === "failed" ||
+            context.delegatedWorktreeProof === "foreign-evidence"
           ? ("failed" as const)
           : undefined;
     const result = {
@@ -168,7 +172,9 @@ const scenarioOperationResultHandlers = {
           terminalStatus === "failed"
             ? {
                 evidencePaths: [
-                  `/var/lib/voice-agent-evidence/${request.operationId}/restricted-runner-failure.json`,
+                  context.delegatedWorktreeProof === "foreign-evidence"
+                    ? "/var/lib/voice-agent-evidence/administrative-operation-foreign/failure.json"
+                    : `/var/lib/voice-agent-evidence/${request.operationId}/restricted-runner-failure.json`,
                 ],
                 kind: "restricted-runner" as const,
                 message: "The bounded Delegation was terminated.",
@@ -184,7 +190,9 @@ const scenarioOperationResultHandlers = {
           terminalStatus === "stopped"
             ? {
                 evidencePaths: [
-                  `/var/lib/voice-agent-evidence/${request.operationId}/stop.json`,
+                  context.delegatedWorktreeProof === "traversal-evidence"
+                    ? `/var/lib/voice-agent-evidence/${request.operationId}/../foreign/stop.json`
+                    : `/var/lib/voice-agent-evidence/${request.operationId}/stop.json`,
                 ],
                 kind: "owner-requested" as const,
                 message: "The bounded Delegation was stopped by its owner.",
@@ -375,11 +383,13 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly delegatedWorktreeProof?:
     | "failed"
     | "failed-verification"
+    | "foreign-evidence"
     | "mismatched"
     | "mismatched-candidate"
     | "mismatched-publication"
     | "missing"
     | "terminated"
+    | "traversal-evidence"
     | "valid";
   readonly registeredCodebaseAvailability?: "available" | "unavailable";
   readonly registeredCodebaseExpiresAt?: string;
