@@ -24,7 +24,9 @@ import {
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
   livePatchRollbackActivationRequestSchema,
+  livePatchRollbackActivationFailureReasonSchema,
   livePatchRollbackActivationResultSchema,
+  pendingLivePatchRollbackActivationSchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeAuthoritySnapshot,
   sameAdministrativeExecutionManifest,
@@ -139,10 +141,17 @@ interface AdministrativeMutationLaneRow {
 }
 
 interface LivePatchRollbackRow {
+  readonly attempt_count: number;
+  readonly last_error: string | null;
+  readonly next_attempt_at: string;
   readonly operation_id: string;
   readonly request_json: string;
   readonly result_json: string | null;
-  readonly status: "activated" | "activation-pending" | "armed";
+  readonly status:
+    | "activated"
+    | "activation-pending"
+    | "armed"
+    | "window-expired";
   readonly task_id: string;
 }
 
@@ -440,19 +449,27 @@ export function createSqliteAdministrativeAutonomyStore(
     [operationId: string],
     LivePatchRollbackRow
   >(`
-    SELECT operation_id, task_id, status, request_json, result_json
+    SELECT operation_id, task_id, status, request_json, result_json,
+      attempt_count, last_error, next_attempt_at
     FROM administrative_live_patch_rollbacks
     WHERE operation_id = ?
   `);
   const insertLivePatchRollback = database.prepare(`
     INSERT INTO administrative_live_patch_rollbacks (
-      operation_id, task_id, status, request_json, result_json, updated_at
-    ) VALUES (?, ?, 'armed', ?, NULL, ?)
+      operation_id, task_id, status, request_json, result_json, updated_at,
+      attempt_count, last_error, next_attempt_at
+    ) VALUES (?, ?, 'armed', ?, NULL, ?, 0, NULL, ?)
   `);
   const markArmedRollbacksPending = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
-    SET status = 'activation-pending', updated_at = ?
+    SET status = 'activation-pending', updated_at = ?, next_attempt_at = ?
     WHERE status = 'armed'
+  `);
+  const expireMaturedLivePatchRollbacks = database.prepare(`
+    UPDATE administrative_live_patch_rollbacks
+    SET status = 'window-expired', updated_at = ?
+    WHERE status = 'armed'
+      AND json_extract(request_json, '$.rollbackDeadline') <= ?
   `);
   const activateLivePatchRollbackWindow = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -475,7 +492,7 @@ export function createSqliteAdministrativeAutonomyStore(
   >(`
     SELECT operation_id
     FROM administrative_live_patch_rollbacks
-    WHERE status != 'activated'
+    WHERE status IN ('armed', 'activation-pending')
     ORDER BY operation_id
     LIMIT 100
   `);
@@ -483,7 +500,8 @@ export function createSqliteAdministrativeAutonomyStore(
     [],
     LivePatchRollbackRow
   >(`
-    SELECT operation_id, task_id, status, request_json, result_json
+    SELECT operation_id, task_id, status, request_json, result_json,
+      attempt_count, last_error, next_attempt_at
     FROM administrative_live_patch_rollbacks
     WHERE status = 'activation-pending'
     ORDER BY operation_id
@@ -509,6 +527,12 @@ export function createSqliteAdministrativeAutonomyStore(
     SET status = 'activated', result_json = ?, updated_at = ?
     WHERE operation_id = ? AND status = 'activation-pending'
   `);
+  const recordLivePatchRollbackActivationFailure = database.prepare(`
+    UPDATE administrative_live_patch_rollbacks
+    SET attempt_count = attempt_count + 1, last_error = ?,
+      next_attempt_at = ?, updated_at = ?
+    WHERE operation_id = ? AND status = 'activation-pending'
+  `);
 
   function policyStatus(row = requirePolicyState()): AdministrativePolicyStatus {
     if (row.status === "inactive") {
@@ -531,6 +555,22 @@ export function createSqliteAdministrativeAutonomyStore(
       const pendingOperationIds = listUnresolvedLivePatchRollbackIds
         .all()
         .map((rollback) => rollback.operation_id);
+      const pendingActivations = listPendingLivePatchRollbacks
+        .all()
+        .slice(0, 100)
+        .map((rollback) => ({
+          attemptCount: rollback.attempt_count,
+          lastFailureReason:
+            rollback.last_error === null
+              ? null
+              : livePatchRollbackActivationFailureReasonSchema.parse(
+                  rollback.last_error,
+                ),
+          nextAttemptAt: administrativeTimestampSchema.parse(
+            rollback.next_attempt_at,
+          ),
+          operationId: rollback.operation_id,
+        }));
       const activatedOperationCount =
         countActivatedLivePatchRollbacks.get()?.count ?? 0;
       const pendingOperationCount =
@@ -547,6 +587,7 @@ export function createSqliteAdministrativeAutonomyStore(
           pendingOperationIds,
           pendingOperationIdsTruncated:
             pendingOperationCount > pendingOperationIds.length,
+          pendingActivations,
         },
         revision: row.active_revision,
         stateVersion: row.state_version,
@@ -710,9 +751,11 @@ export function createSqliteAdministrativeAutonomyStore(
       intendedState: task.intended_state,
       kind: "administrative.work",
       outcome: task.outcome,
-      executionManifest: taskExecutionManifest(task),
-      policyRevision: task.policy_revision,
-      policyStateVersion: task.state_version,
+      authority: {
+        executionManifest: taskExecutionManifest(task),
+        policyRevision: task.policy_revision,
+        policyStateVersion: task.state_version,
+      },
       publicationIntent: task.publication_intent,
       question: task.question,
       status: task.status,
@@ -727,12 +770,15 @@ export function createSqliteAdministrativeAutonomyStore(
         input.expectation,
       );
       const current = requirePolicyState();
+      expireMaturedLivePatchRollbacks.run(
+        input.revision.activatedAt,
+        input.revision.activatedAt,
+      );
       const activeRevision =
         current.status === "inactive" ? null : current.active_revision;
       if (
         activeRevision !== expectation.expectedActiveRevision ||
         current.state_version !== expectation.expectedStateVersion ||
-        (countUnresolvedLivePatchRollbacks.get()?.count ?? 0) > 0 ||
         administrativeExecutionManifestFingerprint(
           input.revision.executionManifest,
         ) !== expectation.expectedExecutionManifestFingerprint ||
@@ -740,6 +786,12 @@ export function createSqliteAdministrativeAutonomyStore(
         input.stateVersion !== current.state_version + 1
       ) {
         return undefined;
+      }
+      if ((countUnresolvedLivePatchRollbacks.get()?.count ?? 0) > 0) {
+        return {
+          decision: "blocked",
+          reason: "unresolved-live-patch-rollback-windows",
+        } as const;
       }
       const revision = administrativePolicyRevisionSchema.parse(input.revision);
       insertPolicyRevision.run(
@@ -774,7 +826,7 @@ export function createSqliteAdministrativeAutonomyStore(
         current.active_revision === expectation.expectedRevision &&
         current.state_version === expectation.expectedStateVersion + 1
       ) {
-        markArmedRollbacksPending.run(input.suspendedAt);
+        markArmedRollbacksPending.run(input.suspendedAt, input.suspendedAt);
         return policyStatus(current);
       }
       const result = suspendPolicyState.run(
@@ -802,7 +854,7 @@ export function createSqliteAdministrativeAutonomyStore(
         suspensionEvent.summary,
         JSON.stringify(suspensionEvent.details),
       );
-      markArmedRollbacksPending.run(input.suspendedAt);
+      markArmedRollbacksPending.run(input.suspendedAt, input.suspendedAt);
       return policyStatus();
     },
   );
@@ -874,6 +926,7 @@ export function createSqliteAdministrativeAutonomyStore(
         request.operationId,
         request.taskId,
         JSON.stringify(request),
+        request.armedAt,
         request.armedAt,
       );
       return true;
@@ -1065,6 +1118,62 @@ export function createSqliteAdministrativeAutonomyStore(
     },
   );
 
+  const recordLivePatchRollbackActivationFailureTransaction =
+    database.transaction(
+      (
+        input: Parameters<
+          AdministrativeAutonomyStore["recordLivePatchRollbackActivationFailure"]
+        >[0],
+      ) => {
+        const rollback = readLivePatchRollback.get(input.operationId);
+        if (
+          rollback === undefined ||
+          rollback.status !== "activation-pending" ||
+          requirePolicyState().status !== "suspended"
+        ) {
+          return false;
+        }
+        const reason = livePatchRollbackActivationFailureReasonSchema.parse(
+          input.reason,
+        );
+        const failedAt = administrativeTimestampSchema.parse(input.failedAt);
+        const nextAttemptAt = administrativeTimestampSchema.parse(
+          input.nextAttemptAt,
+        );
+        const attemptCount = rollback.attempt_count + 1;
+        if (
+          input.failureEvent.kind !==
+            "administrative.live-patch.rollback-activation-failed" ||
+          input.failureEvent.occurredAt !== failedAt ||
+          input.failureEvent.details.operationId !== input.operationId ||
+          input.failureEvent.details.reason !== reason ||
+          input.failureEvent.details.attemptCount !== attemptCount ||
+          input.failureEvent.details.nextAttemptAt !== nextAttemptAt
+        ) {
+          throw new Error(
+            "Live Patch rollback failure Evidence Event does not match its attempt",
+          );
+        }
+        if (
+          recordLivePatchRollbackActivationFailure.run(
+            reason,
+            nextAttemptAt,
+            failedAt,
+            input.operationId,
+          ).changes !== 1
+        ) {
+          return false;
+        }
+        const request = livePatchRollbackActivationRequestSchema.parse(
+          JSON.parse(rollback.request_json),
+        );
+        if (rollback.last_error !== reason) {
+          appendEvents(request.taskId, [input.failureEvent]);
+        }
+        return true;
+      },
+    );
+
   const prepareTransaction = database.transaction(
     (input: AdministrativePreparedTaskPersistence) => {
       if (
@@ -1080,9 +1189,9 @@ export function createSqliteAdministrativeAutonomyStore(
           input.capabilityHash,
           input.task.outcome,
           input.task.publicationIntent,
-          JSON.stringify(input.task.executionManifest),
-          input.task.policyRevision,
-          input.task.policyStateVersion,
+          JSON.stringify(input.task.authority.executionManifest),
+          input.task.authority.policyRevision,
+          input.task.authority.policyStateVersion,
           input.task.status,
           input.task.question,
           input.task.intendedState,
@@ -1534,13 +1643,21 @@ export function createSqliteAdministrativeAutonomyStore(
       return listPendingLivePatchRollbacks
         .all()
         .map((row) =>
-          livePatchRollbackActivationRequestSchema.parse(
-            JSON.parse(row.request_json),
-          ),
+          pendingLivePatchRollbackActivationSchema.parse({
+            attemptCount: row.attempt_count,
+            lastFailureReason: row.last_error,
+            nextAttemptAt: row.next_attempt_at,
+            request: JSON.parse(row.request_json) as unknown,
+          }),
         );
     },
     async readPolicyStatus() {
       return policyStatus();
+    },
+    async recordLivePatchRollbackActivationFailure(input) {
+      return recordLivePatchRollbackActivationFailureTransaction.immediate(
+        input,
+      );
     },
     async readPolicyEvidence() {
       return policyEvidenceProjection();
@@ -1646,11 +1763,16 @@ function createSchema(database: Database.Database): void {
       operation_id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
       status TEXT NOT NULL CHECK (
-        status IN ('armed', 'activation-pending', 'activated')
+        status IN (
+          'armed', 'activation-pending', 'activated', 'window-expired'
+        )
       ),
       request_json TEXT NOT NULL,
       result_json TEXT,
       updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z',
       FOREIGN KEY (operation_id) REFERENCES administrative_operations(id),
       FOREIGN KEY (task_id) REFERENCES administrative_tasks(id)
     );
@@ -1770,6 +1892,57 @@ function createSchema(database: Database.Database): void {
     "initial_execution_started_at",
     "TEXT",
   );
+  migrateAdministrativeLivePatchRollbacks(database);
+}
+
+function migrateAdministrativeLivePatchRollbacks(
+  database: Database.Database,
+): void {
+  const table = database
+    .prepare<[], { readonly sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'administrative_live_patch_rollbacks'",
+    )
+    .get();
+  if (table?.sql.includes("window-expired")) return;
+  database.pragma("foreign_keys = OFF");
+  try {
+    database.exec(`
+      BEGIN IMMEDIATE;
+      ALTER TABLE administrative_live_patch_rollbacks
+        RENAME TO administrative_live_patch_rollbacks_legacy;
+      CREATE TABLE administrative_live_patch_rollbacks (
+        operation_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (
+          status IN (
+            'armed', 'activation-pending', 'activated', 'window-expired'
+          )
+        ),
+        request_json TEXT NOT NULL,
+        result_json TEXT,
+        updated_at TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        next_attempt_at TEXT NOT NULL,
+        FOREIGN KEY (operation_id) REFERENCES administrative_operations(id),
+        FOREIGN KEY (task_id) REFERENCES administrative_tasks(id)
+      );
+      INSERT INTO administrative_live_patch_rollbacks (
+        operation_id, task_id, status, request_json, result_json, updated_at,
+        attempt_count, last_error, next_attempt_at
+      )
+      SELECT operation_id, task_id, status, request_json, result_json,
+        updated_at, 0, NULL, updated_at
+      FROM administrative_live_patch_rollbacks_legacy;
+      DROP TABLE administrative_live_patch_rollbacks_legacy;
+      COMMIT;
+    `);
+  } catch (error) {
+    if (database.inTransaction) database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    database.pragma("foreign_keys = ON");
+  }
 }
 
 function ensureColumn(

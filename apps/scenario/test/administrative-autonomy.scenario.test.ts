@@ -183,8 +183,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
       intendedState: "The requested administrative outcome is achieved.",
       kind: "administrative.work",
       outcome: "intervention",
-      policyRevision: 1,
-      policyStateVersion: 1,
+      authority: { policyRevision: 1, policyStateVersion: 1 },
       question:
         "Confirm changing voice-agent in production to this intended state: The requested administrative outcome is achieved.",
       status: "completed",
@@ -844,8 +843,7 @@ test("Task Confirmation presents the intended state and decline consumes its cap
       intendedState: "The production application serves healthy responses.",
       kind: "administrative.work",
       outcome: "intervention",
-      policyRevision: 1,
-      policyStateVersion: 1,
+      authority: { policyRevision: 1, policyStateVersion: 1 },
       question:
         "Confirm changing voice-agent in production to this intended state: The production application serves healthy responses.",
       status: "denied",
@@ -924,8 +922,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
       intendedState: "The proposed change exists in an isolated worktree.",
       kind: "administrative.work",
       outcome: "proposal",
-      policyRevision: 1,
-      policyStateVersion: 1,
+      authority: { policyRevision: 1, policyStateVersion: 1 },
       question:
         "Confirm branch-only work for voice-agent in production toward this intended state: The proposed change exists in an isolated worktree.",
       status: "completed",

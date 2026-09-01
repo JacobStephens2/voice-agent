@@ -2,6 +2,11 @@ import { z } from "zod";
 
 import { grokRunnerPinSchema } from "./grok-delegation.ts";
 import { grokEnrollmentCampaignIdSchema } from "./grok-enrollment.ts";
+import {
+  delegationResultCoreSchema,
+  delegationWorktreeSchema,
+} from "./keeplore-delegation.ts";
+import { registeredCodebaseSchema } from "./promotion.ts";
 
 const identifierSchema = z.string().min(1).max(120);
 const administrativeIdentitySchema = (kind: "claim" | "operation" | "task") =>
@@ -315,6 +320,24 @@ export type AdministrativePolicyRevision = z.infer<
   typeof administrativePolicyRevisionSchema
 >;
 
+export const livePatchRollbackActivationFailureReasonSchema = z.enum([
+  "implementation-mismatch",
+  "transient-failure",
+]);
+export type LivePatchRollbackActivationFailureReason = z.infer<
+  typeof livePatchRollbackActivationFailureReasonSchema
+>;
+
+const pendingLivePatchRollbackActivationProjectionSchema = z
+  .object({
+    attemptCount: z.number().int().nonnegative(),
+    lastFailureReason:
+      livePatchRollbackActivationFailureReasonSchema.nullable(),
+    nextAttemptAt: timestampSchema,
+    operationId: administrativeOperationIdSchema,
+  })
+  .strict();
+
 export const administrativeRollbackActivationsSchema = z
   .object({
     activatedOperationCount: z.number().int().nonnegative(),
@@ -323,6 +346,9 @@ export const administrativeRollbackActivationsSchema = z
     pendingOperationCount: z.number().int().nonnegative(),
     pendingOperationIds: z.array(administrativeOperationIdSchema).max(100),
     pendingOperationIdsTruncated: z.boolean(),
+    pendingActivations: z
+      .array(pendingLivePatchRollbackActivationProjectionSchema)
+      .max(100),
   })
   .strict()
   .superRefine((projection, context) => {
@@ -337,6 +363,20 @@ export const administrativeRollbackActivationsSchema = z
           path: [`${state}OperationCount`],
         });
       }
+    }
+    if (
+      projection.pendingActivations.length !==
+        projection.pendingOperationIds.length ||
+      projection.pendingActivations.some(
+        (activation, index) =>
+          activation.operationId !== projection.pendingOperationIds[index],
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "pending rollback activation details are inconsistent",
+        path: ["pendingActivations"],
+      });
     }
   });
 
@@ -567,15 +607,44 @@ export type AdministrativePublicationIntent = z.infer<
 
 export const administrativeIntendedStateSchema = z.string().min(1).max(240);
 
-export const administrativeTaskTargetSchema = z
+export const administrativeTaskTargetRequestSchema = z
   .object({
     environment: z.literal("production"),
     registeredCodebaseId: identifierSchema,
   })
   .strict();
+export type AdministrativeTaskTargetRequest = z.infer<
+  typeof administrativeTaskTargetRequestSchema
+>;
+
+export const administrativeRegisteredCodebaseSchema =
+  registeredCodebaseSchema.extend({
+    expiresAt: timestampSchema,
+    revision: z.number().int().positive(),
+    verificationCommands: z.array(z.string().min(1).max(200)).min(1).max(10),
+    worktreeRoot: z.string().min(1).max(500).startsWith("/"),
+  });
+export type AdministrativeRegisteredCodebase = z.infer<
+  typeof administrativeRegisteredCodebaseSchema
+>;
+
+export const administrativeTaskTargetSchema =
+  administrativeTaskTargetRequestSchema.extend({
+    registeredCodebase: administrativeRegisteredCodebaseSchema,
+  });
 export type AdministrativeTaskTarget = z.infer<
   typeof administrativeTaskTargetSchema
 >;
+
+export function sameAdministrativeRegisteredCodebase(
+  left: AdministrativeRegisteredCodebase,
+  right: AdministrativeRegisteredCodebase,
+): boolean {
+  return (
+    JSON.stringify(administrativeRegisteredCodebaseSchema.parse(left)) ===
+    JSON.stringify(administrativeRegisteredCodebaseSchema.parse(right))
+  );
+}
 
 export const livePatchRollbackActivationRequestSchema = z
   .object({
@@ -592,6 +661,19 @@ export const livePatchRollbackActivationRequestSchema = z
   .strict();
 export type LivePatchRollbackActivationRequest = z.infer<
   typeof livePatchRollbackActivationRequestSchema
+>;
+
+export const pendingLivePatchRollbackActivationSchema = z
+  .object({
+    attemptCount: z.number().int().nonnegative(),
+    lastFailureReason:
+      livePatchRollbackActivationFailureReasonSchema.nullable(),
+    nextAttemptAt: timestampSchema,
+    request: livePatchRollbackActivationRequestSchema,
+  })
+  .strict();
+export type PendingLivePatchRollbackActivation = z.infer<
+  typeof pendingLivePatchRollbackActivationSchema
 >;
 
 export const livePatchRollbackActivationResultSchema = z
@@ -697,6 +779,16 @@ export const administrativeOperationRequestSchema = z.discriminatedUnion(
           })
           .strict(),
         kind: z.literal("delegated-worktree.change"),
+        delegation: z
+          .object({
+            delegationId: administrativeOperationIdSchema,
+            verificationCommands: z
+              .array(z.string().min(1).max(200))
+              .min(1)
+              .max(10),
+            worktree: delegationWorktreeSchema,
+          })
+          .strict(),
         publication: z.discriminatedUnion("kind", [
           z
             .object({
@@ -827,6 +919,7 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
     z
       .object({
         ...administrativeOperationResultFields,
+        delegation: delegationResultCoreSchema,
         kind: z.literal("delegated-worktree.change"),
         publication: z.discriminatedUnion("kind", [
           z
@@ -863,15 +956,13 @@ export type AdministrativeOperationResult = z.infer<
 export const administrativeTaskSchema = z
   .object({
     activeExecutionDeadline: timestampSchema.nullable(),
+    authority: administrativeAuthoritySnapshotSchema,
     conclusion: z.string().min(1).max(240),
     createdAt: timestampSchema,
     id: administrativeTaskIdSchema,
     intendedState: administrativeIntendedStateSchema,
     kind: z.literal("administrative.work"),
     outcome: administrativeTaskOutcomeSchema,
-    executionManifest: administrativeExecutionManifestSchema,
-    policyRevision: z.number().int().positive(),
-    policyStateVersion: z.number().int().positive(),
     publicationIntent: administrativePublicationIntentSchema,
     question: z.string().min(1).max(500),
     status: z.enum([
@@ -889,16 +980,9 @@ export type AdministrativeTask = z.infer<typeof administrativeTaskSchema>;
 
 /** The single authority value persisted with and recovered from a Task. */
 export function administrativeTaskAuthoritySnapshot(
-  task: Pick<
-    AdministrativeTask,
-    "executionManifest" | "policyRevision" | "policyStateVersion"
-  >,
+  task: Pick<AdministrativeTask, "authority">,
 ): AdministrativeAuthoritySnapshot {
-  return administrativeAuthoritySnapshotSchema.parse({
-    executionManifest: task.executionManifest,
-    policyRevision: task.policyRevision,
-    policyStateVersion: task.policyStateVersion,
-  });
+  return administrativeAuthoritySnapshotSchema.parse(task.authority);
 }
 
 const eventFields = {
@@ -971,6 +1055,18 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
       })
       .strict(),
     kind: z.literal("administrative.live-patch.rollback-activated"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z
+      .object({
+        attemptCount: z.number().int().positive(),
+        nextAttemptAt: timestampSchema,
+        operationId: administrativeOperationIdSchema,
+        reason: livePatchRollbackActivationFailureReasonSchema,
+      })
+      .strict(),
+    kind: z.literal("administrative.live-patch.rollback-activation-failed"),
   }),
   z.object({
     ...eventFields,

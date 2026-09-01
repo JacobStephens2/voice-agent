@@ -9,6 +9,8 @@ const eventLabels: Record<
   "administrative.confirmation.prepared": "Task Confirmation prepared",
   "administrative.live-patch.rollback-activated":
     "Live Patch rollback activated",
+  "administrative.live-patch.rollback-activation-failed":
+    "Live Patch rollback activation retry scheduled",
   "administrative.operation.accepted": "Operation accepted",
   "administrative.operation.completed": "Operation completed",
   "administrative.plan.accepted": "Operation plan accepted",
@@ -37,7 +39,10 @@ export function AdministrativeTaskPage({
         <p>
           <strong>Intended resulting state:</strong> {record.task.intendedState}
         </p>
-        <p>Administrative Autonomy Policy revision {record.task.policyRevision}</p>
+        <p>
+          Administrative Autonomy Policy revision{" "}
+          {record.task.authority.policyRevision}
+        </p>
       </section>
 
       <section aria-labelledby="timeline-heading">

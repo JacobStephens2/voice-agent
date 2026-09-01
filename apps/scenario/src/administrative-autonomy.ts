@@ -3,6 +3,7 @@ import {
   administrativeExecutionManifestFingerprint,
   administrativeOperationClaimIdSchema,
   administrativeOperationIdSchema,
+  administrativeRegisteredCodebaseSchema,
   administrativeTaskIdSchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
@@ -17,7 +18,7 @@ import {
   type AdministrativePolicyStatus,
   type AdministrativeProviderPlan,
   type AdministrativeRequestedOutcome,
-  type AdministrativeTaskTarget,
+  type AdministrativeTaskTargetRequest,
   type AdministrativeTimestamp,
   type LivePatchMutationProof,
   type LivePatchRollbackActivationRequest,
@@ -71,7 +72,7 @@ export interface AdministrativeAutonomyScenario {
     readonly outcome: AdministrativeRequestedOutcome;
     readonly ownerId: string;
     readonly requestId: string;
-    readonly target: AdministrativeTaskTarget;
+    readonly target: AdministrativeTaskTargetRequest;
   }): Promise<AdministrativeTaskAdmissionResult>;
   interleavePolicyRevisionBeforePlanAdmission(): void;
   interleavePolicyRevisionAfterFirstOperation(): void;
@@ -103,6 +104,120 @@ export interface AdministrativeAutonomyScenario {
   suspendPolicyState(): Promise<AdministrativePolicyStatus>;
 }
 
+interface ScenarioOperationResultContext {
+  readonly common: Pick<
+    AdministrativeOperationResult,
+    "completedAt" | "effect" | "operationId" | "summary"
+  >;
+  readonly delegatedWorktreeProof:
+    | "failed-verification"
+    | "mismatched"
+    | "missing"
+    | "valid";
+  readonly livePatchProof: LivePatchMutationProof | undefined;
+  readonly omitLivePatchReconciliation: boolean;
+}
+
+type ScenarioOperationResultHandler = (
+  request: AdministrativeOperationRequest,
+  context: ScenarioOperationResultContext,
+) => AdministrativeOperationResult;
+
+const scenarioOperationResultHandlers = {
+  "delegated-worktree.change": (request, context) => {
+    if (request.kind !== "delegated-worktree.change") {
+      throw new Error("The scenario Delegated Worktree handler was cross-wired");
+    }
+    const result = {
+      ...context.common,
+      delegation: {
+        branch:
+          context.delegatedWorktreeProof === "mismatched"
+            ? "administrative/untrusted-provider-branch"
+            : request.delegation.worktree.branch,
+        changedFiles: ["src/administrative-change.ts"],
+        commits: ["a".repeat(40)],
+        completedAt: context.common.completedAt,
+        delegationId: request.delegation.delegationId,
+        failure: null,
+        risks: [],
+        status: "completed" as const,
+        verification: {
+          automated: request.delegation.verificationCommands.map((command) => ({
+            command,
+            outcome:
+              context.delegatedWorktreeProof === "failed-verification"
+                ? ("failed" as const)
+                : ("passed" as const),
+            summary: `${command} completed in the restricted Delegated Worktree.`,
+          })),
+        },
+        worktree: {
+          ...request.delegation.worktree,
+          dirty: false,
+          state: "completed" as const,
+        },
+      },
+      kind: request.kind,
+      publication:
+        request.publication.kind === "open-pull-request"
+          ? {
+              baseBranch: "registered-production-branch" as const,
+              kind: "isolated-pull-request-opened" as const,
+              productionMutation: false as const,
+              registeredCodebaseId: request.target.registeredCodebaseId,
+              state: "open" as const,
+            }
+          : {
+              kind: "isolated-branch-prepared" as const,
+              productionMutation: false as const,
+            },
+    };
+    if (context.delegatedWorktreeProof === "missing") {
+      const { delegation: _delegation, ...missingProof } = result;
+      return missingProof as unknown as AdministrativeOperationResult;
+    }
+    return result;
+  },
+  "live-patch.apply": (request, context) => {
+    if (request.kind !== "live-patch.apply" || context.livePatchProof === undefined) {
+      throw new Error("The scenario Live Patch handler was cross-wired");
+    }
+    const result = {
+      ...context.common,
+      kind: request.kind,
+      mutationProof: context.livePatchProof,
+    };
+    if (!context.omitLivePatchReconciliation) return result;
+    const incompleteProof = {
+      healthCheck: result.mutationProof.healthCheck,
+      independentRollback: result.mutationProof.independentRollback,
+      mutationStartedAt: result.mutationProof.mutationStartedAt,
+      verification: result.mutationProof.verification,
+    };
+    return {
+      ...result,
+      mutationProof: incompleteProof,
+    } as unknown as AdministrativeOperationResult;
+  },
+  "production.observe": (request, context) => {
+    if (request.kind !== "production.observe") {
+      throw new Error("The scenario observation handler was cross-wired");
+    }
+    return {
+      ...context.common,
+      kind: request.kind,
+      observation: {
+        kind: "registered-application-health" as const,
+        status: "healthy" as const,
+      },
+    };
+  },
+} satisfies Record<
+  AdministrativeOperationRequest["kind"],
+  ScenarioOperationResultHandler
+>;
+
 export async function createAdministrativeAutonomyScenario(options: {
   readonly beforeOperationEffect?: (
     request: AdministrativeOperationRequest,
@@ -128,6 +243,12 @@ export async function createAdministrativeAutonomyScenario(options: {
     readonly provider?: 1 | 2;
     readonly rollbackActivator?: 1 | 2;
   };
+  /** Deliberately untrusted claims exposed by fake implementation objects. */
+  readonly selfReportedExecutionImplementationVersions?: {
+    readonly executor?: 1 | 2;
+    readonly provider?: 1 | 2;
+    readonly rollbackActivator?: 1 | 2;
+  };
   readonly executionManifestVersion?: 1 | 2;
   readonly holdOperationUntilAbort?: boolean;
   readonly identifierNamespace?: string;
@@ -145,6 +266,8 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly planningDeadlineCallbacks?: Array<() => void>;
   readonly providerPlan: AdministrativeProviderPlan | unknown;
   readonly providerSignals?: Array<AbortSignal | undefined>;
+  readonly reconciliationCallbacks?: Array<() => Promise<void>>;
+  readonly reconciliationSchedule?: string[];
   readonly reportedCompletionTime?: string;
   readonly rollbackActivationAttempts?: LivePatchRollbackActivationRequest[];
   readonly rollbackActivationEffects?: string[];
@@ -154,6 +277,14 @@ export async function createAdministrativeAutonomyScenario(options: {
     string,
     AdministrativeTimestamp
   >;
+  readonly delegatedWorktreeProof?:
+    | "failed-verification"
+    | "mismatched"
+    | "missing"
+    | "valid";
+  readonly registeredCodebaseAvailability?: "available" | "unavailable";
+  readonly registeredCodebaseExpiresAt?: string;
+  readonly registeredCodebaseRevisionByLookup?: readonly number[];
 }): Promise<AdministrativeAutonomyScenario> {
   let capabilitySequence = 0;
   let claimSequence = 0;
@@ -178,6 +309,7 @@ export async function createAdministrativeAutonomyScenario(options: {
     options.rollbackActivationTimeLedger ?? new Map();
   const identifierNamespace = options.identifierNamespace ?? "";
   const currentTime = () => options.clock?.current ?? options.now;
+  let registeredCodebaseLookup = 0;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
   const executionManifest =
     options.executionAdapters === "unavailable"
@@ -194,10 +326,28 @@ export async function createAdministrativeAutonomyScenario(options: {
     options.executionImplementationVersions?.rollbackActivator ??
       implementationVersion,
   );
+  const selfReportedExecutorManifest = createScenarioExecutionManifest(
+    options.selfReportedExecutionImplementationVersions?.executor ??
+      options.executionImplementationVersions?.executor ??
+      implementationVersion,
+  );
+  const selfReportedProviderManifest = createScenarioExecutionManifest(
+    options.selfReportedExecutionImplementationVersions?.provider ??
+      options.executionImplementationVersions?.provider ??
+      implementationVersion,
+  );
+  const selfReportedRollbackActivatorManifest = createScenarioExecutionManifest(
+    options.selfReportedExecutionImplementationVersions?.rollbackActivator ??
+      options.executionImplementationVersions?.rollbackActivator ??
+      implementationVersion,
+  );
   if (providerManifest.provider.kind !== "scenario-fake") {
     throw new Error("The scenario provider identity is unavailable");
   }
-  const providerIdentity = providerManifest.provider;
+  if (selfReportedProviderManifest.provider.kind !== "scenario-fake") {
+    throw new Error("The self-reported scenario provider identity is unavailable");
+  }
+  const providerIdentity = selfReportedProviderManifest.provider;
   const rollbackActivatorImplementation =
     rollbackActivatorManifest.operationAdapters.find(
       (adapter) => adapter.kind === "live-patch.apply",
@@ -205,10 +355,19 @@ export async function createAdministrativeAutonomyScenario(options: {
   if (rollbackActivatorImplementation === undefined) {
     throw new Error("The scenario rollback activator identity is unavailable");
   }
+  const selfReportedRollbackActivatorImplementation =
+    selfReportedRollbackActivatorManifest.operationAdapters.find(
+      (adapter) => adapter.kind === "live-patch.apply",
+    );
+  if (selfReportedRollbackActivatorImplementation === undefined) {
+    throw new Error(
+      "The self-reported scenario rollback activator identity is unavailable",
+    );
+  }
   let runtime: ReturnType<typeof createAdministrativeAutonomyRuntime>;
   const executor = {
     identity: {
-      operationAdapters: executorManifest.operationAdapters.map(
+      operationAdapters: selfReportedExecutorManifest.operationAdapters.map(
         ({ implementationDigest, kind }) => ({ implementationDigest, kind }),
       ),
     },
@@ -325,53 +484,13 @@ export async function createAdministrativeAutonomyScenario(options: {
         operationId: request.operationId,
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
-      if (request.kind === "live-patch.apply") {
-        const result = {
-          ...common,
-          kind: request.kind,
-          mutationProof: livePatchProof,
-        };
-        if (options.omitLivePatchReconciliation) {
-          const incompleteProof = {
-            healthCheck: result.mutationProof.healthCheck,
-            independentRollback: result.mutationProof.independentRollback,
-            mutationStartedAt: result.mutationProof.mutationStartedAt,
-            verification: result.mutationProof.verification,
-          };
-          return {
-            ...result,
-            mutationProof: incompleteProof,
-          } as unknown as AdministrativeOperationResult;
-        }
-        return result;
-      }
-      if (request.kind === "production.observe") {
-        return {
-          ...common,
-          kind: request.kind,
-          observation: {
-            kind: "registered-application-health" as const,
-            status: "healthy" as const,
-          },
-        };
-      }
-      return {
-        ...common,
-        kind: request.kind,
-        publication:
-          request.publication.kind === "open-pull-request"
-            ? {
-                baseBranch: "registered-production-branch" as const,
-                kind: "isolated-pull-request-opened" as const,
-                productionMutation: false as const,
-                registeredCodebaseId: request.target.registeredCodebaseId,
-                state: "open" as const,
-              }
-            : {
-                kind: "isolated-branch-prepared" as const,
-                productionMutation: false as const,
-              },
-      };
+      return scenarioOperationResultHandlers[request.kind](request, {
+        common,
+        delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
+        livePatchProof,
+        omitLivePatchReconciliation:
+          options.omitLivePatchReconciliation ?? false,
+      });
     },
   };
   const provider = {
@@ -412,7 +531,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   const rollbackActivator = {
     identity: {
       implementationDigest:
-        rollbackActivatorImplementation.rollbackActivationImplementationDigest,
+        selfReportedRollbackActivatorImplementation.rollbackActivationImplementationDigest,
       kind: "live-patch.apply" as const,
     },
     async activate(request: LivePatchRollbackActivationRequest) {
@@ -463,7 +582,69 @@ export async function createAdministrativeAutonomyScenario(options: {
     runtime = createAdministrativeAutonomyRuntime({
       ...(options.executionAdapters === "unavailable"
         ? {}
-        : { executor, provider, rollbackActivator }),
+        : {
+            executor,
+            implementationCatalog: {
+              identifyExecutor(implementation) {
+                if (implementation !== executor) return undefined;
+                return {
+                  operationAdapters: executorManifest.operationAdapters.map(
+                    ({ implementationDigest, kind }) => ({
+                      implementationDigest,
+                      kind,
+                    }),
+                  ),
+                };
+              },
+              identifyProvider(implementation) {
+                return implementation === provider
+                  ? providerManifest.provider
+                  : undefined;
+              },
+              identifyRollbackActivator(implementation) {
+                return implementation === rollbackActivator
+                  ? {
+                      implementationDigest:
+                        rollbackActivatorImplementation.rollbackActivationImplementationDigest,
+                      kind: "live-patch.apply" as const,
+                    }
+                  : undefined;
+              },
+            },
+            provider,
+            registeredCodebases: {
+              async findRegisteredCodebase(registeredCodebaseId: string) {
+                if (
+                  options.registeredCodebaseAvailability === "unavailable"
+                ) {
+                  throw new Error("Registered Codebase registry unavailable");
+                }
+                if (registeredCodebaseId !== "voice-agent") return undefined;
+                const revisions = options.registeredCodebaseRevisionByLookup;
+                const revision =
+                  revisions?.[
+                    Math.min(registeredCodebaseLookup, revisions.length - 1)
+                  ] ?? 1;
+                registeredCodebaseLookup += 1;
+                return administrativeRegisteredCodebaseSchema.parse({
+                  applicationId: "voice-agent",
+                  expiresAt:
+                    options.registeredCodebaseExpiresAt ??
+                    "2100-01-01T00:00:00.000Z",
+                  initialProductionCommit: "1".repeat(40),
+                  liveCheckoutPath: "/srv/voice-agent",
+                  productionBranch: "main",
+                  registeredAt: "1990-01-01T00:00:00.000Z",
+                  repository: "JacobStephens2/voice-agent",
+                  revision,
+                  sourceCheckoutRoot: "/srv/source/voice-agent",
+                  verificationCommands: ["pnpm typecheck", "pnpm test"],
+                  worktreeRoot: "/var/lib/voice-agent/worktrees/voice-agent",
+                });
+              },
+            },
+            rollbackActivator,
+          }),
       executionManifest,
       identifiers: {
         nextCapability: () =>
@@ -498,6 +679,27 @@ export async function createAdministrativeAutonomyScenario(options: {
                 });
                 return () => {
                   armed = false;
+                };
+              },
+            },
+          }),
+      ...(options.reconciliationCallbacks === undefined
+        ? {}
+        : {
+            reconciliationScheduler: {
+              schedule(
+                at: AdministrativeTimestamp,
+                reconcile: () => Promise<void>,
+              ) {
+                let scheduled = true;
+                options.reconciliationSchedule?.push(at);
+                options.reconciliationCallbacks?.push(async () => {
+                  if (!scheduled) return;
+                  scheduled = false;
+                  await reconcile();
+                });
+                return () => {
+                  scheduled = false;
                 };
               },
             },

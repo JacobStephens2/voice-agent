@@ -14,15 +14,18 @@ import {
   administrativeProviderPlanSchema,
   administrativeIntendedStateSchema,
   administrativeRequestedOutcomeSchema,
+  administrativeRegisteredCodebaseSchema,
   administrativeTimestampSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
   administrativeTaskTargetSchema,
+  administrativeTaskTargetRequestSchema,
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
   administrativeLivePatchRollbackActivatorIdentitySchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
+  sameAdministrativeRegisteredCodebase,
   sameGrokRunnerPin,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
@@ -42,10 +45,12 @@ import {
   type AdministrativePolicySuspensionExpectation,
   type AdministrativePublicationIntent,
   type AdministrativeRequestedOutcome,
+  type AdministrativeRegisteredCodebase,
   type AdministrativeTask,
   type AdministrativeTaskId,
   type AdministrativeTaskOutcome,
   type AdministrativeTaskTarget,
+  type AdministrativeTaskTargetRequest,
   type AdministrativeTimestamp,
   type LivePatchRollbackActivationRequest,
   type AdministrativeLivePatchRollbackActivatorIdentity,
@@ -60,7 +65,6 @@ import {
 } from "@voice-agent/policy";
 
 export interface AdministrativePlanProvider {
-  readonly identity: AdministrativePlanProviderIdentity;
   /**
    * taskId is the durable planning idempotency key. A provider may receive the
    * same accepted task again after a transient failure or process restart.
@@ -75,6 +79,13 @@ export interface AdministrativePlanProvider {
   }): Promise<unknown>;
 }
 
+/** Trusted, composition-owned Registered Codebase lookup. */
+export interface AdministrativeRegisteredCodebaseRegistry {
+  findRegisteredCodebase(
+    registeredCodebaseId: string,
+  ): Promise<unknown>;
+}
+
 export interface AdministrativePlanningDeadlineTimer {
   arm(
     deadline: AdministrativeTimestamp,
@@ -82,8 +93,14 @@ export interface AdministrativePlanningDeadlineTimer {
   ): () => void;
 }
 
+export interface AdministrativeReconciliationScheduler {
+  schedule(
+    at: AdministrativeTimestamp,
+    reconcile: () => Promise<void>,
+  ): () => void;
+}
+
 export interface AdministrativeOperationExecutor {
-  readonly identity: AdministrativeOperationExecutorIdentity;
   /**
    * The adapter must use request.operationId as its idempotency key, carry the
    * claim ID and deadline into its typed broker fence, and stop and settle
@@ -97,13 +114,25 @@ export interface AdministrativeOperationExecutor {
 }
 
 export interface AdministrativeLivePatchRollbackActivator {
-  readonly identity: AdministrativeLivePatchRollbackActivatorIdentity;
   /**
    * operationId is the durable idempotency key. Repeating the same typed
    * request after failure or restart must return the already-activated result
    * without repeating an external effect.
    */
   activate(request: LivePatchRollbackActivationRequest): Promise<unknown>;
+}
+
+/**
+ * Deployment-owned trust anchor for the concrete implementations installed at
+ * this composition boundary. Implementations never select their own authority
+ * identity; the catalog binds an object reference to reviewed provenance.
+ */
+export interface AdministrativeImplementationCatalog {
+  identifyExecutor(implementation: AdministrativeOperationExecutor): unknown;
+  identifyProvider(implementation: AdministrativePlanProvider): unknown;
+  identifyRollbackActivator(
+    implementation: AdministrativeLivePatchRollbackActivator,
+  ): unknown;
 }
 
 export interface AdministrativeOperationExecution {
@@ -146,6 +175,7 @@ type AdministrativeEffectFenceDenialReason =
   | "claim-lost"
   | "execution-manifest"
   | "live-patch-rollback"
+  | "registered-codebase"
   | "stale-policy";
 
 class AdministrativeEffectFenceError extends Error {
@@ -158,6 +188,15 @@ class AdministrativeEffectFenceError extends Error {
 }
 
 class AdministrativePlanningDeadlineError extends Error {}
+
+class AdministrativeRollbackActivationError extends Error {
+  readonly reason: "implementation-mismatch" | "transient-failure";
+
+  constructor(reason: "implementation-mismatch" | "transient-failure") {
+    super(reason);
+    this.reason = reason;
+  }
+}
 
 export type AdministrativePolicyActivationResult =
   | {
@@ -225,7 +264,7 @@ export interface AdministrativeAutonomyRuntime {
     readonly outcome: AdministrativeRequestedOutcome;
     readonly ownerId: string;
     readonly requestId: string;
-    readonly target: AdministrativeTaskTarget;
+    readonly target: AdministrativeTaskTargetRequest;
   }): Promise<AdministrativeTaskPreparationResult>;
   suspendPolicy(input: {
     readonly expectation: AdministrativePolicySuspensionExpectation;
@@ -236,32 +275,64 @@ export function createAdministrativeAutonomyRuntime(options: {
   readonly executionManifest: AdministrativeExecutionManifest;
   readonly executor?: AdministrativeOperationExecutor;
   readonly identifiers: AdministrativeIdentifiers;
+  readonly implementationCatalog?: AdministrativeImplementationCatalog;
   readonly now: () => string;
   readonly operationLeaseMilliseconds?: number;
   readonly planningDeadlineTimer?: AdministrativePlanningDeadlineTimer;
   readonly provider?: AdministrativePlanProvider;
+  readonly reconciliationScheduler?: AdministrativeReconciliationScheduler;
+  readonly registeredCodebases?: AdministrativeRegisteredCodebaseRegistry;
   readonly rollbackActivator?: AdministrativeLivePatchRollbackActivator;
   readonly store: AdministrativeAutonomyStore;
 }): AdministrativeAutonomyRuntime {
   const executionManifest = administrativeExecutionManifestSchema.parse(
     options.executionManifest,
   );
-  const providerIdentity =
-    options.provider === undefined
-      ? undefined
-      : administrativePlanProviderIdentitySchema.parse(options.provider.identity);
-  const executorIdentity =
-    options.executor === undefined
-      ? undefined
-      : administrativeOperationExecutorIdentitySchema.parse(
-          options.executor.identity,
+  const trustedProviderIdentity = () => {
+    if (options.provider === undefined || options.implementationCatalog === undefined) {
+      return undefined;
+    }
+    try {
+      const parsed = administrativePlanProviderIdentitySchema.safeParse(
+        options.implementationCatalog.identifyProvider(options.provider),
+      );
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const trustedExecutorIdentity = () => {
+    if (options.executor === undefined || options.implementationCatalog === undefined) {
+      return undefined;
+    }
+    try {
+      const parsed = administrativeOperationExecutorIdentitySchema.safeParse(
+        options.implementationCatalog.identifyExecutor(options.executor),
+      );
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const trustedRollbackActivatorIdentity = () => {
+    if (
+      options.rollbackActivator === undefined ||
+      options.implementationCatalog === undefined
+    ) {
+      return undefined;
+    }
+    try {
+      const parsed =
+        administrativeLivePatchRollbackActivatorIdentitySchema.safeParse(
+          options.implementationCatalog.identifyRollbackActivator(
+            options.rollbackActivator,
+          ),
         );
-  const rollbackActivatorIdentity =
-    options.rollbackActivator === undefined
-      ? undefined
-      : administrativeLivePatchRollbackActivatorIdentitySchema.parse(
-          options.rollbackActivator.identity,
-        );
+      return parsed.success ? parsed.data : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const now = () => administrativeTimestampSchema.parse(options.now());
   const planningDeadlineTimer = options.planningDeadlineTimer ?? {
     arm(deadline: AdministrativeTimestamp, onDeadline: () => void) {
@@ -284,6 +355,20 @@ export function createAdministrativeAutonomyRuntime(options: {
     );
   }
   if (
+    executionManifestPresent !== (options.implementationCatalog !== undefined)
+  ) {
+    throw new Error(
+      "Administrative execution requires a trusted implementation catalog",
+    );
+  }
+  if (
+    executionManifestPresent !== (options.registeredCodebases !== undefined)
+  ) {
+    throw new Error(
+      "Administrative execution requires a trusted Registered Codebase registry",
+    );
+  }
+  if (
     executionManifestPresent ===
     (executionManifest.provider.kind === "unavailable")
   ) {
@@ -296,19 +381,29 @@ export function createAdministrativeAutonomyRuntime(options: {
       "The Live Patch rollback implementation does not match the Administrative Execution Manifest",
     );
   }
-  if (!providerIdentityMatchesManifest(providerIdentity, executionManifest)) {
+  if (
+    !providerIdentityMatchesManifest(
+      trustedProviderIdentity(),
+      executionManifest,
+    )
+  ) {
     throw new Error(
       "Administrative provider implementation identity does not match the Administrative Execution Manifest",
     );
   }
-  if (!executorIdentityMatchesManifest(executorIdentity, executionManifest)) {
+  if (
+    !executorIdentityMatchesManifest(
+      trustedExecutorIdentity(),
+      executionManifest,
+    )
+  ) {
     throw new Error(
       "Administrative Operation executor implementation identity does not match the Administrative Execution Manifest",
     );
   }
   if (
     !rollbackActivatorIdentityMatchesManifest(
-      rollbackActivatorIdentity,
+      trustedRollbackActivatorIdentity(),
       executionManifest,
     )
   ) {
@@ -319,10 +414,10 @@ export function createAdministrativeAutonomyRuntime(options: {
   const runtimeImplementationsMatchManifest = (
     manifest: AdministrativeExecutionManifest,
   ) =>
-    providerIdentityMatchesManifest(providerIdentity, manifest) &&
-    executorIdentityMatchesManifest(executorIdentity, manifest) &&
+    providerIdentityMatchesManifest(trustedProviderIdentity(), manifest) &&
+    executorIdentityMatchesManifest(trustedExecutorIdentity(), manifest) &&
     rollbackActivatorIdentityMatchesManifest(
-      rollbackActivatorIdentity,
+      trustedRollbackActivatorIdentity(),
       manifest,
     );
   const requestedOperationLeaseMilliseconds =
@@ -337,15 +432,65 @@ export function createAdministrativeAutonomyRuntime(options: {
     requestedOperationLeaseMilliseconds,
     administrativeActiveExecutionMilliseconds,
   );
+  const reconciliationScheduler = options.reconciliationScheduler ?? {
+    schedule(at: AdministrativeTimestamp, reconcile: () => Promise<void>) {
+      const timer = setTimeout(
+        () => void reconcile(),
+        Math.max(0, new Date(at).getTime() - new Date(now()).getTime()),
+      );
+      timer.unref?.();
+      return () => clearTimeout(timer);
+    },
+  };
   let closed = false;
   let reconciliationPromise: Promise<void> | undefined;
   let reconciliationRequested = false;
-  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelRetry: (() => void) | undefined;
   let retryAt: AdministrativeTimestamp | undefined;
   const inFlightExecutions = new Map<
     AdministrativeOperationId,
     { readonly abort: (reason: string) => void }
   >();
+
+  async function findTrustedRegisteredCodebase(
+    registeredCodebaseId: string,
+    observedAt: AdministrativeTimestamp,
+  ): Promise<AdministrativeRegisteredCodebase | undefined> {
+    if (options.registeredCodebases === undefined) return undefined;
+    try {
+      const registration = administrativeRegisteredCodebaseSchema.parse(
+        await options.registeredCodebases.findRegisteredCodebase(
+          registeredCodebaseId,
+        ),
+      );
+      return registration.applicationId === registeredCodebaseId &&
+        registration.registeredAt <= observedAt &&
+        observedAt < registration.expiresAt
+        ? registration
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function requireCurrentRegisteredCodebase(
+    target: AdministrativeTaskTarget,
+    observedAt: AdministrativeTimestamp,
+  ): Promise<void> {
+    const current = await findTrustedRegisteredCodebase(
+      target.registeredCodebaseId,
+      observedAt,
+    );
+    if (
+      current === undefined ||
+      !sameAdministrativeRegisteredCodebase(
+        current,
+        target.registeredCodebase,
+      )
+    ) {
+      throw new AdministrativeEffectFenceError("registered-codebase");
+    }
+  }
 
   async function denyPlannedTask(taskId: AdministrativeTaskId, reason: string) {
     const deniedAt = now();
@@ -365,18 +510,20 @@ export function createAdministrativeAutonomyRuntime(options: {
 
   function scheduleReconciliation(at: AdministrativeTimestamp): void {
     if (closed || (retryAt !== undefined && retryAt <= at)) return;
-    if (retryTimer !== undefined) clearTimeout(retryTimer);
+    cancelRetry?.();
     retryAt = at;
-    const delay = Math.max(
-      0,
-      new Date(at).getTime() - new Date(now()).getTime(),
-    );
-    retryTimer = setTimeout(() => {
+    cancelRetry = reconciliationScheduler.schedule(at, async () => {
       retryAt = undefined;
-      retryTimer = undefined;
-      void reconcileOperations();
-    }, delay);
-    retryTimer.unref?.();
+      cancelRetry = undefined;
+      try {
+        await reconcileOperations();
+      } catch {
+        const retryAfterControllerFailure = administrativeTimestampSchema.parse(
+          new Date(new Date(now()).getTime() + 1_000).toISOString(),
+        );
+        scheduleReconciliation(retryAfterControllerFailure);
+      }
+    });
   }
 
   async function completeAdministrativeTask(
@@ -388,7 +535,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     await options.store.completeTask({
       completedAt,
       completedEvent: {
-        details: { policyRevision: record.task.policyRevision },
+        details: { policyRevision: record.task.authority.policyRevision },
         id: options.identifiers.nextEventId(),
         kind: "administrative.task.completed",
         occurredAt: completedAt,
@@ -476,22 +623,30 @@ export function createAdministrativeAutonomyRuntime(options: {
   async function reconcileLivePatchRollbackActivations(
     policy: Extract<AdministrativePolicyStatus, { status: "suspended" }>,
   ): Promise<void> {
-    if (options.rollbackActivator === undefined) return;
-    const requests =
+    const pendingActivations =
       await options.store.listPendingLivePatchRollbackActivations();
-    for (const request of requests) {
-      if (
-        !rollbackActivatorIdentityMatchesManifest(
-          rollbackActivatorIdentity,
-          request.authority.executionManifest,
-        )
-      ) {
+    for (const pending of pendingActivations) {
+      const request = pending.request;
+      const observedAt = now();
+      if (pending.nextAttemptAt > observedAt) {
+        scheduleReconciliation(pending.nextAttemptAt);
         continue;
       }
+      const implementationMatches =
+        options.rollbackActivator !== undefined &&
+        rollbackActivatorIdentityMatchesManifest(
+          trustedRollbackActivatorIdentity(),
+          request.authority.executionManifest,
+        );
       try {
+        if (!implementationMatches || options.rollbackActivator === undefined) {
+          throw new AdministrativeRollbackActivationError(
+            "implementation-mismatch",
+          );
+        }
         const untrusted = await options.rollbackActivator.activate(request);
         const result = livePatchRollbackActivationResultSchema.parse(untrusted);
-        const observedAt = now();
+        const completedAt = now();
         if (
           result.operationId !== request.operationId ||
           result.taskId !== request.taskId ||
@@ -499,7 +654,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           result.target.registeredCodebaseId !==
             request.target.registeredCodebaseId ||
           result.activatedAt < policy.suspendedAt ||
-          result.activatedAt > observedAt
+          result.activatedAt > completedAt
         ) {
           throw new Error(
             "Live Patch rollback activation proof does not match its request",
@@ -515,9 +670,38 @@ export function createAdministrativeAutonomyRuntime(options: {
           },
           result,
         });
-      } catch {
-        // Administrative Suspension is already durable. A failed independent
-        // activator stays pending for the next retry or process restart.
+      } catch (error) {
+        const failedAt = now();
+        const reason =
+          error instanceof AdministrativeRollbackActivationError
+            ? error.reason
+            : "transient-failure";
+        const delay = Math.min(
+          60_000,
+          1_000 * 2 ** Math.min(pending.attemptCount, 6),
+        );
+        const nextAttemptAt = administrativeTimestampSchema.parse(
+          new Date(new Date(failedAt).getTime() + delay).toISOString(),
+        );
+        await options.store.recordLivePatchRollbackActivationFailure({
+          failedAt,
+          failureEvent: {
+            details: {
+              attemptCount: pending.attemptCount + 1,
+              nextAttemptAt,
+              operationId: request.operationId,
+              reason,
+            },
+            id: options.identifiers.nextEventId(),
+            kind: "administrative.live-patch.rollback-activation-failed",
+            occurredAt: failedAt,
+            summary: "The armed Live Patch rollback activation will retry.",
+          },
+          nextAttemptAt,
+          operationId: request.operationId,
+          reason,
+        });
+        scheduleReconciliation(nextAttemptAt);
       }
     }
   }
@@ -535,7 +719,10 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
     }
     const policy = await options.store.findActivePolicy();
-    if (policy === undefined || policy.revision !== task.policyRevision) {
+    if (
+      policy === undefined ||
+      policy.revision !== task.authority.policyRevision
+    ) {
       return denyPlannedTask(
         task.id,
         "Administrative Autonomy policy state is stale",
@@ -544,7 +731,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     if (
       !sameAdministrativeExecutionManifest(
         policy.executionManifest,
-        task.executionManifest,
+        task.authority.executionManifest,
       ) ||
       !sameAdministrativeExecutionManifest(
         policy.executionManifest,
@@ -611,7 +798,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
       return {
         decision: "admitted",
-        policyRevision: task.policyRevision,
+        policyRevision: task.authority.policyRevision,
         taskId: task.id,
       };
     } finally {
@@ -680,7 +867,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         details: {
           operations: parsedPlan.data.map((operation) => operation.kind),
           policyRevision: policy.revision,
-          stateVersion: task.policyStateVersion,
+          stateVersion: task.authority.policyStateVersion,
         },
         id: options.identifiers.nextEventId(),
         kind: "administrative.plan.accepted",
@@ -697,7 +884,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     }
     return {
       decision: "admitted",
-      policyRevision: task.policyRevision,
+      policyRevision: task.authority.policyRevision,
       taskId: task.id,
     };
   }
@@ -763,6 +950,15 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
       return true;
     }
+    try {
+      await requireCurrentRegisteredCodebase(claim.request.target, now());
+    } catch {
+      await denyPlannedTask(
+        taskId,
+        "The Registered Codebase registration is unavailable or stale",
+      );
+      return true;
+    }
     const claimMaintenance = maintainOperationClaim({
       activeExecutionDeadline: claim.activeExecutionDeadline,
       claimId: claim.claimId,
@@ -798,6 +994,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         ) {
           throw new AdministrativeEffectFenceError("live-patch-rollback");
         }
+        await requireCurrentRegisteredCodebase(request.target, request.armedAt);
         const armed = await options.store.armLivePatchRollback({
           claimId: claim.claimId,
           request,
@@ -826,6 +1023,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           throw new Error("Administrative Operation effect was aborted");
         }
         const effectAt = now();
+        await requireCurrentRegisteredCodebase(claim.request.target, effectAt);
         if (input.mutationStartedAt !== effectAt) {
           throw new AdministrativeEffectFenceError("live-patch-rollback");
         }
@@ -851,10 +1049,12 @@ export function createAdministrativeAutonomyRuntime(options: {
         if (claimMaintenance.signal.aborted) {
           throw new Error("Administrative Operation effect was aborted");
         }
+        const effectAt = now();
+        await requireCurrentRegisteredCodebase(claim.request.target, effectAt);
         const authority = await options.store.recheckOperationEffect({
           authority: claim.request.authority,
           claimId: claim.claimId,
-          effectAt: now(),
+          effectAt,
           operationId: claim.request.operationId,
           taskId: claim.request.taskId,
         });
@@ -891,6 +1091,8 @@ export function createAdministrativeAutonomyRuntime(options: {
           const reason =
             error.reason === "live-patch-rollback"
               ? "Administrative executor returned incomplete or mismatched bounded proof"
+              : error.reason === "registered-codebase"
+                ? "The Registered Codebase registration is unavailable or stale"
               : error.reason === "active-execution-deadline"
                 ? "Administrative Task active-execution deadline elapsed"
               : error.reason === "stale-policy" ||
@@ -1004,7 +1206,7 @@ export function createAdministrativeAutonomyRuntime(options: {
   }
 
   async function reconcileOperations(): Promise<void> {
-    if (closed || options.executor === undefined) return;
+    if (closed) return;
     reconciliationRequested = true;
     if (reconciliationPromise !== undefined) return reconciliationPromise;
     reconciliationPromise = (async () => {
@@ -1017,6 +1219,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           await reconcileLivePatchRollbackActivations(policy);
           return;
         }
+        if (options.executor === undefined) return;
         const taskIds = await options.store.listRecoverableTaskIds();
         const results = await Promise.all(
           taskIds.map((taskId) => reconcileTask(taskId)),
@@ -1077,6 +1280,13 @@ export function createAdministrativeAutonomyRuntime(options: {
         },
         stateVersion: current.stateVersion + 1,
       });
+      if (activated !== undefined && "decision" in activated) {
+        return {
+          decision: "denied" as const,
+          reason:
+            "Administrative Autonomy has unresolved Live Patch rollback windows",
+        };
+      }
       return activated === undefined
         ? {
             decision: "denied",
@@ -1124,7 +1334,7 @@ export function createAdministrativeAutonomyRuntime(options: {
             activeExecutionDeadline,
             policyRevision:
               (await options.store.findTask(input.taskId))?.task
-                .policyRevision ?? 1,
+                .authority.policyRevision ?? 1,
           },
           id: options.identifiers.nextEventId(),
           kind: "administrative.confirmation.accepted",
@@ -1154,13 +1364,13 @@ export function createAdministrativeAutonomyRuntime(options: {
       }
       return {
         decision: "admitted",
-        policyRevision: task.policyRevision,
+        policyRevision: task.authority.policyRevision,
         taskId: task.id,
       };
     },
     async close() {
       closed = true;
-      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      cancelRetry?.();
       await options.store.close();
     },
     getPolicyStatus: () => options.store.readPolicyStatus(),
@@ -1219,7 +1429,9 @@ export function createAdministrativeAutonomyRuntime(options: {
       const intendedState = administrativeIntendedStateSchema.parse(
         input.intendedState,
       );
-      const target = administrativeTaskTargetSchema.parse(input.target);
+      const targetRequest = administrativeTaskTargetRequestSchema.parse(
+        input.target,
+      );
       const policy = await options.store.readPolicyStatus();
       if (policy.status !== "active") {
         return {
@@ -1245,6 +1457,20 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
       const confirmationCapability = options.identifiers.nextCapability();
       const preparedAt = now();
+      const registeredCodebase = await findTrustedRegisteredCodebase(
+        targetRequest.registeredCodebaseId,
+        preparedAt,
+      );
+      if (registeredCodebase === undefined) {
+        return {
+          decision: "denied",
+          reason: "The Registered Codebase is unavailable or not current",
+        };
+      }
+      const target = administrativeTaskTargetSchema.parse({
+        ...targetRequest,
+        registeredCodebase,
+      });
       const authority = administrativeAuthoritySnapshotSchema.parse({
         executionManifest,
         policyRevision: policy.revision,
@@ -1276,7 +1502,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           intendedState,
           kind: "administrative.work",
           outcome,
-          ...authority,
+          authority,
           publicationIntent,
           question: confirmationQuestion(
             intendedState,
@@ -1429,7 +1655,7 @@ function confirmationQuestion(
   return `Confirm changing ${subject} to this intended state: ${intendedState}`;
 }
 
-function operationRequest(input: {
+interface AdministrativeOperationRequestInput {
   readonly authority: AdministrativeAuthoritySnapshot;
   readonly intendedState: string;
   readonly kind: AdministrativeOperationRequest["kind"];
@@ -1437,72 +1663,131 @@ function operationRequest(input: {
   readonly publicationIntent: AdministrativePublicationIntent;
   readonly target: AdministrativeTaskTarget;
   readonly taskId: AdministrativeTaskId;
-}): AdministrativeOperationRequest {
-  const common = {
+}
+
+interface AdministrativeOperationResultValidation {
+  readonly completed: number;
+  readonly effectStarted: number;
+  readonly initialExecutionStarted: number;
+}
+
+interface AdministrativeOperationHandler {
+  buildRequest(input: AdministrativeOperationRequestInput): unknown;
+  validateResult(
+    request: AdministrativeOperationRequest,
+    result: AdministrativeOperationResult,
+    timing: AdministrativeOperationResultValidation,
+  ): void;
+}
+
+const administrativeOperationHandlers = {
+  "delegated-worktree.change": {
+    buildRequest(input) {
+      const branch = `administrative/${input.operationId}`;
+      return {
+        ...operationRequestCommon(input),
+        change: confirmedIntendedState(input.intendedState),
+        delegation: {
+          delegationId: input.operationId,
+          verificationCommands:
+            input.target.registeredCodebase.verificationCommands,
+          worktree: {
+            baseCommit: input.target.registeredCodebase.initialProductionCommit,
+            branch,
+            dirty: false,
+            id: input.operationId,
+            path: `${input.target.registeredCodebase.worktreeRoot}/${input.operationId}`,
+            state: "queued",
+          },
+        },
+        kind: input.kind,
+        publication:
+          input.publicationIntent === "open-pull-request"
+            ? {
+                baseBranch: "registered-production-branch",
+                kind: "open-pull-request",
+                productionMutation: false,
+              }
+            : { kind: "branch-only", productionMutation: false },
+      };
+    },
+    validateResult: validateDelegatedWorktreeResult,
+  },
+  "live-patch.apply": {
+    buildRequest(input) {
+      return {
+        ...operationRequestCommon(input),
+        kind: input.kind,
+        mutationBoundary: {
+          healthCheck: {
+            kind: "registered-application-health",
+            requiredBeforeMutation: true,
+          },
+          independentRollback: {
+            armedBeforeMutation: true,
+            kind: "independent-live-patch-rollback",
+            rollbackWindowMilliseconds: livePatchRollbackWindowMilliseconds,
+          },
+          reconciliation: {
+            acceptedOutcomes: [
+              "captured-as-isolated-pull-request",
+              "removed-from-production",
+            ],
+            kind: "live-patch-reconciliation",
+            requiredBeforeTaskCompletion: true,
+          },
+          verification: {
+            kind: "independent-application-health-proof",
+            requiredAfterMutation: true,
+          },
+        },
+        patch: confirmedIntendedState(input.intendedState),
+      };
+    },
+    validateResult: validateLivePatchResult,
+  },
+  "production.observe": {
+    buildRequest(input) {
+      return {
+        ...operationRequestCommon(input),
+        kind: input.kind,
+        observation: {
+          intendedState: input.intendedState,
+          kind: "registered-application-health",
+          targetSource: "confirmed-durable-task",
+        },
+      };
+    },
+    validateResult: validateObservationResult,
+  },
+} satisfies Record<
+  AdministrativeOperationRequest["kind"],
+  AdministrativeOperationHandler
+>;
+
+function operationRequestCommon(input: AdministrativeOperationRequestInput) {
+  return {
     authority: administrativeAuthoritySnapshotSchema.parse(input.authority),
     operationId: input.operationId,
     target: input.target,
     taskId: input.taskId,
   };
-  const intendedState = {
-    intendedState: input.intendedState,
+}
+
+function confirmedIntendedState(intendedState: string) {
+  return {
+    intendedState,
     kind: "achieve-confirmed-intended-state" as const,
     targetSource: "confirmed-durable-task" as const,
   };
-  if (input.kind === "production.observe") {
-    return administrativeOperationRequestSchema.parse({
-      ...common,
-      kind: input.kind,
-      observation: {
-        intendedState: input.intendedState,
-        kind: "registered-application-health",
-        targetSource: "confirmed-durable-task",
-      },
-    });
-  }
-  if (input.kind === "delegated-worktree.change") {
-    return administrativeOperationRequestSchema.parse({
-      ...common,
-      change: intendedState,
-      kind: input.kind,
-      publication:
-        input.publicationIntent === "open-pull-request"
-          ? {
-              baseBranch: "registered-production-branch",
-              kind: "open-pull-request",
-              productionMutation: false,
-            }
-          : { kind: "branch-only", productionMutation: false },
-    });
-  }
-  return administrativeOperationRequestSchema.parse({
-    ...common,
-    kind: input.kind,
-    mutationBoundary: {
-      healthCheck: {
-        kind: "registered-application-health",
-        requiredBeforeMutation: true,
-      },
-      independentRollback: {
-        armedBeforeMutation: true,
-        kind: "independent-live-patch-rollback",
-        rollbackWindowMilliseconds: livePatchRollbackWindowMilliseconds,
-      },
-      reconciliation: {
-        acceptedOutcomes: [
-          "captured-as-isolated-pull-request",
-          "removed-from-production",
-        ],
-        kind: "live-patch-reconciliation",
-        requiredBeforeTaskCompletion: true,
-      },
-      verification: {
-        kind: "independent-application-health-proof",
-        requiredAfterMutation: true,
-      },
-    },
-    patch: intendedState,
-  });
+}
+
+function operationRequest(
+  input: AdministrativeOperationRequestInput,
+): AdministrativeOperationRequest {
+  return administrativeOperationRequestSchema.parse(
+    administrativeOperationHandlers[input.kind].buildRequest(input),
+  );
 }
 
 function operationResult(
@@ -1547,56 +1832,116 @@ function operationResult(
   ) {
     throw new Error("Administrative idempotency proof is not valid");
   }
-  if (
-    request.kind === "delegated-worktree.change" &&
-    result.kind === request.kind
-  ) {
-    const matchingPublication =
-      (request.publication.kind === "branch-only" &&
-        result.publication.kind === "isolated-branch-prepared") ||
-      (request.publication.kind === "open-pull-request" &&
-        result.publication.kind === "isolated-pull-request-opened" &&
-        result.publication.registeredCodebaseId ===
-          request.target.registeredCodebaseId);
-    if (!matchingPublication) {
-      throw new Error(
-        "Administrative publication proof does not match its request",
-      );
-    }
-  }
-  if (request.kind === "live-patch.apply" && result.kind === "live-patch.apply") {
-    const proof = result.mutationProof;
-    const healthObserved = new Date(proof.healthCheck.observedAt).getTime();
-    const rollbackArmed = new Date(proof.independentRollback.armedAt).getTime();
-    const rollbackDeadline = new Date(
-      proof.independentRollback.rollbackDeadline,
-    ).getTime();
-    const mutationStarted = new Date(proof.mutationStartedAt).getTime();
-    const verificationObserved = new Date(
-      proof.verification.observedAt,
-    ).getTime();
-    const reconciliationObserved = new Date(
-      proof.reconciliation.observedAt,
-    ).getTime();
-    if (
-      healthObserved < initialExecutionStarted ||
-      healthObserved > rollbackArmed ||
-      rollbackArmed > mutationStarted ||
-      rollbackDeadline - mutationStarted !==
-        request.mutationBoundary.independentRollback.rollbackWindowMilliseconds ||
-      mutationStarted !== effectStarted ||
-      mutationStarted >= rollbackDeadline ||
-      mutationStarted > verificationObserved ||
-      verificationObserved > reconciliationObserved ||
-      reconciliationObserved > completed ||
-      completed >= rollbackDeadline ||
-      proof.reconciliation.registeredCodebaseId !==
-        request.target.registeredCodebaseId
-    ) {
-      throw new Error("Live Patch safety proof is not in a valid time order");
-    }
-  }
+  administrativeOperationHandlers[request.kind].validateResult(
+    request,
+    result,
+    { completed, effectStarted, initialExecutionStarted },
+  );
   return result;
+}
+
+function validateObservationResult(
+  request: AdministrativeOperationRequest,
+  result: AdministrativeOperationResult,
+): void {
+  if (request.kind !== "production.observe" || result.kind !== request.kind) {
+    throw new Error("Observation result does not match its Operation kind");
+  }
+}
+
+function validateDelegatedWorktreeResult(
+  request: AdministrativeOperationRequest,
+  result: AdministrativeOperationResult,
+): void {
+  if (
+    request.kind !== "delegated-worktree.change" ||
+    result.kind !== request.kind
+  ) {
+    throw new Error("Delegation Result does not match its Operation kind");
+  }
+  const delegation = result.delegation;
+  const expectedWorktree = request.delegation.worktree;
+  const verificationPassed =
+    request.delegation.verificationCommands.every((command) =>
+      delegation.verification.automated.some(
+        (verification) =>
+          verification.command === command &&
+          verification.outcome === "passed",
+      ),
+    ) &&
+    delegation.verification.automated.every(
+      (verification) => verification.outcome === "passed",
+    );
+  if (
+    delegation.delegationId !== request.delegation.delegationId ||
+    delegation.completedAt !== result.completedAt ||
+    delegation.branch !== expectedWorktree.branch ||
+    delegation.status !== "completed" ||
+    delegation.failure !== null ||
+    delegation.changedFiles.length === 0 ||
+    delegation.commits.length === 0 ||
+    delegation.worktree.id !== expectedWorktree.id ||
+    delegation.worktree.baseCommit !== expectedWorktree.baseCommit ||
+    delegation.worktree.branch !== expectedWorktree.branch ||
+    delegation.worktree.path !== expectedWorktree.path ||
+    delegation.worktree.state !== "completed" ||
+    delegation.worktree.dirty ||
+    !verificationPassed
+  ) {
+    throw new Error(
+      "Administrative Delegation Result is incomplete, mismatched, or unverified",
+    );
+  }
+  const matchingPublication =
+    (request.publication.kind === "branch-only" &&
+      result.publication.kind === "isolated-branch-prepared") ||
+    (request.publication.kind === "open-pull-request" &&
+      result.publication.kind === "isolated-pull-request-opened" &&
+      result.publication.registeredCodebaseId ===
+        request.target.registeredCodebaseId);
+  if (!matchingPublication) {
+    throw new Error("Administrative publication proof does not match its request");
+  }
+}
+
+function validateLivePatchResult(
+  request: AdministrativeOperationRequest,
+  result: AdministrativeOperationResult,
+  timing: AdministrativeOperationResultValidation,
+): void {
+  if (request.kind !== "live-patch.apply" || result.kind !== request.kind) {
+    throw new Error("Live Patch result does not match its Operation kind");
+  }
+  const proof = result.mutationProof;
+  const healthObserved = new Date(proof.healthCheck.observedAt).getTime();
+  const rollbackArmed = new Date(proof.independentRollback.armedAt).getTime();
+  const rollbackDeadline = new Date(
+    proof.independentRollback.rollbackDeadline,
+  ).getTime();
+  const mutationStarted = new Date(proof.mutationStartedAt).getTime();
+  const verificationObserved = new Date(
+    proof.verification.observedAt,
+  ).getTime();
+  const reconciliationObserved = new Date(
+    proof.reconciliation.observedAt,
+  ).getTime();
+  if (
+    healthObserved < timing.initialExecutionStarted ||
+    healthObserved > rollbackArmed ||
+    rollbackArmed > mutationStarted ||
+    rollbackDeadline - mutationStarted !==
+      request.mutationBoundary.independentRollback.rollbackWindowMilliseconds ||
+    mutationStarted !== timing.effectStarted ||
+    mutationStarted >= rollbackDeadline ||
+    mutationStarted > verificationObserved ||
+    verificationObserved > reconciliationObserved ||
+    reconciliationObserved > timing.completed ||
+    timing.completed >= rollbackDeadline ||
+    proof.reconciliation.registeredCodebaseId !==
+      request.target.registeredCodebaseId
+  ) {
+    throw new Error("Live Patch safety proof is not in a valid time order");
+  }
 }
 
 function describeClaimDenial(

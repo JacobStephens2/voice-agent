@@ -18,7 +18,9 @@ import type {
   AdministrativeTaskId,
   AdministrativeTimestamp,
   LivePatchRollbackActivationRequest,
+  LivePatchRollbackActivationFailureReason,
   LivePatchRollbackActivationResult,
+  PendingLivePatchRollbackActivation,
 } from "@voice-agent/contracts";
 
 type UnsequencedAdministrativeEvidenceEvent =
@@ -100,7 +102,14 @@ export interface AdministrativeAutonomyStore {
     readonly expectation: AdministrativePolicyActivationExpectation;
     readonly revision: AdministrativePolicyRevision;
     readonly stateVersion: number;
-  }): Promise<AdministrativePolicyStatus | undefined>;
+  }): Promise<
+    | AdministrativePolicyStatus
+    | {
+        readonly decision: "blocked";
+        readonly reason: "unresolved-live-patch-rollback-windows";
+      }
+    | undefined
+  >;
   claimConfirmation(input: {
     readonly acceptedAt: AdministrativeTimestamp;
     readonly acceptedEvent: UnsequencedAdministrativeEvidenceEvent;
@@ -152,7 +161,7 @@ export interface AdministrativeAutonomyStore {
   ): Promise<AdministrativeEvidenceRecord | undefined>;
   listRecoverableTaskIds(): Promise<readonly AdministrativeTaskId[]>;
   listPendingLivePatchRollbackActivations(): Promise<
-    readonly LivePatchRollbackActivationRequest[]
+    readonly PendingLivePatchRollbackActivation[]
   >;
   listTasks(): Promise<readonly AdministrativeTask[]>;
   readPolicyEvidence(): Promise<AdministrativePolicyEvidenceProjection>;
@@ -160,6 +169,13 @@ export interface AdministrativeAutonomyStore {
     input: AdministrativePolicyEvidencePageRequest,
   ): Promise<AdministrativePolicyEvidencePage>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
+  recordLivePatchRollbackActivationFailure(input: {
+    readonly failedAt: AdministrativeTimestamp;
+    readonly failureEvent: UnsequencedAdministrativeEvidenceEvent;
+    readonly nextAttemptAt: AdministrativeTimestamp;
+    readonly operationId: AdministrativeOperationId;
+    readonly reason: LivePatchRollbackActivationFailureReason;
+  }): Promise<boolean>;
   recheckOperationEffect(input: {
     readonly authority: AdministrativeAuthoritySnapshot;
     readonly claimId: AdministrativeOperationClaimId;
