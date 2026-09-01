@@ -738,7 +738,9 @@ function productionAppearance(): KeeploreProductionAppearanceObservation {
 
 function keeploreRegistration(): KeeploreRegistration {
   return {
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath: "/var/www/keeplore.app",
       releaseRoot: "/opt/keeplore/releases",

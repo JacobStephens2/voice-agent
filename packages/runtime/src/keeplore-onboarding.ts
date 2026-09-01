@@ -1,5 +1,6 @@
 import {
   keeploreDeploymentContractSchema,
+  keeploreRegisteredCodebaseId,
   type KeeploreBranchProtection,
   type KeeploreDeploymentContract,
   type KeeploreEnrollmentSource,
@@ -111,7 +112,7 @@ export function createKeeploreOnboardingControls(options: {
         buildCommand: input.buildCommand,
         health: input.health,
         preflightCommand: input.preflightCommand,
-        registeredCodebaseId: "keeplore-production",
+        registeredCodebaseId: keeploreRegisteredCodebaseId,
         releaseRoot: input.releaseRoot,
         retainedReleases: input.retainedReleases,
         revision: input.revision,

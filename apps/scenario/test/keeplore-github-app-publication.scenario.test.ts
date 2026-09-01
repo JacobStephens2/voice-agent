@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
+import { registeredCodebaseIdSchema } from "@voice-agent/contracts";
+
 import {
   createKeeploreCandidatePublisher,
   handleKeeplorePublisherRequest,
@@ -652,7 +654,9 @@ function registeredDelegation(
     brief: {
       delegationId,
       registeredCodebase: {
-        applicationId: "keeplore-production",
+        registeredCodebaseId: registeredCodebaseIdSchema.parse(
+          "keeplore-production",
+        ),
         productionBranch: "main",
         repository: overrides.repository ?? "JacobStephens2/keeplore",
         revision: 1,

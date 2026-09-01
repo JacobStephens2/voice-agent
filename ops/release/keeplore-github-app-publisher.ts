@@ -13,9 +13,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
+import {
+  keeploreRegisteredCodebaseId,
+  registeredCodebaseIdSchema,
+} from "../../packages/contracts/src/index.ts";
+
 const keeploreRepository = "JacobStephens2/keeplore" as const;
 const keeploreRepositoryName = "keeplore" as const;
-const keeploreApplicationId = "keeplore-production" as const;
 const keeploreProductionBranch = "main" as const;
 const keeploreRemote = "https://github.com/JacobStephens2/keeplore.git";
 const worktreeRoot = "/var/lib/voice-agent-worktrees/keeplore";
@@ -326,11 +330,15 @@ function parseRegisteredDelegation(
     "Registered Codebase",
   );
   const worktree = requireRecord(record.worktree, "Delegated Worktree");
+  const registeredCodebaseId = registeredCodebaseIdSchema.safeParse(
+    codebase.registeredCodebaseId,
+  );
   if (
     record.status !== "running" ||
     record.stopRequested !== false ||
     brief.delegationId !== requestedDelegationId ||
-    codebase.applicationId !== keeploreApplicationId ||
+    !registeredCodebaseId.success ||
+    registeredCodebaseId.data !== keeploreRegisteredCodebaseId ||
     codebase.repository !== keeploreRepository ||
     codebase.productionBranch !== keeploreProductionBranch ||
     typeof codebase.revision !== "number" ||
@@ -381,7 +389,7 @@ function authorizeRepositoryPolicy(input: {
   }
   for (const observation of [rules, bypass, app]) {
     if (
-      observation.application !== keeploreApplicationId ||
+      observation.application !== keeploreRegisteredCodebaseId ||
       !freshTimestamp(observation.observedAt, input.now)
     ) {
       throw new Error("Keeplore publication policy is absent or stale");

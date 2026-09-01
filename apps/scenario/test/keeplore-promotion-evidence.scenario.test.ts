@@ -8,9 +8,10 @@ import {
   projectKeeplorePromotionEvidence,
   readPromotionAttempts,
 } from "@voice-agent/runtime";
-import type {
-  KeeploreDeploymentContract,
-  KeeploreRegistration,
+import {
+  registeredCodebaseIdSchema,
+  type KeeploreDeploymentContract,
+  type KeeploreRegistration,
 } from "@voice-agent/contracts";
 
 const temporaryDirectories: string[] = [];
@@ -182,7 +183,9 @@ async function createStore() {
 
 function registration(): KeeploreRegistration {
   return {
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath: "/var/www/keeplore.app",
       releaseRoot: "/opt/keeplore/releases",
@@ -212,7 +215,9 @@ function contract(): KeeploreDeploymentContract {
     buildCommand: "php -l",
     health: { expectedStatus: 200, path: "/api/health" },
     preflightCommand: "php -l",
-    registeredCodebaseId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     releaseRoot: "/opt/keeplore/releases",
     retainedReleases: 2,
     revision: 1,

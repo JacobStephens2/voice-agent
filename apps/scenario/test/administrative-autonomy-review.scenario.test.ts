@@ -11,9 +11,14 @@ import {
   administrativeTaskTargetRequestSchema,
   administrativeTaskTargetSchema,
   administrativeTimestampSchema,
+  keeploreDelegationBriefSchema,
+  keeploreDeploymentContractSchema,
+  keeploreRegistrationSchema,
+  keeploreRegisteredCodebaseId,
   type AdministrativeTaskTarget,
   type AdministrativeTimestamp,
   type LivePatchRollbackActivationRequest,
+  type RegisteredCodebaseId,
 } from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
@@ -52,6 +57,38 @@ test("Registered Codebase contracts expose only their branded domain identity", 
     registeredCodebaseId: "voice-agent",
   });
   expect("applicationId" in registration).toBe(false);
+
+  const requireRegisteredCodebaseId = (_value: RegisteredCodebaseId) => {};
+  const keeploreRegistrationId =
+    keeploreRegistrationSchema.shape.registeredCodebaseId.parse(
+      keeploreRegisteredCodebaseId,
+    );
+  const keeploreContractId =
+    keeploreDeploymentContractSchema.shape.registeredCodebaseId.parse(
+      keeploreRegisteredCodebaseId,
+    );
+  const keeploreBriefId =
+    keeploreDelegationBriefSchema.shape.registeredCodebase.shape.registeredCodebaseId.parse(
+      keeploreRegisteredCodebaseId,
+    );
+  requireRegisteredCodebaseId(keeploreRegistrationId);
+  requireRegisteredCodebaseId(keeploreContractId);
+  requireRegisteredCodebaseId(keeploreBriefId);
+
+  expect({
+    keeploreBriefId,
+    keeploreContractId,
+    keeploreRegistrationId,
+  }).toEqual({
+    keeploreBriefId: "keeplore-production",
+    keeploreContractId: "keeplore-production",
+    keeploreRegistrationId: "keeplore-production",
+  });
+  expect("applicationId" in keeploreRegistrationSchema.shape).toBe(false);
+  expect(
+    "applicationId" in keeploreDelegationBriefSchema.shape.registeredCodebase
+      .shape,
+  ).toBe(false);
 });
 
 test("an Administrative Execution Manifest cannot gain authority after Human Merge", async () => {
@@ -2803,6 +2840,100 @@ test.each(changedRegisteredCodebaseTargets)(
         },
         statusCode: 200,
       },
+    });
+
+    await scenario.close();
+  },
+);
+
+test.each(
+  [
+    "details-kind",
+    "event-kind",
+    "occurred-at",
+    "operation-id",
+    "result",
+  ] as const,
+)("SQLite refuses forged Live Patch completion %s evidence", async (
+  operationCompletionEvidenceForgery,
+) => {
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-10-02T14:55:00.000Z",
+      operationCompletionEvidenceForgery,
+      providerPlan: [{ kind: "live-patch.apply" }],
+    },
+    temporaryDirectories,
+  );
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: `forged-live-patch-completion-${operationCompletionEvidenceForgery}`,
+    target,
+  });
+  const record = await scenario.readTask("administrative-task-1");
+
+  expect({
+    admission,
+    completedEvents: record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    task: record?.task,
+  }).toMatchObject({
+    admission: {
+      decision: "admitted",
+    },
+    completedEvents: [],
+    task: { status: "running" },
+  });
+
+  await scenario.close();
+});
+
+test.each([
+  ["exact", true],
+  ["forged", false],
+] as const)(
+  "SQLite accepts %s Live Patch completion replay only when it matches the durable result",
+  async (operationCompletionReplay, expectedReplayOutcome) => {
+    const operationCompletionReplayOutcomes: boolean[] = [];
+    const { scenario } = await createActivatedScenario(
+      {
+        now: "2026-10-02T14:57:00.000Z",
+        operationCompletionReplay,
+        operationCompletionReplayOutcomes,
+        providerPlan: [{ kind: "live-patch.apply" }],
+      },
+      temporaryDirectories,
+    );
+    const admission = await scenario.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState: "The urgent production behavior is restored.",
+      outcome: "restore",
+      ownerId: "owner",
+      requestId: `live-patch-completion-replay-${operationCompletionReplay}`,
+      target,
+    });
+    const completedEvents = (
+      await scenario.readTask("administrative-task-1")
+    )?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    );
+
+    expect({
+      admission,
+      completedEventCount: completedEvents?.length,
+      operationCompletionReplayOutcomes,
+    }).toEqual({
+      admission: {
+        decision: "admitted",
+        policyRevision: 1,
+        taskId: "administrative-task-1",
+      },
+      completedEventCount: 1,
+      operationCompletionReplayOutcomes: [expectedReplayOutcome],
     });
 
     await scenario.close();

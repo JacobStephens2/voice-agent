@@ -8,12 +8,13 @@ import {
   createKeeploreButtonTrialScenario,
   type KeeploreButtonTrialScenario,
 } from "@voice-agent/scenario";
-import type {
-  KeeploreDelegationBrief,
-  KeeploreDelegationFailure,
-  KeeploreDelegationResult,
-  KeeploreRegistration,
-  KeeploreWorktree,
+import {
+  registeredCodebaseIdSchema,
+  type KeeploreDelegationBrief,
+  type KeeploreDelegationFailure,
+  type KeeploreDelegationResult,
+  type KeeploreRegistration,
+  type KeeploreWorktree,
 } from "@voice-agent/contracts";
 import { createSqliteKeeploreDelegationStore } from "@voice-agent/sqlite-store";
 
@@ -373,7 +374,9 @@ test("an authenticated confirmed Keeplore Button Trial produces a bounded verifi
     goal:
       "Make Keeplore's table-view Get Rid Of control match the row-level Remove control without changing card view.",
     registeredCodebase: {
-      applicationId: "keeplore-production",
+      registeredCodebaseId: registeredCodebaseIdSchema.parse(
+        "keeplore-production",
+      ),
       productionBranch: "main",
       provider: "codex",
       repository: "JacobStephens2/keeplore",
@@ -1172,7 +1175,9 @@ async function confirmTrial(
 
 function keeploreRegistration(): KeeploreRegistration {
   return {
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath: "/var/www/keeplore.app",
       releaseRoot: "/opt/keeplore/releases",

@@ -8,8 +8,8 @@ import {
 } from "./delegation.ts";
 
 import {
-  keeploreApplicationId,
   keeploreProductionBranch,
+  keeploreRegisteredCodebaseIdSchema,
   keeploreRepository,
 } from "./keeplore-onboarding.ts";
 
@@ -208,7 +208,7 @@ export const keeploreDelegationBriefSchema = z
     goal: z.literal(keeploreButtonTrialGoal),
     registeredCodebase: z
       .object({
-        applicationId: z.literal(keeploreApplicationId),
+        registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
         productionBranch: z.literal(keeploreProductionBranch),
         provider: z.literal("codex"),
         readScope: z.array(z.string().min(1).max(200)).min(1).max(20),

@@ -12,11 +12,12 @@ import {
   createSqliteDurableTaskStore,
   createSqliteTaskContinuityStore,
 } from "@voice-agent/sqlite-store";
-import type {
-  KeeploreDelegationBrief,
-  KeeploreDelegationResult,
-  KeeploreRegistration,
-  KeeploreWorktree,
+import {
+  registeredCodebaseIdSchema,
+  type KeeploreDelegationBrief,
+  type KeeploreDelegationResult,
+  type KeeploreRegistration,
+  type KeeploreWorktree,
 } from "@voice-agent/contracts";
 
 const temporaryDirectories: string[] = [];
@@ -163,7 +164,9 @@ async function createScenario(
 
 function keeploreRegistration(): KeeploreRegistration {
   return {
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath: "/var/www/keeplore.app",
       releaseRoot: "/opt/keeplore/releases",

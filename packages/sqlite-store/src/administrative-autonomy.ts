@@ -40,6 +40,8 @@ import {
   type AdministrativeEvidenceEvent,
   type AdministrativeEvidenceRecord,
   type AdministrativeOperationKind,
+  type AdministrativeOperationRequest,
+  type AdministrativeOperationResult,
   type AdministrativePolicyStatus,
   type AdministrativePolicyEvidenceEvent,
   type AdministrativeTask,
@@ -197,6 +199,44 @@ function confirmationDenialReason(
     return "confirmation-replayed";
   }
   return undefined;
+}
+
+function assertAdministrativeOperationCompletionEvidence(
+  request: AdministrativeOperationRequest,
+  result: AdministrativeOperationResult,
+  event: Parameters<
+    AdministrativeAutonomyStore["completeOperation"]
+  >[0]["completedEvent"],
+): void {
+  if (
+    result.kind !== request.kind ||
+    result.operationId !== request.operationId ||
+    event.kind !== "administrative.operation.completed" ||
+    event.occurredAt !== result.completedAt ||
+    event.details.kind !== result.kind ||
+    event.details.operationId !== result.operationId ||
+    JSON.stringify(event.details.result) !== JSON.stringify(result)
+  ) {
+    throw new Error(
+      "Administrative Operation completion Evidence Event is mismatched",
+    );
+  }
+}
+
+function validateLivePatchCompletion(
+  request: AdministrativeOperationRequest,
+  result: AdministrativeOperationResult,
+): void {
+  if (request.kind !== "live-patch.apply") return;
+  if (
+    result.kind !== request.kind ||
+    result.mutationProof.reconciliation.registeredCodebaseId !==
+      request.target.registeredCodebaseId ||
+    result.mutationProof.reconciliation.targetFingerprint !==
+      administrativeTaskTargetBinding(request.target).targetFingerprint
+  ) {
+    throw new Error("Live Patch completion changed its trusted target");
+  }
 }
 
 export function createSqliteAdministrativeAutonomyStore(
@@ -1571,19 +1611,39 @@ export function createSqliteAdministrativeAutonomyStore(
       if (operation === undefined || operation.task_id !== input.taskId) {
         throw new Error("Administrative Operation is unavailable");
       }
+      const request = administrativeOperationRequestSchema.parse(
+        JSON.parse(operation.request_json),
+      );
+      const submittedResult = administrativeOperationResultSchema.parse(
+        input.result,
+      );
+      assertAdministrativeOperationCompletionEvidence(
+        request,
+        submittedResult,
+        input.completedEvent,
+      );
+      validateLivePatchCompletion(request, submittedResult);
       if (operation.status === "completed") {
+        if (operation.result_json === null) {
+          throw new Error("Completed Administrative Operation has no result");
+        }
+        const durableResult = administrativeOperationResultSchema.parse(
+          JSON.parse(operation.result_json),
+        );
+        if (JSON.stringify(durableResult) !== JSON.stringify(submittedResult)) {
+          throw new Error(
+            "Administrative Operation replay does not match its durable result",
+          );
+        }
         return loadRecord(requireTask(input.taskId));
       }
       if (operation.claim_id !== input.claimId) {
         throw new Error("Administrative Operation claim changed concurrently");
       }
       const task = requireTask(input.taskId);
-      const request = administrativeOperationRequestSchema.parse(
-        JSON.parse(operation.request_json),
-      );
       if (
         task.active_execution_deadline === null ||
-        input.result.completedAt >= task.active_execution_deadline ||
+        submittedResult.completedAt >= task.active_execution_deadline ||
         !matchesAuthoritySnapshot(request.authority)
       ) {
         throw new Error("Administrative Operation authority is no longer active");
@@ -1591,7 +1651,9 @@ export function createSqliteAdministrativeAutonomyStore(
       if (request.kind === "live-patch.apply") {
         const rollback = readLivePatchRollback.get(input.operationId);
         const result =
-          input.result.kind === "live-patch.apply" ? input.result : undefined;
+          submittedResult.kind === "live-patch.apply"
+            ? submittedResult
+            : undefined;
         if (rollback?.status !== "armed" || result === undefined) {
           throw new Error("Live Patch rollback is not armed");
         }
@@ -1617,8 +1679,8 @@ export function createSqliteAdministrativeAutonomyStore(
         }
       }
       const result = completeOperation.run(
-        JSON.stringify(input.result),
-        input.result.completedAt,
+        JSON.stringify(submittedResult),
+        submittedResult.completedAt,
         input.operationId,
         input.taskId,
         input.claimId,

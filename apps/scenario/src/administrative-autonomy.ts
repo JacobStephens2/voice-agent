@@ -1,8 +1,10 @@
 import {
+  administrativeEvidenceEventSchema,
   administrativeExecutionManifestSchema,
   administrativeExecutionManifestFingerprint,
   administrativeOperationClaimIdSchema,
   administrativeOperationIdSchema,
+  administrativeOperationResultSchema,
   administrativeRegisteredCodebaseSchema,
   administrativeTaskIdSchema,
   administrativeTaskTargetBinding,
@@ -349,6 +351,12 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly effectLedger?: Set<string>;
   readonly executorFailures?: number;
   readonly executionAdapters?: "available" | "unavailable";
+  readonly operationCompletionEvidenceForgery?:
+    | "details-kind"
+    | "event-kind"
+    | "occurred-at"
+    | "operation-id"
+    | "result";
   readonly executionImplementationVersions?: {
     readonly executor?: 1 | 2;
     readonly provider?: 1 | 2;
@@ -373,6 +381,8 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly onRollbackActivationStart?: () => void;
   readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
+  readonly operationCompletionReplay?: "exact" | "forged";
+  readonly operationCompletionReplayOutcomes?: boolean[];
   readonly omitLivePatchReconciliation?: boolean;
   readonly providerAttempts?: string[];
   readonly providerFailures?: number;
@@ -422,6 +432,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   let crashedAfterEffect = false;
   let crashedAfterRollbackActivation = false;
   let lostOperationSettlementResponse = false;
+  let forgedOperationCompletionEvidence = false;
   let revisePolicyAfterFirstOperation = false;
   let revisePolicyBeforePlanAdmission = false;
   let providerFailuresRemaining = options.providerFailures ?? 0;
@@ -442,10 +453,10 @@ export async function createAdministrativeAutonomyScenario(options: {
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
   const runtimeStore: ReturnType<
     typeof createSqliteAdministrativeAutonomyStore
-  > =
-    options.loseFirstOperationSettlementResponse === true
+  > = {
+    ...store,
+    ...(options.loseFirstOperationSettlementResponse === true
       ? {
-          ...store,
           async settleClaimedOperationAndDenyTask(input) {
             const record = await store.settleClaimedOperationAndDenyTask(input);
             if (!lostOperationSettlementResponse) {
@@ -457,7 +468,63 @@ export async function createAdministrativeAutonomyScenario(options: {
             return record;
           },
         }
-      : store;
+      : {}),
+    ...(options.operationCompletionEvidenceForgery !== undefined ||
+    options.operationCompletionReplay !== undefined
+      ? {
+          async completeOperation(input) {
+            if (
+              input.completedEvent.kind !==
+              "administrative.operation.completed"
+            ) {
+              throw new Error(
+                "Administrative Operation completion requires completion evidence",
+              );
+            }
+            const forgedResult = forgeAdministrativeOperationResult(
+              input.result,
+            );
+            const submittedInput =
+              options.operationCompletionEvidenceForgery !== undefined &&
+              !forgedOperationCompletionEvidence
+                ? {
+                    ...input,
+                    completedEvent: forgeAdministrativeCompletionEvent(
+                      input.completedEvent,
+                      forgedResult,
+                      options.operationCompletionEvidenceForgery,
+                    ),
+                  }
+                : input;
+            forgedOperationCompletionEvidence = true;
+            const record = await store.completeOperation(submittedInput);
+            if (options.operationCompletionReplay !== undefined) {
+              try {
+                const replayResult =
+                  options.operationCompletionReplay === "exact"
+                    ? input.result
+                    : forgedResult;
+                await store.completeOperation({
+                  ...input,
+                  completedEvent: {
+                    ...input.completedEvent,
+                    details: {
+                      ...input.completedEvent.details,
+                      result: replayResult,
+                    },
+                  },
+                  result: replayResult,
+                });
+                options.operationCompletionReplayOutcomes?.push(true);
+              } catch {
+                options.operationCompletionReplayOutcomes?.push(false);
+              }
+            }
+            return record;
+          },
+        }
+      : {}),
+  };
   const executionManifest =
     options.executionAdapters === "unavailable"
       ? administrativeUnavailableExecutionManifest
@@ -1144,6 +1211,91 @@ function createLivePatchProof(
       status: "healthy",
     },
   });
+}
+
+function forgeAdministrativeOperationResult(
+  result: AdministrativeOperationResult,
+): AdministrativeOperationResult {
+  if (result.kind !== "live-patch.apply") return result;
+  return administrativeOperationResultSchema.parse({
+    ...result,
+    mutationProof: {
+      ...result.mutationProof,
+      reconciliation: {
+        ...result.mutationProof.reconciliation,
+        targetFingerprint: "0".repeat(64),
+      },
+    },
+  });
+}
+
+function forgeAdministrativeCompletionEvent(
+  event: Extract<
+    Parameters<
+      ReturnType<
+        typeof createSqliteAdministrativeAutonomyStore
+      >["completeOperation"]
+    >[0]["completedEvent"],
+    { readonly kind: "administrative.operation.completed" }
+  >,
+  forgedResult: AdministrativeOperationResult,
+  forgery:
+    | "details-kind"
+    | "event-kind"
+    | "occurred-at"
+    | "operation-id"
+    | "result",
+): Parameters<
+  ReturnType<
+    typeof createSqliteAdministrativeAutonomyStore
+  >["completeOperation"]
+>[0]["completedEvent"] {
+  const changed =
+    forgery === "event-kind"
+      ? {
+          ...event,
+          details: {
+            kind: event.details.kind,
+            operationId: event.details.operationId,
+            reason: "forged terminal state",
+          },
+          kind: "administrative.operation.failed",
+        }
+      : {
+          ...event,
+          details: {
+            ...event.details,
+            ...(forgery === "details-kind"
+              ? { kind: "production.observe" }
+              : {}),
+            ...(forgery === "operation-id"
+              ? {
+                  operationId:
+                    administrativeOperationIdSchema.parse("forged-operation"),
+                }
+              : {}),
+            ...(forgery === "result" ? { result: forgedResult } : {}),
+          },
+          ...(forgery === "occurred-at"
+            ? {
+                occurredAt: administrativeTimestampSchema.parse(
+                  "2099-01-01T00:00:00.000Z",
+                ),
+              }
+            : {}),
+        };
+  const parsed = administrativeEvidenceEventSchema.parse({
+    ...changed,
+    sequence: 1,
+  });
+  if (
+    parsed.kind !== "administrative.operation.completed" &&
+    parsed.kind !== "administrative.operation.failed"
+  ) {
+    throw new Error("Unexpected forged Administrative Evidence Event kind");
+  }
+  const { sequence: _sequence, ...unsequenced } = parsed;
+  return unsequenced;
 }
 
 function createScenarioExecutionManifest(
