@@ -19,15 +19,12 @@ test("a command's output and exit status are returned", async () => {
 });
 
 test("a command sees only the environment it was given", async () => {
-  const result = await runBoundedCommand("/bin/sh", ["-c", "env"], {
+  const result = await runBoundedCommand("/usr/bin/env", [], {
     environment: { GROK_HOME: "/tmp/home" },
     maximumOutputBytes: 10_000,
     timeoutMilliseconds: 5_000,
   });
-  expect(result.stdout.trim().split("\n").sort()).toEqual([
-    "GROK_HOME=/tmp/home",
-    "PWD=/",
-  ]);
+  expect(result.stdout).toBe("GROK_HOME=/tmp/home\n");
 });
 
 test("a command that outruns its time bound is reported, not awaited", async () => {
