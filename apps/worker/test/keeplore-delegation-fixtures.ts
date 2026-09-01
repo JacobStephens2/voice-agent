@@ -3,6 +3,7 @@ import {
   keeploreButtonTrialGoal,
   keeploreDelegationBriefSchema,
   keeploreDelegationCapabilities,
+  keeploreRegisteredCodebaseId,
   keeploreWorktreeSchema,
   type KeeploreDelegationBrief,
   type KeeploreWorktree,
@@ -32,7 +33,7 @@ export function keeploreDelegationBrief(options: {
     },
     goal: keeploreButtonTrialGoal,
     registeredCodebase: {
-      applicationId: "keeplore-production",
+      registeredCodebaseId: keeploreRegisteredCodebaseId,
       productionBranch: "main",
       provider: "codex",
       readScope: ["**/*.php"],

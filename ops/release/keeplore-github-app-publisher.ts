@@ -13,9 +13,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
+// This file is installed as a standalone pinned authority. The type-only import
+// is erased by Node's strip-types loader; runtime identity validation below is
+// self-contained so deployment never resolves outside the reviewed artifact.
+import type { RegisteredCodebaseId } from "../../packages/contracts/src/index.ts";
+
 const keeploreRepository = "JacobStephens2/keeplore" as const;
 const keeploreRepositoryName = "keeplore" as const;
-const keeploreApplicationId = "keeplore-production" as const;
+const keeploreRegisteredCodebaseId = parseRegisteredCodebaseId(
+  "keeplore-production",
+);
 const keeploreProductionBranch = "main" as const;
 const keeploreRemote = "https://github.com/JacobStephens2/keeplore.git";
 const worktreeRoot = "/var/lib/voice-agent-worktrees/keeplore";
@@ -91,6 +98,39 @@ export interface KeeploreCandidatePublisherDependencies {
     args: readonly string[],
     environment?: Readonly<Record<string, string>>,
   ): Promise<GitResult>;
+}
+
+/** Decode the immutable Delegation row at the installed publisher's SQLite seam. */
+export function createKeeplorePublisherDelegationReader(
+  databasePath: string,
+): (delegationId: string) => Promise<unknown> {
+  return async (delegationId) => {
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const row = database
+        .prepare(`
+          SELECT brief_json, status, stop_requested, worktree_json
+          FROM keeplore_delegations WHERE delegation_id = ?
+        `)
+        .get(delegationId) as
+        | {
+            readonly brief_json: string;
+            readonly status: string;
+            readonly stop_requested: number;
+            readonly worktree_json: string;
+          }
+        | undefined;
+      if (row === undefined) return undefined;
+      return {
+        brief: normalizeStoredPublisherBrief(JSON.parse(row.brief_json)),
+        status: row.status,
+        stopRequested: row.stop_requested === 1,
+        worktree: JSON.parse(row.worktree_json) as unknown,
+      };
+    } finally {
+      database.close();
+    }
+  };
 }
 
 interface RegisteredDelegation {
@@ -315,6 +355,31 @@ function parsePublicationRequest(input: unknown): KeeplorePublicationRequest {
   };
 }
 
+function parseRegisteredCodebaseId(
+  input: "keeplore-production",
+): RegisteredCodebaseId;
+function parseRegisteredCodebaseId(
+  input: unknown,
+): RegisteredCodebaseId | undefined;
+function parseRegisteredCodebaseId(
+  input: unknown,
+): RegisteredCodebaseId | undefined {
+  return input === "keeplore-production"
+    ? (input as RegisteredCodebaseId)
+    : undefined;
+}
+
+function storedRegisteredCodebaseId(
+  record: Readonly<Record<string, unknown>>,
+): RegisteredCodebaseId | undefined {
+  if ("registeredCodebaseId" in record && "application" in record) {
+    return undefined;
+  }
+  return parseRegisteredCodebaseId(
+    record.registeredCodebaseId ?? record.application,
+  );
+}
+
 function parseRegisteredDelegation(
   input: unknown,
   requestedDelegationId: string,
@@ -326,11 +391,15 @@ function parseRegisteredDelegation(
     "Registered Codebase",
   );
   const worktree = requireRecord(record.worktree, "Delegated Worktree");
+  const registeredCodebaseId = parseRegisteredCodebaseId(
+    codebase.registeredCodebaseId,
+  );
   if (
+    "applicationId" in codebase ||
     record.status !== "running" ||
     record.stopRequested !== false ||
     brief.delegationId !== requestedDelegationId ||
-    codebase.applicationId !== keeploreApplicationId ||
+    registeredCodebaseId !== keeploreRegisteredCodebaseId ||
     codebase.repository !== keeploreRepository ||
     codebase.productionBranch !== keeploreProductionBranch ||
     typeof codebase.revision !== "number" ||
@@ -354,6 +423,25 @@ function parseRegisteredDelegation(
     delegationId: requestedDelegationId,
     sourceCommit: codebase.sourceCommit,
     worktreePath: expectedPath,
+  };
+}
+
+function normalizeStoredPublisherBrief(input: unknown): unknown {
+  if (!isRecord(input) || !isRecord(input.registeredCodebase)) return input;
+  const registeredCodebase = input.registeredCodebase;
+  if (
+    "registeredCodebaseId" in registeredCodebase ||
+    !("applicationId" in registeredCodebase)
+  ) {
+    return input;
+  }
+  const { applicationId, ...canonicalCodebase } = registeredCodebase;
+  return {
+    ...input,
+    registeredCodebase: {
+      ...canonicalCodebase,
+      registeredCodebaseId: applicationId,
+    },
   };
 }
 
@@ -381,7 +469,8 @@ function authorizeRepositoryPolicy(input: {
   }
   for (const observation of [rules, bypass, app]) {
     if (
-      observation.application !== keeploreApplicationId ||
+      storedRegisteredCodebaseId(observation) !==
+        keeploreRegisteredCodebaseId ||
       !freshTimestamp(observation.observedAt, input.now)
     ) {
       throw new Error("Keeplore publication policy is absent or stale");
@@ -1032,33 +1121,8 @@ async function startProductionServer(): Promise<void> {
       await assertRootOwnedCredential(policyJournalPath, false);
       return readFile(policyJournalPath, "utf8");
     },
-    async readRegisteredDelegation(delegationId) {
-      const database = new DatabaseSync(databasePath, { readOnly: true });
-      try {
-        const row = database
-          .prepare(`
-            SELECT brief_json, status, stop_requested, worktree_json
-            FROM keeplore_delegations WHERE delegation_id = ?
-          `)
-          .get(delegationId) as
-          | {
-              readonly brief_json: string;
-              readonly status: string;
-              readonly stop_requested: number;
-              readonly worktree_json: string;
-            }
-          | undefined;
-        if (row === undefined) return undefined;
-        return {
-          brief: JSON.parse(row.brief_json) as unknown,
-          status: row.status,
-          stopRequested: row.stop_requested === 1,
-          worktree: JSON.parse(row.worktree_json) as unknown,
-        };
-      } finally {
-        database.close();
-      }
-    },
+    readRegisteredDelegation:
+      createKeeplorePublisherDelegationReader(databasePath),
     resolvePath: realpath,
     runGit: productionGit,
   });

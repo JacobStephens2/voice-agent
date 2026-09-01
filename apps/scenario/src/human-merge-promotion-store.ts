@@ -10,6 +10,7 @@ import type {
   PromotionOperationProjection,
   PromotionEvidenceEventProjection,
   PromotionEvidenceRecordProjection,
+  RegisteredCodebaseId,
   SafePointDisposition,
   SelfPromotionVerification,
 } from "@voice-agent/contracts";
@@ -25,11 +26,14 @@ import {
   promotionReleaseProjectionSchema,
   promotionRollbackProjectionSchema,
   promotionVerificationProjectionSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
+  registeredCodebaseIdSchema,
   safePointDispositionSchema,
   selfPromotionVerificationSchema,
 } from "@voice-agent/contracts";
 
-export const fixtureApplicationId = "fixture-production" as const;
+export const fixtureRegisteredCodebaseId =
+  registeredCodebaseIdSchema.parse("fixture-production");
 export const fixtureInitialProductionCommit =
   "1111111111111111111111111111111111111111" as const;
 export const fixtureRepository = "JacobStephens2/fixture-application" as const;
@@ -39,7 +43,7 @@ export const fixtureRepository = "JacobStephens2/fixture-application" as const;
  * model; a real application such as Keeplore supplies its own boundaries.
  */
 export interface PromotionCodebase {
-  readonly applicationId: string;
+  readonly registeredCodebaseId: RegisteredCodebaseId;
   readonly buildCommand: string;
   readonly health: FixtureDeploymentContract["health"];
   /**
@@ -57,7 +61,7 @@ export interface PromotionCodebase {
 }
 
 export const fixturePromotionCodebase: PromotionCodebase = {
-  applicationId: fixtureApplicationId,
+  registeredCodebaseId: fixtureRegisteredCodebaseId,
   buildCommand: "pnpm build",
   health: { expectedStatus: 204, path: "/health" },
   initialProductionCommit: fixtureInitialProductionCommit,
@@ -75,7 +79,8 @@ export const fixturePromotionCodebase: PromotionCodebase = {
  * Promotion replaces the runtime performing it, which is what the Promotion
  * Safe Point exists for.
  */
-export const voiceAgentApplicationId = "voice-agent" as const;
+export const voiceAgentRegisteredCodebaseId =
+  registeredCodebaseIdSchema.parse("voice-agent");
 export const voiceAgentRepository = "JacobStephens2/voice-agent" as const;
 export const voiceAgentInitialProductionCommit =
   "3131313131313131313131313131313131313131" as const;
@@ -88,7 +93,7 @@ export const voiceAgentInitialProductionCommit =
 export const voiceAgentSafePointObservations = 900;
 
 export const voiceAgentPromotionCodebase: PromotionCodebase = {
-  applicationId: voiceAgentApplicationId,
+  registeredCodebaseId: voiceAgentRegisteredCodebaseId,
   buildCommand: "pnpm install --frozen-lockfile && pnpm build",
   // The API's localhost-only readiness probe, which is the same reading the
   // pinned deployment-health check makes.
@@ -281,6 +286,8 @@ export function createPromotionStore(
   codebase: PromotionCodebase = fixturePromotionCodebase,
 ): PromotionStore {
   const database = new Database(databasePath);
+  // SQLite retains its legacy `application_id` columns; this adapter maps the
+  // canonical Registered Codebase ID at the persistence seam.
   database.pragma("foreign_keys = ON");
   database.pragma("journal_mode = WAL");
   createPromotionSchema(database);
@@ -290,14 +297,14 @@ export function createPromotionStore(
         application_id, active_release_json
       ) VALUES (?, NULL)
     `)
-    .run(codebase.applicationId);
+    .run(codebase.registeredCodebaseId);
 
   function findRegistration(): FixtureCodebaseRegistration {
     const row = database
       .prepare(
         "SELECT definition_json FROM promotion_registrations WHERE application_id = ?",
       )
-      .get(codebase.applicationId) as
+      .get(codebase.registeredCodebaseId) as
       | { readonly definition_json: string }
       | undefined;
     if (row === undefined) throw new Error("Registered Codebase is unavailable");
@@ -314,7 +321,9 @@ export function createPromotionStore(
           AND promotion_contracts.revision = promotion_active_contracts.revision
         WHERE promotion_active_contracts.application_id = ?
       `)
-      .get(codebase.applicationId) as { readonly definition_json: string } | undefined;
+      .get(codebase.registeredCodebaseId) as
+      | { readonly definition_json: string }
+      | undefined;
     return row === undefined
       ? undefined
       : parseStored(row.definition_json, fixtureDeploymentContractSchema);
@@ -336,7 +345,7 @@ export function createPromotionStore(
         FROM promotion_application_state
         WHERE application_id = ?
       `)
-      .get(codebase.applicationId) as ApplicationStateRow;
+      .get(codebase.registeredCodebaseId) as ApplicationStateRow;
   }
 
   function projectMerge(input: {
@@ -595,7 +604,7 @@ export function createPromotionStore(
           FROM promotion_attempts
           WHERE application_id = ? AND merge_commit = ?
         `)
-        .get(codebase.applicationId, commit) !== undefined
+        .get(codebase.registeredCodebaseId, commit) !== undefined
     );
   }
 
@@ -603,36 +612,38 @@ export function createPromotionStore(
     now: string,
     policyOptions: { readonly seedContract?: boolean } = {},
   ): void {
-    const registration: FixtureCodebaseRegistration = {
-      applicationId: codebase.applicationId,
-      initialProductionCommit: codebase.initialProductionCommit,
-      liveCheckoutPath: codebase.liveCheckoutPath,
-      productionBranch: codebase.productionBranch,
-      registeredAt: now,
-      repository: codebase.repository,
-      sourceCheckoutRoot: codebase.sourceCheckoutRoot,
-    };
-    const contract: FixtureDeploymentContract = {
-      activatedAt: now,
-      activatedBy: "fresh-passkey-action",
-      applicationId: codebase.applicationId,
-      buildCommand: codebase.buildCommand,
-      health: codebase.health,
-      preflightCommand: codebase.preflightCommand,
-      releaseRoot: codebase.releaseRoot,
-      revision: 1,
-      ...(codebase.selfPromotion === undefined
-        ? {}
-        : { selfPromotion: codebase.selfPromotion }),
-      source: "voice-agent-policy",
-    };
+    const registration: FixtureCodebaseRegistration =
+      fixtureCodebaseRegistrationSchema.parse({
+        registeredCodebaseId: codebase.registeredCodebaseId,
+        initialProductionCommit: codebase.initialProductionCommit,
+        liveCheckoutPath: codebase.liveCheckoutPath,
+        productionBranch: codebase.productionBranch,
+        registeredAt: now,
+        repository: codebase.repository,
+        sourceCheckoutRoot: codebase.sourceCheckoutRoot,
+      });
+    const contract: FixtureDeploymentContract =
+      fixtureDeploymentContractSchema.parse({
+        activatedAt: now,
+        activatedBy: "fresh-passkey-action",
+        registeredCodebaseId: codebase.registeredCodebaseId,
+        buildCommand: codebase.buildCommand,
+        health: codebase.health,
+        preflightCommand: codebase.preflightCommand,
+        releaseRoot: codebase.releaseRoot,
+        revision: 1,
+        ...(codebase.selfPromotion === undefined
+          ? {}
+          : { selfPromotion: codebase.selfPromotion }),
+        source: "voice-agent-policy",
+      });
     database
       .prepare(`
         INSERT OR IGNORE INTO promotion_registrations (
           application_id, definition_json
         ) VALUES (?, ?)
       `)
-      .run(codebase.applicationId, JSON.stringify(registration));
+      .run(codebase.registeredCodebaseId, JSON.stringify(registration));
     if (policyOptions.seedContract !== false) {
       database
         .prepare(`
@@ -640,14 +651,18 @@ export function createPromotionStore(
             application_id, revision, definition_json
           ) VALUES (?, ?, ?)
         `)
-        .run(codebase.applicationId, contract.revision, JSON.stringify(contract));
+        .run(
+          codebase.registeredCodebaseId,
+          contract.revision,
+          JSON.stringify(contract),
+        );
       database
         .prepare(`
           INSERT OR IGNORE INTO promotion_active_contracts (
             application_id, revision
           ) VALUES (?, ?)
         `)
-        .run(codebase.applicationId, contract.revision);
+        .run(codebase.registeredCodebaseId, contract.revision);
     }
     database
       .prepare(`
@@ -655,7 +670,7 @@ export function createPromotionStore(
           application_id, active_release_json, consecutive_failures, circuit_state
         ) VALUES (?, NULL, 0, 'closed')
       `)
-      .run(codebase.applicationId);
+      .run(codebase.registeredCodebaseId);
   }
 
   const activateContractTransaction = database.transaction(
@@ -666,7 +681,7 @@ export function createPromotionStore(
           FROM promotion_contracts
           WHERE application_id = ? AND revision = ?
         `)
-        .get(contract.applicationId, contract.revision);
+        .get(contract.registeredCodebaseId, contract.revision);
       if (existing !== undefined) {
         throw new Error(
           `Deployment Contract revision ${contract.revision} already exists`,
@@ -694,7 +709,7 @@ export function createPromotionStore(
           ) VALUES (?, ?, ?)
         `)
         .run(
-          contract.applicationId,
+          contract.registeredCodebaseId,
           contract.revision,
           JSON.stringify(contract),
         );
@@ -704,7 +719,7 @@ export function createPromotionStore(
           VALUES (?, ?)
           ON CONFLICT(application_id) DO UPDATE SET revision = excluded.revision
         `)
-        .run(contract.applicationId, contract.revision);
+        .run(contract.registeredCodebaseId, contract.revision);
       return findActiveContract();
     },
   );
@@ -769,7 +784,7 @@ export function createPromotionStore(
         .run(
           input.attemptId,
           input.taskId,
-          codebase.applicationId,
+          codebase.registeredCodebaseId,
           input.event.commit,
           sequences.accepted_sequence,
           sequences.queue_sequence,
@@ -931,7 +946,7 @@ export function createPromotionStore(
             SET circuit_state = 'half-open'
             WHERE application_id = ? AND circuit_state = 'open'
           `)
-          .run(codebase.applicationId);
+          .run(codebase.registeredCodebaseId);
         database
           .prepare(`
             UPDATE promotion_records
@@ -1038,7 +1053,7 @@ export function createPromotionStore(
             FROM promotion_environment
             WHERE application_id = ?
           `)
-          .get(codebase.applicationId) as {
+          .get(codebase.registeredCodebaseId) as {
           readonly active_release_json: string | null;
         };
         database
@@ -1054,7 +1069,7 @@ export function createPromotionStore(
             SET active_release_json = ?
             WHERE application_id = ?
           `)
-          .run(JSON.stringify(input.release), codebase.applicationId);
+          .run(JSON.stringify(input.release), codebase.registeredCodebaseId);
       } else if (input.kind === "release.rollback") {
         const currentAttempt = findAttempt(input.attempt.id);
         database
@@ -1063,7 +1078,10 @@ export function createPromotionStore(
             SET active_release_json = ?
             WHERE application_id = ?
           `)
-          .run(currentAttempt.previous_release_json, codebase.applicationId);
+          .run(
+            currentAttempt.previous_release_json,
+            codebase.registeredCodebaseId,
+          );
       }
       database
         .prepare(`
@@ -1105,7 +1123,7 @@ export function createPromotionStore(
             circuit_opened_accepted_sequence = NULL, circuit_opened_at = NULL
           WHERE application_id = ?
         `)
-        .run(JSON.stringify(input.release), codebase.applicationId);
+        .run(JSON.stringify(input.release), codebase.registeredCodebaseId);
       database
         .prepare(`
           UPDATE promotion_records
@@ -1156,7 +1174,9 @@ export function createPromotionStore(
           FROM promotion_attempts
           WHERE application_id = ?
         `)
-        .get(codebase.applicationId) as { readonly accepted_sequence: number };
+        .get(codebase.registeredCodebaseId) as {
+          readonly accepted_sequence: number;
+        };
       const restoredRelease =
         attempt.previous_release_json === null
           ? undefined
@@ -1201,7 +1221,7 @@ export function createPromotionStore(
           circuitState,
           circuitState === "open" ? latestAcceptedSequence.accepted_sequence : null,
           circuitState === "open" ? input.now : null,
-          codebase.applicationId,
+          codebase.registeredCodebaseId,
         );
       const conclusion =
         restoredRelease === undefined
@@ -1245,7 +1265,7 @@ export function createPromotionStore(
         FROM promotion_environment
         WHERE application_id = ?
       `)
-      .get(codebase.applicationId) as {
+      .get(codebase.registeredCodebaseId) as {
       readonly active_release_json: string | null;
     };
     const operations = database
@@ -1379,7 +1399,7 @@ export function createPromotionStore(
           SELECT active_release_json FROM promotion_environment
           WHERE application_id = ?
         `)
-        .get(codebase.applicationId) as
+        .get(codebase.registeredCodebaseId) as
         | { readonly active_release_json: string | null }
         | undefined;
       return environment?.active_release_json == null
@@ -1664,7 +1684,9 @@ interface StoredValueSchema<T> {
 }
 
 function parseStored<T>(value: string, schema: StoredValueSchema<T>): T {
-  return schema.parse(JSON.parse(value));
+  return schema.parse(
+    normalizeStoredRegisteredCodebaseIdentity(JSON.parse(value)),
+  );
 }
 
 function requireRecord(

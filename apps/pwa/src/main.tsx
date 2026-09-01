@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 
 import {
+  administrativeExecutionManifestFingerprint,
+  administrativePolicyActivationExpectationSchema,
   type AuthenticationStatus,
+  type AdministrativeAutonomyStatus,
+  type AdministrativeRestartWitnessObservationIdentity,
   type BountywellRegistration,
   type KeeploreLiveInspection,
   type KeeploreRegistration,
@@ -18,6 +22,7 @@ import {
 } from "@voice-agent/contracts";
 import {
   applyEvidenceLifecyclePolicy,
+  activateAdministrativePolicy,
   authorizeDeploymentAuthorityUpgrade,
   authorizeRawAudioDebug,
   changeTelephoneSpendingCeiling,
@@ -25,6 +30,7 @@ import {
   enrollBootstrapPasskey,
   enrollReplacementPasskey,
   loadAuthenticationStatus,
+  loadAdministrativeAutonomyStatus,
   loadBountywellRegistration,
   loadRegisteredTelephone,
   loadTelephoneBoundaryStatus,
@@ -42,8 +48,10 @@ import {
   injectBountywellOutage,
   presentBountywellOutage,
   proveBountywellRecoveryTimer,
+  readAdministrativeRestartWitnessFragment,
   registerBountywell,
   registerTelephone,
+  recordAdministrativeRestartWitnessObservation,
   resumePromotionQueue,
   startRecovery,
   submitBountywellHealthInquiry,
@@ -76,6 +84,8 @@ const pendingBountywellRequestIdKey =
 
 function App() {
   const [status, setStatus] = useState<AuthenticationStatus>();
+  const [administrativeAutonomy, setAdministrativeAutonomy] =
+    useState<AdministrativeAutonomyStatus>();
   const [tasks, setTasks] = useState<readonly EvidenceRecordSummary[]>();
   const [record, setRecord] = useState<VoiceAgentEvidenceRecordProjection>();
   const [bountywellRegistration, setBountywellRegistration] =
@@ -102,6 +112,9 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [pendingBountywellRequestId, setPendingBountywellRequestId] =
     useState(readPendingBountywellRequestId);
+  const [restartWitnessObservation, setRestartWitnessObservation] = useState<
+    AdministrativeRestartWitnessObservationIdentity | undefined
+  >(readAdministrativeRestartWitnessFragment);
 
   const loadProtectedContent = useCallback(async () => {
     const taskId = new URLSearchParams(window.location.search).get("task");
@@ -115,12 +128,15 @@ function App() {
     if (content.kind === "tasks") {
       setTasks(content.tasks);
       setRecord(undefined);
-      const [bountywell, telephone, notification, boundaries] = await Promise.all([
-        loadBountywellRegistration(),
-        loadRegisteredTelephone(),
-        loadNotificationPreference(),
-        loadTelephoneBoundaryStatus(),
-      ]);
+      const [administrative, bountywell, telephone, notification, boundaries] =
+        await Promise.all([
+          loadAdministrativeAutonomyStatus(),
+          loadBountywellRegistration(),
+          loadRegisteredTelephone(),
+          loadNotificationPreference(),
+          loadTelephoneBoundaryStatus(),
+        ]);
+      setAdministrativeAutonomy(administrative);
       setBountywellRegistration(bountywell);
       setRegisteredTelephone(telephone);
       setTelephoneRegistrationLoaded(true);
@@ -249,6 +265,86 @@ function App() {
     await run(async () => {
       setBountywellRegistration(await registerBountywell(csrfToken));
       setMessage("Bountywell read-only access is registered.");
+    });
+  }
+
+  async function activateAdministrativeAutonomy() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before activating Administrative Autonomy.");
+      return;
+    }
+    await run(async () => {
+      if (administrativeAutonomy === undefined) {
+        throw new Error("Administrative Autonomy policy state is unavailable.");
+      }
+      const expectedActiveRevision =
+        administrativeAutonomy.policy.status === "inactive"
+          ? null
+          : administrativeAutonomy.policy.revision;
+      const expectedExecutionManifest =
+        administrativeAutonomy.taskExecution.status === "activation-required"
+          ? administrativeAutonomy.taskExecution.runtimeExecutionManifest
+          : administrativeAutonomy.taskExecution.executionManifest;
+      const activated = await activateAdministrativePolicy(
+        csrfToken,
+        administrativePolicyActivationExpectationSchema.parse({
+          expectedActiveRevision,
+          expectedExecutionManifestFingerprint:
+            administrativeExecutionManifestFingerprint(
+              expectedExecutionManifest,
+            ),
+          expectedStateVersion: administrativeAutonomy.policy.stateVersion,
+        }),
+      );
+      if (activated.status !== "active") {
+        throw new Error("Administrative Autonomy did not become active.");
+      }
+      setAdministrativeAutonomy({
+        policy: activated,
+        policyEvidence: administrativeAutonomy.policyEvidence,
+        taskExecution:
+          activated.executionManifest.provider.kind === "unavailable"
+            ? {
+                executionManifest: activated.executionManifest,
+                reason:
+                  "An executable Administrative Execution Manifest is not present.",
+                status: "unavailable",
+              }
+            : {
+                executionManifest: activated.executionManifest,
+                status: "execution-manifest-present",
+              },
+      });
+      setMessage(
+        `Administrative Autonomy Policy revision ${activated.revision} is active.`,
+      );
+    });
+  }
+
+  async function recordRestartWitnessObservation() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in before recording the Agent Host Restart Witness.");
+      return;
+    }
+    if (restartWitnessObservation === undefined) {
+      setMessage("The Restart Witness challenge is unavailable.");
+      return;
+    }
+    await run(async () => {
+      const observation =
+        await recordAdministrativeRestartWitnessObservation(
+          csrfToken,
+          restartWitnessObservation,
+        );
+      setRestartWitnessObservation(undefined);
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${window.location.search}`,
+      );
+      setMessage(
+        `The server recorded the ${observation.phase} Restart Witness observation.`,
+      );
     });
   }
 
@@ -549,6 +645,7 @@ function App() {
   }
   return (
     <TaskList
+      administrativeAutonomy={administrativeAutonomy}
       bountywellRegistration={bountywellRegistration}
       registeredTelephone={registeredTelephone}
       telephoneRegistrationLoaded={telephoneRegistrationLoaded}
@@ -558,6 +655,7 @@ function App() {
       message={message}
       busy={busy}
       onAuthorizeDeploymentAuthorityUpgrade={authorizeAuthorityUpgrade}
+      onActivateAdministrativeAutonomy={activateAdministrativeAutonomy}
       onFresh={freshPasskeyAction}
       onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}
@@ -576,6 +674,8 @@ function App() {
       onChangeSpendingCeiling={saveSpendingCeiling}
       onUpdateNotificationPreference={saveNotificationPreference}
       onRunBountywell={runBountywellInquiry}
+      restartWitnessObservation={restartWitnessObservation}
+      onRecordRestartWitnessObservation={recordRestartWitnessObservation}
     />
   );
 }

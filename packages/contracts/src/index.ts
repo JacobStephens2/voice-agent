@@ -46,6 +46,11 @@ import {
   type KeeploreOnboardingEvidenceRecordProjection,
 } from "./keeplore-onboarding.ts";
 import { keeploreButtonTrialTaskSchema } from "./keeplore-delegation.ts";
+import {
+  administrativeEvidenceRecordSchema,
+  administrativeTaskSchema,
+  type AdministrativeEvidenceRecord,
+} from "./administrative-autonomy.ts";
 
 export * from "./promotion.ts";
 export * from "./self-promotion.ts";
@@ -57,12 +62,15 @@ export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";
 export * from "./grok-delegation.ts";
 export * from "./grok-enrollment.ts";
+export * from "./delegation.ts";
 export * from "./keeplore-delegation.ts";
 export * from "./keeplore-promotion-journal.ts";
 export * from "./keeplore-trial-promotion.ts";
 export * from "./keeplore-repository-policy-journal.ts";
 export * from "./recognized-speech-model.ts";
 export * from "./recognized-synthesis-model.ts";
+export * from "./administrative-autonomy.ts";
+export * from "./administrative-restart-witness.ts";
 
 export const originSecurityHeaders = {
   "Content-Security-Policy":
@@ -329,18 +337,21 @@ export type EvidenceRecordProjection = z.infer<
 
 export type VoiceAgentEvidenceRecordProjection =
   | EvidenceRecordProjection
+  | AdministrativeEvidenceRecord
   | KeeploreOnboardingEvidenceRecordProjection
   | PromotionEvidenceRecordProjection
   | TelephoneSessionEvidenceRecordProjection;
 
 export const voiceAgentEvidenceRecordProjectionSchema = z.union([
   evidenceRecordProjectionSchema,
+  administrativeEvidenceRecordSchema,
   keeploreOnboardingEvidenceRecordProjectionSchema,
   promotionEvidenceRecordProjectionSchema,
   telephoneSessionEvidenceRecordProjectionSchema,
 ]);
 
 export const evidenceRecordSummarySchema = z.discriminatedUnion("kind", [
+  administrativeTaskSchema,
   bountywellHealthTaskSchema,
   bountywellOutageTaskSchema,
   keeploreButtonTrialTaskSchema,

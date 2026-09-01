@@ -1,6 +1,7 @@
 import {
   keeploreOnboardingEvidenceRecordProjectionSchema,
   keeplorePromotionAttemptRecordSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
   type KeeploreOnboardingEvidenceRecordProjection,
   type KeeplorePromotionAttemptRecord,
 } from "@voice-agent/contracts";
@@ -36,7 +37,9 @@ export function readPromotionAttempts(
     } catch {
       continue;
     }
-    const attempt = keeplorePromotionAttemptRecordSchema.safeParse(parsed);
+    const attempt = keeplorePromotionAttemptRecordSchema.safeParse(
+      normalizeStoredRegisteredCodebaseIdentity(parsed),
+    );
     if (attempt.success) attempts.push(attempt.data);
   }
   return attempts;

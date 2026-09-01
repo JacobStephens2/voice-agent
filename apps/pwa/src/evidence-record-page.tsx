@@ -1,10 +1,12 @@
 import type {
+  AdministrativeEvidenceRecord,
   KeeploreOnboardingEvidenceRecordProjection,
   PromotionEvidenceRecordProjection,
   TelephoneSessionEvidenceRecordProjection,
   VoiceAgentEvidenceRecordProjection,
 } from "@voice-agent/contracts";
 
+import { AdministrativeTaskPage } from "./administrative-task-page.tsx";
 import { CallbackTaskPage } from "./callback-task-page.tsx";
 import { KeeploreOnboardingTaskPage } from "./keeplore-onboarding-task-page.tsx";
 import { PromotionTaskPage } from "./promotion-task-page.tsx";
@@ -15,12 +17,21 @@ export function EvidenceRecordPage({
 }: {
   readonly record: VoiceAgentEvidenceRecordProjection;
 }) {
+  if (isAdministrativeRecord(record)) {
+    return <AdministrativeTaskPage record={record} />;
+  }
   if (isPromotionRecord(record)) return <PromotionTaskPage record={record} />;
   if (isKeeploreOnboardingRecord(record)) {
     return <KeeploreOnboardingTaskPage record={record} />;
   }
   if (isCallbackRecord(record)) return <CallbackTaskPage record={record} />;
   return <TaskPage record={record} />;
+}
+
+function isAdministrativeRecord(
+  record: VoiceAgentEvidenceRecordProjection,
+): record is AdministrativeEvidenceRecord {
+  return record.task.kind === "administrative.work";
 }
 
 function isPromotionRecord(

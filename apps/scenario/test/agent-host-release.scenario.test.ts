@@ -125,6 +125,12 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   expect(runner).toContain("/var/lib/voice-codex/results");
   expect(verifier).toContain("await context.setOffline(true)");
   expect(publisher).toContain('repositories: [keeploreRepositoryName]');
+  expect(publisher).toContain(
+    'import type { RegisteredCodebaseId } from "../../packages/contracts/src/index.ts";',
+  );
+  expect(publisher).not.toMatch(
+    /import \{[^}]*\} from "\.\.\/\.\.\/packages\/contracts/u,
+  );
   expect(publisher).toContain('contents: "write", pull_requests: "write"');
   expect(publisher).toContain("new DatabaseSync(databasePath, { readOnly: true })");
   expect(publisher).toContain("/installation/token");
@@ -315,6 +321,9 @@ test("the Agent Host release preserves its private ports and service boundaries"
         "ops/systemd/voice-agent-promotion-resume.service",
       ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
     );
+  if (apiServer === undefined || workerServer === undefined) {
+    throw new Error("The API and worker server sources were not loaded");
+  }
 
   for (const portConsumer of [apiServer, apache, health, apiUnit]) {
     expect(portConsumer).toContain("3472");
@@ -327,13 +336,46 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(workerUnit).toContain("Environment=VOICE_AGENT_WORKER_PORT=3474");
   expect(health).toContain("VOICE_AGENT_WORKER_PORT=");
   expect(health).toContain('"http://127.0.0.1:$worker_port/"');
+  expect(health).toContain(
+    "/run/voice-agent-worker/restart-witness.sock",
+  );
   expect(health).not.toContain("http://127.0.0.1:3474/");
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
   expect(apiUnit).toContain("deployment-authority-upgrade.request");
   expect(apiUnit).toContain("deployment-authority-upgrade.challenge");
   expect(apiServer).toContain("deployment-authority-upgrade.request");
   expect(apiServer).toContain("deployment-authority-upgrade.challenge");
+  expect(apiServer).toContain(
+    "registerNodeAdministrativeRestartWitnessServiceInstance",
+  );
+  expect(apiServer).toContain('service: "api"');
+  expect(apiServer).toContain("services: administrativeRestartWitnessStore");
+  expect(apiServer).toContain(
+    "createNodeAdministrativeRestartWitnessWorkerHealth",
+  );
+  expect(apiServer).toContain(
+    "administrativeRestartWitnessWorkerIdentitySocketPath",
+  );
+  expect(apiServer.indexOf("await api.listen")).toBeLessThan(
+    apiServer.lastIndexOf(
+      "registerNodeAdministrativeRestartWitnessServiceInstance",
+    ),
+  );
+  expect(apiUnit).not.toContain("VOICE_AGENT_WORKER_PORT");
+  expect(workerServer).toContain(
+    "registerNodeAdministrativeRestartWitnessServiceInstance",
+  );
+  expect(workerServer).toContain('service: "worker"');
+  expect(workerServer).toContain(
+    "createNodeAdministrativeRestartWitnessWorkerIdentityServer",
+  );
+  expect(workerServer.indexOf("telephoneServer.run()")).toBeLessThan(
+    workerServer.lastIndexOf(
+      "registerNodeAdministrativeRestartWitnessServiceInstance",
+    ),
+  );
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
+  expect(workerUnit).toContain("RuntimeDirectory=voice-agent-worker");
   expect(workerUnit).toContain("voice-subagent-client");
   expect(workerUnit).toContain("EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env");
   expect(subagentUnit).toContain("User=voice-codex");

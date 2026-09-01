@@ -7,7 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 
-import type { KeeploreRegistration } from "@voice-agent/contracts";
+import {
+  registeredCodebaseIdSchema,
+  type KeeploreRegistration,
+} from "@voice-agent/contracts";
 import {
   createKeeploreDelegationRuntime,
   createTelephoneSessionCoordinator,
@@ -151,7 +154,9 @@ test("the Keeplore readback records telephone evidence under the Delegation's Du
 
 function keeploreRegistration(): KeeploreRegistration {
   return {
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath: "/var/www/keeplore.app",
       releaseRoot: "/opt/keeplore/releases",

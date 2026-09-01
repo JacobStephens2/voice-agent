@@ -44,7 +44,7 @@ export function createKeeploreDelegationBrief(input: {
       },
       goal: keeploreButtonTrialGoal,
       registeredCodebase: {
-        applicationId: input.registration.applicationId,
+        registeredCodebaseId: input.registration.registeredCodebaseId,
         productionBranch: input.registration.productionBranch,
         provider: input.registration.permittedSubagentProvider,
         readScope: input.registration.readScope,

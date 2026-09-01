@@ -4,6 +4,7 @@ import {
   keeploreProductionAppearanceVerdictSchema,
   keeploreRequiredCheckObservationSchema,
 } from "./keeplore-trial-promotion.ts";
+import { keeploreRegisteredCodebaseIdSchema } from "./keeplore-onboarding.ts";
 
 const commitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 const timestampSchema = z.iso.datetime();
@@ -17,7 +18,7 @@ const timestampSchema = z.iso.datetime();
  */
 export const keeplorePromotionAttemptRecordSchema = z
   .object({
-    application: z.literal("keeplore-production"),
+    registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
     attemptedAt: timestampSchema,
     /**
      * The required checks GitHub reported for the merge commit, read before the

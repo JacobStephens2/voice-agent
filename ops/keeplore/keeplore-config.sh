@@ -251,7 +251,7 @@ keeplore_retained_release_commit() {
     [ splits("\n")
       | select(length > 0)
       | (try fromjson catch empty)
-      | select(.application == "keeplore-production"
+      | select((.registeredCodebaseId // .application) == "keeplore-production"
           and .commit == $commit
           and .result == "succeeded"
           and .stage == "promotion"

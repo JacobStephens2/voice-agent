@@ -1,4 +1,9 @@
-import { grokSandboxProfile } from "@voice-agent/contracts";
+import {
+  credentialCustodyBoundaryPaths,
+  grokSandboxProfile,
+} from "@voice-agent/contracts";
+
+export { credentialCustodyBoundaryPaths } from "@voice-agent/contracts";
 
 /**
  * The host stores a model process may never read.
@@ -16,23 +21,6 @@ import { grokSandboxProfile } from "@voice-agent/contracts";
  * tools. The parent runner still reads its own root-managed configuration
  * before the sandbox exists; the deny rules apply to what the model runs.
  */
-export const credentialCustodyBoundaryPaths = [
-  "/etc/ssh",
-  "/etc/voice-agent",
-  "/home",
-  "/root",
-  "/run/voice-agent-broker",
-  "/run/voice-agent-grok-auth",
-  "/run/voice-agent-keeplore-publisher",
-  "/run/voice-agent-subagent",
-  "/usr/local/libexec/voice-agent",
-  "/var/lib/voice-agent",
-  "/var/lib/voice-agent-broker",
-  "/var/lib/voice-agent-evidence",
-  "/var/lib/voice-codex",
-  "/var/lib/voice-grok-auth",
-] as const;
-
 /**
  * Refuse to place a run's own files inside a store the model may not read.
  *

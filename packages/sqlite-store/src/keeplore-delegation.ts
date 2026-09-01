@@ -8,6 +8,7 @@ import {
   keeploreDelegationRecordSchema,
   keeploreDelegationResultSchema,
   keeploreWorktreeSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
   type KeeploreDelegationRecord,
   type KeeploreDelegationResult,
 } from "@voice-agent/contracts";
@@ -137,7 +138,9 @@ export function createSqliteKeeploreDelegationStore(
           .get();
         if (row === undefined) return undefined;
         const brief = keeploreDelegationBriefSchema.parse(
-          JSON.parse(row.brief_json),
+          normalizeStoredRegisteredCodebaseIdentity(
+            JSON.parse(row.brief_json),
+          ),
         );
         const worktree = keeploreWorktreeSchema.parse({
           ...JSON.parse(row.worktree_json),
@@ -318,7 +321,9 @@ function requireRecord(row: DelegationRow | undefined): KeeploreDelegationRecord
 }
 
 function projectRecord(row: DelegationRow): KeeploreDelegationRecord {
-  const brief = keeploreDelegationBriefSchema.parse(JSON.parse(row.brief_json));
+  const brief = keeploreDelegationBriefSchema.parse(
+    normalizeStoredRegisteredCodebaseIdentity(JSON.parse(row.brief_json)),
+  );
   const worktree = keeploreWorktreeSchema.parse(JSON.parse(row.worktree_json));
   const result: KeeploreDelegationResult | undefined =
     row.result_json === null

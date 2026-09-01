@@ -7,6 +7,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit -p tsconfig.json",
+    "administrative-autonomy-restart-cli": "node --experimental-strip-types src/administrative-autonomy-restart-cli.ts",
     "cli": "node --experimental-strip-types src/cli.ts",
     "grok-enrollment-cli": "node --experimental-strip-types src/grok-enrollment-cli.ts",
     "slice-three-cli": "node --experimental-strip-types src/slice-three-cli.ts",
@@ -15,6 +16,8 @@
   },
   "dependencies": {
     "@voice-agent/contracts": "workspace:*",
+    "@voice-agent/runtime": "workspace:*",
+    "@voice-agent/sqlite-store": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

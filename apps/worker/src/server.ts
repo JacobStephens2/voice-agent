@@ -7,15 +7,21 @@ import {
   createUnixSocketBountywellObserver,
 } from "@voice-agent/operations-broker";
 import {
+  administrativeRestartWitnessWorkerIdentitySocketPath,
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
   createKeeploreDelegationRuntime,
   createNodeRawAudioArtifactRemover,
+  createNodeAdministrativeRestartWitnessWorkerIdentityServer,
+  createNodeAdministrativeRestartWitnessWorkerReadiness,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   createUnixSocketKeeploreSubagentRunner,
+  registerNodeAdministrativeRestartWitnessServiceInstance,
 } from "@voice-agent/runtime";
 import {
+  createSqliteAdministrativeAutonomyStore,
+  createSqliteAdministrativeRestartWitnessStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteKeeploreDelegationStore,
@@ -75,7 +81,10 @@ const telephoneBoundaries = createTelephoneBoundaryRuntime({
 });
 const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
+const administrativeEvidenceStore =
+  createSqliteAdministrativeAutonomyStore(databasePath);
 const continuityRuntime = createTaskContinuityRuntime({
+  administrativeEvidenceRetention: administrativeEvidenceStore,
   callbackEvidenceRetention: callbackStore,
   nextId: randomUUID,
   now: () => new Date().toISOString(),
@@ -149,11 +158,12 @@ const notificationAdapter = createProductionResendSilentNotificationAdapter(
     ),
   },
 );
+const workerPort = Number(requireEnvironment("VOICE_AGENT_WORKER_PORT"));
 const telephoneServer = createLiveKitAgentServer({
   agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
   agentName,
   ...liveKitConnection,
-  port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
+  port: workerPort,
 });
 
 let stopping = false;
@@ -162,6 +172,11 @@ let nextEvidenceRetentionAt = 0;
 let nextRawAudioCleanupAt = 0;
 let nextBoundaryDeadlineAt = 0;
 let nextAuthenticationNotificationAt = 0;
+let restartWitnessIdentityServer:
+  | ReturnType<
+      typeof createNodeAdministrativeRestartWitnessWorkerIdentityServer
+    >
+  | undefined;
 process.once("SIGINT", () => {
   stopping = true;
 });
@@ -172,6 +187,37 @@ const serverRun = telephoneServer.run().catch((error: unknown) => {
   serverFailure = error;
   stopping = true;
 });
+if (process.env.NODE_ENV !== "test") {
+  await requireWorkerReady(
+    createNodeAdministrativeRestartWitnessWorkerReadiness({ port: workerPort }),
+    () => serverFailure,
+  );
+  const restartWitnessStore = createSqliteAdministrativeRestartWitnessStore(
+    databasePath,
+  );
+  try {
+    const registration =
+      await registerNodeAdministrativeRestartWitnessServiceInstance({
+        nextServiceInstanceId: () =>
+          `administrative-worker-service-instance-${randomUUID()}`,
+        now: () => new Date().toISOString(),
+        service: "worker",
+        store: restartWitnessStore,
+      });
+    restartWitnessIdentityServer =
+      createNodeAdministrativeRestartWitnessWorkerIdentityServer({
+        identity: {
+          releaseCommit: registration.releaseCommit,
+          workerServiceInstanceFingerprint:
+            registration.serviceInstanceFingerprint,
+        },
+        socketPath: administrativeRestartWitnessWorkerIdentitySocketPath,
+      });
+    await restartWitnessIdentityServer.start();
+  } finally {
+    await restartWitnessStore.close();
+  }
+}
 
 while (!stopping) {
   try {
@@ -295,12 +341,14 @@ while (!stopping) {
   }
   await delay(1_000);
 }
+await restartWitnessIdentityServer?.close();
 await telephoneServer.drain(10_000);
 await telephoneServer.close();
 await serverRun;
 await callbackRuntime.close();
 await telephoneBoundaries.close();
 await continuityRuntime.close();
+await administrativeEvidenceStore.close();
 await runtime.close();
 keeploreDelegationStore?.close();
 keeploreOnboardingStore.close();
@@ -374,6 +422,23 @@ function requireHandshakeId(roomName: string): string {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function requireWorkerReady(
+  health: { readonly requireAvailable: () => Promise<void> },
+  readFailure: () => unknown,
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const failure = readFailure();
+    if (failure !== undefined) throw failure;
+    try {
+      await health.requireAvailable();
+      return;
+    } catch {
+      await delay(250);
+    }
+  }
+  throw new Error("The worker health endpoint did not become ready");
 }
 
 function requireEnvironment(name: string): string {

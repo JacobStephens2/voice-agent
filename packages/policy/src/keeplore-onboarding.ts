@@ -1,7 +1,7 @@
 import {
-  keeploreApplicationId,
   keeploreFormerRepository,
   keeploreProductionBranch,
+  keeploreRegisteredCodebaseId,
   keeploreRegistrationSchema,
   keeploreRepository,
   keeploreBranchProtectionSchema,
@@ -159,7 +159,7 @@ export function createKeeploreRegistration(input: {
     throw new Error("Keeplore enrollment requires a declared verification seam");
   }
   return keeploreRegistrationSchema.parse({
-    applicationId: keeploreApplicationId,
+    registeredCodebaseId: keeploreRegisteredCodebaseId,
     deploymentBoundaries: {
       liveCheckoutPath: input.inspection.liveCheckoutPath,
       releaseRoot: keeploreReleaseRoot,
