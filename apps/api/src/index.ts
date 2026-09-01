@@ -39,6 +39,8 @@ import {
   activateKeeploreDeploymentContractRequestSchema,
   activateAdministrativePolicyRequestSchema,
   administrativeAutonomyStatusSchema,
+  administrativePolicyEvidencePageRequestSchema,
+  administrativePolicyEvidencePageSchema,
   administrativePolicyStatusSchema,
   suspendAdministrativePolicyRequestSchema,
   enrollKeeploreRequestSchema,
@@ -79,6 +81,9 @@ import {
   type VoiceAgentEvidenceRecordProjection,
   type AdministrativePolicyStatus,
   type AdministrativePolicyActivationExpectation,
+  type AdministrativePolicyEvidencePage,
+  type AdministrativePolicyEvidencePageRequest,
+  type AdministrativePolicySuspensionExpectation,
   type AdministrativeAutonomyStatus,
 } from "@voice-agent/contracts";
 
@@ -224,9 +229,11 @@ export interface AdministrativeAutonomyApiControls {
     | { readonly decision: "denied"; readonly reason: string }
   >;
   getStatus(): Promise<AdministrativeAutonomyStatus>;
+  getPolicyEvidencePage(
+    input: AdministrativePolicyEvidencePageRequest,
+  ): Promise<AdministrativePolicyEvidencePage>;
   suspendPolicy(input: {
-    readonly expectedRevision: number;
-    readonly expectedStateVersion: number;
+    readonly expectation: AdministrativePolicySuspensionExpectation;
   }): Promise<
     | {
         readonly decision: "suspended";
@@ -518,6 +525,21 @@ function registerAdministrativeAutonomyRoutes(
     );
   });
 
+  api.get(
+    "/api/administrative-autonomy/policy-evidence",
+    async (request, reply) => {
+      if (!(await authorizeEvidence(request, options.authentication))) {
+        return reply.code(401).send({ error: "Authentication required" });
+      }
+      const pageRequest = administrativePolicyEvidencePageRequestSchema.parse(
+        request.query,
+      );
+      return administrativePolicyEvidencePageSchema.parse(
+        await options.controls.getPolicyEvidencePage(pageRequest),
+      );
+    },
+  );
+
   api.post("/api/administrative-autonomy/activate", async (request, reply) => {
     if (!requireOrigin(request, reply, options.origin)) return;
     const body = activateAdministrativePolicyRequestSchema.parse(request.body);
@@ -559,8 +581,7 @@ function registerAdministrativeAutonomyRoutes(
     );
     if (sessionToken === undefined) return;
     const result = await options.controls.suspendPolicy({
-      expectedRevision: body.expectedRevision,
-      expectedStateVersion: body.expectedStateVersion,
+      expectation: body.expectation,
     });
     if (result.decision === "denied") {
       await options.records.recordPolicyDenial?.();

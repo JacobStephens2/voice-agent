@@ -86,6 +86,10 @@ export interface AdministrativeAutonomyScenario {
     operationId: string,
   ): Promise<AdministrativeEvidenceRecord | undefined>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
+  readPolicyEvidencePage(input?: {
+    readonly beforeSequence?: number;
+    readonly limit?: number;
+  }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   readAutonomyStatus(): Promise<{
     readonly body: unknown;
     readonly statusCode: number;
@@ -637,6 +641,24 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
     prepareTask: (input) => runtime.prepareTaskConfirmation(input),
     readPolicyStatus: () => runtime.getPolicyStatus(),
+    async readPolicyEvidencePage(input = {}) {
+      const query = new URLSearchParams();
+      if (input.beforeSequence !== undefined) {
+        query.set("beforeSequence", String(input.beforeSequence));
+      }
+      if (input.limit !== undefined) query.set("limit", String(input.limit));
+      const response = await api.inject({
+        headers: {
+          cookie: `${trustedSessionCookieName}=${scenarioSession}`,
+        },
+        method: "GET",
+        url: `/api/administrative-autonomy/policy-evidence?${query.toString()}`,
+      });
+      return {
+        body: response.json<unknown>(),
+        statusCode: response.statusCode,
+      };
+    },
     async readAutonomyStatus() {
       const response = await api.inject({
         headers: {
@@ -668,8 +690,10 @@ export async function createAdministrativeAutonomyScenario(options: {
         method: "POST",
         payload: {
           csrfToken: scenarioCsrf,
-          expectedRevision: input.expectedRevision,
-          expectedStateVersion: input.expectedStateVersion,
+          expectation: {
+            expectedRevision: input.expectedRevision,
+            expectedStateVersion: input.expectedStateVersion,
+          },
         },
         url: "/api/administrative-autonomy/suspend",
       });
@@ -684,8 +708,10 @@ export async function createAdministrativeAutonomyScenario(options: {
         throw new Error("Administrative Autonomy is not active");
       }
       const suspended = await runtime.suspendPolicy({
-        expectedRevision: policy.revision,
-        expectedStateVersion: policy.stateVersion,
+        expectation: {
+          expectedRevision: policy.revision,
+          expectedStateVersion: policy.stateVersion,
+        },
       });
       if (suspended.decision === "denied") {
         throw new Error("Administrative Suspension state changed concurrently");

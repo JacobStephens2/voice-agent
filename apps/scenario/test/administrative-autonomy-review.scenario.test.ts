@@ -5,6 +5,7 @@ import { afterEach, expect, test } from "vitest";
 import {
   administrativeExecutionManifestSchema,
   administrativePlanProviderIdentitySchema,
+  administrativePolicyEvidencePageSchema,
   administrativeTimestampSchema,
   type LivePatchRollbackActivationRequest,
 } from "@voice-agent/contracts";
@@ -852,6 +853,98 @@ test("Administrative Suspension decisions remain immutable after reactivation an
   });
 
   await restartedProcess.close();
+});
+
+test("every Administrative Suspension decision remains queryable through bounded history pages", async () => {
+  const clock = { current: "2026-10-03T00:00:00.000Z" };
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      clock,
+      now: clock.current,
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
+
+  for (let index = 1; index <= 101; index += 1) {
+    clock.current = new Date(
+      Date.UTC(2026, 9, 3, 0, 0, index),
+    ).toISOString();
+    expect(
+      await firstProcess.suspendPolicy({
+        authenticated: true,
+        expectedRevision: index,
+        expectedStateVersion: index * 2 - 1,
+      }),
+    ).toMatchObject({ statusCode: 200 });
+    expect(
+      await firstProcess.activatePolicy({
+        expectedActiveRevision: index,
+        expectedStateVersion: index * 2,
+        freshPasskey: true,
+      }),
+    ).toMatchObject({ statusCode: 200 });
+  }
+  await firstProcess.close();
+
+  const restarted = await createAdministrativeAutonomyScenario({
+    clock,
+    databasePath,
+    identifierNamespace: "policy-history-restart-",
+    now: clock.current,
+    providerPlan: [{ kind: "production.observe" }],
+  });
+  const latestResponse = await restarted.readPolicyEvidencePage();
+  const latest = administrativePolicyEvidencePageSchema.parse(
+    latestResponse.body,
+  );
+  if (latest.nextBeforeSequence === null) {
+    throw new Error("The bounded policy history page lost its continuation");
+  }
+  const earlierResponse = await restarted.readPolicyEvidencePage({
+    beforeSequence: latest.nextBeforeSequence,
+  });
+  const earlier = administrativePolicyEvidencePageSchema.parse(
+    earlierResponse.body,
+  );
+  const events = [...earlier.events, ...latest.events];
+
+  expect({
+    earlierResponse: earlierResponse.statusCode,
+    eventCount: events.length,
+    first: events[0],
+    latestResponse: latestResponse.statusCode,
+    last: events.at(-1),
+    sequences: events.map((event) => event.sequence),
+  }).toMatchObject({
+    earlierResponse: 200,
+    eventCount: 101,
+    first: {
+      details: { policyRevision: 1, resultingStateVersion: 2 },
+      kind: "administrative.policy.suspended",
+      sequence: 1,
+    },
+    latestResponse: 200,
+    last: {
+      details: { policyRevision: 101, resultingStateVersion: 202 },
+      kind: "administrative.policy.suspended",
+      sequence: 101,
+    },
+    sequences: Array.from({ length: 101 }, (_, index) => index + 1),
+  });
+  expect(earlier).toMatchObject({
+    events: [{ sequence: 1 }],
+    hasMore: false,
+    nextBeforeSequence: null,
+    totalCount: 101,
+  });
+  expect(latest).toMatchObject({
+    hasMore: true,
+    nextBeforeSequence: 2,
+    totalCount: 101,
+  });
+
+  await restarted.close();
 });
 
 test("Administrative Suspension aborts an armed Live Patch before mutation and activates its rollback", async () => {

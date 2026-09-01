@@ -36,7 +36,10 @@ import {
   type AdministrativePlanProviderIdentity,
   type AdministrativePolicyActivationExpectation,
   type AdministrativePolicyActivationSource,
+  type AdministrativePolicyEvidencePage,
+  type AdministrativePolicyEvidencePageRequest,
   type AdministrativePolicyStatus,
+  type AdministrativePolicySuspensionExpectation,
   type AdministrativePublicationIntent,
   type AdministrativeRequestedOutcome,
   type AdministrativeTask,
@@ -205,6 +208,9 @@ export interface AdministrativeAutonomyRuntime {
   }): Promise<AdministrativeTaskAdmissionResult>;
   close(): Promise<void>;
   getPolicyStatus(): Promise<AdministrativePolicyStatus>;
+  getPolicyEvidencePage(
+    input: AdministrativePolicyEvidencePageRequest,
+  ): Promise<AdministrativePolicyEvidencePage>;
   getStatus(): Promise<AdministrativeAutonomyStatus>;
   getTask(
     taskId: AdministrativeTaskId,
@@ -222,8 +228,7 @@ export interface AdministrativeAutonomyRuntime {
     readonly target: AdministrativeTaskTarget;
   }): Promise<AdministrativeTaskPreparationResult>;
   suspendPolicy(input: {
-    readonly expectedRevision: number;
-    readonly expectedStateVersion: number;
+    readonly expectation: AdministrativePolicySuspensionExpectation;
   }): Promise<AdministrativePolicySuspensionResult>;
 }
 
@@ -1159,6 +1164,8 @@ export function createAdministrativeAutonomyRuntime(options: {
       await options.store.close();
     },
     getPolicyStatus: () => options.store.readPolicyStatus(),
+    getPolicyEvidencePage: (input) =>
+      options.store.readPolicyEvidencePage(input),
     async getStatus() {
       const [policy, policyEvidence] = await Promise.all([
         options.store.readPolicyStatus(),
@@ -1299,13 +1306,13 @@ export function createAdministrativeAutonomyRuntime(options: {
     async suspendPolicy(input) {
       const suspendedAt = now();
       const suspended = await options.store.suspendPolicy({
-        expectedRevision: input.expectedRevision,
-        expectedStateVersion: input.expectedStateVersion,
+        expectation: input.expectation,
         suspendedAt,
         suspensionEvent: {
           details: {
-            policyRevision: input.expectedRevision,
-            resultingStateVersion: input.expectedStateVersion + 1,
+            policyRevision: input.expectation.expectedRevision,
+            resultingStateVersion:
+              input.expectation.expectedStateVersion + 1,
           },
           id: options.identifiers.nextEventId(),
           kind: "administrative.policy.suspended",

@@ -13,7 +13,10 @@ import {
   administrativePolicyActivationExpectationSchema,
   administrativePolicyEvidenceEventInputSchema,
   administrativePolicyEvidenceEventSchema,
+  administrativePolicyEvidencePageRequestSchema,
+  administrativePolicyEvidencePageSchema,
   administrativePolicyEvidenceProjectionSchema,
+  administrativePolicySuspensionExpectationSchema,
   administrativePolicyStatusSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
@@ -214,6 +217,16 @@ export function createSqliteAdministrativeAutonomyStore(
       LIMIT 100
     )
     ORDER BY sequence
+  `);
+  const readPolicyEvidencePageEvents = database.prepare<
+    [beforeSequence: number | null, beforeSequence: number | null, limit: number],
+    AdministrativePolicyEvidenceRow
+  >(`
+    SELECT id, sequence, kind, occurred_at, summary, details_json
+    FROM administrative_policy_evidence_events
+    WHERE (? IS NULL OR sequence < ?)
+    ORDER BY sequence DESC
+    LIMIT ?
   `);
   const countPolicyEvidenceEvents = database.prepare<
     [],
@@ -570,22 +583,46 @@ export function createSqliteAdministrativeAutonomyStore(
     );
   }
 
+  function policyEvidenceEvent(row: AdministrativePolicyEvidenceRow) {
+    return administrativePolicyEvidenceEventSchema.parse({
+      details: JSON.parse(row.details_json) as unknown,
+      id: row.id,
+      kind: row.kind,
+      occurredAt: row.occurred_at,
+      sequence: row.sequence,
+      summary: row.summary,
+    });
+  }
+
   function policyEvidenceProjection() {
     const totalCount = countPolicyEvidenceEvents.get()?.count ?? 0;
-    const events = readPolicyEvidenceEvents.all().map((row) =>
-      administrativePolicyEvidenceEventSchema.parse({
-        details: JSON.parse(row.details_json) as unknown,
-        id: row.id,
-        kind: row.kind,
-        occurredAt: row.occurred_at,
-        sequence: row.sequence,
-        summary: row.summary,
-      }),
-    );
+    const events = readPolicyEvidenceEvents.all().map(policyEvidenceEvent);
     return administrativePolicyEvidenceProjectionSchema.parse({
       events,
       totalCount,
       truncated: totalCount > events.length,
+    });
+  }
+
+  function policyEvidencePage(
+    input: Parameters<AdministrativeAutonomyStore["readPolicyEvidencePage"]>[0],
+  ) {
+    const request = administrativePolicyEvidencePageRequestSchema.parse(input);
+    const rows = readPolicyEvidencePageEvents.all(
+      request.beforeSequence,
+      request.beforeSequence,
+      request.limit + 1,
+    );
+    const hasMore = rows.length > request.limit;
+    const events = rows
+      .slice(0, request.limit)
+      .reverse()
+      .map(policyEvidenceEvent);
+    return administrativePolicyEvidencePageSchema.parse({
+      events,
+      hasMore,
+      nextBeforeSequence: hasMore ? events[0]?.sequence : null,
+      totalCount: countPolicyEvidenceEvents.get()?.count ?? 0,
     });
   }
 
@@ -724,6 +761,9 @@ export function createSqliteAdministrativeAutonomyStore(
 
   const suspendTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["suspendPolicy"]>[0]) => {
+      const expectation = administrativePolicySuspensionExpectationSchema.parse(
+        input.expectation,
+      );
       const suspensionEvent =
         administrativePolicyEvidenceEventInputSchema.parse(
           input.suspensionEvent,
@@ -731,8 +771,8 @@ export function createSqliteAdministrativeAutonomyStore(
       const current = requirePolicyState();
       if (
         current.status === "suspended" &&
-        current.active_revision === input.expectedRevision &&
-        current.state_version === input.expectedStateVersion + 1
+        current.active_revision === expectation.expectedRevision &&
+        current.state_version === expectation.expectedStateVersion + 1
       ) {
         markArmedRollbacksPending.run(input.suspendedAt);
         return policyStatus(current);
@@ -740,15 +780,16 @@ export function createSqliteAdministrativeAutonomyStore(
       const result = suspendPolicyState.run(
         input.suspendedAt,
         input.suspendedAt,
-        input.expectedRevision,
-        input.expectedStateVersion,
+        expectation.expectedRevision,
+        expectation.expectedStateVersion,
       );
       if (result.changes !== 1) return undefined;
       if (
         suspensionEvent.occurredAt !== input.suspendedAt ||
-        suspensionEvent.details.policyRevision !== input.expectedRevision ||
+        suspensionEvent.details.policyRevision !==
+          expectation.expectedRevision ||
         suspensionEvent.details.resultingStateVersion !==
-          input.expectedStateVersion + 1
+          expectation.expectedStateVersion + 1
       ) {
         throw new Error(
           "Administrative Suspension evidence does not match its transition",
@@ -1503,6 +1544,9 @@ export function createSqliteAdministrativeAutonomyStore(
     },
     async readPolicyEvidence() {
       return policyEvidenceProjection();
+    },
+    async readPolicyEvidencePage(input) {
+      return policyEvidencePage(input);
     },
     async recheckOperationEffect(input) {
       return recheckOperationEffectTransaction.immediate(input);

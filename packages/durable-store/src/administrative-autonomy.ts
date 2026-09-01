@@ -9,7 +9,10 @@ import type {
   AdministrativePolicyRevision,
   AdministrativePolicyActivationExpectation,
   AdministrativePolicyEvidenceEventInput,
+  AdministrativePolicyEvidencePage,
+  AdministrativePolicyEvidencePageRequest,
   AdministrativePolicyEvidenceProjection,
+  AdministrativePolicySuspensionExpectation,
   AdministrativePolicyStatus,
   AdministrativeTask,
   AdministrativeTaskId,
@@ -153,6 +156,9 @@ export interface AdministrativeAutonomyStore {
   >;
   listTasks(): Promise<readonly AdministrativeTask[]>;
   readPolicyEvidence(): Promise<AdministrativePolicyEvidenceProjection>;
+  readPolicyEvidencePage(
+    input: AdministrativePolicyEvidencePageRequest,
+  ): Promise<AdministrativePolicyEvidencePage>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
   recheckOperationEffect(input: {
     readonly authority: AdministrativeAuthoritySnapshot;
@@ -187,8 +193,7 @@ export interface AdministrativeAutonomyStore {
    * compensation orchestration.
    */
   suspendPolicy(input: {
-    readonly expectedRevision: number;
-    readonly expectedStateVersion: number;
+    readonly expectation: AdministrativePolicySuspensionExpectation;
     readonly suspensionEvent: AdministrativePolicyEvidenceEventInput;
     readonly suspendedAt: AdministrativeTimestamp;
   }): Promise<AdministrativePolicyStatus | undefined>;

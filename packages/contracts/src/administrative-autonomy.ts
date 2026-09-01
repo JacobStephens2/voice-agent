@@ -421,6 +421,40 @@ export type AdministrativePolicyEvidenceProjection = z.infer<
   typeof administrativePolicyEvidenceProjectionSchema
 >;
 
+export const administrativePolicyEvidencePageRequestSchema = z
+  .object({
+    beforeSequence: z.coerce.number().int().positive().nullable().default(null),
+    limit: z.coerce.number().int().positive().max(100).default(100),
+  })
+  .strict();
+export type AdministrativePolicyEvidencePageRequest = z.infer<
+  typeof administrativePolicyEvidencePageRequestSchema
+>;
+
+export const administrativePolicyEvidencePageSchema = z
+  .object({
+    events: z.array(administrativePolicyEvidenceEventSchema).max(100),
+    hasMore: z.boolean(),
+    nextBeforeSequence: z.number().int().positive().nullable(),
+    totalCount: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((page, context) => {
+    const expectedCursor = page.hasMore ? page.events[0]?.sequence : null;
+    if (
+      page.totalCount < page.events.length ||
+      page.nextBeforeSequence !== expectedCursor
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Administrative policy evidence page is inconsistent",
+      });
+    }
+  });
+export type AdministrativePolicyEvidencePage = z.infer<
+  typeof administrativePolicyEvidencePageSchema
+>;
+
 export const administrativeTaskExecutionStatusSchema = z.discriminatedUnion(
   "status",
   [
@@ -485,11 +519,20 @@ export const activateAdministrativePolicyRequestSchema = z
   })
   .strict();
 
+export const administrativePolicySuspensionExpectationSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    expectedStateVersion: z.number().int().positive(),
+  })
+  .strict();
+export type AdministrativePolicySuspensionExpectation = z.infer<
+  typeof administrativePolicySuspensionExpectationSchema
+>;
+
 export const suspendAdministrativePolicyRequestSchema = z
   .object({
     csrfToken: z.string().min(16).max(200),
-    expectedRevision: z.number().int().positive(),
-    expectedStateVersion: z.number().int().positive(),
+    expectation: administrativePolicySuspensionExpectationSchema,
   })
   .strict();
 
