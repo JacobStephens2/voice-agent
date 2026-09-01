@@ -39,9 +39,13 @@ boundary. The request can supply none of those values.
 
 The API captures its real entrypoint and Restart Witness module paths when the
 process is composed. Every observation requires those captured root-owned,
-non-writable files to belong to the Release that is active at observation time.
-An API process left running across Promotion therefore fails closed instead of
-following the moved `current` symlink and claiming the new Release's identity.
+non-writable files to belong to the Release that is active at observation time,
+and walks the entire active Release to reject any unowned, writable, broken, or
+escaping transitive entry. An API process left running across Promotion
+therefore fails closed instead of following the moved `current` symlink and
+claiming the new Release's identity. The wizard performs the equivalent fixed
+ownership, mode, and canonical-symlink checks directly; it never sources a
+Release verifier through a path it has not already proved.
 
 After the baseline, the wizard restarts `voice-agent-api.service` and
 `voice-agent-worker.service`. The service-restart observation passes only for a

@@ -41,13 +41,17 @@ test("the witness is post-Promotion, resumable, and records no raw credential or
   expect(wizard).toContain('ACCEPTANCE_CLI=$ACTIVE_RELEASE/apps/acceptance/src/administrative-autonomy-restart-cli.ts');
   expect(wizard).toContain('[[ $REPOSITORY_ROOT != "$ACTIVE_RELEASE" ]]');
   expect(wizard).toContain(
-    'voice_agent_release_tree_is_immutable "$ACTIVE_RELEASE"',
-  );
-  expect(wizard).toContain(
     'sudo find "$ACTIVE_RELEASE" ! -uid 0 -print -quit',
   );
   expect(wizard).toContain(
     'sudo find "$ACTIVE_RELEASE" ! -type l -perm /222 -print -quit',
+  );
+  expect(wizard).toContain(
+    'sudo find "$ACTIVE_RELEASE" -type l -print0',
+  );
+  expect(wizard).toContain('resolved=$(readlink -f -- "$link")');
+  expect(wizard).not.toContain(
+    'source "$ACTIVE_RELEASE/ops/release/release-immutability.sh"',
   );
   expect(wizard).toContain('"$ACTIVE_RELEASE/.voice-agent-release"');
   expect(wizard).toContain("Run this only post-Promotion");

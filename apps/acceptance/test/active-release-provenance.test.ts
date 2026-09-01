@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
-import { activeReleaseTreeIsOwnedAndImmutable } from "../src/active-release-provenance.ts";
+import { administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable } from "@voice-agent/runtime";
 
 const temporaryDirectories: string[] = [];
 
@@ -42,15 +42,24 @@ test("the CLI Release provenance rejects wrong ownership and mutable content", a
   const ownerUid = (await lstat(release)).uid;
 
   await expect(
-    activeReleaseTreeIsOwnedAndImmutable(release, ownerUid),
+    administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+      release,
+      ownerUid,
+    ),
   ).resolves.toBe(true);
   await expect(
-    activeReleaseTreeIsOwnedAndImmutable(release, ownerUid + 1),
+    administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+      release,
+      ownerUid + 1,
+    ),
   ).resolves.toBe(false);
 
   await chmod(cli, 0o644);
   await expect(
-    activeReleaseTreeIsOwnedAndImmutable(release, ownerUid),
+    administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+      release,
+      ownerUid,
+    ),
   ).resolves.toBe(false);
 });
 
@@ -64,6 +73,9 @@ test("the CLI Release provenance rejects canonical symlink escape", async () => 
   const ownerUid = (await lstat(release)).uid;
 
   await expect(
-    activeReleaseTreeIsOwnedAndImmutable(release, ownerUid),
+    administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+      release,
+      ownerUid,
+    ),
   ).resolves.toBe(false);
 });

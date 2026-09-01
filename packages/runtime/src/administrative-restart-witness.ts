@@ -1,5 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -65,6 +66,40 @@ export function administrativeRestartWitnessReleaseProvenanceIsExact(
     modeIsImmutable(input.apiEntrypointMode) &&
     modeIsImmutable(input.witnessModuleMode)
   );
+}
+
+/** Validates every entry in the active immutable Release without following it. */
+export async function administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+  releaseRoot: string,
+  expectedOwnerUid: number,
+): Promise<boolean> {
+  try {
+    if (!isAbsolute(releaseRoot)) return false;
+    const canonicalRoot = await realpath(releaseRoot);
+    if (canonicalRoot !== releaseRoot) return false;
+    const pending = [canonicalRoot];
+    while (pending.length > 0) {
+      const path = pending.pop();
+      if (path === undefined) return false;
+      const metadata = await lstat(path);
+      if (metadata.uid !== expectedOwnerUid) return false;
+      if (metadata.isSymbolicLink()) {
+        const target = await realpath(path);
+        if (!releasePathIsWithin(canonicalRoot, target)) return false;
+        continue;
+      }
+      if ((metadata.mode & 0o222) !== 0) return false;
+      if (metadata.isDirectory()) {
+        const entries = await readdir(path);
+        pending.push(...entries.map((entry) => join(path, entry)));
+      } else if (!metadata.isFile()) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -156,7 +191,11 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
           witnessModuleMode: witnessModuleMetadata.mode,
           witnessModuleOwnerUid: witnessModuleMetadata.uid,
           witnessModulePath,
-        })
+        }) ||
+        !(await administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+          activeReleasePath,
+          0,
+        ))
       ) {
         throw new Error("The active immutable Voice Agent Release is invalid");
       }
@@ -171,4 +210,14 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
 
 function modeIsImmutable(mode: number): boolean {
   return (mode & 0o222) === 0;
+}
+
+function releasePathIsWithin(root: string, candidate: string): boolean {
+  const pathFromRoot = relative(root, candidate);
+  return (
+    pathFromRoot === "" ||
+    (!isAbsolute(pathFromRoot) &&
+      pathFromRoot !== ".." &&
+      !pathFromRoot.startsWith(`..${sep}`))
+  );
 }

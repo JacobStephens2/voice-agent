@@ -11,11 +11,11 @@ import {
   administrativeTimestampSchema,
 } from "@voice-agent/contracts";
 import { createSqliteAdministrativeRestartWitnessStore } from "@voice-agent/sqlite-store";
+import { administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable } from "@voice-agent/runtime";
 
 import { evaluateAdministrativeAutonomyRestartWitness } from "./index.ts";
 import { parseOptions, requireOnlyOptions } from "./cli-options.ts";
 import { createRecordFile, readRecordFile } from "./record-file.ts";
-import { activeReleaseTreeIsOwnedAndImmutable } from "./active-release-provenance.ts";
 
 const productionDatabasePath = "/var/lib/voice-agent/voice-agent.sqlite";
 const activeReleaseMarkerPath =
@@ -117,7 +117,12 @@ async function readActiveReleaseCommit() {
       "Run this only from the exact active immutable Agent Host Release",
     );
   }
-  if (!(await activeReleaseTreeIsOwnedAndImmutable(releasePath, 0))) {
+  if (
+    !(await administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+      releasePath,
+      0,
+    ))
+  ) {
     throw new Error(
       "The active Agent Host Release is not root-owned and immutable",
     );

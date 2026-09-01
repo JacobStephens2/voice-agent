@@ -1,4 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +31,7 @@ import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import { administrativeAutonomyPolicyDefinition } from "@voice-agent/policy";
 import {
   administrativeRestartWitnessReleaseProvenanceIsExact,
+  administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable,
   createAdministrativeRestartWitnessRuntime,
 } from "@voice-agent/runtime";
 import {
@@ -335,6 +343,43 @@ test("the host observation rejects a stale or non-root API process", () => {
         ...mutation,
       }),
     ).toBe(false);
+  }
+});
+
+test("the host observation rejects mutable or unowned transitive Release files", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "voice-agent-api-release-"));
+  temporaryDirectories.push(parent);
+  await mkdir(join(parent, "release"));
+  const release = await realpath(join(parent, "release"));
+  const transitiveModule = join(release, "transitive-store-module.ts");
+  await writeFile(transitiveModule, "export {};\n");
+  await chmod(transitiveModule, 0o444);
+  await chmod(release, 0o555);
+  const ownerUid = process.getuid?.() ?? 0;
+
+  try {
+    await expect(
+      administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+        release,
+        ownerUid,
+      ),
+    ).resolves.toBe(true);
+    await chmod(transitiveModule, 0o644);
+    await expect(
+      administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+        release,
+        ownerUid,
+      ),
+    ).resolves.toBe(false);
+    await chmod(transitiveModule, 0o444);
+    await expect(
+      administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+        release,
+        ownerUid + 1,
+      ),
+    ).resolves.toBe(false);
+  } finally {
+    await chmod(release, 0o700);
   }
 });
 

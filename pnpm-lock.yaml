@@ -26,6 +26,9 @@ importers:
       '@voice-agent/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@voice-agent/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@voice-agent/sqlite-store':
         specifier: workspace:*
         version: link:../../packages/sqlite-store

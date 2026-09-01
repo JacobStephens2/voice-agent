@@ -207,13 +207,23 @@ if [[ -n $(sudo find "$ACTIVE_RELEASE" ! -uid 0 -print -quit) ]] || \
   warn "The active Agent Host Release tree is not root-owned and immutable."
   exit 1
 fi
-if [[ -L "$ACTIVE_RELEASE/ops/release/release-immutability.sh" ]]; then
-  warn "The active Release immutability verifier is not a regular Release file."
+release_symlink_escape=false
+if ! sudo find "$ACTIVE_RELEASE" -type l -print >/dev/null; then
+  warn "The active Agent Host Release symlinks could not be inspected."
   exit 1
 fi
-source "$ACTIVE_RELEASE/ops/release/release-immutability.sh"
-if ! voice_agent_release_tree_is_immutable "$ACTIVE_RELEASE"; then
-  warn "The active Agent Host Release tree is not immutable."
+while IFS= read -r -d '' link; do
+  if ! resolved=$(readlink -f -- "$link"); then
+    release_symlink_escape=true
+    break
+  fi
+  case "$resolved" in
+    "$ACTIVE_RELEASE" | "$ACTIVE_RELEASE"/*) ;;
+    *) release_symlink_escape=true; break ;;
+  esac
+done < <(sudo find "$ACTIVE_RELEASE" -type l -print0)
+if [[ $release_symlink_escape == true ]]; then
+  warn "The active Agent Host Release contains an escaping or broken symlink."
   exit 1
 fi
 
