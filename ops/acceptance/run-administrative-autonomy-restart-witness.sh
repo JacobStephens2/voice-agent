@@ -232,14 +232,12 @@ witness_cli() {
     "$ACCEPTANCE_CLI" "$@"
 }
 
-campaign_has_passed() {
-  witness_cli show | jq -e --arg phase "$1" \
-    '.observations[] | select(.phase == $phase and .outcome == "passed")' \
-    >/dev/null
+campaign_next_phase() {
+  witness_cli show | jq -er '.nextObservation.phase // "completed"'
 }
 
 record_current_observation() {
-  local campaign campaign_id challenge phase
+  local campaign campaign_id challenge phase next_phase
   campaign=$(witness_cli show)
   campaign_id=$(jq -r '.campaignId' <<<"$campaign")
   challenge=$(jq -r '.nextObservation.challenge' <<<"$campaign")
@@ -252,10 +250,18 @@ record_current_observation() {
   step "Use the signed-in PWA and choose Record server observation."
   step "The browser sends only the campaign, phase, challenge, and its own CSRF proof; the server reads every witnessed value."
   pause "Return after the PWA reports that the server observation was recorded."
-  if ! campaign_has_passed "$phase"; then
+  next_phase=$(campaign_next_phase)
+  if [[ $next_phase == "$phase" ]]; then
     warn "The server rejected this phase and retained a sanitized failure event. Rerun to use its new single-use challenge."
     return 1
   fi
+  case "$phase:$next_phase" in
+    baseline:service-restart | service-restart:host-reboot | host-reboot:completed) ;;
+    *)
+      warn "The server returned an invalid campaign phase transition. The campaign remains incomplete."
+      return 1
+      ;;
+  esac
 }
 
 banner "Administrative Autonomy restart witness"
@@ -270,18 +276,16 @@ if witness_cli status >/dev/null 2>&1; then
 fi
 
 stage "Authenticated pre-restart authority"
-if campaign_has_passed baseline; then
-  note "The server already recorded the baseline through its authenticated API."
-else
+if [[ $(campaign_next_phase) == baseline ]]; then
   say "Sign in to the active Voice Agent PWA with the owner Trusted Browser Session."
   open_url "$API_ORIGIN"
   record_current_observation
+else
+  note "The server already recorded the baseline through its authenticated API."
 fi
 
 stage "Real API and worker service restart"
-if campaign_has_passed service-restart; then
-  note "The changed API service instance on the same Linux boot is already witnessed."
-else
+if [[ $(campaign_next_phase) == service-restart ]]; then
   sudo systemctl restart voice-agent-api.service voice-agent-worker.service
   if ! sudo systemctl is-active --quiet \
     voice-agent-api.service voice-agent-worker.service; then
@@ -290,11 +294,16 @@ else
   fi
   step "Sign in to the PWA again if needed. The server rejects this phase unless both service identities changed on this same boot."
   record_current_observation
+else
+  note "The changed API and worker service instances on the same Linux boot are already witnessed."
 fi
 
 stage "Real Agent Host reboot"
-if campaign_has_passed host-reboot; then
+if [[ $(campaign_next_phase) == completed ]]; then
   note "The changed Linux boot and stable post-service API/worker identities are already witnessed."
+elif [[ $(campaign_next_phase) != host-reboot ]]; then
+  warn "The campaign has not reached its host-reboot phase. Complete its current server challenge first."
+  exit 1
 elif sudo test -f "$REBOOT_MARKER"; then
   note "The wizard resumed after requesting a reboot; the server verifies the changed Linux boot and the stable post-service API/worker identities."
 else
@@ -313,13 +322,16 @@ else
 fi
 
 stage "Post-reboot authenticated observation"
-if ! campaign_has_passed host-reboot; then
+if [[ $(campaign_next_phase) == host-reboot ]]; then
   step "Sign back in to the deployed PWA."
   if ! record_current_observation; then
     sudo rm -f "$REBOOT_MARKER"
     warn "The reboot was not observed; its marker was cleared so rerunning can request another real reboot."
     exit 1
   fi
+elif [[ $(campaign_next_phase) != completed ]]; then
+  warn "The campaign did not reach a completed server-owned state."
+  exit 1
 fi
 witness_cli status
 witness_cli export >/dev/null

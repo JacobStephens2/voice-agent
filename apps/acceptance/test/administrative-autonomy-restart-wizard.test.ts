@@ -1,7 +1,11 @@
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import { expect, test } from "vitest";
+
+const execFileAsync = promisify(execFile);
 
 const wizard = await readFile(
   fileURLToPath(
@@ -79,4 +83,38 @@ test("an unchanged-boot observation cannot strand reboot recovery", () => {
   expect(wizard).toContain(
     "The reboot was not observed; its marker was cleared so rerunning can request another real reboot.",
   );
+});
+
+test("a migrated campaign follows its current server challenge instead of historical passed phases", async () => {
+  expect(wizard).toContain("campaign_next_phase");
+  expect(wizard).toContain('.nextObservation.phase // "completed"');
+  expect(wizard).not.toContain("campaign_has_passed");
+  expect(wizard).toContain("[[ $(campaign_next_phase) == baseline ]]");
+  expect(wizard).toContain(
+    "[[ $(campaign_next_phase) == service-restart ]]",
+  );
+  expect(wizard).toContain("[[ $(campaign_next_phase) == host-reboot ]]");
+
+  const phaseReader = wizard.match(
+    /campaign_next_phase\(\) \{[\s\S]*?\n\}/u,
+  )?.[0];
+  expect(phaseReader).toBeDefined();
+  const migratedCampaign = JSON.stringify({
+    nextObservation: { challenge: "v3-baseline", phase: "baseline" },
+    observations: [
+      { outcome: "passed", phase: "baseline" },
+      { outcome: "passed", phase: "service-restart" },
+      { outcome: "passed", phase: "host-reboot" },
+    ],
+    status: "migration-required",
+  });
+  const { stdout } = await execFileAsync(
+    "bash",
+    [
+      "-c",
+      `${phaseReader}\nwitness_cli() { printf '%s' "$CAMPAIGN"; }\ncampaign_next_phase`,
+    ],
+    { env: { ...process.env, CAMPAIGN: migratedCampaign } },
+  );
+  expect(stdout.trim()).toBe("baseline");
 });
