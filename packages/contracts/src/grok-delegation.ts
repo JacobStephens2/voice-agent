@@ -86,6 +86,19 @@ export const grokRunnerPinSchema = z
   .strict();
 export type GrokRunnerPin = z.infer<typeof grokRunnerPinSchema>;
 
+export function sameGrokRunnerPin(
+  left: GrokRunnerPin,
+  right: GrokRunnerPin,
+): boolean {
+  const parsedLeft = grokRunnerPinSchema.parse(left);
+  const parsedRight = grokRunnerPinSchema.parse(right);
+  return (
+    parsedLeft.configurationPath === parsedRight.configurationPath &&
+    parsedLeft.digest === parsedRight.digest &&
+    parsedLeft.version === parsedRight.version
+  );
+}
+
 /**
  * What a run cost, as the provider actually reported it.
  *

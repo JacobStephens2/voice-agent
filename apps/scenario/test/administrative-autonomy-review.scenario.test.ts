@@ -1,10 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rm } from "node:fs/promises";
 
 import { afterEach, expect, test } from "vitest";
 
 import {
+  administrativeExecutionManifestSchema,
+  administrativePlanProviderIdentitySchema,
   administrativeTimestampSchema,
   type LivePatchRollbackActivationRequest,
 } from "@voice-agent/contracts";
@@ -27,20 +27,15 @@ afterEach(async () => {
 });
 
 test("an Administrative Execution Manifest cannot gain authority after Human Merge", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
-  const policyProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    executionAdapters: "unavailable",
-    now: "2026-10-02T10:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await policyProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: policyProcess } =
+    await createActivatedScenario(
+      {
+        executionAdapters: "unavailable",
+        now: "2026-10-02T10:00:00.000Z",
+        providerPlan: [{ kind: "production.observe" }],
+      },
+      temporaryDirectories,
+    );
   await policyProcess.close();
 
   const mergedAdapterProcess = await createAdministrativeAutonomyScenario({
@@ -218,6 +213,40 @@ test("administrative safety timestamps require canonical UTC millisecond precisi
   ).toBe(true);
 });
 
+test("a Grok Administrative Execution Manifest binds the complete reviewed Runner Pin", () => {
+  const provider = {
+    enrollmentCampaignId: "grok-enrollment-campaign-1",
+    kind: "grok-build" as const,
+    runnerPin: {
+      configurationPath: "/etc/voice-agent/grok/requirements.toml",
+      digest:
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      version: "1.0.13",
+    },
+  };
+  const manifest = administrativeExecutionManifestSchema.parse({
+    operationAdapters: [],
+    provider,
+    schemaVersion: 1,
+  });
+  const identity = administrativePlanProviderIdentitySchema.parse(provider);
+  const digestOnly = administrativeExecutionManifestSchema.safeParse({
+    operationAdapters: [],
+    provider: {
+      enrollmentCampaignId: provider.enrollmentCampaignId,
+      kind: provider.kind,
+      runnerPin: provider.runnerPin.digest,
+    },
+    schemaVersion: 1,
+  });
+
+  expect({ digestOnly: digestOnly.success, identity, manifest }).toMatchObject({
+    digestOnly: false,
+    identity: provider,
+    manifest: { provider },
+  });
+});
+
 test("confirmed publication intent becomes a bounded request and provider payload injection is denied", async () => {
   const { scenario } = await createActivatedScenario(
     {
@@ -356,20 +385,14 @@ test("confirmed publication intent becomes a bounded request and provider payloa
 });
 
 test("a running plan cannot cross an execution-manifest change after restart", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    executorFailures: 1,
-    now: "2026-10-02T11:40:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      executorFailures: 1,
+      now: "2026-10-02T11:40:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   const admission = await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "Production health is understood.",
@@ -413,22 +436,16 @@ test("a running plan cannot cross an execution-manifest change after restart", a
 });
 
 test("a delayed Live Patch arms a fresh thirty-minute rollback and must reconcile before completion", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const clock = { current: "2026-10-02T12:00:00.000Z" };
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    clock,
-    databasePath,
-    executorFailures: 1,
-    now: clock.current,
-    providerPlan: [{ kind: "live-patch.apply" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      clock,
+      executorFailures: 1,
+      now: clock.current,
+      providerPlan: [{ kind: "live-patch.apply" }],
+    },
+    temporaryDirectories,
+  );
   const admission = await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",
@@ -684,8 +701,6 @@ test("authenticated Administrative Suspension is durable and blocks new admissio
 });
 
 test("Administrative Suspension aborts an armed Live Patch before mutation and activates its rollback", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
   let reportArmed: (() => void) | undefined;
   const armed = new Promise<void>((resolve) => {
     reportArmed = resolve;
@@ -697,23 +712,20 @@ test("Administrative Suspension aborts an armed Live Patch before mutation and a
   const effectLedger = new Set<string>();
   const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
   const rollbackActivationLedger = new Set<string>();
-  const scenario = await createAdministrativeAutonomyScenario({
-    afterLivePatchRollbackArmed: async () => {
-      reportArmed?.();
-      await executorReleased;
+  const { scenario } = await createActivatedScenario(
+    {
+      afterLivePatchRollbackArmed: async () => {
+        reportArmed?.();
+        await executorReleased;
+      },
+      effectLedger,
+      now: "2026-10-02T14:15:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationAttempts,
+      rollbackActivationLedger,
     },
-    databasePath: join(directory, "voice-agent.sqlite"),
-    effectLedger,
-    now: "2026-10-02T14:15:00.000Z",
-    providerPlan: [{ kind: "live-patch.apply" }],
-    rollbackActivationAttempts,
-    rollbackActivationLedger,
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+    temporaryDirectories,
+  );
   const admission = scenario.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",
@@ -766,24 +778,18 @@ test("Administrative Suspension aborts an armed Live Patch before mutation and a
 });
 
 test("Administrative Suspension retains failed Live Patch rollback activation for restart", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
   const rollbackActivationLedger = new Set<string>();
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    now: "2026-10-02T14:30:00.000Z",
-    providerPlan: [{ kind: "live-patch.apply" }],
-    rollbackActivationAttempts,
-    rollbackActivationFailures: 1,
-    rollbackActivationLedger,
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      now: "2026-10-02T14:30:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationAttempts,
+      rollbackActivationFailures: 1,
+      rollbackActivationLedger,
+    },
+    temporaryDirectories,
+  );
   await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",
@@ -1154,28 +1160,22 @@ test("an armed Live Patch blocks manifest replacement and retains its rollback i
 });
 
 test("Administrative Suspension replays rollback activation without repeating its effect", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
   const rollbackActivationEffects: string[] = [];
   const rollbackActivationLedger = new Set<string>();
   const rollbackActivationTimeLedger = new Map();
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    crashAfterFirstRollbackActivation: true,
-    databasePath,
-    now: "2026-10-02T14:40:00.000Z",
-    providerPlan: [{ kind: "live-patch.apply" }],
-    rollbackActivationAttempts,
-    rollbackActivationEffects,
-    rollbackActivationLedger,
-    rollbackActivationTimeLedger,
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      crashAfterFirstRollbackActivation: true,
+      now: "2026-10-02T14:40:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationAttempts,
+      rollbackActivationEffects,
+      rollbackActivationLedger,
+      rollbackActivationTimeLedger,
+    },
+    temporaryDirectories,
+  );
   await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",
@@ -1233,28 +1233,22 @@ test("Administrative Suspension replays rollback activation without repeating it
 });
 
 test("a Live Patch crash after its effect replays the original durable safety proof", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const clock = { current: "2026-10-02T15:00:00.000Z" };
   const effectLedger = new Set<string>();
   const livePatchProofLedger = new Map();
   const operationAttempts: string[] = [];
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    clock,
-    crashAfterFirstEffect: true,
-    databasePath,
-    effectLedger,
-    livePatchProofLedger,
-    now: clock.current,
-    operationAttempts,
-    providerPlan: [{ kind: "live-patch.apply" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      clock,
+      crashAfterFirstEffect: true,
+      effectLedger,
+      livePatchProofLedger,
+      now: clock.current,
+      operationAttempts,
+      providerPlan: [{ kind: "live-patch.apply" }],
+    },
+    temporaryDirectories,
+  );
   const admission = await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",

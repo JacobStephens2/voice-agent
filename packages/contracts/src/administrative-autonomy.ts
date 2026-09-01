@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import { grokRunnerPinSchema } from "./grok-delegation.ts";
+import { grokEnrollmentCampaignIdSchema } from "./grok-enrollment.ts";
+
 const identifierSchema = z.string().min(1).max(120);
 const administrativeIdentitySchema = (kind: "claim" | "operation" | "task") =>
   z
@@ -79,9 +82,9 @@ const administrativeScenarioProviderSchema = z
   .strict();
 const administrativeGrokProviderSchema = z
   .object({
-    enrollmentId: identifierSchema,
+    enrollmentCampaignId: grokEnrollmentCampaignIdSchema,
     kind: z.literal("grok-build"),
-    runnerPin: administrativeImplementationDigestSchema,
+    runnerPin: grokRunnerPinSchema,
   })
   .strict();
 

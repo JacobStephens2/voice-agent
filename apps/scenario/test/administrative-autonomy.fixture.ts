@@ -6,6 +6,15 @@ import { expect } from "vitest";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
 
+export async function createScenarioDatabase(temporaryDirectories: string[]) {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  return {
+    databasePath: join(directory, "voice-agent.sqlite"),
+    directory,
+  };
+}
+
 export async function createActivatedScenario(
   options: Omit<
     Parameters<typeof createAdministrativeAutonomyScenario>[0],
@@ -13,9 +22,7 @@ export async function createActivatedScenario(
   >,
   temporaryDirectories: string[],
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
+  const { databasePath } = await createScenarioDatabase(temporaryDirectories);
   const scenario = await createAdministrativeAutonomyScenario({
     ...options,
     databasePath,

@@ -1,5 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
@@ -12,7 +11,10 @@ import {
 } from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
-import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
+import {
+  createActivatedScenario,
+  createScenarioDatabase,
+} from "./administrative-autonomy.fixture.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -48,9 +50,7 @@ test("Administrative Task, Operation, and claim identities cannot be cross-wired
 });
 
 test("a Fresh Passkey Action activates the policy used by one confirmed repair plan", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
+  const { databasePath } = await createScenarioDatabase(temporaryDirectories);
   const scenario = await createAdministrativeAutonomyScenario({
     databasePath,
     now: "2026-08-31T15:00:00.000Z",
@@ -201,9 +201,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
 });
 
 test("voice and a Trusted Browser Session cannot activate a policy that survives restart", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
+  const { databasePath } = await createScenarioDatabase(temporaryDirectories);
   const firstProcess = await createAdministrativeAutonomyScenario({
     databasePath,
     now: "2026-08-31T16:00:00.000Z",
@@ -287,18 +285,13 @@ test("voice and a Trusted Browser Session cannot activate a policy that survives
 });
 
 test("ambiguous, stale, replayed, and identity-mismatched confirmations fail closed", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-08-31T18:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-08-31T18:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
 
   const ambiguousTask = await scenario.prepareTask({
     intendedState: "The production application health is understood.",
@@ -427,8 +420,6 @@ test("ambiguous, stale, replayed, and identity-mismatched confirmations fail clo
 });
 
 test("the confirmed outcome bounds observation, branch work, and Live Patch selection", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
   const cases = [
     { outcome: "fix", operation: "live-patch.apply" },
     { outcome: "repair", operation: "live-patch.apply" },
@@ -450,16 +441,13 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
   }> = [];
 
   for (const [index, testCase] of cases.entries()) {
-    const scenario = await createAdministrativeAutonomyScenario({
-      databasePath: join(directory, `voice-agent-${index}.sqlite`),
-      now: "2026-08-31T19:00:00.000Z",
-      providerPlan: [{ kind: testCase.operation }],
-    });
-    await scenario.activatePolicy({
-      expectedActiveRevision: null,
-      expectedStateVersion: 0,
-      freshPasskey: true,
-    });
+    const { scenario } = await createActivatedScenario(
+      {
+        now: "2026-08-31T19:00:00.000Z",
+        providerPlan: [{ kind: testCase.operation }],
+      },
+      temporaryDirectories,
+    );
     const result = await scenario.confirmAndRunTask({
       confirmation: "confirmed",
       intendedState: "The requested administrative outcome is achieved.",
@@ -563,8 +551,7 @@ test("the confirmed outcome bounds observation, branch work, and Live Patch sele
 });
 
 test("provider instructions cannot invent administrative authority or persist raw instructions", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
+  const { directory } = await createScenarioDatabase(temporaryDirectories);
   const scenario = await createAdministrativeAutonomyScenario({
     databasePath: join(directory, "voice-agent.sqlite"),
     now: "2026-08-31T20:00:00.000Z",
@@ -640,18 +627,13 @@ test("provider instructions cannot invent administrative authority or persist ra
 });
 
 test("a policy revision interleaved with plan admission prevents every Operation", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-08-31T21:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-08-31T21:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   scenario.interleavePolicyRevisionBeforePlanAdmission();
 
   const result = await scenario.confirmAndRunTask({
@@ -879,24 +861,18 @@ test("Task Confirmation presents the intended state and decline consumes its cap
 });
 
 test("a crashed Operation is reconciled after restart with one stable idempotent effect", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const effectLedger = new Set<string>();
   const operationAttempts: string[] = [];
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    crashAfterFirstEffect: true,
-    databasePath,
-    effectLedger,
-    now: "2026-09-01T00:00:00.000Z",
-    operationAttempts,
-    providerPlan: [{ kind: "delegated-worktree.change" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      crashAfterFirstEffect: true,
+      effectLedger,
+      now: "2026-09-01T00:00:00.000Z",
+      operationAttempts,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
 
   const admitted = await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
@@ -965,8 +941,6 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
 });
 
 test("administrative mutation plans share one durable global execution lane", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
   let activeMutations = 0;
   let maximumActiveMutations = 0;
   let releaseFirstMutation!: () => void;
@@ -977,29 +951,26 @@ test("administrative mutation plans share one durable global execution lane", as
   const firstMutationRelease = new Promise<void>((resolve) => {
     releaseFirstMutation = resolve;
   });
-  const scenario = await createAdministrativeAutonomyScenario({
-    beforeOperationEffect: async (request) => {
-      if (request.kind === "production.observe") return;
-      activeMutations += 1;
-      maximumActiveMutations = Math.max(
-        maximumActiveMutations,
-        activeMutations,
-      );
-      if (request.taskId === "administrative-task-1") {
-        reportFirstMutation();
-        await firstMutationRelease;
-      }
-      activeMutations -= 1;
+  const { scenario } = await createActivatedScenario(
+    {
+      beforeOperationEffect: async (request) => {
+        if (request.kind === "production.observe") return;
+        activeMutations += 1;
+        maximumActiveMutations = Math.max(
+          maximumActiveMutations,
+          activeMutations,
+        );
+        if (request.taskId === "administrative-task-1") {
+          reportFirstMutation();
+          await firstMutationRelease;
+        }
+        activeMutations -= 1;
+      },
+      now: "2026-09-01T01:00:00.000Z",
+      providerPlan: [{ kind: "delegated-worktree.change" }],
     },
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-09-01T01:00:00.000Z",
-    providerPlan: [{ kind: "delegated-worktree.change" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+    temporaryDirectories,
+  );
 
   const firstTask = scenario.confirmAndRunTask({
     confirmation: "confirmed",
@@ -1055,21 +1026,16 @@ test("administrative mutation plans share one durable global execution lane", as
 });
 
 test("a policy revision after one effect blocks every not-yet-started Operation", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-09-01T02:00:00.000Z",
-    providerPlan: [
-      { kind: "production.observe" },
-      { kind: "delegated-worktree.change" },
-    ],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-09-01T02:00:00.000Z",
+      providerPlan: [
+        { kind: "production.observe" },
+        { kind: "delegated-worktree.change" },
+      ],
+    },
+    temporaryDirectories,
+  );
   scenario.interleavePolicyRevisionAfterFirstOperation();
 
   const result = await scenario.confirmAndRunTask({
@@ -1110,19 +1076,14 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
 });
 
 test("deployed policy activation does not imply unavailable task execution", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    executionAdapters: "unavailable",
-    now: "2026-09-01T03:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      executionAdapters: "unavailable",
+      now: "2026-09-01T03:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
 
   const prepared = await scenario.prepareTask({
     intendedState: "The production application health is understood.",
@@ -1168,19 +1129,13 @@ test("deployed policy activation does not imply unavailable task execution", asy
 });
 
 test("policy state has no TTL and the #86 suspension seam persists without a schema change", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    now: "2026-09-01T04:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      now: "2026-09-01T04:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   await firstProcess.close();
 
   const suspensionProcess = await createAdministrativeAutonomyScenario({
@@ -1262,18 +1217,13 @@ test("policy state has no TTL and the #86 suspension seam persists without a sch
 });
 
 test("an activation prepared before Administrative Suspension cannot reactivate stale state", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: "2026-10-01T06:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      now: "2026-10-01T06:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   await scenario.suspendPolicyState();
 
   const staleActivation = await scenario.activatePolicy({
@@ -1302,22 +1252,16 @@ test("an activation prepared before Administrative Suspension cannot reactivate 
 });
 
 test("an accepted task stranded during planning resumes idempotently after restart", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const providerAttempts: string[] = [];
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    now: "2026-10-01T07:00:00.000Z",
-    providerAttempts,
-    providerFailures: 1,
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      now: "2026-10-01T07:00:00.000Z",
+      providerAttempts,
+      providerFailures: 1,
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   const prepared = await firstProcess.prepareTask({
     intendedState: "The production application health is understood.",
     outcome: "investigate",
@@ -1377,24 +1321,18 @@ test("an accepted task stranded during planning resumes idempotently after resta
 });
 
 test("the persisted six-hour execution deadline stops Operation recovery after restart", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const effectLedger = new Set<string>();
   const operationAttempts: string[] = [];
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    crashAfterFirstEffect: true,
-    databasePath,
-    effectLedger,
-    now: "2026-10-01T08:00:00.000Z",
-    operationAttempts,
-    providerPlan: [{ kind: "delegated-worktree.change" }],
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      crashAfterFirstEffect: true,
+      effectLedger,
+      now: "2026-10-01T08:00:00.000Z",
+      operationAttempts,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
   const result = await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The isolated branch contains the requested change.",
@@ -1452,19 +1390,13 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
 });
 
 test("authenticated Evidence Lifecycle expiry prunes ordinary administrative events only", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
-  const workProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    now: "2000-01-01T00:00:00.000Z",
-    providerPlan: [{ kind: "production.observe" }],
-  });
-  await workProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: workProcess } = await createActivatedScenario(
+    {
+      now: "2000-01-01T00:00:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    },
+    temporaryDirectories,
+  );
   const result = await workProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The production application health is understood.",
@@ -1532,25 +1464,20 @@ test("authenticated Evidence Lifecycle expiry prunes ordinary administrative eve
 });
 
 test("Administrative Suspension aborts an in-flight mutation before its effect", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
   let markStarted: (() => void) | undefined;
   const started = new Promise<void>((resolve) => {
     markStarted = resolve;
   });
-  const scenario = await createAdministrativeAutonomyScenario({
-    databasePath: join(directory, "voice-agent.sqlite"),
-    holdOperationUntilAbort: true,
-    now: "2026-10-01T09:00:00.000Z",
-    onOperationStart: () => markStarted?.(),
-    operationLeaseMilliseconds: 30,
-    providerPlan: [{ kind: "delegated-worktree.change" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { scenario } = await createActivatedScenario(
+    {
+      holdOperationUntilAbort: true,
+      now: "2026-10-01T09:00:00.000Z",
+      onOperationStart: () => markStarted?.(),
+      operationLeaseMilliseconds: 30,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
   const admission = scenario.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The isolated branch contains the requested change.",
@@ -1593,23 +1520,18 @@ test("Administrative Suspension aborts an in-flight mutation before its effect",
 });
 
 test("an in-flight bounded executor refuses to begin an effect at the six-hour deadline", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
   const clock = { current: "2026-10-01T10:00:00.000Z" };
-  const scenario = await createAdministrativeAutonomyScenario({
-    async beforeOperationEffect() {
-      clock.current = "2026-10-01T16:00:00.000Z";
+  const { scenario } = await createActivatedScenario(
+    {
+      async beforeOperationEffect() {
+        clock.current = "2026-10-01T16:00:00.000Z";
+      },
+      clock,
+      now: clock.current,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
     },
-    clock,
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: clock.current,
-    providerPlan: [{ kind: "delegated-worktree.change" }],
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+    temporaryDirectories,
+  );
 
   const admission = await scenario.confirmAndRunTask({
     confirmation: "confirmed",
@@ -1645,25 +1567,20 @@ test("an in-flight bounded executor refuses to begin an effect at the six-hour d
 });
 
 test("Operation evidence uses the trusted runtime completion time", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
   const clock = { current: "2026-10-01T11:00:00.000Z" };
-  const scenario = await createAdministrativeAutonomyScenario({
-    async beforeOperationEffect() {
-      clock.current = "2026-10-01T11:01:00.000Z";
+  const { scenario } = await createActivatedScenario(
+    {
+      async beforeOperationEffect() {
+        clock.current = "2026-10-01T11:01:00.000Z";
+      },
+      clock,
+      now: clock.current,
+      operationLeaseMilliseconds: 2 * 60 * 1_000,
+      providerPlan: [{ kind: "production.observe" }],
+      reportedCompletionTime: "2026-10-01T10:00:00.000Z",
     },
-    clock,
-    databasePath: join(directory, "voice-agent.sqlite"),
-    now: clock.current,
-    operationLeaseMilliseconds: 2 * 60 * 1_000,
-    providerPlan: [{ kind: "production.observe" }],
-    reportedCompletionTime: "2026-10-01T10:00:00.000Z",
-  });
-  await scenario.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+    temporaryDirectories,
+  );
   const result = await scenario.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The production application health is understood.",

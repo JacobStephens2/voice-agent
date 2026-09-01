@@ -23,6 +23,7 @@ import {
   administrativeLivePatchRollbackActivatorIdentitySchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
+  sameGrokRunnerPin,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
   type AdministrativeAuthoritySnapshot,
@@ -1272,8 +1273,9 @@ function providerIdentityMatchesManifest(
   }
   return (
     manifest.provider.kind === "grok-build" &&
-    identity.enrollmentId === manifest.provider.enrollmentId &&
-    identity.runnerPin === manifest.provider.runnerPin
+    identity.enrollmentCampaignId ===
+      manifest.provider.enrollmentCampaignId &&
+    sameGrokRunnerPin(identity.runnerPin, manifest.provider.runnerPin)
   );
 }
 
