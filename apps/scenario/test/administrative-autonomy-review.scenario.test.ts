@@ -439,7 +439,12 @@ test("a verified Delegation Result completes delegated work through the public t
     (event) => event.kind === "administrative.operation.completed",
   );
 
-  expect({ admission, completion, task: record?.task }).toMatchObject({
+  expect({
+    admission,
+    completion,
+    operation: scenario.executedOperations[0],
+    task: record?.task,
+  }).toMatchObject({
     admission: { decision: "admitted" },
     completion: {
       details: {
@@ -456,6 +461,11 @@ test("a verified Delegation Result completes delegated work through the public t
                 { command: "pnpm typecheck", outcome: "passed" },
                 { command: "pnpm test", outcome: "passed" },
               ],
+              candidate: {
+                branch: "administrative/administrative-operation-1",
+                commit: "a".repeat(40),
+                worktreeId: "administrative-operation-1",
+              },
             },
             worktree: {
               id: "administrative-operation-1",
@@ -466,13 +476,56 @@ test("a verified Delegation Result completes delegated work through the public t
       },
       kind: "administrative.operation.completed",
     },
+    operation: {
+      delegation: {
+        brief: {
+          acceptanceCriteria: {
+            automaticVerification: {
+              commands: ["pnpm typecheck", "pnpm test"],
+              kind: "registered-codebase-verification",
+            },
+            intendedState: {
+              intendedState:
+                "The proposed change is verified in its isolated worktree.",
+              kind: "confirmed-intended-state",
+            },
+          },
+          authorizedCapabilities: [
+            "registered-source.read",
+            "delegated-worktree.write",
+            "verification.run",
+            "verified-candidate.prepare",
+          ],
+          boundedContext: {
+            editableScope: "registered-codebase",
+            rawVoiceTranscriptIncluded: false,
+            repositoryContentTrust: "untrusted-data-only",
+          },
+          constraints: [
+            "delegated-worktree-only",
+            "production-mutation-forbidden",
+            "production-ref-mutation-forbidden",
+            "human-merge-required",
+          ],
+          delegationId: "administrative-operation-1",
+          registeredCodebase: { applicationId: "voice-agent", revision: 1 },
+        },
+      },
+    },
     task: { status: "completed" },
   });
 
   await scenario.close();
 });
 
-test.each(["missing", "mismatched", "failed-verification"] as const)(
+test.each([
+  "missing",
+  "mismatched",
+  "mismatched-candidate",
+  "mismatched-publication",
+  "failed-verification",
+  "terminated",
+] as const)(
   "a %s Delegation Result cannot complete its Operation or Task",
   async (delegatedWorktreeProof) => {
     const { scenario } = await createActivatedScenario(
@@ -516,6 +569,45 @@ test.each(["missing", "mismatched", "failed-verification"] as const)(
     await scenario.close();
   },
 );
+
+test("a verified Delegation completion remains valid when trusted receipt time advances", async () => {
+  const clock = { current: "2026-10-02T11:36:30.000Z" };
+  const { scenario } = await createActivatedScenario(
+    {
+      beforeExecutorResultReturn() {
+        clock.current = "2026-10-02T11:36:30.025Z";
+      },
+      clock,
+      now: clock.current,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The verified candidate is ready on its isolated branch.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "advancing-clock-delegation",
+    target,
+  });
+  const completion = (await scenario.readTask("administrative-task-1"))?.evidence.find(
+    (event) => event.kind === "administrative.operation.completed",
+  );
+
+  expect({ admission, completion }).toMatchObject({
+    admission: { decision: "admitted" },
+    completion: {
+      details: {
+        result: {
+          completedAt: "2026-10-02T11:36:30.025Z",
+          delegation: { completedAt: "2026-10-02T11:36:30.000Z" },
+        },
+      },
+    },
+  });
+  await scenario.close();
+});
 
 test("Administrative Tasks fail closed for unavailable, absent, expired, or drifted Registered Codebases", async () => {
   const unavailable = await createActivatedScenario(
@@ -1780,6 +1872,8 @@ test("the suspension reconciliation controller retries durable rollback failures
     activatedEvidence: [{ details: { operationId: "administrative-operation-1" } }],
     failureReasons: [
       "transient-failure",
+      "transient-failure",
+      "implementation-mismatch",
       "implementation-mismatch",
     ],
     recovered: {
@@ -1801,6 +1895,65 @@ test("the suspension reconciliation controller retries durable rollback failures
     ),
   ).toHaveLength(1);
   await recoveryProcess.close();
+});
+
+test("repeated rollback attempts remain append-only behind a truthful bounded Evidence Record", async () => {
+  const clock = { current: "2026-10-02T15:30:00.000Z" };
+  const callbacks: Array<() => Promise<void>> = [];
+  const schedule: string[] = [];
+  const { scenario } = await createActivatedScenario(
+    {
+      clock,
+      now: clock.current,
+      providerPlan: [{ kind: "live-patch.apply" }],
+      reconciliationCallbacks: callbacks,
+      reconciliationSchedule: schedule,
+      rollbackActivationFailures: 105,
+    },
+    temporaryDirectories,
+  );
+  await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "bounded-rollback-evidence",
+    target,
+  });
+  await scenario.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  for (let attempt = 0; attempt < 104; attempt += 1) {
+    clock.current = schedule[attempt] ?? clock.current;
+    await callbacks[attempt]?.();
+  }
+  const record = await scenario.readTask("administrative-task-1");
+  const status = await scenario.readPolicyStatus();
+
+  expect({
+    evidenceKinds: record?.evidence.map((event) => event.kind),
+    evidenceTotalCount: record?.evidenceTotalCount,
+    evidenceTruncated: record?.evidenceTruncated,
+    pending: status.status === "suspended"
+      ? status.rollbackActivations.pendingActivations
+      : [],
+  }).toMatchObject({
+    evidenceTotalCount: 111,
+    evidenceTruncated: true,
+    pending: [{ attemptCount: 105, lastFailureReason: "transient-failure" }],
+  });
+  expect(record?.evidence).toHaveLength(100);
+  expect(
+    record?.evidence.every(
+      (event) =>
+        event.kind ===
+        "administrative.live-patch.rollback-activation-failed",
+    ),
+  ).toBe(true);
+
+  await scenario.close();
 });
 
 test("a matured Live Patch rollback window is durably disarmed before a racing direct revision", async () => {
@@ -1849,8 +2002,14 @@ test("a matured Live Patch rollback window is durably disarmed before a racing d
     }),
   ]);
   const status = await restarted.readPolicyStatus();
+  const expiryEvidence = (
+    await restarted.readTask("administrative-task-1")
+  )?.evidence.filter(
+    (event) =>
+      event.kind === "administrative.live-patch.rollback-window-expired",
+  );
 
-  expect({ beforeDeadline, raced, status }).toMatchObject({
+  expect({ beforeDeadline, expiryEvidence, raced, status }).toMatchObject({
     beforeDeadline: {
       body: {
         error:
@@ -1858,6 +2017,15 @@ test("a matured Live Patch rollback window is durably disarmed before a racing d
       },
       statusCode: 409,
     },
+    expiryEvidence: [
+      {
+        details: {
+          operationId: "administrative-operation-1",
+          reconciledAt: "2026-10-02T16:30:00.000Z",
+          rollbackDeadline: "2026-10-02T16:30:00.000Z",
+        },
+      },
+    ],
     status: { revision: 2, stateVersion: 2, status: "active" },
   });
   expect(raced.filter((result) => result.decision === "activated")).toHaveLength(1);

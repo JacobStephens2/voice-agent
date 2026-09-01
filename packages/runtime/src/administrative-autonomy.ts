@@ -1655,10 +1655,13 @@ function confirmationQuestion(
   return `Confirm changing ${subject} to this intended state: ${intendedState}`;
 }
 
-interface AdministrativeOperationRequestInput {
+interface AdministrativeOperationRequestInput<
+  Kind extends AdministrativeOperationRequest["kind"] =
+    AdministrativeOperationRequest["kind"],
+> {
   readonly authority: AdministrativeAuthoritySnapshot;
   readonly intendedState: string;
-  readonly kind: AdministrativeOperationRequest["kind"];
+  readonly kind: Kind;
   readonly operationId: AdministrativeOperationId;
   readonly publicationIntent: AdministrativePublicationIntent;
   readonly target: AdministrativeTaskTarget;
@@ -1669,28 +1672,80 @@ interface AdministrativeOperationResultValidation {
   readonly completed: number;
   readonly effectStarted: number;
   readonly initialExecutionStarted: number;
+  readonly reportedCompletedAt: AdministrativeTimestamp;
 }
 
-interface AdministrativeOperationHandler {
-  buildRequest(input: AdministrativeOperationRequestInput): unknown;
+type AdministrativeOperationRequestFor<
+  Kind extends AdministrativeOperationRequest["kind"],
+> = Extract<AdministrativeOperationRequest, { readonly kind: Kind }>;
+
+type AdministrativeOperationResultFor<
+  Kind extends AdministrativeOperationRequest["kind"],
+> = Extract<AdministrativeOperationResult, { readonly kind: Kind }>;
+
+interface AdministrativeOperationHandler<
+  Kind extends AdministrativeOperationRequest["kind"],
+> {
+  buildRequest(
+    input: AdministrativeOperationRequestInput<Kind>,
+  ): AdministrativeOperationRequestFor<Kind>;
   validateResult(
-    request: AdministrativeOperationRequest,
-    result: AdministrativeOperationResult,
+    request: AdministrativeOperationRequestFor<Kind>,
+    result: AdministrativeOperationResultFor<Kind>,
     timing: AdministrativeOperationResultValidation,
   ): void;
 }
+
+type AdministrativeOperationHandlerRegistry = {
+  [Kind in AdministrativeOperationRequest["kind"]]:
+    AdministrativeOperationHandler<Kind>;
+};
 
 const administrativeOperationHandlers = {
   "delegated-worktree.change": {
     buildRequest(input) {
       const branch = `administrative/${input.operationId}`;
-      return {
+      return parseAdministrativeOperationRequest("delegated-worktree.change", {
         ...operationRequestCommon(input),
         change: confirmedIntendedState(input.intendedState),
         delegation: {
-          delegationId: input.operationId,
-          verificationCommands:
-            input.target.registeredCodebase.verificationCommands,
+          brief: {
+            acceptanceCriteria: {
+              automaticVerification: {
+                commands: input.target.registeredCodebase.verificationCommands,
+                kind: "registered-codebase-verification",
+              },
+              intendedState: {
+                intendedState: input.intendedState,
+                kind: "confirmed-intended-state",
+                targetSource: "confirmed-durable-task",
+              },
+            },
+            authorizedCapabilities: [
+              "registered-source.read",
+              "delegated-worktree.write",
+              "verification.run",
+              "verified-candidate.prepare",
+              ...(input.publicationIntent === "open-pull-request"
+                ? (["verified-candidate.publish"] as const)
+                : []),
+            ],
+            boundedContext: {
+              editableScope: "registered-codebase",
+              rawVoiceTranscriptIncluded: false,
+              repositoryContentTrust: "untrusted-data-only",
+              source: "confirmed-durable-task-and-registration",
+            },
+            constraints: [
+              "delegated-worktree-only",
+              "production-mutation-forbidden",
+              "production-ref-mutation-forbidden",
+              "human-merge-required",
+            ],
+            delegationId: input.operationId,
+            goal: confirmedIntendedState(input.intendedState),
+            registeredCodebase: input.target.registeredCodebase,
+          },
           worktree: {
             baseCommit: input.target.registeredCodebase.initialProductionCommit,
             branch,
@@ -1709,13 +1764,13 @@ const administrativeOperationHandlers = {
                 productionMutation: false,
               }
             : { kind: "branch-only", productionMutation: false },
-      };
+      });
     },
     validateResult: validateDelegatedWorktreeResult,
   },
   "live-patch.apply": {
     buildRequest(input) {
-      return {
+      return parseAdministrativeOperationRequest("live-patch.apply", {
         ...operationRequestCommon(input),
         kind: input.kind,
         mutationBoundary: {
@@ -1742,13 +1797,13 @@ const administrativeOperationHandlers = {
           },
         },
         patch: confirmedIntendedState(input.intendedState),
-      };
+      });
     },
     validateResult: validateLivePatchResult,
   },
   "production.observe": {
     buildRequest(input) {
-      return {
+      return parseAdministrativeOperationRequest("production.observe", {
         ...operationRequestCommon(input),
         kind: input.kind,
         observation: {
@@ -1756,14 +1811,21 @@ const administrativeOperationHandlers = {
           kind: "registered-application-health",
           targetSource: "confirmed-durable-task",
         },
-      };
+      });
     },
     validateResult: validateObservationResult,
   },
-} satisfies Record<
-  AdministrativeOperationRequest["kind"],
-  AdministrativeOperationHandler
->;
+} satisfies AdministrativeOperationHandlerRegistry;
+
+function parseAdministrativeOperationRequest<
+  Kind extends AdministrativeOperationRequest["kind"],
+>(kind: Kind, input: unknown): AdministrativeOperationRequestFor<Kind> {
+  const parsed = administrativeOperationRequestSchema.parse(input);
+  if (parsed.kind !== kind) {
+    throw new Error("Administrative Operation request handler was cross-wired");
+  }
+  return parsed as AdministrativeOperationRequestFor<Kind>;
+}
 
 function operationRequestCommon(input: AdministrativeOperationRequestInput) {
   return {
@@ -1785,9 +1847,23 @@ function confirmedIntendedState(intendedState: string) {
 function operationRequest(
   input: AdministrativeOperationRequestInput,
 ): AdministrativeOperationRequest {
-  return administrativeOperationRequestSchema.parse(
-    administrativeOperationHandlers[input.kind].buildRequest(input),
-  );
+  switch (input.kind) {
+    case "delegated-worktree.change":
+      return administrativeOperationHandlers[input.kind].buildRequest({
+        ...input,
+        kind: input.kind,
+      });
+    case "live-patch.apply":
+      return administrativeOperationHandlers[input.kind].buildRequest({
+        ...input,
+        kind: input.kind,
+      });
+    case "production.observe":
+      return administrativeOperationHandlers[input.kind].buildRequest({
+        ...input,
+        kind: input.kind,
+      });
+  }
 }
 
 function operationResult(
@@ -1832,37 +1908,74 @@ function operationResult(
   ) {
     throw new Error("Administrative idempotency proof is not valid");
   }
-  administrativeOperationHandlers[request.kind].validateResult(
-    request,
-    result,
-    { completed, effectStarted, initialExecutionStarted },
-  );
+  validateAdministrativeOperationKindResult(request, result, {
+    completed,
+    effectStarted,
+    initialExecutionStarted,
+    reportedCompletedAt: untrusted.completedAt,
+  });
   return result;
 }
 
-function validateObservationResult(
+function validateAdministrativeOperationKindResult(
   request: AdministrativeOperationRequest,
   result: AdministrativeOperationResult,
+  timing: AdministrativeOperationResultValidation,
 ): void {
-  if (request.kind !== "production.observe" || result.kind !== request.kind) {
-    throw new Error("Observation result does not match its Operation kind");
+  switch (request.kind) {
+    case "delegated-worktree.change":
+      if (result.kind !== request.kind) {
+        throw new Error("Delegation Result does not match its Operation kind");
+      }
+      administrativeOperationHandlers[request.kind].validateResult(
+        request,
+        result,
+        timing,
+      );
+      return;
+    case "live-patch.apply":
+      if (result.kind !== request.kind) {
+        throw new Error("Live Patch result does not match its Operation kind");
+      }
+      administrativeOperationHandlers[request.kind].validateResult(
+        request,
+        result,
+        timing,
+      );
+      return;
+    case "production.observe":
+      if (result.kind !== request.kind) {
+        throw new Error("Observation result does not match its Operation kind");
+      }
+      administrativeOperationHandlers[request.kind].validateResult(
+        request,
+        result,
+        timing,
+      );
   }
 }
 
-function validateDelegatedWorktreeResult(
-  request: AdministrativeOperationRequest,
-  result: AdministrativeOperationResult,
+function validateObservationResult(
+  _request: AdministrativeOperationRequestFor<"production.observe">,
+  _result: AdministrativeOperationResultFor<"production.observe">,
+  _timing: AdministrativeOperationResultValidation,
 ): void {
-  if (
-    request.kind !== "delegated-worktree.change" ||
-    result.kind !== request.kind
-  ) {
-    throw new Error("Delegation Result does not match its Operation kind");
-  }
+}
+
+function validateDelegatedWorktreeResult(
+  request: AdministrativeOperationRequestFor<"delegated-worktree.change">,
+  result: AdministrativeOperationResultFor<"delegated-worktree.change">,
+  timing: AdministrativeOperationResultValidation,
+): void {
   const delegation = result.delegation;
+  const candidate = delegation.verification.candidate;
+  const reportedCompleted = new Date(timing.reportedCompletedAt).getTime();
   const expectedWorktree = request.delegation.worktree;
+  const expectedCommands =
+    request.delegation.brief.acceptanceCriteria.automaticVerification.commands;
+  const headCommit = delegation.commits.at(-1);
   const verificationPassed =
-    request.delegation.verificationCommands.every((command) =>
+    expectedCommands.every((command) =>
       delegation.verification.automated.some(
         (verification) =>
           verification.command === command &&
@@ -1873,8 +1986,10 @@ function validateDelegatedWorktreeResult(
       (verification) => verification.outcome === "passed",
     );
   if (
-    delegation.delegationId !== request.delegation.delegationId ||
-    delegation.completedAt !== result.completedAt ||
+    delegation.delegationId !== request.delegation.brief.delegationId ||
+    delegation.completedAt !== timing.reportedCompletedAt ||
+    reportedCompleted < timing.effectStarted ||
+    reportedCompleted > timing.completed ||
     delegation.branch !== expectedWorktree.branch ||
     delegation.status !== "completed" ||
     delegation.failure !== null ||
@@ -1885,7 +2000,11 @@ function validateDelegatedWorktreeResult(
     delegation.worktree.branch !== expectedWorktree.branch ||
     delegation.worktree.path !== expectedWorktree.path ||
     delegation.worktree.state !== "completed" ||
-    delegation.worktree.dirty ||
+      delegation.worktree.dirty ||
+    candidate === null ||
+    candidate.branch !== delegation.branch ||
+    candidate.commit !== headCommit ||
+    candidate.worktreeId !== delegation.worktree.id ||
     !verificationPassed
   ) {
     throw new Error(
@@ -1894,24 +2013,28 @@ function validateDelegatedWorktreeResult(
   }
   const matchingPublication =
     (request.publication.kind === "branch-only" &&
-      result.publication.kind === "isolated-branch-prepared") ||
+      result.publication.kind === "isolated-branch-prepared" &&
+      result.publication.branch === delegation.branch &&
+      result.publication.headCommit === headCommit) ||
     (request.publication.kind === "open-pull-request" &&
       result.publication.kind === "isolated-pull-request-opened" &&
       result.publication.registeredCodebaseId ===
-        request.target.registeredCodebaseId);
+        request.target.registeredCodebaseId &&
+      result.publication.headBranch === delegation.branch &&
+      result.publication.headCommit === headCommit &&
+      result.publication.url.startsWith(
+        `https://github.com/${request.target.registeredCodebase.repository}/pull/`,
+      ));
   if (!matchingPublication) {
     throw new Error("Administrative publication proof does not match its request");
   }
 }
 
 function validateLivePatchResult(
-  request: AdministrativeOperationRequest,
-  result: AdministrativeOperationResult,
+  request: AdministrativeOperationRequestFor<"live-patch.apply">,
+  result: AdministrativeOperationResultFor<"live-patch.apply">,
   timing: AdministrativeOperationResultValidation,
 ): void {
-  if (request.kind !== "live-patch.apply" || result.kind !== request.kind) {
-    throw new Error("Live Patch result does not match its Operation kind");
-  }
   const proof = result.mutationProof;
   const healthObserved = new Date(proof.healthCheck.observedAt).getTime();
   const rollbackArmed = new Date(proof.independentRollback.armedAt).getTime();

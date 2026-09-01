@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import Database from "better-sqlite3";
 
 import {
@@ -284,9 +286,22 @@ export function createSqliteAdministrativeAutonomyStore(
     AdministrativeEvidenceRow
   >(`
     SELECT id, sequence, kind, occurred_at, summary, details_json
+    FROM (
+      SELECT id, sequence, kind, occurred_at, summary, details_json
+      FROM administrative_evidence_events
+      WHERE task_id = ?
+      ORDER BY sequence DESC
+      LIMIT 100
+    )
+    ORDER BY sequence
+  `);
+  const countEvents = database.prepare<
+    [taskId: string],
+    { readonly count: number }
+  >(`
+    SELECT COUNT(*) AS count
     FROM administrative_evidence_events
     WHERE task_id = ?
-    ORDER BY sequence
   `);
   const readLastEventSequence = database.prepare<
     [taskId: string],
@@ -470,6 +485,17 @@ export function createSqliteAdministrativeAutonomyStore(
     SET status = 'window-expired', updated_at = ?
     WHERE status = 'armed'
       AND json_extract(request_json, '$.rollbackDeadline') <= ?
+  `);
+  const listMaturedLivePatchRollbacks = database.prepare<
+    [expiresAt: string],
+    LivePatchRollbackRow
+  >(`
+    SELECT operation_id, task_id, status, request_json, result_json,
+      attempt_count, last_error, next_attempt_at
+    FROM administrative_live_patch_rollbacks
+    WHERE status = 'armed'
+      AND json_extract(request_json, '$.rollbackDeadline') <= ?
+    ORDER BY operation_id
   `);
   const activateLivePatchRollbackWindow = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -729,6 +755,7 @@ export function createSqliteAdministrativeAutonomyStore(
   }
 
   function loadRecord(task: AdministrativeTaskRow): AdministrativeEvidenceRecord {
+    const evidenceTotalCount = countEvents.get(task.id)?.count ?? 0;
     return administrativeEvidenceRecordSchema.parse({
       evidence: readEvents.all(task.id).map((event) => ({
         details: JSON.parse(event.details_json) as unknown,
@@ -738,6 +765,8 @@ export function createSqliteAdministrativeAutonomyStore(
         sequence: event.sequence,
         summary: event.summary,
       })),
+      evidenceTotalCount,
+      evidenceTruncated: evidenceTotalCount > 100,
       task: taskProjection(task),
     });
   }
@@ -770,10 +799,34 @@ export function createSqliteAdministrativeAutonomyStore(
         input.expectation,
       );
       const current = requirePolicyState();
-      expireMaturedLivePatchRollbacks.run(
+      const maturedRollbacks = listMaturedLivePatchRollbacks.all(
+        input.revision.activatedAt,
+      );
+      const expired = expireMaturedLivePatchRollbacks.run(
         input.revision.activatedAt,
         input.revision.activatedAt,
       );
+      if (expired.changes !== maturedRollbacks.length) {
+        throw new Error("Live Patch rollback expiry projection changed concurrently");
+      }
+      for (const rollback of maturedRollbacks) {
+        const request = livePatchRollbackActivationRequestSchema.parse(
+          JSON.parse(rollback.request_json),
+        );
+        appendEvents(request.taskId, [
+          {
+            details: {
+              operationId: request.operationId,
+              reconciledAt: input.revision.activatedAt,
+              rollbackDeadline: request.rollbackDeadline,
+            },
+            id: rollbackWindowExpiryEventId(request.operationId),
+            kind: "administrative.live-patch.rollback-window-expired",
+            occurredAt: input.revision.activatedAt,
+            summary: "The armed Live Patch rollback window expired normally.",
+          },
+        ]);
+      }
       const activeRevision =
         current.status === "inactive" ? null : current.active_revision;
       if (
@@ -1167,9 +1220,7 @@ export function createSqliteAdministrativeAutonomyStore(
         const request = livePatchRollbackActivationRequestSchema.parse(
           JSON.parse(rollback.request_json),
         );
-        if (rollback.last_error !== reason) {
-          appendEvents(request.taskId, [input.failureEvent]);
-        }
+        appendEvents(request.taskId, [input.failureEvent]);
         return true;
       },
     );
@@ -1957,6 +2008,11 @@ function ensureColumn(
   if (!columns.some((candidate) => candidate.name === column)) {
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
+}
+
+function rollbackWindowExpiryEventId(operationId: string): string {
+  const digest = createHash("sha256").update(operationId).digest("hex");
+  return `administrative-rollback-window-expired-${digest}`;
 }
 
 function isSqliteConstraint(error: unknown): boolean {

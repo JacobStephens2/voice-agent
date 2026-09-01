@@ -3,9 +3,10 @@ import { z } from "zod";
 import { grokRunnerPinSchema } from "./grok-delegation.ts";
 import { grokEnrollmentCampaignIdSchema } from "./grok-enrollment.ts";
 import {
+  delegationCommitSchema,
   delegationResultCoreSchema,
   delegationWorktreeSchema,
-} from "./keeplore-delegation.ts";
+} from "./delegation.ts";
 import { registeredCodebaseSchema } from "./promotion.ts";
 
 const identifierSchema = z.string().min(1).max(120);
@@ -713,6 +714,69 @@ const administrativeOperationRequestFields = {
   taskId: administrativeTaskIdSchema,
 };
 
+export const administrativeDelegationBriefSchema = z
+  .object({
+    acceptanceCriteria: z
+      .object({
+        automaticVerification: z
+          .object({
+            commands: z.array(z.string().min(1).max(200)).min(1).max(10),
+            kind: z.literal("registered-codebase-verification"),
+          })
+          .strict(),
+        intendedState: z
+          .object({
+            intendedState: administrativeIntendedStateSchema,
+            kind: z.literal("confirmed-intended-state"),
+            targetSource: z.literal("confirmed-durable-task"),
+          })
+          .strict(),
+      })
+      .strict(),
+    authorizedCapabilities: z.union([
+      z.tuple([
+        z.literal("registered-source.read"),
+        z.literal("delegated-worktree.write"),
+        z.literal("verification.run"),
+        z.literal("verified-candidate.prepare"),
+      ]),
+      z.tuple([
+        z.literal("registered-source.read"),
+        z.literal("delegated-worktree.write"),
+        z.literal("verification.run"),
+        z.literal("verified-candidate.prepare"),
+        z.literal("verified-candidate.publish"),
+      ]),
+    ]),
+    boundedContext: z
+      .object({
+        editableScope: z.literal("registered-codebase"),
+        rawVoiceTranscriptIncluded: z.literal(false),
+        repositoryContentTrust: z.literal("untrusted-data-only"),
+        source: z.literal("confirmed-durable-task-and-registration"),
+      })
+      .strict(),
+    constraints: z.tuple([
+      z.literal("delegated-worktree-only"),
+      z.literal("production-mutation-forbidden"),
+      z.literal("production-ref-mutation-forbidden"),
+      z.literal("human-merge-required"),
+    ]),
+    delegationId: administrativeOperationIdSchema,
+    goal: z
+      .object({
+        intendedState: administrativeIntendedStateSchema,
+        kind: z.literal("achieve-confirmed-intended-state"),
+        targetSource: z.literal("confirmed-durable-task"),
+      })
+      .strict(),
+    registeredCodebase: administrativeRegisteredCodebaseSchema,
+  })
+  .strict();
+export type AdministrativeDelegationBrief = z.infer<
+  typeof administrativeDelegationBriefSchema
+>;
+
 export const livePatchMutationBoundarySchema = z
   .object({
     healthCheck: z
@@ -752,9 +816,8 @@ export type LivePatchMutationBoundary = z.infer<
   typeof livePatchMutationBoundarySchema
 >;
 
-export const administrativeOperationRequestSchema = z.discriminatedUnion(
-  "kind",
-  [
+export const administrativeOperationRequestSchema = z
+  .discriminatedUnion("kind", [
     z
       .object({
         ...administrativeOperationRequestFields,
@@ -781,11 +844,7 @@ export const administrativeOperationRequestSchema = z.discriminatedUnion(
         kind: z.literal("delegated-worktree.change"),
         delegation: z
           .object({
-            delegationId: administrativeOperationIdSchema,
-            verificationCommands: z
-              .array(z.string().min(1).max(200))
-              .min(1)
-              .max(10),
+            brief: administrativeDelegationBriefSchema,
             worktree: delegationWorktreeSchema,
           })
           .strict(),
@@ -820,8 +879,39 @@ export const administrativeOperationRequestSchema = z.discriminatedUnion(
           .strict(),
       })
       .strict(),
-  ],
-);
+  ])
+  .superRefine((request, context) => {
+    if (request.kind !== "delegated-worktree.change") return;
+    const { brief, worktree } = request.delegation;
+    const publishes = request.publication.kind === "open-pull-request";
+    const valid =
+      brief.delegationId === request.operationId &&
+      brief.goal.intendedState === request.change.intendedState &&
+      brief.acceptanceCriteria.intendedState.intendedState ===
+        request.change.intendedState &&
+      JSON.stringify(
+        brief.acceptanceCriteria.automaticVerification.commands,
+      ) === JSON.stringify(brief.registeredCodebase.verificationCommands) &&
+      sameAdministrativeRegisteredCodebase(
+        brief.registeredCodebase,
+        request.target.registeredCodebase,
+      ) &&
+      (brief.authorizedCapabilities.length === 5) === publishes &&
+      worktree.id === request.operationId &&
+      worktree.baseCommit ===
+        request.target.registeredCodebase.initialProductionCommit &&
+      worktree.branch === `administrative/${request.operationId}` &&
+      worktree.path ===
+        `${request.target.registeredCodebase.worktreeRoot}/${request.operationId}`;
+    if (!valid) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "The Delegation Brief and worktree must derive from the confirmed task and Registered Codebase",
+        path: ["delegation"],
+      });
+    }
+  });
 export type AdministrativeOperationRequest = z.infer<
   typeof administrativeOperationRequestSchema
 >;
@@ -924,6 +1014,8 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
         publication: z.discriminatedUnion("kind", [
           z
             .object({
+              branch: z.string().min(1).max(200),
+              headCommit: delegationCommitSchema,
               kind: z.literal("isolated-branch-prepared"),
               productionMutation: z.literal(false),
             })
@@ -931,10 +1023,13 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
           z
             .object({
               baseBranch: z.literal("registered-production-branch"),
+              headBranch: z.string().min(1).max(200),
+              headCommit: delegationCommitSchema,
               kind: z.literal("isolated-pull-request-opened"),
               productionMutation: z.literal(false),
               registeredCodebaseId: identifierSchema,
               state: z.literal("open"),
+              url: z.url().startsWith("https://github.com/"),
             })
             .strict(),
         ]),
@@ -1070,6 +1165,17 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...eventFields,
+    details: z
+      .object({
+        operationId: administrativeOperationIdSchema,
+        reconciledAt: timestampSchema,
+        rollbackDeadline: timestampSchema,
+      })
+      .strict(),
+    kind: z.literal("administrative.live-patch.rollback-window-expired"),
+  }),
+  z.object({
+    ...eventFields,
     details: z.object({ policyRevision: z.number().int().positive() }),
     kind: z.literal("administrative.task.completed"),
   }),
@@ -1086,9 +1192,23 @@ export type AdministrativeEvidenceEvent = z.infer<
 export const administrativeEvidenceRecordSchema = z
   .object({
     evidence: z.array(administrativeEvidenceEventSchema).max(100),
+    evidenceTotalCount: z.number().int().nonnegative(),
+    evidenceTruncated: z.boolean(),
     task: administrativeTaskSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((record, context) => {
+    if (
+      record.evidenceTotalCount < record.evidence.length ||
+      record.evidenceTruncated !==
+        (record.evidenceTotalCount > record.evidence.length)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Administrative Evidence Record projection is inconsistent",
+      });
+    }
+  });
 export type AdministrativeEvidenceRecord = z.infer<
   typeof administrativeEvidenceRecordSchema
 >;

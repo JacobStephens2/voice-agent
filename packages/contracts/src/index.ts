@@ -62,6 +62,7 @@ export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";
 export * from "./grok-delegation.ts";
 export * from "./grok-enrollment.ts";
+export * from "./delegation.ts";
 export * from "./keeplore-delegation.ts";
 export * from "./keeplore-promotion-journal.ts";
 export * from "./keeplore-trial-promotion.ts";

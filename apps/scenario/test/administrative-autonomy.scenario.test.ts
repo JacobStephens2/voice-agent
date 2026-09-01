@@ -1440,6 +1440,8 @@ test("authenticated Evidence Lifecycle expiry prunes ordinary administrative eve
     afterDeniedEvidence: 6,
     afterExpiry: {
       evidence: [],
+      evidenceTotalCount: 0,
+      evidenceTruncated: false,
       task: expect.objectContaining({
         id: "administrative-task-1",
         status: "completed",

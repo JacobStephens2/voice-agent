@@ -112,22 +112,37 @@ interface ScenarioOperationResultContext {
   readonly delegatedWorktreeProof:
     | "failed-verification"
     | "mismatched"
+    | "mismatched-candidate"
+    | "mismatched-publication"
     | "missing"
+    | "terminated"
     | "valid";
   readonly livePatchProof: LivePatchMutationProof | undefined;
   readonly omitLivePatchReconciliation: boolean;
 }
 
-type ScenarioOperationResultHandler = (
-  request: AdministrativeOperationRequest,
+type ScenarioOperationRequestFor<
+  Kind extends AdministrativeOperationRequest["kind"],
+> = Extract<AdministrativeOperationRequest, { readonly kind: Kind }>;
+
+type ScenarioOperationResultFor<
+  Kind extends AdministrativeOperationRequest["kind"],
+> = Extract<AdministrativeOperationResult, { readonly kind: Kind }>;
+
+type ScenarioOperationResultHandler<
+  Kind extends AdministrativeOperationRequest["kind"],
+> = (
+  request: ScenarioOperationRequestFor<Kind>,
   context: ScenarioOperationResultContext,
-) => AdministrativeOperationResult;
+) => ScenarioOperationResultFor<Kind>;
+
+type ScenarioOperationResultHandlerRegistry = {
+  [Kind in AdministrativeOperationRequest["kind"]]:
+    ScenarioOperationResultHandler<Kind>;
+};
 
 const scenarioOperationResultHandlers = {
   "delegated-worktree.change": (request, context) => {
-    if (request.kind !== "delegated-worktree.change") {
-      throw new Error("The scenario Delegated Worktree handler was cross-wired");
-    }
     const result = {
       ...context.common,
       delegation: {
@@ -135,27 +150,63 @@ const scenarioOperationResultHandlers = {
           context.delegatedWorktreeProof === "mismatched"
             ? "administrative/untrusted-provider-branch"
             : request.delegation.worktree.branch,
-        changedFiles: ["src/administrative-change.ts"],
-        commits: ["a".repeat(40)],
+        changedFiles:
+          context.delegatedWorktreeProof === "terminated"
+            ? []
+            : ["src/administrative-change.ts"],
+        commits:
+          context.delegatedWorktreeProof === "terminated"
+            ? []
+            : ["a".repeat(40)],
         completedAt: context.common.completedAt,
-        delegationId: request.delegation.delegationId,
-        failure: null,
+        delegationId: request.delegation.brief.delegationId,
+        failure:
+          context.delegatedWorktreeProof === "terminated"
+            ? {
+                evidencePaths: [
+                  `/var/lib/voice-agent-evidence/${request.operationId}/restricted-runner-failure.json`,
+                ],
+                kind: "restricted-runner" as const,
+                message: "The bounded Delegation was terminated.",
+                name: "AdministrativeDelegationTerminated",
+              }
+            : null,
         risks: [],
-        status: "completed" as const,
+        status:
+          context.delegatedWorktreeProof === "terminated"
+            ? ("stopped" as const)
+            : ("completed" as const),
         verification: {
-          automated: request.delegation.verificationCommands.map((command) => ({
-            command,
-            outcome:
-              context.delegatedWorktreeProof === "failed-verification"
-                ? ("failed" as const)
-                : ("passed" as const),
-            summary: `${command} completed in the restricted Delegated Worktree.`,
-          })),
+          automated:
+            request.delegation.brief.acceptanceCriteria.automaticVerification.commands.map(
+              (command) => ({
+                command,
+                outcome:
+                  context.delegatedWorktreeProof === "failed-verification"
+                    ? ("failed" as const)
+                    : ("passed" as const),
+                summary: `${command} completed in the restricted Delegated Worktree.`,
+              }),
+            ),
+          candidate:
+            context.delegatedWorktreeProof === "terminated"
+              ? null
+              : {
+                  branch: request.delegation.worktree.branch,
+                  commit:
+                    context.delegatedWorktreeProof === "mismatched-candidate"
+                      ? "b".repeat(40)
+                      : "a".repeat(40),
+                  worktreeId: request.delegation.worktree.id,
+                },
         },
         worktree: {
           ...request.delegation.worktree,
           dirty: false,
-          state: "completed" as const,
+          state:
+            context.delegatedWorktreeProof === "terminated"
+              ? ("stopped" as const)
+              : ("completed" as const),
         },
       },
       kind: request.kind,
@@ -163,25 +214,36 @@ const scenarioOperationResultHandlers = {
         request.publication.kind === "open-pull-request"
           ? {
               baseBranch: "registered-production-branch" as const,
+              headBranch: request.delegation.worktree.branch,
+              headCommit:
+                context.delegatedWorktreeProof === "mismatched-publication"
+                  ? "b".repeat(40)
+                  : "a".repeat(40),
               kind: "isolated-pull-request-opened" as const,
               productionMutation: false as const,
               registeredCodebaseId: request.target.registeredCodebaseId,
               state: "open" as const,
+              url: `https://github.com/${request.target.registeredCodebase.repository}/pull/83`,
             }
           : {
+              branch: request.delegation.worktree.branch,
+              headCommit:
+                context.delegatedWorktreeProof === "mismatched-publication"
+                  ? "b".repeat(40)
+                  : "a".repeat(40),
               kind: "isolated-branch-prepared" as const,
               productionMutation: false as const,
             },
     };
     if (context.delegatedWorktreeProof === "missing") {
       const { delegation: _delegation, ...missingProof } = result;
-      return missingProof as unknown as AdministrativeOperationResult;
+      return missingProof as unknown as ScenarioOperationResultFor<"delegated-worktree.change">;
     }
     return result;
   },
   "live-patch.apply": (request, context) => {
-    if (request.kind !== "live-patch.apply" || context.livePatchProof === undefined) {
-      throw new Error("The scenario Live Patch handler was cross-wired");
+    if (context.livePatchProof === undefined) {
+      throw new Error("The scenario Live Patch proof is unavailable");
     }
     const result = {
       ...context.common,
@@ -198,12 +260,9 @@ const scenarioOperationResultHandlers = {
     return {
       ...result,
       mutationProof: incompleteProof,
-    } as unknown as AdministrativeOperationResult;
+    } as unknown as ScenarioOperationResultFor<"live-patch.apply">;
   },
   "production.observe": (request, context) => {
-    if (request.kind !== "production.observe") {
-      throw new Error("The scenario observation handler was cross-wired");
-    }
     return {
       ...context.common,
       kind: request.kind,
@@ -213,15 +272,27 @@ const scenarioOperationResultHandlers = {
       },
     };
   },
-} satisfies Record<
-  AdministrativeOperationRequest["kind"],
-  ScenarioOperationResultHandler
->;
+} satisfies ScenarioOperationResultHandlerRegistry;
+
+function scenarioOperationResult(
+  request: AdministrativeOperationRequest,
+  context: ScenarioOperationResultContext,
+): AdministrativeOperationResult {
+  switch (request.kind) {
+    case "delegated-worktree.change":
+      return scenarioOperationResultHandlers[request.kind](request, context);
+    case "live-patch.apply":
+      return scenarioOperationResultHandlers[request.kind](request, context);
+    case "production.observe":
+      return scenarioOperationResultHandlers[request.kind](request, context);
+  }
+}
 
 export async function createAdministrativeAutonomyScenario(options: {
   readonly beforeOperationEffect?: (
     request: AdministrativeOperationRequest,
   ) => Promise<void>;
+  readonly beforeExecutorResultReturn?: () => Promise<void> | void;
   readonly beforeProviderPlanReturn?: (input: {
     readonly signal?: AbortSignal;
   }) => Promise<void>;
@@ -280,7 +351,10 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly delegatedWorktreeProof?:
     | "failed-verification"
     | "mismatched"
+    | "mismatched-candidate"
+    | "mismatched-publication"
     | "missing"
+    | "terminated"
     | "valid";
   readonly registeredCodebaseAvailability?: "available" | "unavailable";
   readonly registeredCodebaseExpiresAt?: string;
@@ -484,7 +558,8 @@ export async function createAdministrativeAutonomyScenario(options: {
         operationId: request.operationId,
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
-      return scenarioOperationResultHandlers[request.kind](request, {
+      await options.beforeExecutorResultReturn?.();
+      return scenarioOperationResult(request, {
         common,
         delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
         livePatchProof,

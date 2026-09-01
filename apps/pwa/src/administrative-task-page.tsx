@@ -11,6 +11,8 @@ const eventLabels: Record<
     "Live Patch rollback activated",
   "administrative.live-patch.rollback-activation-failed":
     "Live Patch rollback activation retry scheduled",
+  "administrative.live-patch.rollback-window-expired":
+    "Live Patch rollback window expired",
   "administrative.operation.accepted": "Operation accepted",
   "administrative.operation.completed": "Operation completed",
   "administrative.plan.accepted": "Operation plan accepted",
@@ -47,6 +49,12 @@ export function AdministrativeTaskPage({
 
       <section aria-labelledby="timeline-heading">
         <h2 id="timeline-heading">Evidence timeline</h2>
+        {record.evidenceTruncated ? (
+          <p>
+            Showing the latest {record.evidence.length} of{" "}
+            {record.evidenceTotalCount} immutable Evidence Events.
+          </p>
+        ) : null}
         <ol className="timeline">
           {record.evidence.map((event) => (
             <li key={event.id}>

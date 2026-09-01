@@ -1,6 +1,14 @@
 import { z } from "zod";
 
 import {
+  delegationAutomaticVerificationSchema,
+  delegationCommitSchema,
+  delegationFailureSchema,
+  delegationRepositoryPathSchema,
+  delegationWorktreeSchema,
+} from "./delegation.ts";
+
+import {
   keeploreApplicationId,
   keeploreProductionBranch,
   keeploreRepository,
@@ -9,14 +17,6 @@ import {
 const identifierSchema = z.string().min(1).max(120);
 const timestampSchema = z.iso.datetime();
 const absolutePathSchema = z.string().min(1).max(500).startsWith("/");
-export const delegationCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
-export const delegationRepositoryPathSchema = z
-  .string()
-  .min(1)
-  .max(300)
-  .refine((path) => !path.startsWith("/") && !path.split("/").includes(".."), {
-    message: "Repository paths must stay relative to the Registered Codebase",
-  });
 
 export const keeploreButtonTrialGoal =
   "Make Keeplore's table-view Get Rid Of control match the row-level Remove control without changing card view." as const;
@@ -166,16 +166,6 @@ export const keeploreCandidatePublicationRefusalSchema = z
   })
   .strict();
 
-export const delegationWorktreeSchema = z
-  .object({
-    baseCommit: delegationCommitSchema,
-    branch: z.string().min(1).max(200),
-    dirty: z.boolean(),
-    id: identifierSchema,
-    path: absolutePathSchema,
-    state: z.enum(["queued", "running", "completed", "stopped", "failed"]),
-  })
-  .strict();
 export const keeploreWorktreeSchema = delegationWorktreeSchema;
 
 export const keeploreDelegationBriefSchema = z
@@ -276,61 +266,6 @@ export const keeploreScreenshotSchema = z
       .strict(),
   })
   .strict();
-
-export const keeploreDelegationFailureKinds = [
-  "delegation-execution",
-  "model-declined",
-  "restricted-runner",
-  "sandbox-initialization",
-] as const;
-
-export const delegationFailureSchema = z
-  .object({
-    evidencePaths: z.array(absolutePathSchema).max(4),
-    kind: z.enum(keeploreDelegationFailureKinds),
-    message: z.string().min(1).max(300),
-    name: z.string().min(1).max(120),
-  })
-  .strict();
-
-export const delegationAutomaticVerificationSchema = z
-  .object({
-    command: z.string().min(1).max(200),
-    outcome: z.enum(["failed", "passed"]),
-    summary: z.string().min(1).max(300),
-  })
-  .strict();
-
-/** Canonical cross-codebase portion of every structured Delegation Result. */
-export const delegationResultCoreSchema = z
-  .object({
-    branch: z.string().min(1).max(200),
-    changedFiles: z.array(delegationRepositoryPathSchema).max(20),
-    commits: z.array(delegationCommitSchema).max(20),
-    completedAt: timestampSchema,
-    delegationId: identifierSchema,
-    failure: delegationFailureSchema.nullable(),
-    risks: z.array(z.string().min(1).max(300)).max(20),
-    status: z.enum(["completed", "failed", "stopped"]),
-    verification: z
-      .object({
-        automated: z.array(delegationAutomaticVerificationSchema).max(10),
-      })
-      .strict(),
-    worktree: delegationWorktreeSchema,
-  })
-  .strict()
-  .superRefine((result, context) => {
-    if ((result.status === "completed") !== (result.failure === null)) {
-      context.addIssue({
-        code: "custom",
-        message:
-          "Completed Delegations have no failure; failed or stopped Delegations retain one",
-        path: ["failure"],
-      });
-    }
-  });
-export type DelegationResultCore = z.infer<typeof delegationResultCoreSchema>;
 
 export const keeploreDelegationResultSchema = z
   .object({
