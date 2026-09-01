@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   administrativeActiveExecutionMilliseconds,
+  administrativeExecutionManifestFingerprint,
   administrativeExecutionManifestSchema,
   administrativeOperationRequestSchema,
   administrativeOperationResultSchema,
@@ -10,6 +11,7 @@ import {
   administrativeRequestedOutcomeSchema,
   administrativeTaskTargetSchema,
   livePatchRollbackWindowMilliseconds,
+  sameAdministrativeExecutionManifest,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
   type AdministrativeExecutionManifest,
@@ -61,8 +63,10 @@ export interface AdministrativeOperationExecutor {
 export interface AdministrativeOperationExecution {
   readonly fence: {
     readonly activeExecutionDeadline: string;
+    readonly attemptStartedAt: string;
     readonly claimId: string;
-    readonly executionStartedAt: string;
+    readonly initialExecutionStartedAt: string;
+    readonly recovered: boolean;
     readonly signal: AbortSignal;
   };
   readonly request: AdministrativeOperationRequest;
@@ -113,6 +117,7 @@ export interface AdministrativeAutonomyRuntime {
   applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedExecutionManifestFingerprint: string;
     readonly expectedStateVersion: number;
     readonly source: AdministrativePolicyActivationSource;
   }): Promise<AdministrativePolicyActivationResult>;
@@ -325,8 +330,14 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
     }
     if (
-      !sameExecutionManifest(policy.executionManifest, task.executionManifest) ||
-      !sameExecutionManifest(policy.executionManifest, executionManifest)
+      !sameAdministrativeExecutionManifest(
+        policy.executionManifest,
+        task.executionManifest,
+      ) ||
+      !sameAdministrativeExecutionManifest(
+        policy.executionManifest,
+        executionManifest,
+      )
     ) {
       return denyPlannedTask(
         task.id,
@@ -486,7 +497,10 @@ export function createAdministrativeAutonomyRuntime(options: {
       return true;
     }
     if (
-      !sameExecutionManifest(claim.request.executionManifest, executionManifest)
+      !sameAdministrativeExecutionManifest(
+        claim.request.executionManifest,
+        executionManifest,
+      )
     ) {
       await denyPlannedTask(
         taskId,
@@ -501,13 +515,15 @@ export function createAdministrativeAutonomyRuntime(options: {
     });
     try {
       let untrustedResult: unknown;
-      const executionStartedAt = options.now();
+      const attemptStartedAt = options.now();
       try {
         untrustedResult = await options.executor.execute({
           fence: {
             activeExecutionDeadline: claim.activeExecutionDeadline,
+            attemptStartedAt,
             claimId: claim.claimId,
-            executionStartedAt,
+            initialExecutionStartedAt: claim.initialExecutionStartedAt,
+            recovered: claim.recovered,
             signal: claimMaintenance.signal,
           },
           request: claim.request,
@@ -552,7 +568,11 @@ export function createAdministrativeAutonomyRuntime(options: {
         result = operationResult(
           claim.request,
           untrustedResult,
-          executionStartedAt,
+          {
+            attemptStartedAt,
+            initialExecutionStartedAt: claim.initialExecutionStartedAt,
+            recovered: claim.recovered,
+          },
           completedAt,
         );
       } catch {
@@ -626,7 +646,11 @@ export function createAdministrativeAutonomyRuntime(options: {
       const authorization = authorizeAdministrativePolicyActivation({
         current,
         expectedActiveRevision: input.expectedActiveRevision,
+        expectedExecutionManifestFingerprint:
+          input.expectedExecutionManifestFingerprint,
         expectedStateVersion: input.expectedStateVersion,
+        runtimeExecutionManifestFingerprint:
+          administrativeExecutionManifestFingerprint(executionManifest),
         source: input.source,
       });
       if (authorization.decision === "deny") {
@@ -637,6 +661,8 @@ export function createAdministrativeAutonomyRuntime(options: {
       const activatedAt = options.now();
       const activated = await options.store.activatePolicy({
         expectedActiveRevision: input.expectedActiveRevision,
+        expectedExecutionManifestFingerprint:
+          input.expectedExecutionManifestFingerprint,
         expectedStateVersion: input.expectedStateVersion,
         revision: {
           activatedAt,
@@ -736,7 +762,10 @@ export function createAdministrativeAutonomyRuntime(options: {
       const policy = await options.store.readPolicyStatus();
       const manifestMismatch =
         policy.status !== "inactive" &&
-        !sameExecutionManifest(policy.executionManifest, executionManifest);
+        !sameAdministrativeExecutionManifest(
+          policy.executionManifest,
+          executionManifest,
+        );
       return {
         policy,
         taskExecution: manifestMismatch
@@ -786,7 +815,12 @@ export function createAdministrativeAutonomyRuntime(options: {
           reason: "Administrative Autonomy is not active",
         };
       }
-      if (!sameExecutionManifest(policy.executionManifest, executionManifest)) {
+      if (
+        !sameAdministrativeExecutionManifest(
+          policy.executionManifest,
+          executionManifest,
+        )
+      ) {
         return {
           decision: "denied",
           reason:
@@ -984,7 +1018,11 @@ function operationRequest(input: {
 function operationResult(
   request: AdministrativeOperationRequest,
   untrustedResult: unknown,
-  executionStartedAt: string,
+  execution: {
+    readonly attemptStartedAt: string;
+    readonly initialExecutionStartedAt: string;
+    readonly recovered: boolean;
+  },
   completedAt: string,
 ): AdministrativeOperationResult {
   const untrusted = administrativeOperationResultSchema.parse(untrustedResult);
@@ -996,6 +1034,28 @@ function operationResult(
     throw new Error(
       "Administrative Operation result identity does not match its request",
     );
+  }
+  const attemptStarted = new Date(execution.attemptStartedAt).getTime();
+  const initialExecutionStarted = new Date(
+    execution.initialExecutionStartedAt,
+  ).getTime();
+  const completed = new Date(result.completedAt).getTime();
+  const effectStarted =
+    result.effect.kind === "effect-performed"
+      ? new Date(result.effect.startedAt).getTime()
+      : new Date(result.effect.originallyStartedAt).getTime();
+  if (
+    effectStarted < initialExecutionStarted ||
+    effectStarted > completed ||
+    (result.effect.kind === "effect-performed" &&
+      effectStarted < attemptStarted) ||
+    (result.effect.kind === "idempotent-effect-replay" &&
+      (!execution.recovered ||
+        effectStarted > attemptStarted ||
+        new Date(result.effect.replayedAt).getTime() < attemptStarted ||
+        new Date(result.effect.replayedAt).getTime() > completed))
+  ) {
+    throw new Error("Administrative idempotency proof is not valid");
   }
   if (
     request.kind === "delegated-worktree.change" &&
@@ -1016,7 +1076,6 @@ function operationResult(
   }
   if (request.kind === "live-patch.apply" && result.kind === "live-patch.apply") {
     const proof = result.mutationProof;
-    const executionStarted = new Date(executionStartedAt).getTime();
     const healthObserved = new Date(proof.healthCheck.observedAt).getTime();
     const rollbackArmed = new Date(proof.independentRollback.armedAt).getTime();
     const rollbackDeadline = new Date(
@@ -1029,13 +1088,15 @@ function operationResult(
     const reconciliationObserved = new Date(
       proof.reconciliation.observedAt,
     ).getTime();
-    const completed = new Date(result.completedAt).getTime();
     if (
-      healthObserved < executionStarted ||
+      healthObserved < initialExecutionStarted ||
       healthObserved > rollbackArmed ||
       rollbackDeadline - rollbackArmed !==
         request.mutationBoundary.independentRollback.rollbackWindowMilliseconds ||
       rollbackArmed > mutationStarted ||
+      rollbackDeadline - mutationStarted !==
+        request.mutationBoundary.independentRollback.rollbackWindowMilliseconds ||
+      mutationStarted !== effectStarted ||
       mutationStarted >= rollbackDeadline ||
       mutationStarted > verificationObserved ||
       verificationObserved > reconciliationObserved ||
@@ -1048,13 +1109,6 @@ function operationResult(
     }
   }
   return result;
-}
-
-function sameExecutionManifest(
-  left: AdministrativeExecutionManifest,
-  right: AdministrativeExecutionManifest,
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function describeClaimDenial(

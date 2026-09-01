@@ -214,6 +214,7 @@ export interface KeeploreOnboardingApiControls {
 export interface AdministrativeAutonomyApiControls {
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedExecutionManifestFingerprint: string;
     readonly expectedStateVersion: number;
     readonly source: "fresh-passkey-action";
   }): Promise<
@@ -538,6 +539,8 @@ function registerAdministrativeAutonomyRoutes(
     }
     const result = await options.controls.activatePolicy({
       expectedActiveRevision: body.expectedActiveRevision,
+      expectedExecutionManifestFingerprint:
+        body.expectedExecutionManifestFingerprint,
       expectedStateVersion: body.expectedStateVersion,
       source: "fresh-passkey-action",
     });

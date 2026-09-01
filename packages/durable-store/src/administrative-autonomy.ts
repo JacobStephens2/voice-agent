@@ -47,6 +47,7 @@ export type AdministrativeOperationClaim =
       readonly claimId: string;
       readonly decision: "claimed";
       readonly activeExecutionDeadline: string;
+      readonly initialExecutionStartedAt: string;
       readonly recovered: boolean;
       readonly request: AdministrativeOperationRequest;
     }
@@ -65,6 +66,7 @@ export interface AdministrativeAutonomyStore {
   applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedExecutionManifestFingerprint: string;
     readonly expectedStateVersion: number;
     readonly revision: AdministrativePolicyRevision;
     readonly stateVersion: number;

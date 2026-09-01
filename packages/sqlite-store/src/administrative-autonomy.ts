@@ -4,6 +4,7 @@ import {
   administrativeActiveExecutionMilliseconds,
   administrativeEvidenceEventSchema,
   administrativeEvidenceRecordSchema,
+  administrativeExecutionManifestFingerprint,
   administrativeExecutionManifestSchema,
   administrativeMutationOperationKinds,
   administrativeOperationRequestSchema,
@@ -11,6 +12,7 @@ import {
   administrativePolicyStatusSchema,
   administrativeTaskSchema,
   administrativeUnavailableExecutionManifest,
+  sameAdministrativeExecutionManifest,
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
   type AdministrativeEvidenceRecord,
@@ -69,6 +71,7 @@ interface AdministrativeEvidenceRow {
 interface AdministrativeOperationRow {
   readonly claim_id: string | null;
   readonly id: string;
+  readonly initial_execution_started_at: string | null;
   readonly lease_expires_at: string | null;
   readonly request_json: string;
   readonly status: "accepted" | "completed" | "running";
@@ -228,7 +231,8 @@ export function createSqliteAdministrativeAutonomyStore(
     [operationId: string],
     AdministrativeOperationRow
   >(`
-    SELECT id, task_id, status, request_json, claim_id, lease_expires_at
+    SELECT id, task_id, status, request_json, claim_id, lease_expires_at,
+      initial_execution_started_at
     FROM administrative_operations
     WHERE id = ?
   `);
@@ -236,7 +240,8 @@ export function createSqliteAdministrativeAutonomyStore(
     [taskId: string],
     AdministrativeOperationRow
   >(`
-    SELECT id, task_id, status, request_json, claim_id, lease_expires_at
+    SELECT id, task_id, status, request_json, claim_id, lease_expires_at,
+      initial_execution_started_at
     FROM administrative_operations
     WHERE task_id = ? AND status != 'completed'
     ORDER BY ordinal
@@ -244,7 +249,8 @@ export function createSqliteAdministrativeAutonomyStore(
   `);
   const claimOperation = database.prepare(`
     UPDATE administrative_operations
-    SET status = 'running', claim_id = ?, lease_expires_at = ?, updated_at = ?
+    SET status = 'running', claim_id = ?, lease_expires_at = ?, updated_at = ?,
+      initial_execution_started_at = COALESCE(initial_execution_started_at, ?)
     WHERE id = ? AND task_id = ?
       AND (
         status = 'accepted'
@@ -420,9 +426,9 @@ export function createSqliteAdministrativeAutonomyStore(
       return false;
     }
     const active = requirePolicyRevision(input.policyRevision);
-    return (
-      JSON.stringify(active.executionManifest) ===
-      JSON.stringify(input.executionManifest)
+    return sameAdministrativeExecutionManifest(
+      active.executionManifest,
+      input.executionManifest,
     );
   }
 
@@ -490,6 +496,9 @@ export function createSqliteAdministrativeAutonomyStore(
       if (
         activeRevision !== input.expectedActiveRevision ||
         current.state_version !== input.expectedStateVersion ||
+        administrativeExecutionManifestFingerprint(
+          input.revision.executionManifest,
+        ) !== input.expectedExecutionManifestFingerprint ||
         input.revision.revision !== (activeRevision ?? 0) + 1 ||
         input.stateVersion !== current.state_version + 1
       ) {
@@ -660,8 +669,10 @@ export function createSqliteAdministrativeAutonomyStore(
           request.taskId !== input.taskId ||
           request.policyRevision !== task.policy_revision ||
           request.policyStateVersion !== task.state_version ||
-          JSON.stringify(request.executionManifest) !==
-            JSON.stringify(taskExecutionManifest(task))
+          !sameAdministrativeExecutionManifest(
+            request.executionManifest,
+            taskExecutionManifest(task),
+          )
         ) {
           throw new Error(
             "Administrative Operation authority does not match its Durable Task",
@@ -707,8 +718,10 @@ export function createSqliteAdministrativeAutonomyStore(
         JSON.parse(operation.request_json),
       );
       if (
-        JSON.stringify(request.executionManifest) !==
-        JSON.stringify(input.executionManifest)
+        !sameAdministrativeExecutionManifest(
+          request.executionManifest,
+          input.executionManifest,
+        )
       ) {
         return { decision: "denied", reason: "execution-manifest" };
       }
@@ -760,6 +773,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.claimId,
         input.leaseExpiresAt,
         input.claimedAt,
+        input.claimedAt,
         operation.id,
         input.taskId,
         input.claimedAt,
@@ -771,6 +785,8 @@ export function createSqliteAdministrativeAutonomyStore(
         activeExecutionDeadline: task.active_execution_deadline,
         claimId: input.claimId,
         decision: "claimed",
+        initialExecutionStartedAt:
+          operation.initial_execution_started_at ?? input.claimedAt,
         recovered: operation.status === "running",
         request,
       };
@@ -1042,6 +1058,7 @@ function createSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL,
       claim_id TEXT,
       lease_expires_at TEXT,
+      initial_execution_started_at TEXT,
       UNIQUE (task_id, ordinal),
       FOREIGN KEY (task_id) REFERENCES administrative_tasks(id),
       FOREIGN KEY (policy_revision)
@@ -1143,6 +1160,12 @@ function createSchema(database: Database.Database): void {
     database,
     "administrative_operations",
     "lease_expires_at",
+    "TEXT",
+  );
+  ensureColumn(
+    database,
+    "administrative_operations",
+    "initial_execution_started_at",
     "TEXT",
   );
 }

@@ -93,6 +93,28 @@ export const administrativeUnavailableExecutionManifest: AdministrativeExecution
     schemaVersion: 1,
   });
 
+export const administrativeExecutionManifestFingerprintSchema = z
+  .string()
+  .min(1)
+  .max(2_000);
+
+/** Canonical identity shared by browser CAS, runtime admission, and storage. */
+export function administrativeExecutionManifestFingerprint(
+  manifest: AdministrativeExecutionManifest,
+): string {
+  return JSON.stringify(administrativeExecutionManifestSchema.parse(manifest));
+}
+
+export function sameAdministrativeExecutionManifest(
+  left: AdministrativeExecutionManifest,
+  right: AdministrativeExecutionManifest,
+): boolean {
+  return (
+    administrativeExecutionManifestFingerprint(left) ===
+    administrativeExecutionManifestFingerprint(right)
+  );
+}
+
 export const administrativeMutationOperationKinds = [
   "delegated-worktree.change",
   "live-patch.apply",
@@ -223,6 +245,8 @@ export const activateAdministrativePolicyRequestSchema = z
   .object({
     csrfToken: z.string().min(16).max(200),
     expectedActiveRevision: z.number().int().positive().nullable(),
+    expectedExecutionManifestFingerprint:
+      administrativeExecutionManifestFingerprintSchema,
     expectedStateVersion: z.number().int().nonnegative(),
   })
   .strict();
@@ -404,6 +428,21 @@ export type AdministrativeOperationRequest = z.infer<
 
 const administrativeOperationResultFields = {
   completedAt: timestampSchema,
+  effect: z.discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("effect-performed"),
+        startedAt: timestampSchema,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("idempotent-effect-replay"),
+        originallyStartedAt: timestampSchema,
+        replayedAt: timestampSchema,
+      })
+      .strict(),
+  ]),
   operationId: identifierSchema,
   summary: z.string().min(1).max(240),
 };
@@ -458,6 +497,9 @@ export const livePatchMutationProofSchema = z
       .strict(),
   })
   .strict();
+export type LivePatchMutationProof = z.infer<
+  typeof livePatchMutationProofSchema
+>;
 
 export const administrativeOperationResultSchema = z.discriminatedUnion(
   "kind",

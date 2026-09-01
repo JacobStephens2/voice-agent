@@ -266,15 +266,22 @@ function App() {
       return;
     }
     await run(async () => {
+      if (administrativeAutonomy === undefined) {
+        throw new Error("Administrative Autonomy policy state is unavailable.");
+      }
       const expectedActiveRevision =
-        administrativeAutonomy === undefined ||
         administrativeAutonomy.policy.status === "inactive"
           ? null
           : administrativeAutonomy.policy.revision;
+      const expectedExecutionManifest =
+        administrativeAutonomy.taskExecution.status === "activation-required"
+          ? administrativeAutonomy.taskExecution.runtimeExecutionManifest
+          : administrativeAutonomy.taskExecution.executionManifest;
       const activated = await activateAdministrativePolicy(
         csrfToken,
         expectedActiveRevision,
-        administrativeAutonomy?.policy.stateVersion ?? 0,
+        expectedExecutionManifest,
+        administrativeAutonomy.policy.stateVersion,
       );
       if (activated.status !== "active") {
         throw new Error("Administrative Autonomy did not become active.");

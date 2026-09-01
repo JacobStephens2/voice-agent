@@ -27,7 +27,9 @@ export type AdministrativePolicyDecision =
 export function authorizeAdministrativePolicyActivation(input: {
   readonly current: AdministrativePolicyStatus;
   readonly expectedActiveRevision: number | null;
+  readonly expectedExecutionManifestFingerprint: string;
   readonly expectedStateVersion: number;
+  readonly runtimeExecutionManifestFingerprint: string;
   readonly source: AdministrativePolicyActivationSource;
 }): AdministrativePolicyDecision {
   if (input.source !== "fresh-passkey-action") {
@@ -50,6 +52,15 @@ export function authorizeAdministrativePolicyActivation(input: {
     return {
       decision: "deny",
       reason: "Administrative Autonomy policy state is stale",
+    };
+  }
+  if (
+    input.expectedExecutionManifestFingerprint !==
+    input.runtimeExecutionManifestFingerprint
+  ) {
+    return {
+      decision: "deny",
+      reason: "Administrative execution manifest changed after it was observed",
     };
   }
   return { decision: "allow" };

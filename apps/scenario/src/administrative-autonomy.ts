@@ -1,5 +1,6 @@
 import {
   administrativeExecutionManifestSchema,
+  administrativeExecutionManifestFingerprint,
   administrativeUnavailableExecutionManifest,
   livePatchRollbackWindowMilliseconds,
   type AdministrativeEvidenceRecord,
@@ -11,6 +12,7 @@ import {
   type AdministrativeProviderPlan,
   type AdministrativeRequestedOutcome,
   type AdministrativeTaskTarget,
+  type LivePatchMutationProof,
 } from "@voice-agent/contracts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
@@ -36,6 +38,7 @@ export interface AdministrativeAutonomyScenario {
   }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   activatePolicy(input: {
     readonly expectedActiveRevision: number | null;
+    readonly expectedExecutionManifestFingerprint?: string;
     readonly expectedStateVersion: number;
     readonly freshPasskey: boolean;
   }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
@@ -100,7 +103,9 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly executionManifestVersion?: 1 | 2;
   readonly holdOperationUntilAbort?: boolean;
   readonly identifierNamespace?: string;
+  readonly livePatchRollbackArmLeadMilliseconds?: number;
   readonly livePatchRollbackDurationMilliseconds?: number;
+  readonly livePatchProofLedger?: Map<string, LivePatchMutationProof>;
   readonly now: string;
   readonly onOperationStart?: () => void;
   readonly operationLeaseMilliseconds?: number;
@@ -125,6 +130,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   const executedOperations: AdministrativeOperationRequest[] = [];
   const operationAttempts: AdministrativeOperationRequest[] = [];
   const effectLedger = options.effectLedger ?? new Set<string>();
+  const livePatchProofLedger = options.livePatchProofLedger ?? new Map();
   const identifierNamespace = options.identifierNamespace ?? "";
   const currentTime = () => options.clock?.current ?? options.now;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
@@ -137,15 +143,21 @@ export async function createAdministrativeAutonomyScenario(options: {
     async execute(execution: {
       readonly fence: {
         readonly activeExecutionDeadline: string;
+        readonly attemptStartedAt: string;
         readonly claimId: string;
-        readonly executionStartedAt: string;
+        readonly initialExecutionStartedAt: string;
+        readonly recovered: boolean;
         readonly signal: AbortSignal;
       };
       readonly request: AdministrativeOperationRequest;
     }) {
       const { request } = execution;
-      const { activeExecutionDeadline, executionStartedAt, signal } =
-        execution.fence;
+      const {
+        activeExecutionDeadline,
+        attemptStartedAt,
+        initialExecutionStartedAt,
+        signal,
+      } = execution.fence;
       operationAttempts.push(request);
       options.operationAttempts?.push(request.operationId);
       options.onOperationStart?.();
@@ -154,10 +166,27 @@ export async function createAdministrativeAutonomyScenario(options: {
         throw new Error("Simulated executor failure before the Operation effect");
       }
       if (options.holdOperationUntilAbort) await waitForAbort(signal);
-      if (!effectLedger.has(request.operationId)) {
+      const effectWasAlreadyApplied = effectLedger.has(request.operationId);
+      let livePatchProof =
+        request.kind === "live-patch.apply"
+          ? livePatchProofLedger.get(request.operationId)
+          : undefined;
+      let effectPerformedAt = attemptStartedAt;
+      if (!effectWasAlreadyApplied) {
         await options.beforeOperationEffect?.(request);
         if (signal.aborted || currentTime() >= activeExecutionDeadline) {
           throw new Error("The bounded administrative execution was aborted");
+        }
+        effectPerformedAt = currentTime();
+        if (request.kind === "live-patch.apply") {
+          livePatchProof = createLivePatchProof(
+            request,
+            effectPerformedAt,
+            options.livePatchRollbackArmLeadMilliseconds ?? 0,
+            options.livePatchRollbackDurationMilliseconds ??
+              livePatchRollbackWindowMilliseconds,
+          );
+          livePatchProofLedger.set(request.operationId, livePatchProof);
         }
         effectLedger.add(request.operationId);
         executedOperations.push(request);
@@ -169,6 +198,8 @@ export async function createAdministrativeAutonomyScenario(options: {
           }
           await runtime.activatePolicy({
             expectedActiveRevision: policy.revision,
+            expectedExecutionManifestFingerprint:
+              administrativeExecutionManifestFingerprint(executionManifest),
             expectedStateVersion: policy.stateVersion,
             source: "fresh-passkey-action",
           });
@@ -178,49 +209,30 @@ export async function createAdministrativeAutonomyScenario(options: {
           throw new Error("Simulated process loss after the Operation effect");
         }
       }
+      if (request.kind === "live-patch.apply" && livePatchProof === undefined) {
+        throw new Error("The fake Live Patch broker lost its durable proof");
+      }
       const common = {
         completedAt: options.reportedCompletionTime ?? currentTime(),
+        effect: effectWasAlreadyApplied
+          ? {
+              kind: "idempotent-effect-replay" as const,
+              originallyStartedAt:
+                livePatchProof?.mutationStartedAt ?? initialExecutionStartedAt,
+              replayedAt: attemptStartedAt,
+            }
+          : {
+              kind: "effect-performed" as const,
+              startedAt: livePatchProof?.mutationStartedAt ?? effectPerformedAt,
+            },
         operationId: request.operationId,
         summary: `The ${request.kind} Operation completed through the fake executor.`,
       };
       if (request.kind === "live-patch.apply") {
-        const rollbackDeadline = new Date(
-          new Date(executionStartedAt).getTime() +
-            (options.livePatchRollbackDurationMilliseconds ??
-              livePatchRollbackWindowMilliseconds),
-        ).toISOString();
         const result = {
           ...common,
           kind: request.kind,
-          mutationProof: {
-            healthCheck: {
-              kind: "registered-application-health" as const,
-              observedAt: executionStartedAt,
-              status: "healthy" as const,
-            },
-            independentRollback: {
-              armedBeforeMutation: true as const,
-              armedAt: executionStartedAt,
-              kind: "independent-live-patch-rollback" as const,
-              rollbackDeadline,
-            },
-            mutationStartedAt: executionStartedAt,
-            reconciliation: {
-              baseBranch: "registered-production-branch" as const,
-              kind: "captured-as-isolated-pull-request" as const,
-              observedAt: currentTime(),
-              productionMutationRetained: true as const,
-              reconciledPatch: "accepted-live-patch-diff" as const,
-              registeredCodebaseId: request.target.registeredCodebaseId,
-              state: "open" as const,
-              verifiedBy: "independent-reconciliation-observer" as const,
-            },
-            verification: {
-              kind: "independent-application-health-proof" as const,
-              observedAt: currentTime(),
-              status: "healthy" as const,
-            },
-          },
+          mutationProof: livePatchProof,
         };
         if (options.omitLivePatchReconciliation) {
           const incompleteProof = {
@@ -280,6 +292,8 @@ export async function createAdministrativeAutonomyScenario(options: {
         }
         await runtime.activatePolicy({
           expectedActiveRevision: policy.revision,
+          expectedExecutionManifestFingerprint:
+            administrativeExecutionManifestFingerprint(executionManifest),
           expectedStateVersion: policy.stateVersion,
           source: "fresh-passkey-action",
         });
@@ -371,6 +385,9 @@ export async function createAdministrativeAutonomyScenario(options: {
         payload: {
           csrfToken: scenarioCsrf,
           expectedActiveRevision: input.expectedActiveRevision,
+          expectedExecutionManifestFingerprint:
+            input.expectedExecutionManifestFingerprint ??
+            administrativeExecutionManifestFingerprint(executionManifest),
           expectedStateVersion: input.expectedStateVersion,
         },
         url: "/api/administrative-autonomy/activate",
@@ -389,7 +406,12 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
     attemptOperationClaimRenewal: (input) =>
       store.renewOperationClaim(input),
-    attemptPolicyActivation: (input) => runtime.activatePolicy(input),
+    attemptPolicyActivation: (input) =>
+      runtime.activatePolicy({
+        ...input,
+        expectedExecutionManifestFingerprint:
+          administrativeExecutionManifestFingerprint(executionManifest),
+      }),
     async confirmAndRunTask(input) {
       const prepared = await runtime.prepareTaskConfirmation({
         intendedState: input.intendedState,
@@ -469,6 +491,48 @@ export async function createAdministrativeAutonomyScenario(options: {
         throw new Error("Administrative Suspension state changed concurrently");
       }
       return suspended;
+    },
+  };
+}
+
+function createLivePatchProof(
+  request: Extract<AdministrativeOperationRequest, { kind: "live-patch.apply" }>,
+  effectStartedAt: string,
+  rollbackArmLeadMilliseconds: number,
+  rollbackDurationMilliseconds: number,
+): LivePatchMutationProof {
+  const rollbackArmedAt = new Date(
+    new Date(effectStartedAt).getTime() - rollbackArmLeadMilliseconds,
+  ).toISOString();
+  return {
+    healthCheck: {
+      kind: "registered-application-health",
+      observedAt: rollbackArmedAt,
+      status: "healthy",
+    },
+    independentRollback: {
+      armedBeforeMutation: true,
+      armedAt: rollbackArmedAt,
+      kind: "independent-live-patch-rollback",
+      rollbackDeadline: new Date(
+        new Date(rollbackArmedAt).getTime() + rollbackDurationMilliseconds,
+      ).toISOString(),
+    },
+    mutationStartedAt: effectStartedAt,
+    reconciliation: {
+      baseBranch: "registered-production-branch",
+      kind: "captured-as-isolated-pull-request",
+      observedAt: effectStartedAt,
+      productionMutationRetained: true,
+      reconciledPatch: "accepted-live-patch-diff",
+      registeredCodebaseId: request.target.registeredCodebaseId,
+      state: "open",
+      verifiedBy: "independent-reconciliation-observer",
+    },
+    verification: {
+      kind: "independent-application-health-proof",
+      observedAt: effectStartedAt,
+      status: "healthy",
     },
   };
 }

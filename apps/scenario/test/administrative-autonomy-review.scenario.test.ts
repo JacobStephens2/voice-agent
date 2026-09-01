@@ -53,6 +53,12 @@ test("an activated adapter manifest cannot gain authority after Human Merge", as
   });
   const statusBeforeReactivation =
     await mergedAdapterProcess.readAutonomyStatus();
+  const staleManifestActivation = await mergedAdapterProcess.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedExecutionManifestFingerprint: "stale-observed-manifest",
+    expectedStateVersion: 1,
+    freshPasskey: true,
+  });
   const reactivation = await mergedAdapterProcess.activatePolicy({
     expectedActiveRevision: 1,
     expectedStateVersion: 1,
@@ -67,8 +73,13 @@ test("an activated adapter manifest cannot gain authority after Human Merge", as
     target,
   });
 
-  expect({ admitted, reactivation, staleAdmission, statusBeforeReactivation })
-    .toMatchObject({
+  expect({
+    admitted,
+    reactivation,
+    staleAdmission,
+    staleManifestActivation,
+    statusBeforeReactivation,
+  }).toMatchObject({
       admitted: { decision: "admitted", policyRevision: 2 },
       reactivation: {
         body: {
@@ -89,6 +100,13 @@ test("an activated adapter manifest cannot gain authority after Human Merge", as
         decision: "denied",
         reason:
           "The active policy revision does not authorize the configured execution manifest.",
+      },
+      staleManifestActivation: {
+        body: {
+          error:
+            "Administrative execution manifest changed after it was observed",
+        },
+        statusCode: 409,
       },
       statusBeforeReactivation: {
         body: {
@@ -416,6 +434,34 @@ test("a delayed Live Patch arms a fresh thirty-minute rollback and must reconcil
       "Administrative executor returned incomplete or mismatched bounded proof",
   });
   await shortenedRollback.close();
+
+  const rollbackClock = { current: "2026-10-02T13:45:00.000Z" };
+  const { scenario: armedTooEarly } = await createActivatedScenario(
+    {
+      beforeOperationEffect: async () => {
+        rollbackClock.current = "2026-10-02T13:46:00.000Z";
+      },
+      clock: rollbackClock,
+      livePatchRollbackArmLeadMilliseconds: 60 * 1_000,
+      now: rollbackClock.current,
+      providerPlan: [{ kind: "live-patch.apply" }],
+    },
+    temporaryDirectories,
+  );
+  const reducedPostMutationWindow = await armedTooEarly.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "early-armed-live-patch-rollback-request",
+    target,
+  });
+  expect(reducedPostMutationWindow).toEqual({
+    decision: "denied",
+    reason:
+      "Administrative executor returned incomplete or mismatched bounded proof",
+  });
+  await armedTooEarly.close();
 });
 
 test("authenticated Administrative Suspension is durable and blocks new admission", async () => {
@@ -471,4 +517,90 @@ test("authenticated Administrative Suspension is durable and blocks new admissio
   });
 
   await scenario.close();
+});
+
+test("a Live Patch crash after its effect replays the original durable safety proof", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const clock = { current: "2026-10-02T15:00:00.000Z" };
+  const effectLedger = new Set<string>();
+  const livePatchProofLedger = new Map();
+  const operationAttempts: string[] = [];
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    clock,
+    crashAfterFirstEffect: true,
+    databasePath,
+    effectLedger,
+    livePatchProofLedger,
+    now: clock.current,
+    operationAttempts,
+    providerPlan: [{ kind: "live-patch.apply" }],
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  const admission = await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "live-patch-post-effect-crash-request",
+    target,
+  });
+  await firstProcess.close();
+
+  clock.current = "2026-10-02T15:01:00.000Z";
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    clock,
+    databasePath,
+    effectLedger,
+    identifierNamespace: "live-restart-",
+    livePatchProofLedger,
+    now: clock.current,
+    operationAttempts,
+    providerPlan: [{ kind: "live-patch.apply" }],
+  });
+  const record =
+    admission.decision === "admitted"
+      ? await restartedProcess.readTask(admission.taskId)
+      : undefined;
+  const completion = record?.evidence.find(
+    (event) => event.kind === "administrative.operation.completed",
+  );
+
+  expect({
+    effectCount: effectLedger.size,
+    operationAttempts,
+    result:
+      completion?.kind === "administrative.operation.completed"
+        ? completion.details.result
+        : undefined,
+    task: record?.task,
+  }).toMatchObject({
+    effectCount: 1,
+    operationAttempts: [
+      "administrative-operation-1",
+      "administrative-operation-1",
+    ],
+    result: {
+      effect: {
+        kind: "idempotent-effect-replay",
+        originallyStartedAt: "2026-10-02T15:00:00.000Z",
+        replayedAt: "2026-10-02T15:01:00.000Z",
+      },
+      mutationProof: {
+        independentRollback: {
+          armedAt: "2026-10-02T15:00:00.000Z",
+          rollbackDeadline: "2026-10-02T15:30:00.000Z",
+        },
+        mutationStartedAt: "2026-10-02T15:00:00.000Z",
+      },
+    },
+    task: { status: "completed" },
+  });
+
+  await restartedProcess.close();
 });
