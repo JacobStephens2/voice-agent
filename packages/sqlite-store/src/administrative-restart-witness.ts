@@ -3,6 +3,8 @@ import Database from "better-sqlite3";
 import {
   administrativeExecutionManifestFingerprint,
   administrativePolicyRevisionSchema,
+  administrativeRestartWitnessApiServiceInstanceFingerprintSchema,
+  administrativeRestartWitnessBootIdentityFingerprintSchema,
   administrativeRestartWitnessCampaignIdSchema,
   administrativeRestartWitnessCampaignSchema,
   administrativeRestartWitnessChallengeSchema,
@@ -12,8 +14,8 @@ import {
   administrativeRestartWitnessObservationSchema,
   administrativeRestartWitnessObservationResponseSchema,
   administrativeRestartWitnessReleaseCommitSchema,
-  administrativeRestartWitnessServiceInstanceFingerprintSchema,
   administrativeRestartWitnessServiceSchema,
+  administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema,
   administrativeTimestampSchema,
   type AdministrativeRestartWitnessCampaign,
   type AdministrativeRestartWitnessFailureReason,
@@ -32,6 +34,7 @@ interface CampaignRow {
 interface ChallengeRow {
   readonly challenge: string;
   readonly phase: AdministrativeRestartWitnessPhase;
+  readonly witness_version: number;
 }
 
 interface ObservationRow {
@@ -48,11 +51,17 @@ interface ObservationRow {
   readonly sequence: number;
   readonly service_instance_fingerprint: string | null;
   readonly worker_service_instance_fingerprint: string | null;
+  readonly witness_version: number;
 }
 
 interface ServiceInstanceRow {
   readonly boot_identity_fingerprint: string;
   readonly instance_fingerprint: string;
+}
+
+interface AcceptedServiceInstancesRow {
+  readonly service_instance_fingerprint: string;
+  readonly worker_service_instance_fingerprint: string;
 }
 
 interface PolicyAuthorityRow {
@@ -97,18 +106,20 @@ export function createSqliteAdministrativeRestartWitnessStore(
   `);
   const insertChallenge = database.prepare(`
     INSERT INTO administrative_restart_witness_challenges (
-      campaign_id, challenge, phase, issued_at
-    ) VALUES (?, ?, ?, ?)
+      campaign_id, challenge, phase, issued_at, witness_version
+    ) VALUES (?, ?, ?, ?, 3)
   `);
   const readCurrentChallenge = database.prepare<
     [campaignId: string],
     ChallengeRow
   >(`
-    SELECT challenges.challenge, challenges.phase
+    SELECT challenges.challenge, challenges.phase, challenges.witness_version
     FROM administrative_restart_witness_challenges AS challenges
     LEFT JOIN administrative_restart_witness_observations AS observations
       ON observations.challenge = challenges.challenge
-    WHERE challenges.campaign_id = ? AND observations.challenge IS NULL
+    WHERE challenges.campaign_id = ?
+      AND challenges.witness_version = 3
+      AND observations.challenge IS NULL
     ORDER BY challenges.sequence DESC
     LIMIT 1
   `);
@@ -116,9 +127,9 @@ export function createSqliteAdministrativeRestartWitnessStore(
     [campaignId: string, challenge: string],
     ChallengeRow
   >(`
-    SELECT challenge, phase
+    SELECT challenge, phase, witness_version
     FROM administrative_restart_witness_challenges
-    WHERE campaign_id = ? AND challenge = ?
+    WHERE campaign_id = ? AND challenge = ? AND witness_version = 3
   `);
   const challengeWasConsumed = database.prepare<
     [campaignId: string, challenge: string],
@@ -133,13 +144,19 @@ export function createSqliteAdministrativeRestartWitnessStore(
     [campaignId: string],
     ObservationRow
   >(`
-    SELECT sequence, challenge, phase, outcome, failure, observed_at,
-      policy_revision, policy_state_version, execution_manifest_fingerprint,
-      release_commit, service_instance_fingerprint,
-      worker_service_instance_fingerprint, boot_identity_fingerprint
-    FROM administrative_restart_witness_observations
-    WHERE campaign_id = ?
-    ORDER BY sequence
+    SELECT observations.sequence, observations.challenge, observations.phase,
+      observations.outcome, observations.failure, observations.observed_at,
+      observations.policy_revision, observations.policy_state_version,
+      observations.execution_manifest_fingerprint,
+      observations.release_commit, observations.service_instance_fingerprint,
+      observations.worker_service_instance_fingerprint,
+      observations.boot_identity_fingerprint,
+      challenges.witness_version
+    FROM administrative_restart_witness_observations AS observations
+    JOIN administrative_restart_witness_challenges AS challenges
+      ON challenges.challenge = observations.challenge
+    WHERE observations.campaign_id = ?
+    ORDER BY observations.sequence
   `);
   const readPolicyAuthority = database.prepare<[], PolicyAuthorityRow>(`
     SELECT state.status, state.active_revision, state.state_version,
@@ -167,6 +184,26 @@ export function createSqliteAdministrativeRestartWitnessStore(
     ORDER BY sequence DESC
     LIMIT 1
   `);
+  const readAcceptedServiceInstances = database.prepare<
+    [releaseCommit: string],
+    AcceptedServiceInstancesRow
+  >(`
+    SELECT observations.service_instance_fingerprint,
+      observations.worker_service_instance_fingerprint
+    FROM administrative_restart_witness_observations AS observations
+    JOIN administrative_restart_witness_campaigns AS campaigns
+      ON campaigns.campaign_id = observations.campaign_id
+    JOIN administrative_restart_witness_challenges AS challenges
+      ON challenges.challenge = observations.challenge
+    WHERE campaigns.release_commit = ?
+      AND observations.phase = 'service-restart'
+      AND observations.outcome = 'passed'
+      AND challenges.witness_version = 3
+      AND observations.service_instance_fingerprint IS NOT NULL
+      AND observations.worker_service_instance_fingerprint IS NOT NULL
+    ORDER BY observations.sequence DESC
+    LIMIT 1
+  `);
   const insertServiceInstance = database.prepare(`
     INSERT INTO administrative_restart_witness_service_instances (
       release_commit, service, instance_fingerprint,
@@ -177,8 +214,16 @@ export function createSqliteAdministrativeRestartWitnessStore(
   function projectCampaign(row: CampaignRow): AdministrativeRestartWitnessCampaign {
     const observations = readObservations
       .all(row.campaign_id)
+      .slice(-maximumObservationAttempts)
       .map(projectObservation);
-    const nextObservation = readCurrentChallenge.get(row.campaign_id) ?? null;
+    const currentChallenge = readCurrentChallenge.get(row.campaign_id);
+    const nextObservation =
+      currentChallenge === undefined
+        ? null
+        : {
+            challenge: currentChallenge.challenge,
+            phase: currentChallenge.phase,
+          };
     return administrativeRestartWitnessCampaignSchema.parse({
       campaignId: row.campaign_id,
       createdAt: row.created_at,
@@ -215,22 +260,35 @@ export function createSqliteAdministrativeRestartWitnessStore(
       row.execution_manifest_fingerprint === null ||
       row.release_commit === null ||
       row.service_instance_fingerprint === null ||
-      row.worker_service_instance_fingerprint === null ||
       row.boot_identity_fingerprint === null
     ) {
       throw new Error("A passing restart observation has incomplete authority");
     }
+    const legacy =
+      row.witness_version < 3 ||
+      row.worker_service_instance_fingerprint === null;
     const checks =
       row.phase === "baseline"
         ? { authorityCaptured: true as const }
         : row.phase === "service-restart"
-          ? {
+          ? legacy
+            ? {
+                authorityUnchanged: true as const,
+                bootIdentityUnchanged: true as const,
+                serviceInstanceChanged: true as const,
+              }
+            : {
               apiServiceInstanceChanged: true as const,
               authorityUnchanged: true as const,
               bootIdentityUnchanged: true as const,
               workerServiceInstanceChanged: true as const,
             }
-          : {
+          : legacy
+            ? {
+                authorityUnchanged: true as const,
+                bootIdentityChanged: true as const,
+              }
+            : {
               apiServiceInstanceStable: true as const,
               authorityUnchanged: true as const,
               bootIdentityChanged: true as const,
@@ -263,7 +321,22 @@ export function createSqliteAdministrativeRestartWitnessStore(
         input.releaseCommit,
       );
       const existing = findCampaignForRelease.get(releaseCommit);
-      if (existing !== undefined) return projectCampaign(existing);
+      if (existing !== undefined) {
+        const rows = readObservations.all(existing.campaign_id);
+        const currentChallenge = readCurrentChallenge.get(existing.campaign_id);
+        const currentPassed = rows.filter(
+          (row) => row.witness_version === 3 && row.outcome === "passed",
+        );
+        if (currentChallenge === undefined && currentPassed.length === 0) {
+          insertChallenge.run(
+            existing.campaign_id,
+            initialChallenge,
+            "baseline",
+            createdAt,
+          );
+        }
+        return projectCampaign(existing);
+      }
       const identityCollision = findCampaign.get(campaignId);
       if (identityCollision !== undefined) {
         throw new Error("Restart Witness campaign identity is already in use");
@@ -286,10 +359,11 @@ export function createSqliteAdministrativeRestartWitnessStore(
     const campaign = findCampaign.get(identity.campaignId);
     if (campaign === undefined) return denied("campaign-unavailable");
     const rows = readObservations.all(identity.campaignId);
-    if (rows.length >= maximumObservationAttempts) {
+    const currentRows = rows.filter((row) => row.witness_version === 3);
+    if (currentRows.length >= maximumObservationAttempts) {
       return denied("campaign-attempt-limit");
     }
-    const passedRows = rows.filter((row) => row.outcome === "passed");
+    const passedRows = currentRows.filter((row) => row.outcome === "passed");
     if (passedRows.length === orderedPhases.length) {
       return denied("campaign-completed");
     }
@@ -324,6 +398,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
       decision: "admitted" as const,
       identity,
       passedRows,
+      nextSequence: (rows.at(-1)?.sequence ?? 0) + 1,
       phase,
       rows,
     };
@@ -354,7 +429,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
         phase: admission.phase,
         serviceRestart,
       });
-      const sequence = admission.rows.length + 1;
+      const sequence = admission.nextSequence;
       if (failure !== undefined) {
         insertObservation.run(
           admission.identity.campaignId,
@@ -442,7 +517,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
       if (admission.decision === "denied") return admission;
       insertObservation.run(
         admission.identity.campaignId,
-        admission.rows.length + 1,
+        admission.nextSequence,
         admission.identity.challenge,
         admission.phase,
         "failed",
@@ -473,12 +548,8 @@ export function createSqliteAdministrativeRestartWitnessStore(
       >[0],
     ) => {
       const bootIdentityFingerprint =
-        administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+        administrativeRestartWitnessBootIdentityFingerprintSchema.parse(
           input.bootIdentityFingerprint,
-        );
-      const candidateInstanceFingerprint =
-        administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
-          input.candidateInstanceFingerprint,
         );
       const registeredAt = administrativeTimestampSchema.parse(
         input.registeredAt,
@@ -489,13 +560,30 @@ export function createSqliteAdministrativeRestartWitnessStore(
       const service = administrativeRestartWitnessServiceSchema.parse(
         input.service,
       );
+      const candidateInstanceFingerprint =
+        service === "api"
+          ? administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
+              input.candidateInstanceFingerprint,
+            )
+          : administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
+              input.candidateInstanceFingerprint,
+            );
       const previous = readLatestServiceInstance.get(releaseCommit, service);
+      const accepted = readAcceptedServiceInstances.get(releaseCommit);
+      const acceptedFingerprint =
+        service === "api"
+          ? accepted?.service_instance_fingerprint
+          : accepted?.worker_service_instance_fingerprint;
       const instanceFingerprint =
         previous !== undefined &&
         previous.boot_identity_fingerprint !== bootIdentityFingerprint
-          ? administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
-              previous.instance_fingerprint,
-            )
+          ? service === "api"
+            ? administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
+                acceptedFingerprint ?? previous.instance_fingerprint,
+              )
+            : administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
+                acceptedFingerprint ?? previous.instance_fingerprint,
+              )
           : candidateInstanceFingerprint;
       insertServiceInstance.run(
         releaseCommit,
@@ -545,7 +633,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
         input.releaseCommit,
       );
       const boot =
-        administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+        administrativeRestartWitnessBootIdentityFingerprintSchema.parse(
           input.bootIdentityFingerprint,
         );
       const api = readLatestServiceInstance.get(release, "api");
@@ -553,7 +641,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
       return {
         ...(api?.boot_identity_fingerprint === boot
           ? {
-              api: administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+              api: administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
                 api.instance_fingerprint,
               ),
             }
@@ -561,7 +649,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
         ...(worker?.boot_identity_fingerprint === boot
           ? {
               worker:
-                administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+                administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
                   worker.instance_fingerprint,
                 ),
             }
@@ -703,6 +791,9 @@ function createSchema(database: Database.Database): void {
         phase IN ('baseline', 'service-restart', 'host-reboot')
       ),
       issued_at TEXT NOT NULL,
+      witness_version INTEGER NOT NULL DEFAULT 3 CHECK (
+        witness_version IN (2, 3)
+      ),
       FOREIGN KEY (campaign_id)
         REFERENCES administrative_restart_witness_campaigns(campaign_id)
     );
@@ -811,6 +902,16 @@ function createSchema(database: Database.Database): void {
     database.exec(`
       ALTER TABLE administrative_restart_witness_observations
       ADD COLUMN worker_service_instance_fingerprint TEXT
+    `);
+  }
+  const challengeColumns = database
+    .prepare("PRAGMA table_info(administrative_restart_witness_challenges)")
+    .all() as ReadonlyArray<{ readonly name: string }>;
+  if (!challengeColumns.some(({ name }) => name === "witness_version")) {
+    // Existing challenges are V2 evidence: they never observed the worker.
+    database.exec(`
+      ALTER TABLE administrative_restart_witness_challenges
+      ADD COLUMN witness_version INTEGER NOT NULL DEFAULT 2
     `);
   }
 }

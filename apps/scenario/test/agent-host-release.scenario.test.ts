@@ -321,6 +321,9 @@ test("the Agent Host release preserves its private ports and service boundaries"
         "ops/systemd/voice-agent-promotion-resume.service",
       ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
     );
+  if (workerServer === undefined) {
+    throw new Error("The worker server source was not loaded");
+  }
 
   for (const portConsumer of [apiServer, apache, health, apiUnit]) {
     expect(portConsumer).toContain("3472");
@@ -344,10 +347,19 @@ test("the Agent Host release preserves its private ports and service boundaries"
   );
   expect(apiServer).toContain('service: "api"');
   expect(apiServer).toContain("services: administrativeRestartWitnessStore");
+  expect(apiServer).toContain(
+    "createNodeAdministrativeRestartWitnessWorkerHealth",
+  );
+  expect(apiUnit).toContain("Environment=VOICE_AGENT_WORKER_PORT=3474");
   expect(workerServer).toContain(
     "registerNodeAdministrativeRestartWitnessServiceInstance",
   );
   expect(workerServer).toContain('service: "worker"');
+  expect(workerServer.indexOf("telephoneServer.run()")).toBeLessThan(
+    workerServer.lastIndexOf(
+      "registerNodeAdministrativeRestartWitnessServiceInstance",
+    ),
+  );
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
   expect(workerUnit).toContain("voice-subagent-client");
   expect(workerUnit).toContain("EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env");

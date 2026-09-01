@@ -63,6 +63,8 @@ export type AdministrativeOperationClaim =
       readonly initialExecutionStartedAt: AdministrativeTimestamp;
       readonly recovered: boolean;
       readonly request: AdministrativeOperationRequest;
+      /** Stale authority may only recover a result already owned by the broker. */
+      readonly settlementOnly: boolean;
     }
   | {
       readonly decision: "deferred";
@@ -203,6 +205,7 @@ export interface AdministrativeAutonomyStore {
     readonly leaseExpiresAt: AdministrativeTimestamp;
     readonly operationId: AdministrativeOperationId;
     readonly renewedAt: AdministrativeTimestamp;
+    readonly settlementOnly: boolean;
   }): Promise<boolean>;
   savePlan(input: {
     readonly operations: readonly AdministrativePlannedOperation[];

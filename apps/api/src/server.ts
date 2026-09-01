@@ -51,6 +51,7 @@ import {
   readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
   createNodeAdministrativeRestartWitnessHost,
+  createNodeAdministrativeRestartWitnessWorkerHealth,
   registerNodeAdministrativeRestartWitnessServiceInstance,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
@@ -116,6 +117,9 @@ const administrativeRestartWitnessRuntime = testMode
             store: administrativeRestartWitnessStore,
           }),
         services: administrativeRestartWitnessStore,
+        workerHealth: createNodeAdministrativeRestartWitnessWorkerHealth({
+          port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
+        }),
       }),
       identifiers: {
         nextChallenge: () =>
@@ -445,4 +449,12 @@ async function readAdditionalMetrics(path: string): Promise<string> {
     }
     throw error;
   }
+}
+
+function requireEnvironment(name: string): string {
+  const value = process.env[name];
+  if (value === undefined || value.length === 0) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
 }

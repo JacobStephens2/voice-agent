@@ -35,6 +35,8 @@ export function evaluateAdministrativeAutonomyRestartWitness(
   if (serviceRestart === undefined) {
     errors.push("The API and worker service restart has not been witnessed.");
   } else if (
+    !("apiServiceInstanceChanged" in serviceRestart.checks) ||
+    !("workerServiceInstanceChanged" in serviceRestart.checks) ||
     !serviceRestart.checks.apiServiceInstanceChanged ||
     !serviceRestart.checks.workerServiceInstanceChanged
   ) {
@@ -43,6 +45,8 @@ export function evaluateAdministrativeAutonomyRestartWitness(
   if (hostReboot === undefined) {
     errors.push("The real Agent Host reboot has not been witnessed.");
   } else if (
+    !("apiServiceInstanceStable" in hostReboot.checks) ||
+    !("workerServiceInstanceStable" in hostReboot.checks) ||
     !hostReboot.checks.bootIdentityChanged ||
     !hostReboot.checks.apiServiceInstanceStable ||
     !hostReboot.checks.workerServiceInstanceStable

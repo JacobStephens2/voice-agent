@@ -49,12 +49,27 @@ export type AdministrativeRestartWitnessServiceInstanceId = z.infer<
   typeof administrativeRestartWitnessServiceInstanceIdSchema
 >;
 
-export const administrativeRestartWitnessServiceInstanceFingerprintSchema = z
+const restartWitnessFingerprintSchema = z
   .string()
-  .regex(/^[0-9a-f]{64}$/u)
-  .brand<"AdministrativeRestartWitnessServiceInstanceFingerprint">();
-export type AdministrativeRestartWitnessServiceInstanceFingerprint = z.infer<
-  typeof administrativeRestartWitnessServiceInstanceFingerprintSchema
+  .regex(/^[0-9a-f]{64}$/u);
+
+export const administrativeRestartWitnessApiServiceInstanceFingerprintSchema =
+  restartWitnessFingerprintSchema.brand<"AdministrativeRestartWitnessApiServiceInstanceFingerprint">();
+export type AdministrativeRestartWitnessApiServiceInstanceFingerprint = z.infer<
+  typeof administrativeRestartWitnessApiServiceInstanceFingerprintSchema
+>;
+
+export const administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema =
+  restartWitnessFingerprintSchema.brand<"AdministrativeRestartWitnessWorkerServiceInstanceFingerprint">();
+export type AdministrativeRestartWitnessWorkerServiceInstanceFingerprint =
+  z.infer<
+    typeof administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema
+  >;
+
+export const administrativeRestartWitnessBootIdentityFingerprintSchema =
+  restartWitnessFingerprintSchema.brand<"AdministrativeRestartWitnessBootIdentityFingerprint">();
+export type AdministrativeRestartWitnessBootIdentityFingerprint = z.infer<
+  typeof administrativeRestartWitnessBootIdentityFingerprintSchema
 >;
 
 export const administrativeRestartWitnessServiceSchema = z.enum([
@@ -68,12 +83,12 @@ export type AdministrativeRestartWitnessService = z.infer<
 export const administrativeRestartWitnessHostObservationSchema = z
   .object({
     apiServiceInstanceFingerprint:
-      administrativeRestartWitnessServiceInstanceFingerprintSchema,
+      administrativeRestartWitnessApiServiceInstanceFingerprintSchema,
     bootIdentityFingerprint:
-      administrativeRestartWitnessServiceInstanceFingerprintSchema,
+      administrativeRestartWitnessBootIdentityFingerprintSchema,
     releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
     workerServiceInstanceFingerprint:
-      administrativeRestartWitnessServiceInstanceFingerprintSchema,
+      administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema,
   })
   .strict();
 export type AdministrativeRestartWitnessHostObservation = z.infer<
@@ -95,6 +110,7 @@ export const administrativeRestartWitnessFailureReasonSchema = z.enum([
   "phase-out-of-order",
   "policy-inactive",
   "release-changed",
+  "service-instance-unchanged",
   "worker-observation-unavailable",
   "worker-service-instance-changed-during-host-reboot",
   "worker-service-instance-unchanged",
@@ -116,7 +132,7 @@ const policyObservationSchema = z
 const commonObservationFields = {
   observedAt: administrativeTimestampSchema,
   provenance: z.literal("server-recorded-authenticated-api"),
-  sequence: z.number().int().positive().max(100),
+  sequence: z.number().int().positive(),
 };
 
 const passingObservationFields = {
@@ -126,7 +142,7 @@ const passingObservationFields = {
   releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
 };
 
-const passedObservationSchema = z.discriminatedUnion("phase", [
+const currentPassedObservationSchema = z.discriminatedUnion("phase", [
   z
     .object({
       ...passingObservationFields,
@@ -164,6 +180,43 @@ const passedObservationSchema = z.discriminatedUnion("phase", [
     .strict(),
 ]);
 
+// V2 observations remain readable append-only evidence. They cannot satisfy
+// the V3 campaign because they did not witness the worker service.
+const legacyPassedObservationSchema = z.discriminatedUnion("phase", [
+  z
+    .object({
+      ...passingObservationFields,
+      checks: z.object({ authorityCaptured: z.literal(true) }).strict(),
+      phase: z.literal("baseline"),
+    })
+    .strict(),
+  z
+    .object({
+      ...passingObservationFields,
+      checks: z
+        .object({
+          authorityUnchanged: z.literal(true),
+          bootIdentityUnchanged: z.literal(true),
+          serviceInstanceChanged: z.literal(true),
+        })
+        .strict(),
+      phase: z.literal("service-restart"),
+    })
+    .strict(),
+  z
+    .object({
+      ...passingObservationFields,
+      checks: z
+        .object({
+          authorityUnchanged: z.literal(true),
+          bootIdentityChanged: z.literal(true),
+        })
+        .strict(),
+      phase: z.literal("host-reboot"),
+    })
+    .strict(),
+]);
+
 const failedObservationSchema = z
   .object({
     ...commonObservationFields,
@@ -181,7 +234,8 @@ const failedObservationSchema = z
   .strict();
 
 export const administrativeRestartWitnessObservationSchema = z.union([
-  passedObservationSchema,
+  currentPassedObservationSchema,
+  legacyPassedObservationSchema,
   failedObservationSchema,
 ]);
 export type AdministrativeRestartWitnessObservation = z.infer<

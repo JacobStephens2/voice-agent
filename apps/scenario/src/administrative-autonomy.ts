@@ -448,6 +448,7 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly onRollbackActivationStart?: () => void;
   readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
+  readonly operationRecoveryAttempts?: string[];
   readonly operationCompletionReplay?: "exact" | "forged";
   readonly operationCompletionReplayOutcomes?: boolean[];
   readonly operationCompletionStoreAttempts?: string[];
@@ -712,6 +713,62 @@ export async function createAdministrativeAutonomyScenario(options: {
       operationAdapters: selfReportedExecutorManifest.operationAdapters.map(
         ({ implementationDigest, kind }) => ({ implementationDigest, kind }),
       ),
+    },
+    async recoverCompletedResult(
+      recovery: Pick<
+        AdministrativeOperationExecution,
+        "request"
+      > & {
+        readonly fence: Pick<
+          AdministrativeOperationExecution["fence"],
+          | "activeExecutionDeadline"
+          | "attemptStartedAt"
+          | "claimId"
+          | "initialExecutionStartedAt"
+          | "signal"
+        >;
+      },
+    ) {
+      const { request } = recovery;
+      options.operationRecoveryAttempts?.push(request.operationId);
+      if (!effectLedger.has(request.operationId)) {
+        return { decision: "not-completed" as const };
+      }
+      const livePatchProof =
+        request.kind === "live-patch.apply"
+          ? livePatchProofLedger.get(request.operationId)
+          : undefined;
+      if (request.kind === "live-patch.apply" && livePatchProof === undefined) {
+        throw new Error("The fake Live Patch broker lost its durable proof");
+      }
+      const result = scenarioOperationResult(request, {
+        common: {
+          completedAt: administrativeTimestampSchema.parse(currentTime()),
+          effect: {
+            kind: "idempotent-effect-replay" as const,
+            originallyStartedAt:
+              livePatchProof?.mutationStartedAt ??
+              recovery.fence.initialExecutionStartedAt,
+            replayedAt: recovery.fence.attemptStartedAt,
+          },
+          operationId: request.operationId,
+          summary: `The ${request.kind} Operation completed through the fake executor.`,
+        },
+        delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
+        livePatchProof,
+        omitLivePatchReconciliation:
+          options.omitLivePatchReconciliation ?? false,
+      });
+      return {
+        decision: "completed" as const,
+        result:
+          options.livePatchProofSubstitution?.seam === "runtime"
+            ? substituteLivePatchProof(
+                result,
+                options.livePatchProofSubstitution.field,
+              )
+            : result,
+      };
     },
     async execute(execution: AdministrativeOperationExecution) {
       const { request } = execution;
@@ -1214,6 +1271,7 @@ export async function createAdministrativeAutonomyScenario(options: {
         ),
         operationId: administrativeOperationIdSchema.parse(input.operationId),
         renewedAt: administrativeTimestampSchema.parse(input.renewedAt),
+        settlementOnly: false,
       }),
     attemptPolicyActivation: (input) =>
       runtime.activatePolicy({

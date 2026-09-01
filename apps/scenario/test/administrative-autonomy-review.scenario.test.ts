@@ -3679,6 +3679,7 @@ test.each(["captured", "removed"] as const)(
   const effectLedger = new Set<string>();
   const livePatchProofLedger = new Map();
   const operationAttempts: string[] = [];
+  const operationRecoveryAttempts: string[] = [];
   const { databasePath, scenario: firstProcess } = await createActivatedScenario(
     {
       clock,
@@ -3712,6 +3713,7 @@ test.each(["captured", "removed"] as const)(
     livePatchReconciliation,
     now: clock.current,
     operationAttempts,
+    operationRecoveryAttempts,
     providerPlan: [{ kind: "live-patch.apply" }],
   });
   const record =
@@ -3725,6 +3727,7 @@ test.each(["captured", "removed"] as const)(
   expect({
     effectCount: effectLedger.size,
     operationAttempts,
+    operationRecoveryAttempts,
     result:
       completion?.kind === "administrative.operation.completed"
         ? completion.details.result
@@ -3732,10 +3735,8 @@ test.each(["captured", "removed"] as const)(
     task: record?.task,
   }).toMatchObject({
     effectCount: 1,
-    operationAttempts: [
-      "administrative-operation-1",
-      "administrative-operation-1",
-    ],
+    operationAttempts: ["administrative-operation-1"],
+    operationRecoveryAttempts: ["administrative-operation-1"],
     result: {
       effect: {
         kind: "idempotent-effect-replay",

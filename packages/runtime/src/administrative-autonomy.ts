@@ -7,6 +7,7 @@ import {
   administrativeExecutionManifestFingerprint,
   administrativeExecutionManifestSchema,
   administrativeOperationRequestSchema,
+  administrativeOperationRecoveryResultSchema,
   administrativeOperationResultSchema,
   administrativeOperationClaimIdSchema,
   administrativeOperationExecutorIdentitySchema,
@@ -132,6 +133,14 @@ export interface AdministrativeOperationExecutor {
   execute(
     execution: AdministrativeOperationExecution,
   ): Promise<AdministrativeOperationResult>;
+  /**
+   * Reads a result already durably owned by the idempotent broker without
+   * exposing any effect-authority callback. This is the only path available
+   * when a policy transition follows the effect but precedes settlement.
+   */
+  recoverCompletedResult(
+    recovery: AdministrativeOperationRecovery,
+  ): Promise<unknown>;
 }
 
 export interface AdministrativeLivePatchRollbackActivator {
@@ -183,6 +192,17 @@ export interface AdministrativeOperationExecution {
       readonly rollbackDeadline: AdministrativeTimestamp;
     }) => Promise<void>;
     readonly recheckEffectAuthority: () => Promise<void>;
+    readonly signal: AbortSignal;
+  };
+  readonly request: AdministrativeOperationRequest;
+}
+
+export interface AdministrativeOperationRecovery {
+  readonly fence: {
+    readonly activeExecutionDeadline: AdministrativeTimestamp;
+    readonly attemptStartedAt: AdministrativeTimestamp;
+    readonly claimId: AdministrativeOperationClaimId;
+    readonly initialExecutionStartedAt: AdministrativeTimestamp;
     readonly signal: AbortSignal;
   };
   readonly request: AdministrativeOperationRequest;
@@ -709,6 +729,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     readonly activeExecutionDeadline: AdministrativeTimestamp;
     readonly claimId: AdministrativeOperationClaimId;
     readonly operationId: AdministrativeOperationId;
+    readonly settlementOnly: boolean;
   }): {
     readonly abort: (reason: string) => void;
     readonly lossReason: () => string | undefined;
@@ -751,6 +772,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           ),
           operationId: input.operationId,
           renewedAt,
+          settlementOnly: input.settlementOnly,
         })
         .then((renewed) => {
           if (!renewed) abort("Administrative Operation claim was lost");
@@ -1151,19 +1173,11 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
       return true;
     }
-    try {
-      await requireCurrentRegisteredCodebase(claim.request.target, now());
-    } catch {
-      await denyClaimedOperation(
-        claim,
-        "The Registered Codebase registration is unavailable or stale",
-      );
-      return true;
-    }
     const claimMaintenance = maintainOperationClaim({
       activeExecutionDeadline: claim.activeExecutionDeadline,
       claimId: claim.claimId,
       operationId: claim.request.operationId,
+      settlementOnly: claim.settlementOnly,
     });
     inFlightExecutions.set(claim.request.operationId, claimMaintenance);
     try {
@@ -1267,20 +1281,50 @@ export function createAdministrativeAutonomyRuntime(options: {
         }
       };
       try {
-        untrustedResult = await options.executor.execute({
-          fence: {
-            activeExecutionDeadline: claim.activeExecutionDeadline,
-            activateLivePatchRollbackWindow,
-            armLivePatchRollback,
-            attemptStartedAt,
-            claimId: claim.claimId,
-            initialExecutionStartedAt: claim.initialExecutionStartedAt,
-            recovered: claim.recovered,
-            recheckEffectAuthority,
-            signal: claimMaintenance.signal,
-          },
-          request: claim.request,
-        });
+        if (claim.recovered) {
+          const recovered = administrativeOperationRecoveryResultSchema.parse(
+            await options.executor.recoverCompletedResult({
+              fence: {
+                activeExecutionDeadline: claim.activeExecutionDeadline,
+                attemptStartedAt,
+                claimId: claim.claimId,
+                initialExecutionStartedAt: claim.initialExecutionStartedAt,
+                signal: claimMaintenance.signal,
+              },
+              request: claim.request,
+            }),
+          );
+          if (recovered.decision === "completed") {
+            untrustedResult = recovered.result;
+          } else if (claim.settlementOnly) {
+            await denyClaimedOperation(
+              claim,
+              "Administrative Autonomy policy state is stale",
+            );
+            return true;
+          }
+        }
+        if (untrustedResult === undefined) {
+          try {
+            await requireCurrentRegisteredCodebase(claim.request.target, now());
+          } catch {
+            throw new AdministrativeEffectFenceError("registered-codebase");
+          }
+          untrustedResult = await options.executor.execute({
+            fence: {
+              activeExecutionDeadline: claim.activeExecutionDeadline,
+              activateLivePatchRollbackWindow,
+              armLivePatchRollback,
+              attemptStartedAt,
+              claimId: claim.claimId,
+              initialExecutionStartedAt: claim.initialExecutionStartedAt,
+              recovered: claim.recovered,
+              recheckEffectAuthority,
+              signal: claimMaintenance.signal,
+            },
+            request: claim.request,
+          });
+        }
       } catch (error) {
         const lossReason = claimMaintenance.lossReason();
         if (lossReason !== undefined) {

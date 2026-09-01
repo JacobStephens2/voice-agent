@@ -1245,6 +1245,20 @@ export type AdministrativeOperationResult = z.infer<
   typeof administrativeOperationResultSchema
 >;
 
+export const administrativeOperationRecoveryResultSchema =
+  z.discriminatedUnion("decision", [
+    z.object({ decision: z.literal("not-completed") }).strict(),
+    z
+      .object({
+        decision: z.literal("completed"),
+        result: administrativeOperationResultSchema,
+      })
+      .strict(),
+  ]);
+export type AdministrativeOperationRecoveryResult = z.infer<
+  typeof administrativeOperationRecoveryResultSchema
+>;
+
 export interface AdministrativeDelegatedWorktreeResultValidation {
   readonly completed: number;
   readonly effectStarted: number;

@@ -11,6 +11,7 @@ import {
   createDurableTaskRuntime,
   createKeeploreDelegationRuntime,
   createNodeRawAudioArtifactRemover,
+  createNodeAdministrativeRestartWitnessWorkerHealth,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   createUnixSocketKeeploreSubagentRunner,
@@ -80,22 +81,6 @@ const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
 const administrativeEvidenceStore =
   createSqliteAdministrativeAutonomyStore(databasePath);
-if (process.env.NODE_ENV !== "test") {
-  const restartWitnessStore = createSqliteAdministrativeRestartWitnessStore(
-    databasePath,
-  );
-  try {
-    await registerNodeAdministrativeRestartWitnessServiceInstance({
-      nextServiceInstanceId: () =>
-        `administrative-worker-service-instance-${randomUUID()}`,
-      now: () => new Date().toISOString(),
-      service: "worker",
-      store: restartWitnessStore,
-    });
-  } finally {
-    await restartWitnessStore.close();
-  }
-}
 const continuityRuntime = createTaskContinuityRuntime({
   administrativeEvidenceRetention: administrativeEvidenceStore,
   callbackEvidenceRetention: callbackStore,
@@ -171,11 +156,12 @@ const notificationAdapter = createProductionResendSilentNotificationAdapter(
     ),
   },
 );
+const workerPort = Number(requireEnvironment("VOICE_AGENT_WORKER_PORT"));
 const telephoneServer = createLiveKitAgentServer({
   agent: fileURLToPath(new URL("./telephone-agent.ts", import.meta.url)),
   agentName,
   ...liveKitConnection,
-  port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
+  port: workerPort,
 });
 
 let stopping = false;
@@ -194,6 +180,26 @@ const serverRun = telephoneServer.run().catch((error: unknown) => {
   serverFailure = error;
   stopping = true;
 });
+if (process.env.NODE_ENV !== "test") {
+  await requireWorkerReady(
+    createNodeAdministrativeRestartWitnessWorkerHealth({ port: workerPort }),
+    () => serverFailure,
+  );
+  const restartWitnessStore = createSqliteAdministrativeRestartWitnessStore(
+    databasePath,
+  );
+  try {
+    await registerNodeAdministrativeRestartWitnessServiceInstance({
+      nextServiceInstanceId: () =>
+        `administrative-worker-service-instance-${randomUUID()}`,
+      now: () => new Date().toISOString(),
+      service: "worker",
+      store: restartWitnessStore,
+    });
+  } finally {
+    await restartWitnessStore.close();
+  }
+}
 
 while (!stopping) {
   try {
@@ -397,6 +403,23 @@ function requireHandshakeId(roomName: string): string {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function requireWorkerReady(
+  health: { readonly requireAvailable: () => Promise<void> },
+  readFailure: () => unknown,
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const failure = readFailure();
+    if (failure !== undefined) throw failure;
+    try {
+      await health.requireAvailable();
+      return;
+    } catch {
+      await delay(250);
+    }
+  }
+  throw new Error("The worker health endpoint did not become ready");
 }
 
 function requireEnvironment(name: string): string {

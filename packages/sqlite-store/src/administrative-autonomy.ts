@@ -1582,7 +1582,9 @@ export function createSqliteAdministrativeAutonomyStore(
       ) {
         return { decision: "denied", reason: "execution-manifest" };
       }
-      if (!matchesAuthoritySnapshot(request.authority)) {
+      const recovered = operation.status === "running";
+      const settlementOnly = !matchesAuthoritySnapshot(request.authority);
+      if (settlementOnly && !recovered) {
         return { decision: "denied", reason: "stale-policy" };
       }
       if (
@@ -1648,8 +1650,9 @@ export function createSqliteAdministrativeAutonomyStore(
         initialExecutionStartedAt: administrativeTimestampSchema.parse(
           operation.initial_execution_started_at ?? input.claimedAt,
         ),
-        recovered: operation.status === "running",
+        recovered,
         request,
+        settlementOnly,
       };
     },
   );
@@ -1902,7 +1905,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.renewedAt >= task.active_execution_deadline ||
         input.leaseExpiresAt <= input.renewedAt ||
         input.leaseExpiresAt > task.active_execution_deadline ||
-        !matchesAuthoritySnapshot(request.authority)
+        (!matchesAuthoritySnapshot(request.authority) && !input.settlementOnly)
       ) {
         return false;
       }

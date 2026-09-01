@@ -1,13 +1,14 @@
 import type {
   AdministrativeRestartWitnessCampaign,
+  AdministrativeRestartWitnessApiServiceInstanceFingerprint,
+  AdministrativeRestartWitnessBootIdentityFingerprint,
   AdministrativeRestartWitnessCampaignId,
   AdministrativeRestartWitnessChallenge,
   AdministrativeRestartWitnessHostObservation,
   AdministrativeRestartWitnessObservationIdentity,
   AdministrativeRestartWitnessObservationResponse,
   AdministrativeRestartWitnessReleaseCommit,
-  AdministrativeRestartWitnessService,
-  AdministrativeRestartWitnessServiceInstanceFingerprint,
+  AdministrativeRestartWitnessWorkerServiceInstanceFingerprint,
   AdministrativeTimestamp,
 } from "@voice-agent/contracts";
 
@@ -34,18 +35,28 @@ export interface AdministrativeRestartWitnessStore {
     readonly observedAt: AdministrativeTimestamp;
   }): Promise<AdministrativeRestartWitnessObservationResponse>;
   registerServiceInstance(input: {
-    readonly bootIdentityFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
-    readonly candidateInstanceFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly bootIdentityFingerprint: AdministrativeRestartWitnessBootIdentityFingerprint;
     readonly registeredAt: AdministrativeTimestamp;
     readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
-    readonly service: AdministrativeRestartWitnessService;
-  }): Promise<AdministrativeRestartWitnessServiceInstanceFingerprint>;
+  } & (
+    | {
+        readonly candidateInstanceFingerprint: AdministrativeRestartWitnessApiServiceInstanceFingerprint;
+        readonly service: "api";
+      }
+    | {
+        readonly candidateInstanceFingerprint: AdministrativeRestartWitnessWorkerServiceInstanceFingerprint;
+        readonly service: "worker";
+      }
+  )): Promise<
+    | AdministrativeRestartWitnessApiServiceInstanceFingerprint
+    | AdministrativeRestartWitnessWorkerServiceInstanceFingerprint
+  >;
   readServiceInstances(input: {
-    readonly bootIdentityFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly bootIdentityFingerprint: AdministrativeRestartWitnessBootIdentityFingerprint;
     readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
   }): Promise<{
-    readonly api?: AdministrativeRestartWitnessServiceInstanceFingerprint;
-    readonly worker?: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly api?: AdministrativeRestartWitnessApiServiceInstanceFingerprint;
+    readonly worker?: AdministrativeRestartWitnessWorkerServiceInstanceFingerprint;
   }>;
   readCampaign(
     campaignId: AdministrativeRestartWitnessCampaignId,

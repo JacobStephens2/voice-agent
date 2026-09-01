@@ -16,6 +16,7 @@ Environment=VOICE_AGENT_DEPLOYMENT_AUTHORITY_UPGRADE_REQUEST_PATH=/var/lib/voice
 Environment=VOICE_AGENT_DEPLOYMENT_AUTHORITY_UPGRADE_CHALLENGE_PATH=/var/lib/voice-agent-promotion-resume/deployment-authority-upgrade.challenge
 Environment=VOICE_AGENT_PROMOTION_STATE_PATH=/var/lib/voice-agent-promotions/state.tsv
 Environment=VOICE_AGENT_PORT=3472
+Environment=VOICE_AGENT_WORKER_PORT=3474
 ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/api/src/server.ts
 Restart=on-failure
 RestartSec=3s

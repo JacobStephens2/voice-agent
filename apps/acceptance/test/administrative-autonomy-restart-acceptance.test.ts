@@ -127,6 +127,42 @@ test("durable failed attempts remain visible without replacing later server-reco
   expect(withFailures.observations).toHaveLength(4);
 });
 
+test("legacy API-only observations remain readable but cannot satisfy the worker-bound witness", () => {
+  const legacy = parseAdministrativeAutonomyRestartRecord({
+    campaignId,
+    createdAt: "2026-09-01T14:00:00.000Z",
+    observations: [
+      passingObservation("baseline", 1, "2026-09-01T14:01:00.000Z"),
+      {
+        ...passingObservation(
+          "service-restart",
+          2,
+          "2026-09-01T14:05:00.000Z",
+        ),
+        checks: {
+          authorityUnchanged: true,
+          bootIdentityUnchanged: true,
+          serviceInstanceChanged: true,
+        },
+      },
+      {
+        ...passingObservation("host-reboot", 3, "2026-09-01T14:15:00.000Z"),
+        checks: {
+          authorityUnchanged: true,
+          bootIdentityChanged: true,
+        },
+      },
+    ],
+    releaseCommit,
+    schemaVersion: 3,
+    status: "completed",
+  });
+
+  expect(evaluateAdministrativeAutonomyRestartWitness(legacy)).toMatchObject({
+    ready: false,
+  });
+});
+
 function completedWitness(): AdministrativeRestartWitnessRecord {
   return parseAdministrativeAutonomyRestartRecord({
     campaignId,

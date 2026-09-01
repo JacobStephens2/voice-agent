@@ -1007,6 +1007,7 @@ test("Task Confirmation presents the intended state and decline consumes its cap
 test("a crashed Operation is reconciled after restart with one stable idempotent effect", async () => {
   const effectLedger = new Set<string>();
   const operationAttempts: string[] = [];
+  const operationRecoveryAttempts: string[] = [];
   const { databasePath, scenario: firstProcess } = await createActivatedScenario(
     {
       crashAfterFirstEffect: true,
@@ -1038,6 +1039,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
     identifierNamespace: "restart-",
     now: "2026-09-01T00:01:00.000Z",
     operationAttempts,
+    operationRecoveryAttempts,
     providerPlan: [{ kind: "production.observe" }],
   });
   const afterRestart = await restartedProcess.readTask("administrative-task-1");
@@ -1055,10 +1057,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
       taskId: "administrative-task-1",
     },
     effectCount: 1,
-    operationAttempts: [
-      "administrative-operation-1",
-      "administrative-operation-1",
-    ],
+    operationAttempts: ["administrative-operation-1"],
     statusBeforeRestart: "running",
     taskAfterRestart: {
       activeExecutionDeadline: "2026-09-01T06:00:00.000Z",
@@ -1079,6 +1078,7 @@ test("a crashed Operation is reconciled after restart with one stable idempotent
       updatedAt: "2026-09-01T00:01:00.000Z",
     },
   });
+  expect(operationRecoveryAttempts).toEqual(["administrative-operation-1"]);
 
   await restartedProcess.close();
 });
@@ -1334,6 +1334,92 @@ test("a completed Delegation remains durable when policy changes before settleme
       },
     ],
     restartedAttempts: [],
+  });
+  await restarted.close();
+});
+
+test("a completed Delegation is recovered after policy revision and process loss before settlement", async () => {
+  const effectLedger = new Set<string>();
+  const firstProcessAttempts: string[] = [];
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      crashAfterFirstEffect: true,
+      effectLedger,
+      now: "2026-09-01T02:40:00.000Z",
+      operationAttempts: firstProcessAttempts,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
+  firstProcess.interleavePolicyRevisionAfterFirstOperation();
+  expect(
+    await firstProcess.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState:
+        "A verified candidate survives a policy revision and settlement crash.",
+      outcome: "propose",
+      ownerId: "owner",
+      requestId: "delegation-policy-revision-settlement-crash",
+      target: {
+        environment: "production",
+        registeredCodebaseId: "voice-agent",
+      },
+    }),
+  ).toMatchObject({ decision: "admitted" });
+  expect(
+    (await firstProcess.readTask("administrative-task-1"))?.task.status,
+  ).toBe("running");
+  await firstProcess.close();
+
+  const restartedExecutionAttempts: string[] = [];
+  const recoveryAttempts: string[] = [];
+  const restarted = await createAdministrativeAutonomyScenario({
+    databasePath,
+    effectLedger,
+    identifierNamespace: "revision-settlement-recovery-",
+    now: "2026-09-01T02:41:00.000Z",
+    operationAttempts: restartedExecutionAttempts,
+    operationRecoveryAttempts: recoveryAttempts,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  const record = await restarted.readTask("administrative-task-1");
+  expect({
+    durableResult: record?.evidence.find(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    effectCount: effectLedger.size,
+    firstProcessAttempts,
+    policy: await restarted.readPolicyStatus(),
+    recoveryAttempts,
+    restartedExecutionAttempts,
+    taskStatus: record?.task.status,
+  }).toMatchObject({
+    durableResult: {
+      details: {
+        kind: "delegated-worktree.change",
+        result: {
+          delegation: {
+            branch: "administrative/administrative-operation-1",
+            commits: ["a".repeat(40)],
+            status: "completed",
+            verification: {
+              automated: [
+                { command: "pnpm typecheck", outcome: "passed" },
+                { command: "pnpm test", outcome: "passed" },
+              ],
+            },
+          },
+          effect: { kind: "idempotent-effect-replay" },
+          operationId: "administrative-operation-1",
+        },
+      },
+    },
+    effectCount: 1,
+    firstProcessAttempts: ["administrative-operation-1"],
+    policy: { revision: 2, stateVersion: 2, status: "active" },
+    recoveryAttempts: ["administrative-operation-1"],
+    restartedExecutionAttempts: [],
+    taskStatus: "completed",
   });
   await restarted.close();
 });

@@ -6,26 +6,34 @@ import { fileURLToPath } from "node:url";
 
 import {
   administrativeRestartWitnessChallengeSchema,
+  administrativeRestartWitnessApiServiceInstanceFingerprintSchema,
+  administrativeRestartWitnessBootIdentityFingerprintSchema,
   administrativeRestartWitnessHostObservationSchema,
   administrativeRestartWitnessObservationIdentitySchema,
   administrativeRestartWitnessObservationResponseSchema,
   administrativeRestartWitnessReleaseCommitSchema,
-  administrativeRestartWitnessServiceInstanceFingerprintSchema,
   administrativeRestartWitnessServiceInstanceIdSchema,
   administrativeRestartWitnessServiceSchema,
+  administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema,
   administrativeTimestampSchema,
+  type AdministrativeRestartWitnessApiServiceInstanceFingerprint,
+  type AdministrativeRestartWitnessBootIdentityFingerprint,
   type AdministrativeRestartWitnessChallenge,
   type AdministrativeRestartWitnessHostObservation,
   type AdministrativeRestartWitnessObservationIdentity,
   type AdministrativeRestartWitnessObservationResponse,
   type AdministrativeRestartWitnessReleaseCommit,
   type AdministrativeRestartWitnessService,
-  type AdministrativeRestartWitnessServiceInstanceFingerprint,
+  type AdministrativeRestartWitnessWorkerServiceInstanceFingerprint,
 } from "@voice-agent/contracts";
 import type { AdministrativeRestartWitnessStore } from "@voice-agent/durable-store";
 
 export interface AdministrativeRestartWitnessHost {
   read(): Promise<AdministrativeRestartWitnessHostObservation>;
+}
+
+export interface AdministrativeRestartWitnessWorkerHealth {
+  requireAvailable(): Promise<void>;
 }
 
 export interface AdministrativeRestartWitnessRuntime {
@@ -202,14 +210,15 @@ export function createAdministrativeRestartWitnessRuntime(options: {
 
 /** Reads the real Agent Host identities from fixed deployment-owned paths. */
 export function createNodeAdministrativeRestartWitnessHost(input: {
-  readonly apiServiceInstanceFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+  readonly apiServiceInstanceFingerprint: AdministrativeRestartWitnessApiServiceInstanceFingerprint;
   readonly services: Pick<
     AdministrativeRestartWitnessStore,
     "readServiceInstances"
   >;
+  readonly workerHealth: AdministrativeRestartWitnessWorkerHealth;
 }): AdministrativeRestartWitnessHost {
   const apiServiceInstanceFingerprint =
-    administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+    administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
       input.apiServiceInstanceFingerprint,
     );
   const apiEntrypoint = process.argv[1];
@@ -268,6 +277,11 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
       if (serviceInstances.worker === undefined) {
         throw new AdministrativeRestartWitnessWorkerObservationError();
       }
+      try {
+        await input.workerHealth.requireAvailable();
+      } catch {
+        throw new AdministrativeRestartWitnessWorkerObservationError();
+      }
       return administrativeRestartWitnessHostObservationSchema.parse({
         apiServiceInstanceFingerprint,
         bootIdentityFingerprint,
@@ -278,11 +292,32 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
   };
 }
 
+/** Fixed localhost health seam for the deployment-composed worker service. */
+export function createNodeAdministrativeRestartWitnessWorkerHealth(input: {
+  readonly port: number;
+}): AdministrativeRestartWitnessWorkerHealth {
+  if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) {
+    throw new Error("The worker health port is invalid");
+  }
+  const url = `http://127.0.0.1:${input.port}/`;
+  return {
+    async requireAvailable() {
+      const response = await fetch(url, {
+        redirect: "error",
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (!response.ok) {
+        throw new Error("The worker health response was not successful");
+      }
+    },
+  };
+}
+
 /**
  * Registers one concrete service startup after validating the executing bytes.
  * Only domain-separated hashes cross into the append-only durable ledger.
  */
-export async function registerNodeAdministrativeRestartWitnessServiceInstance(input: {
+type RegisterRestartWitnessServiceInput = {
   readonly nextServiceInstanceId: () => string;
   readonly now: () => string;
   readonly service: AdministrativeRestartWitnessService;
@@ -290,7 +325,20 @@ export async function registerNodeAdministrativeRestartWitnessServiceInstance(in
     AdministrativeRestartWitnessStore,
     "registerServiceInstance"
   >;
-}): Promise<AdministrativeRestartWitnessServiceInstanceFingerprint> {
+};
+
+export function registerNodeAdministrativeRestartWitnessServiceInstance(
+  input: RegisterRestartWitnessServiceInput & { readonly service: "api" },
+): Promise<AdministrativeRestartWitnessApiServiceInstanceFingerprint>;
+export function registerNodeAdministrativeRestartWitnessServiceInstance(
+  input: RegisterRestartWitnessServiceInput & { readonly service: "worker" },
+): Promise<AdministrativeRestartWitnessWorkerServiceInstanceFingerprint>;
+export async function registerNodeAdministrativeRestartWitnessServiceInstance(
+  input: RegisterRestartWitnessServiceInput,
+): Promise<
+  | AdministrativeRestartWitnessApiServiceInstanceFingerprint
+  | AdministrativeRestartWitnessWorkerServiceInstanceFingerprint
+> {
   const service = administrativeRestartWitnessServiceSchema.parse(input.service);
   const serviceInstanceId =
     administrativeRestartWitnessServiceInstanceIdSchema.parse(
@@ -336,19 +384,38 @@ export async function registerNodeAdministrativeRestartWitnessServiceInstance(in
       `The ${service} service cannot register mutable or unowned Release provenance`,
     );
   }
-  return input.store.registerServiceInstance({
+  const common = {
     bootIdentityFingerprint: administrativeRestartWitnessIdentityFingerprint(
       "agent-host-boot",
       bootIdentity.trim(),
     ),
-    candidateInstanceFingerprint: administrativeRestartWitnessIdentityFingerprint(
-      `${service}-service-instance`,
-      serviceInstanceId,
-    ),
     registeredAt: administrativeTimestampSchema.parse(input.now()),
     releaseCommit,
+  };
+  if (service === "api") {
+    const registered = await input.store.registerServiceInstance({
+      ...common,
+      candidateInstanceFingerprint: administrativeRestartWitnessIdentityFingerprint(
+        "api-service-instance",
+        serviceInstanceId,
+      ),
+      service,
+    });
+    return administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
+      registered,
+    );
+  }
+  const registered = await input.store.registerServiceInstance({
+    ...common,
+    candidateInstanceFingerprint: administrativeRestartWitnessIdentityFingerprint(
+      "worker-service-instance",
+      serviceInstanceId,
+    ),
     service,
   });
+  return administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
+    registered,
+  );
 }
 
 function modeIsImmutable(mode: number): boolean {
@@ -366,16 +433,42 @@ function releasePathIsWithin(root: string, candidate: string): boolean {
 }
 
 export function administrativeRestartWitnessIdentityFingerprint(
-  kind:
-    | "agent-host-boot"
-    | "api-service-instance"
-    | "worker-service-instance",
+  kind: "agent-host-boot",
   identity: string,
-): AdministrativeRestartWitnessServiceInstanceFingerprint {
-  return administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
-    createHash("sha256")
-      .update(`voice-agent:administrative-restart-witness:${kind}:v1\0`)
-      .update(identity)
-      .digest("hex"),
-  );
+): AdministrativeRestartWitnessBootIdentityFingerprint;
+export function administrativeRestartWitnessIdentityFingerprint(
+  kind: "api-service-instance",
+  identity: string,
+): AdministrativeRestartWitnessApiServiceInstanceFingerprint;
+export function administrativeRestartWitnessIdentityFingerprint(
+  kind: "worker-service-instance",
+  identity: string,
+): AdministrativeRestartWitnessWorkerServiceInstanceFingerprint;
+export function administrativeRestartWitnessIdentityFingerprint(
+  kind: "agent-host-boot" | "api-service-instance" | "worker-service-instance",
+  identity: string,
+):
+  | AdministrativeRestartWitnessApiServiceInstanceFingerprint
+  | AdministrativeRestartWitnessBootIdentityFingerprint
+  | AdministrativeRestartWitnessWorkerServiceInstanceFingerprint;
+export function administrativeRestartWitnessIdentityFingerprint(
+  kind: "agent-host-boot" | "api-service-instance" | "worker-service-instance",
+  identity: string,
+):
+  | AdministrativeRestartWitnessApiServiceInstanceFingerprint
+  | AdministrativeRestartWitnessBootIdentityFingerprint
+  | AdministrativeRestartWitnessWorkerServiceInstanceFingerprint {
+  const fingerprint = createHash("sha256")
+    .update(`voice-agent:administrative-restart-witness:${kind}:v1\0`)
+    .update(identity)
+    .digest("hex");
+  return kind === "agent-host-boot"
+    ? administrativeRestartWitnessBootIdentityFingerprintSchema.parse(fingerprint)
+    : kind === "api-service-instance"
+      ? administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
+          fingerprint,
+        )
+      : administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
+          fingerprint,
+        );
 }
