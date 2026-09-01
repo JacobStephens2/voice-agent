@@ -210,10 +210,14 @@ record_has() {
 }
 
 capture_authenticated_policy() {
-  local session_cookie="$1"
-  printf 'header = "Cookie: __Host-voice_agent_session=%s"\n' "$session_cookie" | \
-    curl --config - --fail --silent --show-error --max-time 15 \
-      "$API_ORIGIN/api/administrative-autonomy" > "$STATUS_FILE"
+  local api_status_json
+  open_url "$API_ORIGIN/api/administrative-autonomy"
+  step "Use the signed-in browser page; if it reports Authentication required, sign in to the PWA and reopen this URL."
+  step "In the browser, copy the complete JSON response and return here."
+  ask api_status_json "Paste the complete authenticated API JSON response:"
+  if [[ -z $api_status_json ]]; then return 1; fi
+  printf '%s\n' "$api_status_json" > "$STATUS_FILE"
+  unset api_status_json
 }
 
 service_state() {
@@ -247,9 +251,7 @@ if record_has '.events[] | select(.kind == "administrative-policy-baseline-obser
 else
   say "Open the active Voice Agent PWA and sign in with the owner Trusted Browser Session."
   open_url "$API_ORIGIN"
-  step "In browser developer tools, copy only the value of the __Host-voice_agent_session cookie."
-  ask_secret ADMIN_SESSION "Paste the session cookie value (it is never written):"
-  capture_authenticated_policy "$ADMIN_SESSION"
+  capture_authenticated_policy
   sudo install -d -m 0750 "$(dirname "$ACCEPTANCE_RECORD")"
   sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" init \
     --record "$ACCEPTANCE_RECORD" --campaign-id issue-83-restart-witness \
@@ -264,9 +266,8 @@ if record_has '.events | map(select(.kind == "administrative-policy-service-rest
   note "A passing real service-restart observation is already recorded."
 else
   sudo systemctl restart voice-agent-api.service voice-agent-worker.service
-  step "Wait for both systemd units to settle, then copy the current owner session cookie from the authenticated PWA."
-  ask_secret ADMIN_SESSION "Paste the current session cookie value (it is never written):"
-  if capture_authenticated_policy "$ADMIN_SESSION"; then
+  step "Wait for both systemd units to settle before recording the authenticated API response."
+  if capture_authenticated_policy; then
     if sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" record-service-restart \
       --record "$ACCEPTANCE_RECORD" --status-file "$STATUS_FILE" \
       --api-service "$(service_state voice-agent-api.service)" \
@@ -309,10 +310,9 @@ fi
 note "Linux reports a different boot identity; the wizard is resuming after a real reboot."
 
 stage "Post-reboot authenticated verification"
-step "Sign back in to the deployed PWA, then copy the new owner session cookie value."
+step "Sign back in to the deployed PWA before recording the authenticated API response."
 open_url "$API_ORIGIN"
-ask_secret ADMIN_SESSION "Paste the current session cookie value (it is never written):"
-if capture_authenticated_policy "$ADMIN_SESSION"; then
+if capture_authenticated_policy; then
   if sudo /usr/bin/env node --experimental-strip-types "$ACCEPTANCE_CLI" record-host-reboot \
     --record "$ACCEPTANCE_RECORD" --status-file "$STATUS_FILE" \
     --boot-identity-changed passed \

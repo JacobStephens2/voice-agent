@@ -25,7 +25,7 @@ test("the attended witness performs real service and Agent Host restarts", () =>
 
 test("every policy observation uses the deployed authenticated API", () => {
   expect(wizard).toContain('"$API_ORIGIN/api/administrative-autonomy"');
-  expect(wizard).toContain("__Host-voice_agent_session");
+  expect(wizard).toContain("copy the complete JSON response");
   expect(wizard).toContain("record-baseline");
   expect(wizard).toContain("record-service-restart");
   expect(wizard).toContain("record-host-reboot");
@@ -37,7 +37,8 @@ test("the witness is post-Promotion, resumable, and records no raw credential or
   expect(wizard).toContain("Run this only post-Promotion");
   expect(wizard).toContain("arm-host-reboot");
   expect(wizard).toContain('sudo rm -f "$BOOT_CHECKPOINT"');
-  expect(wizard).toContain("it is never written");
+  expect(wizard).not.toContain("__Host-voice_agent_session");
+  expect(wizard).not.toContain("session cookie");
   expect(wizard).not.toContain("--session-cookie");
   expect(wizard).not.toMatch(/--boot-id(?:\s|$)/u);
 });

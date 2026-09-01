@@ -36,13 +36,16 @@ ends. Reconnect and run the same command again; it refuses the host-restart
 observation unless Linux reports a different boot ID, then rechecks both units
 and the deployed authenticated API.
 
-The session cookie is entered through hidden input, passed to `curl` over
-standard input rather than a process argument, and never written to the
-acceptance record. The raw boot IDs are compared locally and removed after the
-observation. The append-only record retains only the Release commit, exact
-policy revision/state version, fixed authenticated API provenance, and
-sanitized pass/fail outcomes. Failed observations remain in its history and a
-later attended retry appends new evidence.
+Authentication remains entirely inside the owner browser and its Credential
+Custody Boundary. At each observation the wizard opens the deployed API route
+in that signed-in browser; the owner copies only the sanitized JSON response,
+which the CLI validates against the full public status schema. No session
+cookie or token enters the shell or acceptance record. The raw boot IDs are
+compared locally and removed after the observation. The append-only record
+retains only the Release commit, exact policy revision/state version, fixed
+authenticated API provenance, and sanitized pass/fail outcomes. Failed
+observations remain in its history and a later attended retry appends new
+evidence.
 
 By default the record is:
 
