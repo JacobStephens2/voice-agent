@@ -66,6 +66,17 @@ export type AdministrativeRestartWitnessWorkerServiceInstanceFingerprint =
     typeof administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema
   >;
 
+export const administrativeRestartWitnessWorkerIdentitySchema = z
+  .object({
+    releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
+    workerServiceInstanceFingerprint:
+      administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema,
+  })
+  .strict();
+export type AdministrativeRestartWitnessWorkerIdentity = z.infer<
+  typeof administrativeRestartWitnessWorkerIdentitySchema
+>;
+
 export const administrativeRestartWitnessBootIdentityFingerprintSchema =
   restartWitnessFingerprintSchema.brand<"AdministrativeRestartWitnessBootIdentityFingerprint">();
 export type AdministrativeRestartWitnessBootIdentityFingerprint = z.infer<

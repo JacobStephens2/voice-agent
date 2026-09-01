@@ -1430,6 +1430,101 @@ test("a completed Delegation is recovered after policy revision and process loss
   await restarted.close();
 });
 
+test("a broker-owned idempotent replay result survives policy revision and process loss before settlement", async () => {
+  const effectLedger = new Set(["administrative-operation-1"]);
+  const operationResultLedger = new Map();
+  let loseProcessAfterReplay = true;
+  let firstProcess: Awaited<
+    ReturnType<typeof createActivatedScenario>
+  >["scenario"] | undefined;
+  const activated = await createActivatedScenario(
+    {
+      beforeExecutorResultReturn: async () => {
+        if (!loseProcessAfterReplay || firstProcess === undefined) return;
+        loseProcessAfterReplay = false;
+        const policy = await firstProcess.readPolicyStatus();
+        if (policy.status !== "active") {
+          throw new Error("The replay race requires an active policy");
+        }
+        const activation = await firstProcess.activatePolicy({
+          expectedActiveRevision: policy.revision,
+          expectedStateVersion: policy.stateVersion,
+          freshPasskey: true,
+        });
+        if (activation.statusCode !== 200) {
+          throw new Error("The interleaved Fresh Passkey revision failed");
+        }
+        throw new Error(
+          "Simulated process loss after durable idempotent replay result",
+        );
+      },
+      effectLedger,
+      now: "2026-09-01T02:43:00.000Z",
+      operationResultLedger,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
+  firstProcess = activated.scenario;
+  expect(
+    await firstProcess.confirmAndRunTask({
+      confirmation: "confirmed",
+      intendedState: "The exact verified candidate remains durable.",
+      outcome: "propose",
+      ownerId: "owner",
+      requestId: "delegation-replay-settlement-crash",
+      target: {
+        environment: "production",
+        registeredCodebaseId: "voice-agent",
+      },
+    }),
+  ).toMatchObject({ decision: "admitted" });
+  await firstProcess.close();
+
+  const recoveryAttempts: string[] = [];
+  const restartedExecutionAttempts: string[] = [];
+  const restarted = await createAdministrativeAutonomyScenario({
+    databasePath: activated.databasePath,
+    effectLedger,
+    identifierNamespace: "replay-settlement-recovery-",
+    now: "2026-09-01T02:44:00.000Z",
+    operationAttempts: restartedExecutionAttempts,
+    operationRecoveryAttempts: recoveryAttempts,
+    operationResultLedger,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  const record = await restarted.readTask("administrative-task-1");
+
+  expect({
+    completed: record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    recoveryAttempts,
+    policy: await restarted.readPolicyStatus(),
+    restartedExecutionAttempts,
+    taskStatus: record?.task.status,
+  }).toMatchObject({
+    completed: [
+      {
+        details: {
+          result: {
+            effect: {
+              kind: "idempotent-effect-replay",
+              originallyStartedAt: "2026-09-01T02:43:00.000Z",
+              replayedAt: "2026-09-01T02:43:00.000Z",
+            },
+          },
+        },
+      },
+    ],
+    recoveryAttempts: ["administrative-operation-1"],
+    policy: { revision: 2, stateVersion: 2, status: "active" },
+    restartedExecutionAttempts: [],
+    taskStatus: "completed",
+  });
+  await restarted.close();
+});
+
 test("a suspended Live Patch preserves its completed effect proof beside rollback evidence", async () => {
   const rollbackActivationEffects: string[] = [];
   let runningScenario: Awaited<

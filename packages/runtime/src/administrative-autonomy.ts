@@ -1408,7 +1408,9 @@ export function createAdministrativeAutonomyRuntime(options: {
               ? claim.initialExecutionStartedAt
               : attemptStartedAt,
             initialExecutionStartedAt: claim.initialExecutionStartedAt,
-            recovered: brokerRecoveredResult ? false : claim.recovered,
+            recovered: brokerRecoveredResult
+              ? reportedResult.effect.kind === "idempotent-effect-replay"
+              : claim.recovered,
           },
           brokerRecoveredResult ? reportedResult.completedAt : settledAt,
         );

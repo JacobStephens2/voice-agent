@@ -36,8 +36,9 @@ observation**, and the authenticated API reads the exact policy revision,
 state version, Administrative Execution Manifest fingerprint, active immutable
 Release, API process instance, and Linux boot identity from its own composition
 boundary. It also reads the Release-bound worker startup fingerprint from the
-fixed store and checks the worker's fixed localhost health endpoint. The
-request can supply none of those values.
+fixed store and requires the live worker-owned Unix-socket response to name
+that exact fingerprint and Release. A generic healthy process cannot stand in
+for the registered worker. The request can supply none of those values.
 
 The API captures its real entrypoint and Restart Witness module paths when the
 process is composed. Every observation requires those captured root-owned,

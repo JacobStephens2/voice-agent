@@ -8,7 +8,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
+import { createServer } from "node:net";
 
 import Database from "better-sqlite3";
 import { afterEach, expect, test } from "vitest";
@@ -20,6 +20,7 @@ import {
   administrativeRestartWitnessRecord,
   administrativeRestartWitnessHostObservationSchema,
   administrativeRestartWitnessReleaseCommitSchema,
+  administrativeRestartWitnessWorkerIdentitySchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
   type AdministrativeRestartWitnessCampaign,
@@ -36,6 +37,7 @@ import {
   AdministrativeRestartWitnessWorkerObservationError,
   createAdministrativeRestartWitnessRuntime,
   createNodeAdministrativeRestartWitnessWorkerHealth,
+  createNodeAdministrativeRestartWitnessWorkerIdentityServer,
 } from "@voice-agent/runtime";
 import {
   createSqliteAdministrativeAutonomyStore,
@@ -355,24 +357,64 @@ test("worker observation failure is append-only, retry-safe, and resumable", asy
   await fixture.policyStore.close();
 });
 
-test("the deployment worker observation requires a live localhost health response", async () => {
-  const server = createServer((_request, response) => {
-    response.statusCode = 200;
-    response.end("ready");
+test("the deployment worker observation requires the exact live Release-bound identity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-worker-identity-"));
+  temporaryDirectories.push(directory);
+  const socketPath = join(directory, "worker.sock");
+  const identity = {
+    releaseCommit,
+    workerServiceInstanceFingerprint: fingerprint(
+      "worker-service-instance",
+      "worker-service-baseline",
+    ),
+  };
+  const server = createNodeAdministrativeRestartWitnessWorkerIdentityServer({
+    identity,
+    socketPath,
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (address === null || typeof address === "string") {
-    throw new Error("The worker health test server did not bind a TCP port");
-  }
+  expect(
+    administrativeRestartWitnessWorkerIdentitySchema.safeParse({
+      ...identity,
+      rawWorkerProcessIdentity: "not-allowed",
+    }).success,
+  ).toBe(false);
+  await server.start();
   const health = createNodeAdministrativeRestartWitnessWorkerHealth({
-    port: address.port,
+    socketPath,
   });
-  await expect(health.requireAvailable()).resolves.toBeUndefined();
+  await expect(health.requireExact(identity)).resolves.toBeUndefined();
+  await expect(
+    health.requireExact({
+      ...identity,
+      releaseCommit:
+        administrativeRestartWitnessReleaseCommitSchema.parse("b".repeat(40)),
+    }),
+  ).rejects.toThrow();
+  await expect(
+    health.requireExact({
+      ...identity,
+      workerServiceInstanceFingerprint: fingerprint(
+        "worker-service-instance",
+        "other-worker",
+      ),
+    }),
+  ).rejects.toThrow();
+  await server.close();
+
+  const unrelated = createServer((connection) => connection.end("ready\n"));
+  await new Promise<void>((resolve, reject) => {
+    unrelated.once("error", reject);
+    unrelated.listen(socketPath, () => {
+      unrelated.off("error", reject);
+      resolve();
+    });
+  });
+  await expect(health.requireExact(identity)).rejects.toThrow();
   await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error === undefined ? resolve() : reject(error))),
+    unrelated.close((error) =>
+      error === undefined ? resolve() : reject(error),
+    ),
   );
-  await expect(health.requireAvailable()).rejects.toThrow();
 });
 
 test("host reboot requires the accepted API and worker identities to remain stable", async () => {

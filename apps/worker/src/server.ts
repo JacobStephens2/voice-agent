@@ -7,11 +7,13 @@ import {
   createUnixSocketBountywellObserver,
 } from "@voice-agent/operations-broker";
 import {
+  administrativeRestartWitnessWorkerIdentitySocketPath,
   createCallbackHandshakeRuntime,
   createDurableTaskRuntime,
   createKeeploreDelegationRuntime,
   createNodeRawAudioArtifactRemover,
-  createNodeAdministrativeRestartWitnessWorkerHealth,
+  createNodeAdministrativeRestartWitnessWorkerIdentityServer,
+  createNodeAdministrativeRestartWitnessWorkerReadiness,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   createUnixSocketKeeploreSubagentRunner,
@@ -170,6 +172,11 @@ let nextEvidenceRetentionAt = 0;
 let nextRawAudioCleanupAt = 0;
 let nextBoundaryDeadlineAt = 0;
 let nextAuthenticationNotificationAt = 0;
+let restartWitnessIdentityServer:
+  | ReturnType<
+      typeof createNodeAdministrativeRestartWitnessWorkerIdentityServer
+    >
+  | undefined;
 process.once("SIGINT", () => {
   stopping = true;
 });
@@ -182,20 +189,31 @@ const serverRun = telephoneServer.run().catch((error: unknown) => {
 });
 if (process.env.NODE_ENV !== "test") {
   await requireWorkerReady(
-    createNodeAdministrativeRestartWitnessWorkerHealth({ port: workerPort }),
+    createNodeAdministrativeRestartWitnessWorkerReadiness({ port: workerPort }),
     () => serverFailure,
   );
   const restartWitnessStore = createSqliteAdministrativeRestartWitnessStore(
     databasePath,
   );
   try {
-    await registerNodeAdministrativeRestartWitnessServiceInstance({
-      nextServiceInstanceId: () =>
-        `administrative-worker-service-instance-${randomUUID()}`,
-      now: () => new Date().toISOString(),
-      service: "worker",
-      store: restartWitnessStore,
-    });
+    const registration =
+      await registerNodeAdministrativeRestartWitnessServiceInstance({
+        nextServiceInstanceId: () =>
+          `administrative-worker-service-instance-${randomUUID()}`,
+        now: () => new Date().toISOString(),
+        service: "worker",
+        store: restartWitnessStore,
+      });
+    restartWitnessIdentityServer =
+      createNodeAdministrativeRestartWitnessWorkerIdentityServer({
+        identity: {
+          releaseCommit: registration.releaseCommit,
+          workerServiceInstanceFingerprint:
+            registration.serviceInstanceFingerprint,
+        },
+        socketPath: administrativeRestartWitnessWorkerIdentitySocketPath,
+      });
+    await restartWitnessIdentityServer.start();
   } finally {
     await restartWitnessStore.close();
   }
@@ -323,6 +341,7 @@ while (!stopping) {
   }
   await delay(1_000);
 }
+await restartWitnessIdentityServer?.close();
 await telephoneServer.drain(10_000);
 await telephoneServer.close();
 await serverRun;

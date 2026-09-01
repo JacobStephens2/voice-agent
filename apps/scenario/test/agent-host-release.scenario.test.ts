@@ -336,6 +336,9 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(workerUnit).toContain("Environment=VOICE_AGENT_WORKER_PORT=3474");
   expect(health).toContain("VOICE_AGENT_WORKER_PORT=");
   expect(health).toContain('"http://127.0.0.1:$worker_port/"');
+  expect(health).toContain(
+    "/run/voice-agent-worker/restart-witness.sock",
+  );
   expect(health).not.toContain("http://127.0.0.1:3474/");
   expect(apiUnit).not.toContain("SupplementaryGroups=voice-broker");
   expect(apiUnit).toContain("deployment-authority-upgrade.request");
@@ -350,22 +353,29 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(apiServer).toContain(
     "createNodeAdministrativeRestartWitnessWorkerHealth",
   );
+  expect(apiServer).toContain(
+    "administrativeRestartWitnessWorkerIdentitySocketPath",
+  );
   expect(apiServer.indexOf("await api.listen")).toBeLessThan(
     apiServer.lastIndexOf(
       "registerNodeAdministrativeRestartWitnessServiceInstance",
     ),
   );
-  expect(apiUnit).toContain("Environment=VOICE_AGENT_WORKER_PORT=3474");
+  expect(apiUnit).not.toContain("VOICE_AGENT_WORKER_PORT");
   expect(workerServer).toContain(
     "registerNodeAdministrativeRestartWitnessServiceInstance",
   );
   expect(workerServer).toContain('service: "worker"');
+  expect(workerServer).toContain(
+    "createNodeAdministrativeRestartWitnessWorkerIdentityServer",
+  );
   expect(workerServer.indexOf("telephoneServer.run()")).toBeLessThan(
     workerServer.lastIndexOf(
       "registerNodeAdministrativeRestartWitnessServiceInstance",
     ),
   );
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
+  expect(workerUnit).toContain("RuntimeDirectory=voice-agent-worker");
   expect(workerUnit).toContain("voice-subagent-client");
   expect(workerUnit).toContain("EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env");
   expect(subagentUnit).toContain("User=voice-codex");

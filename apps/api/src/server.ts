@@ -53,6 +53,7 @@ import {
   createNodeRawAudioArtifactRemover,
   createNodeAdministrativeRestartWitnessHost,
   createNodeAdministrativeRestartWitnessWorkerHealth,
+  administrativeRestartWitnessWorkerIdentitySocketPath,
   registerNodeAdministrativeRestartWitnessServiceInstance,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
@@ -116,7 +117,7 @@ const administrativeRestartWitnessRuntime = testMode
           apiServiceInstanceFingerprint,
         services: administrativeRestartWitnessStore,
         workerHealth: createNodeAdministrativeRestartWitnessWorkerHealth({
-          port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
+          socketPath: administrativeRestartWitnessWorkerIdentitySocketPath,
         }),
       }),
       identifiers: {
@@ -409,14 +410,15 @@ await api.listen({
   port: Number(process.env.VOICE_AGENT_PORT ?? "3472"),
 });
 if (!testMode) {
-  apiServiceInstanceFingerprint =
+  apiServiceInstanceFingerprint = (
     await registerNodeAdministrativeRestartWitnessServiceInstance({
       nextServiceInstanceId: () =>
         `administrative-api-service-instance-${randomUUID()}`,
       now: () => new Date().toISOString(),
       service: "api",
       store: administrativeRestartWitnessStore,
-    });
+    })
+  ).serviceInstanceFingerprint;
 }
 
 async function requestPromotionResume(
@@ -457,12 +459,4 @@ async function readAdditionalMetrics(path: string): Promise<string> {
     }
     throw error;
   }
-}
-
-function requireEnvironment(name: string): string {
-  const value = process.env[name];
-  if (value === undefined || value.length === 0) {
-    throw new Error(`${name} is required`);
-  }
-  return value;
 }

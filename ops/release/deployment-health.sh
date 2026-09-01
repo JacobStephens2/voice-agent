@@ -101,6 +101,10 @@ if [[ ! $worker_port =~ ^[0-9]+$ ]]; then
 fi
 curl --fail --silent --show-error --max-time 5 \
   "http://127.0.0.1:$worker_port/" >/dev/null
+if [[ ! -S /run/voice-agent-worker/restart-witness.sock ]]; then
+  printf 'Voice Agent worker identity seam is unavailable.\n' >&2
+  exit 1
+fi
 runuser --user voice-agent --group voice-broker-client -- /usr/bin/curl \
   --fail --silent --show-error --max-time 5 \
   --unix-socket /run/voice-agent-broker/broker.sock \

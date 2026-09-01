@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
-import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import {
+  chmod,
+  lstat,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+  unlink,
+} from "node:fs/promises";
+import { createConnection, createServer } from "node:net";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +24,7 @@ import {
   administrativeRestartWitnessServiceInstanceIdSchema,
   administrativeRestartWitnessServiceSchema,
   administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema,
+  administrativeRestartWitnessWorkerIdentitySchema,
   administrativeTimestampSchema,
   type AdministrativeRestartWitnessApiServiceInstanceFingerprint,
   type AdministrativeRestartWitnessBootIdentityFingerprint,
@@ -25,6 +35,7 @@ import {
   type AdministrativeRestartWitnessReleaseCommit,
   type AdministrativeRestartWitnessService,
   type AdministrativeRestartWitnessWorkerServiceInstanceFingerprint,
+  type AdministrativeRestartWitnessWorkerIdentity,
 } from "@voice-agent/contracts";
 import type { AdministrativeRestartWitnessStore } from "@voice-agent/durable-store";
 
@@ -33,8 +44,22 @@ export interface AdministrativeRestartWitnessHost {
 }
 
 export interface AdministrativeRestartWitnessWorkerHealth {
+  requireExact(
+    identity: AdministrativeRestartWitnessWorkerIdentity,
+  ): Promise<void>;
+}
+
+export interface AdministrativeRestartWitnessWorkerReadiness {
   requireAvailable(): Promise<void>;
 }
+
+export interface AdministrativeRestartWitnessWorkerIdentityServer {
+  close(): Promise<void>;
+  start(): Promise<void>;
+}
+
+export const administrativeRestartWitnessWorkerIdentitySocketPath =
+  "/run/voice-agent-worker/restart-witness.sock";
 
 export interface AdministrativeRestartWitnessRuntime {
   observe(
@@ -278,7 +303,10 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
         throw new AdministrativeRestartWitnessWorkerObservationError();
       }
       try {
-        await input.workerHealth.requireAvailable();
+        await input.workerHealth.requireExact({
+          releaseCommit,
+          workerServiceInstanceFingerprint: serviceInstances.worker,
+        });
       } catch {
         throw new AdministrativeRestartWitnessWorkerObservationError();
       }
@@ -292,10 +320,10 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
   };
 }
 
-/** Fixed localhost health seam for the deployment-composed worker service. */
-export function createNodeAdministrativeRestartWitnessWorkerHealth(input: {
+/** Readiness probe used before the worker exposes its exact identity seam. */
+export function createNodeAdministrativeRestartWitnessWorkerReadiness(input: {
   readonly port: number;
-}): AdministrativeRestartWitnessWorkerHealth {
+}): AdministrativeRestartWitnessWorkerReadiness {
   if (!Number.isInteger(input.port) || input.port < 1 || input.port > 65_535) {
     throw new Error("The worker health port is invalid");
   }
@@ -313,9 +341,75 @@ export function createNodeAdministrativeRestartWitnessWorkerHealth(input: {
   };
 }
 
+/** Reads and verifies the exact identity owned by the live worker process. */
+export function createNodeAdministrativeRestartWitnessWorkerHealth(input: {
+  readonly socketPath?: string;
+} = {}): AdministrativeRestartWitnessWorkerHealth {
+  const socketPath =
+    input.socketPath ?? administrativeRestartWitnessWorkerIdentitySocketPath;
+  return {
+    async requireExact(untrustedIdentity) {
+      const expected =
+        administrativeRestartWitnessWorkerIdentitySchema.parse(
+          untrustedIdentity,
+        );
+      const observed = await readWorkerIdentity(socketPath);
+      if (
+        observed.releaseCommit !== expected.releaseCommit ||
+        observed.workerServiceInstanceFingerprint !==
+          expected.workerServiceInstanceFingerprint
+      ) {
+        throw new Error("The live worker identity does not match its registration");
+      }
+    },
+  };
+}
+
+/** Serves only the sanitized Release-bound identity of this worker process. */
+export function createNodeAdministrativeRestartWitnessWorkerIdentityServer(input: {
+  readonly identity: AdministrativeRestartWitnessWorkerIdentity;
+  readonly socketPath?: string;
+}): AdministrativeRestartWitnessWorkerIdentityServer {
+  const identity = administrativeRestartWitnessWorkerIdentitySchema.parse(
+    input.identity,
+  );
+  const socketPath =
+    input.socketPath ?? administrativeRestartWitnessWorkerIdentitySocketPath;
+  const server = createServer((connection) => {
+    connection.end(`${JSON.stringify(identity)}\n`);
+  });
+  return {
+    async close() {
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) =>
+            error === undefined ? resolve() : reject(error),
+          );
+        });
+      }
+      await unlink(socketPath).catch((error: unknown) => {
+        if (!isMissingFile(error)) throw error;
+      });
+    },
+    async start() {
+      await unlink(socketPath).catch((error: unknown) => {
+        if (!isMissingFile(error)) throw error;
+      });
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(socketPath, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+      await chmod(socketPath, 0o660);
+    },
+  };
+}
+
 /**
  * Registers one concrete service startup after validating the executing bytes.
- * Only domain-separated hashes cross into the append-only durable ledger.
+ * Only domain-separated hashes cross into the bounded durable projection.
  */
 type RegisterRestartWitnessServiceInput = {
   readonly nextServiceInstanceId: () => string;
@@ -329,15 +423,27 @@ type RegisterRestartWitnessServiceInput = {
 
 export function registerNodeAdministrativeRestartWitnessServiceInstance(
   input: RegisterRestartWitnessServiceInput & { readonly service: "api" },
-): Promise<AdministrativeRestartWitnessApiServiceInstanceFingerprint>;
+): Promise<{
+  readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+  readonly serviceInstanceFingerprint: AdministrativeRestartWitnessApiServiceInstanceFingerprint;
+}>;
 export function registerNodeAdministrativeRestartWitnessServiceInstance(
   input: RegisterRestartWitnessServiceInput & { readonly service: "worker" },
-): Promise<AdministrativeRestartWitnessWorkerServiceInstanceFingerprint>;
+): Promise<{
+  readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+  readonly serviceInstanceFingerprint: AdministrativeRestartWitnessWorkerServiceInstanceFingerprint;
+}>;
 export async function registerNodeAdministrativeRestartWitnessServiceInstance(
   input: RegisterRestartWitnessServiceInput,
 ): Promise<
-  | AdministrativeRestartWitnessApiServiceInstanceFingerprint
-  | AdministrativeRestartWitnessWorkerServiceInstanceFingerprint
+  | {
+      readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+      readonly serviceInstanceFingerprint: AdministrativeRestartWitnessApiServiceInstanceFingerprint;
+    }
+  | {
+      readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+      readonly serviceInstanceFingerprint: AdministrativeRestartWitnessWorkerServiceInstanceFingerprint;
+    }
 > {
   const service = administrativeRestartWitnessServiceSchema.parse(input.service);
   const serviceInstanceId =
@@ -401,9 +507,13 @@ export async function registerNodeAdministrativeRestartWitnessServiceInstance(
       ),
       service,
     });
-    return administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
-      registered,
-    );
+    return {
+      releaseCommit,
+      serviceInstanceFingerprint:
+        administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
+          registered,
+        ),
+    };
   }
   const registered = await input.store.registerServiceInstance({
     ...common,
@@ -413,9 +523,48 @@ export async function registerNodeAdministrativeRestartWitnessServiceInstance(
     ),
     service,
   });
-  return administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
-    registered,
-  );
+  return {
+    releaseCommit,
+    serviceInstanceFingerprint:
+      administrativeRestartWitnessWorkerServiceInstanceFingerprintSchema.parse(
+        registered,
+      ),
+  };
+}
+
+async function readWorkerIdentity(
+  socketPath: string,
+): Promise<AdministrativeRestartWitnessWorkerIdentity> {
+  return await new Promise((resolve, reject) => {
+    const connection = createConnection(socketPath);
+    let payload = "";
+    connection.setEncoding("utf8");
+    connection.setTimeout(2_000, () => {
+      connection.destroy(new Error("The worker identity observation timed out"));
+    });
+    connection.on("data", (chunk: string) => {
+      payload += chunk;
+      if (payload.length > 2_000) {
+        connection.destroy(new Error("The worker identity response is too large"));
+      }
+    });
+    connection.once("error", reject);
+    connection.once("end", () => {
+      try {
+        resolve(
+          administrativeRestartWitnessWorkerIdentitySchema.parse(
+            JSON.parse(payload),
+          ),
+        );
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function modeIsImmutable(mode: number): boolean {
