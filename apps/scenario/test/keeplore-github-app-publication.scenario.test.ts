@@ -693,7 +693,7 @@ function policyJournal(
         "pull_request",
         "required_status_checks",
       ],
-      application: "keeplore-production",
+      registeredCodebaseId: "keeplore-production",
       branch: "main",
       kind: "branch-rules",
       observedAt,
@@ -702,7 +702,7 @@ function policyJournal(
       requiredChecks: overrides.requiredChecks ?? ["keeplore-verification"],
     },
     {
-      application: "keeplore-production",
+      registeredCodebaseId: "keeplore-production",
       attestedAt: observedAt,
       attestedBy: "owner",
       branch: "main",
@@ -715,7 +715,7 @@ function policyJournal(
     {
       appId: overrides.appId ?? 123,
       appSlug: overrides.appSlug ?? "keeplore-publisher",
-      application: "keeplore-production",
+      registeredCodebaseId: "keeplore-production",
       installationId: overrides.installationId ?? 456,
       kind: "github-app",
       observedAt,

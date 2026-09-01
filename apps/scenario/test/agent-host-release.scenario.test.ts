@@ -125,6 +125,12 @@ test("the Keeplore Subagent keeps model tools behind the registered CSS boundary
   expect(runner).toContain("/var/lib/voice-codex/results");
   expect(verifier).toContain("await context.setOffline(true)");
   expect(publisher).toContain('repositories: [keeploreRepositoryName]');
+  expect(publisher).toContain(
+    'import type { RegisteredCodebaseId } from "../../packages/contracts/src/index.ts";',
+  );
+  expect(publisher).not.toMatch(
+    /import \{[^}]*\} from "\.\.\/\.\.\/packages\/contracts/u,
+  );
   expect(publisher).toContain('contents: "write", pull_requests: "write"');
   expect(publisher).toContain("new DatabaseSync(databasePath, { readOnly: true })");
   expect(publisher).toContain("/installation/token");

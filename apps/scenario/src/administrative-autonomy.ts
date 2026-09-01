@@ -1271,7 +1271,9 @@ function forgeAdministrativeCompletionEvent(
             ...(forgery === "operation-id"
               ? {
                   operationId:
-                    administrativeOperationIdSchema.parse("forged-operation"),
+                    administrativeOperationIdSchema.parse(
+                      "administrative-task-1-operation-2",
+                    ),
                 }
               : {}),
             ...(forgery === "result" ? { result: forgedResult } : {}),

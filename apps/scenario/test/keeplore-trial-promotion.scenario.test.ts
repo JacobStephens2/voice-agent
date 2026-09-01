@@ -581,7 +581,8 @@ async function createScenario(): Promise<KeeploreButtonTrialScenario> {
 
 function promotedAttempt(): KeeplorePromotionAttemptRecord {
   return {
-    application: "keeplore-production",
+    registeredCodebaseId:
+      registeredCodebaseIdSchema.parse("keeplore-production"),
     attemptedAt: "2026-08-25T15:05:00.000Z",
     checks: [{ conclusion: "success", name: "keeplore-verification" }],
     commit: mergeCommit,
@@ -621,7 +622,8 @@ function unverifiedPromotedAttempt(): KeeplorePromotionAttemptRecord {
 
 function steppedBackAttempt(): KeeplorePromotionAttemptRecord {
   return {
-    application: "keeplore-production",
+    registeredCodebaseId:
+      registeredCodebaseIdSchema.parse("keeplore-production"),
     attemptedAt: "2026-08-25T16:00:00.000Z",
     commit: previousCommit,
     contractRevision: 2,

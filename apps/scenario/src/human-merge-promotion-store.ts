@@ -26,6 +26,7 @@ import {
   promotionReleaseProjectionSchema,
   promotionRollbackProjectionSchema,
   promotionVerificationProjectionSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
   registeredCodebaseIdSchema,
   safePointDispositionSchema,
   selfPromotionVerificationSchema,
@@ -1683,7 +1684,9 @@ interface StoredValueSchema<T> {
 }
 
 function parseStored<T>(value: string, schema: StoredValueSchema<T>): T {
-  return schema.parse(JSON.parse(value));
+  return schema.parse(
+    normalizeStoredRegisteredCodebaseIdentity(JSON.parse(value)),
+  );
 }
 
 function requireRecord(

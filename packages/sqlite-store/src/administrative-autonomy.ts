@@ -45,6 +45,7 @@ import {
   type AdministrativePolicyStatus,
   type AdministrativePolicyEvidenceEvent,
   type AdministrativeTask,
+  type LivePatchRollbackActivationResult,
 } from "@voice-agent/contracts";
 import type {
   AdministrativeAutonomyStore,
@@ -215,7 +216,7 @@ function assertAdministrativeOperationCompletionEvidence(
     event.occurredAt !== result.completedAt ||
     event.details.kind !== result.kind ||
     event.details.operationId !== result.operationId ||
-    JSON.stringify(event.details.result) !== JSON.stringify(result)
+    !sameAdministrativeResult(event.details.result, result)
   ) {
     throw new Error(
       "Administrative Operation completion Evidence Event is mismatched",
@@ -237,6 +238,18 @@ function validateLivePatchCompletion(
   ) {
     throw new Error("Live Patch completion changed its trusted target");
   }
+}
+
+function sameAdministrativeResult(
+  left: AdministrativeOperationResult,
+  right: AdministrativeOperationResult,
+): boolean;
+function sameAdministrativeResult(
+  left: LivePatchRollbackActivationResult,
+  right: LivePatchRollbackActivationResult,
+): boolean;
+function sameAdministrativeResult(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export function createSqliteAdministrativeAutonomyStore(
@@ -1283,7 +1296,7 @@ export function createSqliteAdministrativeAutonomyStore(
           "administrative.live-patch.rollback-activated" ||
         completedEvent.occurredAt !== result.activatedAt ||
         completedEvent.details.operationId !== result.operationId ||
-        JSON.stringify(completedEvent.details.result) !== JSON.stringify(result)
+        !sameAdministrativeResult(completedEvent.details.result, result)
       ) {
         throw new Error(
           "Live Patch rollback Evidence Event does not match its result",
@@ -1630,7 +1643,7 @@ export function createSqliteAdministrativeAutonomyStore(
         const durableResult = administrativeOperationResultSchema.parse(
           JSON.parse(operation.result_json),
         );
-        if (JSON.stringify(durableResult) !== JSON.stringify(submittedResult)) {
+        if (!sameAdministrativeResult(durableResult, submittedResult)) {
           throw new Error(
             "Administrative Operation replay does not match its durable result",
           );
@@ -1767,8 +1780,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.operationEvent.details.kind !== result.kind ||
         input.operationEvent.details.terminalStatus !==
           result.delegation.status ||
-        JSON.stringify(input.operationEvent.details.result) !==
-          JSON.stringify(result)
+        !sameAdministrativeResult(input.operationEvent.details.result, result)
       ) {
         throw new Error("Terminal Delegation Evidence Event is mismatched");
       }

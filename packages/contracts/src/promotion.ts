@@ -19,6 +19,48 @@ export const registeredCodebaseIdSchema = z
 export type RegisteredCodebaseId = z.infer<
   typeof registeredCodebaseIdSchema
 >;
+
+/**
+ * Normalize the historical identity field only when decoding durable records.
+ * Public request/domain schemas remain strict and emit only the canonical,
+ * branded `registeredCodebaseId` field.
+ */
+export function normalizeStoredRegisteredCodebaseIdentity(
+  value: unknown,
+): unknown {
+  if (!isRecord(value)) return value;
+  const normalized = renameLegacyRegisteredCodebaseIdentity(value);
+  if (!isRecord(normalized.registeredCodebase)) return normalized;
+  return {
+    ...normalized,
+    registeredCodebase: renameLegacyRegisteredCodebaseIdentity(
+      normalized.registeredCodebase,
+    ),
+  };
+}
+
+function renameLegacyRegisteredCodebaseIdentity(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const hasApplication = "application" in value;
+  const hasApplicationId = "applicationId" in value;
+  if (
+    "registeredCodebaseId" in value ||
+    hasApplication === hasApplicationId
+  ) {
+    return value;
+  }
+  if (hasApplicationId) {
+    const { applicationId, ...canonical } = value;
+    return { ...canonical, registeredCodebaseId: applicationId };
+  }
+  const { application, ...canonical } = value;
+  return { ...canonical, registeredCodebaseId: application };
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 const promotionRepositorySchema = z
   .string()
   .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);

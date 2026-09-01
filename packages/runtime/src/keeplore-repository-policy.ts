@@ -1,5 +1,6 @@
 import {
   keeploreRepositoryPolicyObservationSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
   type KeeploreBranchBypassAttestation,
   type KeeploreBranchRulesObservation,
   type KeeploreGitHubAppObservation,
@@ -50,8 +51,9 @@ export function readKeeploreRepositoryPolicyObservations(
     } catch {
       continue;
     }
-    const observation =
-      keeploreRepositoryPolicyObservationSchema.safeParse(parsed);
+    const observation = keeploreRepositoryPolicyObservationSchema.safeParse(
+      normalizeStoredRegisteredCodebaseIdentity(parsed),
+    );
     if (observation.success) observations.push(observation.data);
   }
   return observations;

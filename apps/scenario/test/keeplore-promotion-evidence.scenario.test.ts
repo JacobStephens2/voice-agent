@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, expect, test } from "vitest";
 
 import { createSqliteKeeploreOnboardingStore } from "@voice-agent/sqlite-store";
@@ -21,6 +22,7 @@ const retainedCommit = "52173a8efacf7bc9c94be75664ef8cb091143516";
 /** The shape the Agent Host actually appends, drill line included. */
 const hostJournal = [
   JSON.stringify({
+    // Historical journal spelling remains readable at the persistence seam.
     application: "keeplore-production",
     attemptedAt: "2026-08-20T08:22:07Z",
     commit: promotedCommit,
@@ -39,7 +41,7 @@ const hostJournal = [
     verification: { actualStatus: 200, expectedStatus: 200 },
   }),
   JSON.stringify({
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     attemptedAt: "2026-08-20T09:10:29Z",
     commit: retainedCommit,
     previous: promotedCommit,
@@ -48,7 +50,10 @@ const hostJournal = [
     stage: "verification-drill",
   }),
   "{ truncated line the host is still appending",
-  JSON.stringify({ application: "other-application", commit: promotedCommit }),
+  JSON.stringify({
+    commit: promotedCommit,
+    registeredCodebaseId: "other-application",
+  }),
 ].join("\n");
 
 afterEach(async () => {
@@ -66,6 +71,41 @@ test("a truncated or foreign journal line never becomes evidence", () => {
     "promotion",
     "verification-drill",
   ]);
+});
+
+test("legacy Keeplore enrollment and Deployment Contract identity survive restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "keeplore-legacy-identity-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const schemaStore = createSqliteKeeploreOnboardingStore(databasePath);
+  schemaStore.close();
+
+  const legacyRegistration = withLegacyRegisteredCodebaseId(registration());
+  const legacyContract = withLegacyRegisteredCodebaseId(contract());
+  const database = new Database(databasePath);
+  database
+    .prepare(
+      "INSERT INTO keeplore_registrations (revision, definition_json) VALUES (?, ?)",
+    )
+    .run(1, JSON.stringify(legacyRegistration));
+  database
+    .prepare(
+      "INSERT INTO keeplore_contracts (revision, definition_json) VALUES (?, ?)",
+    )
+    .run(1, JSON.stringify(legacyContract));
+  database.close();
+
+  const restarted = createSqliteKeeploreOnboardingStore(databasePath);
+  const restoredRegistration = await restarted.findRegistration();
+  const restoredContract = await restarted.findActiveContract();
+
+  expect({ restoredContract, restoredRegistration }).toMatchObject({
+    restoredContract: { registeredCodebaseId: "keeplore-production" },
+    restoredRegistration: { registeredCodebaseId: "keeplore-production" },
+  });
+  expect(restoredRegistration).not.toHaveProperty("applicationId");
+  expect(restoredContract).not.toHaveProperty("applicationId");
+  restarted.close();
 });
 
 test("an unenrolled Keeplore has no Evidence Record, however full the journal", async () => {
@@ -143,7 +183,7 @@ test("a bounded step back is not a fresh Promotion of the retained Release", asy
   await store.saveRegistration(registration());
   await store.saveContract(contract());
   const journal = JSON.stringify({
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     attemptedAt: "2026-08-25T16:00:00Z",
     commit: retainedCommit,
     previous: promotedCommit,
@@ -223,4 +263,11 @@ function contract(): KeeploreDeploymentContract {
     revision: 1,
     source: "voice-agent-policy",
   };
+}
+
+function withLegacyRegisteredCodebaseId(
+  value: KeeploreDeploymentContract | KeeploreRegistration,
+): Record<string, unknown> {
+  const { registeredCodebaseId, ...legacy } = value;
+  return { ...legacy, applicationId: registeredCodebaseId };
 }

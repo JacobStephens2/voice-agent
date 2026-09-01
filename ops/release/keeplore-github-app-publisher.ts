@@ -13,13 +13,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 
-import {
-  keeploreRegisteredCodebaseId,
-  registeredCodebaseIdSchema,
-} from "../../packages/contracts/src/index.ts";
+// This file is installed as a standalone pinned authority. The type-only import
+// is erased by Node's strip-types loader; runtime identity validation below is
+// self-contained so deployment never resolves outside the reviewed artifact.
+import type { RegisteredCodebaseId } from "../../packages/contracts/src/index.ts";
 
 const keeploreRepository = "JacobStephens2/keeplore" as const;
 const keeploreRepositoryName = "keeplore" as const;
+const keeploreRegisteredCodebaseId = parseRegisteredCodebaseId(
+  "keeplore-production",
+);
 const keeploreProductionBranch = "main" as const;
 const keeploreRemote = "https://github.com/JacobStephens2/keeplore.git";
 const worktreeRoot = "/var/lib/voice-agent-worktrees/keeplore";
@@ -319,6 +322,31 @@ function parsePublicationRequest(input: unknown): KeeplorePublicationRequest {
   };
 }
 
+function parseRegisteredCodebaseId(
+  input: "keeplore-production",
+): RegisteredCodebaseId;
+function parseRegisteredCodebaseId(
+  input: unknown,
+): RegisteredCodebaseId | undefined;
+function parseRegisteredCodebaseId(
+  input: unknown,
+): RegisteredCodebaseId | undefined {
+  return input === "keeplore-production"
+    ? (input as RegisteredCodebaseId)
+    : undefined;
+}
+
+function storedRegisteredCodebaseId(
+  record: Readonly<Record<string, unknown>>,
+): RegisteredCodebaseId | undefined {
+  if ("registeredCodebaseId" in record && "application" in record) {
+    return undefined;
+  }
+  return parseRegisteredCodebaseId(
+    record.registeredCodebaseId ?? record.application,
+  );
+}
+
 function parseRegisteredDelegation(
   input: unknown,
   requestedDelegationId: string,
@@ -330,15 +358,14 @@ function parseRegisteredDelegation(
     "Registered Codebase",
   );
   const worktree = requireRecord(record.worktree, "Delegated Worktree");
-  const registeredCodebaseId = registeredCodebaseIdSchema.safeParse(
+  const registeredCodebaseId = parseRegisteredCodebaseId(
     codebase.registeredCodebaseId,
   );
   if (
     record.status !== "running" ||
     record.stopRequested !== false ||
     brief.delegationId !== requestedDelegationId ||
-    !registeredCodebaseId.success ||
-    registeredCodebaseId.data !== keeploreRegisteredCodebaseId ||
+    registeredCodebaseId !== keeploreRegisteredCodebaseId ||
     codebase.repository !== keeploreRepository ||
     codebase.productionBranch !== keeploreProductionBranch ||
     typeof codebase.revision !== "number" ||
@@ -389,7 +416,8 @@ function authorizeRepositoryPolicy(input: {
   }
   for (const observation of [rules, bypass, app]) {
     if (
-      observation.application !== keeploreRegisteredCodebaseId ||
+      storedRegisteredCodebaseId(observation) !==
+        keeploreRegisteredCodebaseId ||
       !freshTimestamp(observation.observedAt, input.now)
     ) {
       throw new Error("Keeplore publication policy is absent or stale");
