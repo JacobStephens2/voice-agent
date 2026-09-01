@@ -132,21 +132,14 @@ test.each([
 ] as const)(
   "a restarted runtime refuses a mismatched %s identity until Fresh Passkey activation",
   async (_implementation, executionImplementationVersions) => {
-    const directory = await mkdtemp(
-      join(tmpdir(), "voice-agent-administrative-"),
-    );
-    temporaryDirectories.push(directory);
-    const databasePath = join(directory, "voice-agent.sqlite");
-    const firstProcess = await createAdministrativeAutonomyScenario({
-      databasePath,
-      now: "2026-10-02T10:10:00.000Z",
-      providerPlan: [{ kind: "production.observe" }],
-    });
-    await firstProcess.activatePolicy({
-      expectedActiveRevision: null,
-      expectedStateVersion: 0,
-      freshPasskey: true,
-    });
+    const { databasePath, scenario: firstProcess } =
+      await createActivatedScenario(
+        {
+          now: "2026-10-02T10:10:00.000Z",
+          providerPlan: [{ kind: "production.observe" }],
+        },
+        temporaryDirectories,
+      );
     await firstProcess.close();
 
     await expect(
@@ -887,24 +880,18 @@ test("Administrative Suspension retains failed Live Patch rollback activation fo
 });
 
 test("pending Live Patch rollback activation blocks Fresh Passkey reactivation until restart recovery", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
-  temporaryDirectories.push(directory);
-  const databasePath = join(directory, "voice-agent.sqlite");
   const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
   const rollbackActivationLedger = new Set<string>();
-  const firstProcess = await createAdministrativeAutonomyScenario({
-    databasePath,
-    now: "2026-10-02T14:35:00.000Z",
-    providerPlan: [{ kind: "live-patch.apply" }],
-    rollbackActivationAttempts,
-    rollbackActivationFailures: 2,
-    rollbackActivationLedger,
-  });
-  await firstProcess.activatePolicy({
-    expectedActiveRevision: null,
-    expectedStateVersion: 0,
-    freshPasskey: true,
-  });
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      now: "2026-10-02T14:35:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationAttempts,
+      rollbackActivationFailures: 2,
+      rollbackActivationLedger,
+    },
+    temporaryDirectories,
+  );
   await firstProcess.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",
@@ -926,16 +913,54 @@ test("pending Live Patch rollback activation blocks Fresh Passkey reactivation u
   const stillPending = await firstProcess.readPolicyStatus();
   await firstProcess.close();
 
-  const restartedProcess = await createAdministrativeAutonomyScenario({
+  const mismatchedProcess = await createAdministrativeAutonomyScenario({
     databasePath,
-    identifierNamespace: "pending-reactivation-restart-",
+    executionImplementationVersions: {
+      executor: 2,
+      provider: 2,
+      rollbackActivator: 2,
+    },
+    executionManifestVersion: 2,
+    identifierNamespace: "pending-reactivation-mismatch-",
     now: "2026-10-02T14:36:00.000Z",
     providerPlan: [{ kind: "live-patch.apply" }],
     rollbackActivationAttempts,
     rollbackActivationLedger,
   });
-  const recovered = await restartedProcess.readPolicyStatus();
-  const reactivated = await restartedProcess.activatePolicy({
+  const mismatchStatus = await mismatchedProcess.readPolicyStatus();
+  const mismatchReactivation = await mismatchedProcess.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 2,
+    freshPasskey: true,
+  });
+  await mismatchedProcess.close();
+
+  const recoveryProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "pending-reactivation-recovery-",
+    now: "2026-10-02T14:37:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationLedger,
+  });
+  const recovered = await recoveryProcess.readPolicyStatus();
+  await recoveryProcess.close();
+
+  const replacementProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    executionImplementationVersions: {
+      executor: 2,
+      provider: 2,
+      rollbackActivator: 2,
+    },
+    executionManifestVersion: 2,
+    identifierNamespace: "pending-reactivation-replacement-",
+    now: "2026-10-02T14:38:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationLedger,
+  });
+  const reactivated = await replacementProcess.activatePolicy({
     expectedActiveRevision: 1,
     expectedStateVersion: 2,
     freshPasskey: true,
@@ -944,6 +969,8 @@ test("pending Live Patch rollback activation blocks Fresh Passkey reactivation u
   expect({
     attempts: rollbackActivationAttempts.map((request) => request.operationId),
     blockedReactivation,
+    mismatchReactivation,
+    mismatchStatus,
     reactivated,
     recovered,
     stillPending,
@@ -959,6 +986,20 @@ test("pending Live Patch rollback activation blocks Fresh Passkey reactivation u
           "Administrative Suspension has pending Live Patch rollback activation",
       },
       statusCode: 409,
+    },
+    mismatchReactivation: {
+      body: {
+        error:
+          "Administrative Suspension has pending Live Patch rollback activation",
+      },
+      statusCode: 409,
+    },
+    mismatchStatus: {
+      rollbackActivations: {
+        activatedOperationIds: [],
+        pendingOperationIds: ["administrative-operation-1"],
+      },
+      status: "suspended",
     },
     reactivated: {
       body: { revision: 2, stateVersion: 3, status: "active" },
@@ -980,7 +1021,7 @@ test("pending Live Patch rollback activation blocks Fresh Passkey reactivation u
     },
   });
 
-  await restartedProcess.close();
+  await replacementProcess.close();
 });
 
 test("Administrative Suspension replays rollback activation without repeating its effect", async () => {

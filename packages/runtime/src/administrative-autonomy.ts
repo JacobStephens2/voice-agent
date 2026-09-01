@@ -446,9 +446,17 @@ export function createAdministrativeAutonomyRuntime(options: {
   }
 
   async function reconcileLivePatchRollbackActivations(
-    suspendedAt: AdministrativeTimestamp,
+    policy: Extract<AdministrativePolicyStatus, { status: "suspended" }>,
   ): Promise<void> {
-    if (options.rollbackActivator === undefined) return;
+    if (
+      options.rollbackActivator === undefined ||
+      !rollbackActivatorIdentityMatchesManifest(
+        rollbackActivatorIdentity,
+        policy.executionManifest,
+      )
+    ) {
+      return;
+    }
     const requests =
       await options.store.listPendingLivePatchRollbackActivations();
     for (const request of requests) {
@@ -462,7 +470,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           result.target.environment !== request.target.environment ||
           result.target.registeredCodebaseId !==
             request.target.registeredCodebaseId ||
-          result.activatedAt < suspendedAt ||
+          result.activatedAt < policy.suspendedAt ||
           result.activatedAt > observedAt
         ) {
           throw new Error(
@@ -941,7 +949,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         const policy = await options.store.readPolicyStatus();
         if (policy.status === "suspended") {
           abortInFlightExecutions();
-          await reconcileLivePatchRollbackActivations(policy.suspendedAt);
+          await reconcileLivePatchRollbackActivations(policy);
           return;
         }
         const taskIds = await options.store.listRecoverableTaskIds();
@@ -967,7 +975,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         current.status === "suspended" &&
         current.rollbackActivations.pendingOperationIds.length > 0
       ) {
-        await reconcileLivePatchRollbackActivations(current.suspendedAt);
+        await reconcileLivePatchRollbackActivations(current);
         current = await options.store.readPolicyStatus();
         if (
           current.status === "suspended" &&
@@ -1244,7 +1252,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         throw new Error("Administrative Suspension did not persist");
       }
       abortInFlightExecutions();
-      await reconcileLivePatchRollbackActivations(suspended.suspendedAt);
+      await reconcileLivePatchRollbackActivations(suspended);
       const reconciled = await options.store.readPolicyStatus();
       if (reconciled.status !== "suspended") {
         throw new Error("Administrative Suspension changed concurrently");
