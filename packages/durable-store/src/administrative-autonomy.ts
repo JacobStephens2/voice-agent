@@ -1,5 +1,6 @@
 import type {
   AdministrativeEvidenceEvent,
+  AdministrativeExecutionPauseReason,
   AdministrativeEvidenceRecord,
   AdministrativeAuthoritySnapshot,
   AdministrativeOperationRequest,
@@ -78,6 +79,8 @@ export type AdministrativeOperationClaim =
         | "execution-manifest"
         | "stale-policy";
     }
+  /** The Task is paused or stopped: no work may start, and none has failed. */
+  | { readonly decision: "halted" }
   | { readonly decision: "empty" };
 
 export type AdministrativeEffectAuthority =
@@ -90,6 +93,33 @@ export type AdministrativeEffectAuthority =
         | "execution-manifest"
         | "live-patch-rollback"
         | "stale-policy";
+    };
+
+/**
+ * Identity for a lifetime Evidence Event. The store composes the details from
+ * the state it changes in the same transaction, so a Stop or pause can never
+ * record a projection that raced with the change it describes.
+ */
+export interface AdministrativeLifetimeEventIdentity {
+  readonly id: string;
+  readonly summary: string;
+}
+
+export type AdministrativeTaskLifetimeDenialReason =
+  | "budget-exhausted"
+  | "task-already-paused"
+  | "task-not-paused"
+  | "task-not-running"
+  | "task-unavailable";
+
+export type AdministrativeTaskLifetimeOutcome =
+  | {
+      readonly decision: "applied";
+      readonly record: AdministrativeEvidenceRecord;
+    }
+  | {
+      readonly decision: "denied";
+      readonly reason: AdministrativeTaskLifetimeDenialReason;
     };
 
 /** Durable state behind the Administrative Autonomy runtime interface. */
@@ -216,6 +246,32 @@ export interface AdministrativeAutonomyStore {
     readonly operationId: AdministrativeOperationId;
     readonly renewedAt: AdministrativeTimestamp;
   }): Promise<boolean>;
+  /**
+   * Suspends the active-execution budget. The remaining budget is banked, the
+   * deadline is cleared, and no Operation may start until the Task resumes.
+   */
+  pauseTask(input: {
+    readonly event: AdministrativeLifetimeEventIdentity;
+    readonly pausedAt: AdministrativeTimestamp;
+    readonly reason: AdministrativeExecutionPauseReason;
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeOutcome>;
+  /** Restarts the budget clock with exactly the time the Task had left. */
+  resumeTask(input: {
+    readonly event: AdministrativeLifetimeEventIdentity;
+    readonly resumedAt: AdministrativeTimestamp;
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeOutcome>;
+  /**
+   * Owner Stop. Future work is refused, outstanding Operations are settled as
+   * stopped, worktrees and evidence are preserved, and every armed Live Patch
+   * rollback for the Task becomes owed compensation.
+   */
+  stopTask(input: {
+    readonly event: AdministrativeLifetimeEventIdentity;
+    readonly stoppedAt: AdministrativeTimestamp;
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskLifetimeOutcome>;
   savePlan(input: {
     readonly operations: readonly AdministrativePlannedOperation[];
     readonly planEvent: UnsequencedAdministrativeEvidenceEvent;

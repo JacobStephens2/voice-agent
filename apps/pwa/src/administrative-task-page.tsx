@@ -20,6 +20,9 @@ const eventLabels: Record<
   "administrative.plan.accepted": "Operation plan accepted",
   "administrative.task.completed": "Administrative Task completed",
   "administrative.task.denied": "Administrative Task denied",
+  "administrative.task.paused": "Active execution paused",
+  "administrative.task.resumed": "Active execution resumed",
+  "administrative.task.stopped": "Administrative Task stopped by the owner",
 };
 
 export function AdministrativeTaskPage({

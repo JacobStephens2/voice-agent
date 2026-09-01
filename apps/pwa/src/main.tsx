@@ -52,6 +52,7 @@ import {
   registerBountywell,
   registerTelephone,
   recordAdministrativeRestartWitnessObservation,
+  suspendAdministrativePolicy,
   resumePromotionQueue,
   startRecovery,
   submitBountywellHealthInquiry,
@@ -317,6 +318,27 @@ function App() {
       });
       setMessage(
         `Administrative Autonomy Policy revision ${activated.revision} is active.`,
+      );
+    });
+  }
+
+  async function suspendAdministrativeAutonomy() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before suspending Administrative Autonomy.");
+      return;
+    }
+    await run(async () => {
+      if (administrativeAutonomy?.policy.status !== "active") {
+        throw new Error("Administrative Autonomy is not active.");
+      }
+      const revision = administrativeAutonomy.policy.revision;
+      await suspendAdministrativePolicy(csrfToken, {
+        expectedRevision: revision,
+        expectedStateVersion: administrativeAutonomy.policy.stateVersion,
+      });
+      setAdministrativeAutonomy(await loadAdministrativeAutonomyStatus());
+      setMessage(
+        `Administrative Autonomy Policy revision ${revision} is suspended. A new Fresh Passkey Action is required before reactivation.`,
       );
     });
   }
@@ -656,6 +678,7 @@ function App() {
       busy={busy}
       onAuthorizeDeploymentAuthorityUpgrade={authorizeAuthorityUpgrade}
       onActivateAdministrativeAutonomy={activateAdministrativeAutonomy}
+      onSuspendAdministrativeAutonomy={suspendAdministrativeAutonomy}
       onFresh={freshPasskeyAction}
       onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}

@@ -26,6 +26,7 @@ import {
   type AdministrativePolicyActivationSource,
   type AdministrativePolicyStatus,
   type AdministrativeProviderPlan,
+  type AdministrativeExecutionPauseReason,
   type AdministrativeRequestedOutcome,
   type AdministrativeTaskTarget,
   type AdministrativeTaskTargetRequestInput,
@@ -40,6 +41,7 @@ import {
   type EvidenceRecordAuthentication,
 } from "@voice-agent/api";
 import {
+  AdministrativeExecutionPaused,
   createAdministrativeAutonomyRuntime,
   createTaskContinuityRuntime,
   type AdministrativeOperationExecution,
@@ -129,6 +131,15 @@ export interface AdministrativeAutonomyScenario {
     readonly statusCode: number;
   }>;
   reconcileOperations(): Promise<void>;
+  /** Owner Stop through the authenticated API, not the provider or a call. */
+  stopTask(
+    taskId: string,
+    authorization?: ScenarioAdministrativeAuthorization,
+  ): Promise<{ readonly body: unknown; readonly statusCode: number }>;
+  resumeTask(
+    taskId: string,
+    authorization?: ScenarioAdministrativeAuthorization,
+  ): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   suspendPolicy(input: {
     readonly authenticated: boolean;
     readonly expectedRevision: number;
@@ -415,6 +426,10 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly databasePath: string;
   readonly effectLedger?: Set<string>;
   readonly executorFailures?: number;
+  /** One pause signal per Operation attempt, in order, before its effect. */
+  readonly executorPauses?: readonly AdministrativeExecutionPauseReason[];
+  /** An untrusted pause reason the executor invents rather than one of ours. */
+  readonly executorPauseForgery?: string;
   readonly executionAdapters?: "available" | "unavailable";
   readonly operationCompletionEvidenceForgery?:
     | "details-kind"
@@ -461,6 +476,8 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly providerFailures?: number;
   readonly planningDeadlineCallbacks?: Array<() => void>;
   readonly providerPlan: AdministrativeProviderPlan | unknown;
+  /** Per-Task plans, so one scenario can run mutation and Research together. */
+  readonly providerPlanByTaskId?: Readonly<Record<string, unknown>>;
   readonly providerSignals?: Array<AbortSignal | undefined>;
   readonly reconciliationCallbacks?: Array<() => Promise<void>>;
   readonly reconciliationSchedule?: string[];
@@ -519,6 +536,8 @@ export async function createAdministrativeAutonomyScenario(options: {
   let forgedOperationCompletionEvidence = false;
   let revisePolicyAfterFirstOperation = false;
   let revisePolicyBeforePlanAdmission = false;
+  const executorPauses = [...(options.executorPauses ?? [])];
+  let forgedPauseAttempted = false;
   let providerFailuresRemaining = options.providerFailures ?? 0;
   let executorFailuresRemaining = options.executorFailures ?? 0;
   let rollbackActivationFailuresRemaining =
@@ -766,6 +785,16 @@ export async function createAdministrativeAutonomyScenario(options: {
         executorFailuresRemaining -= 1;
         throw new Error("Simulated executor failure before the Operation effect");
       }
+      if (options.executorPauseForgery !== undefined && !forgedPauseAttempted) {
+        forgedPauseAttempted = true;
+        throw new AdministrativeExecutionPaused(
+          options.executorPauseForgery as AdministrativeExecutionPauseReason,
+        );
+      }
+      const pauseReason = executorPauses.shift();
+      if (pauseReason !== undefined) {
+        throw new AdministrativeExecutionPaused(pauseReason);
+      }
       if (options.holdOperationUntilAbort) await waitForAbort(signal);
       const effectWasAlreadyApplied = effectLedger.has(request.operationId);
       let livePatchProof =
@@ -933,7 +962,7 @@ export async function createAdministrativeAutonomyScenario(options: {
           source: "fresh-passkey-action",
         });
       }
-      return options.providerPlan;
+      return options.providerPlanByTaskId?.[input.taskId] ?? options.providerPlan;
     },
   };
   const rollbackActivator = {
@@ -1210,6 +1239,22 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
   });
 
+  async function administrativeTaskLifetimeRequest(
+    action: "resume" | "stop",
+    taskId: string,
+    authorization: ScenarioAdministrativeAuthorization,
+  ): Promise<{ readonly body: unknown; readonly statusCode: number }> {
+    const requestAuthorization =
+      administrativeRequestAuthorization(authorization);
+    const response = await api.inject({
+      headers: requestAuthorization.headers,
+      method: "POST",
+      payload: { csrfToken: requestAuthorization.csrfToken },
+      url: `/api/administrative-autonomy/tasks/${encodeURIComponent(taskId)}/${action}`,
+    });
+    return { body: response.json<unknown>(), statusCode: response.statusCode };
+  }
+
   return {
     async applyEvidenceLifecyclePolicy(input) {
       if (options.authentication === undefined) {
@@ -1330,6 +1375,10 @@ export async function createAdministrativeAutonomyScenario(options: {
       };
     },
     readPolicyStatus: () => runtime.getPolicyStatus(),
+    stopTask: (taskId, authorization = "owner-session") =>
+      administrativeTaskLifetimeRequest("stop", taskId, authorization),
+    resumeTask: (taskId, authorization = "owner-session") =>
+      administrativeTaskLifetimeRequest("resume", taskId, authorization),
     async respondToTaskConfirmation(input, authorization) {
       const requestAuthorization =
         administrativeRequestAuthorization(authorization);

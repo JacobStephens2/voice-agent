@@ -58,6 +58,30 @@ export const administrativeActiveExecutionMilliseconds =
 export const livePatchRollbackWindowMilliseconds = 30 * 60 * 1_000;
 export const livePatchRollbackActivationAttemptMilliseconds = 30 * 1_000;
 
+/**
+ * A Durable Task only spends its six-hour budget while it is actually working.
+ * Provider pauses, quota exhaustion, and waiting on the owner suspend the
+ * clock rather than consuming it.
+ */
+export const administrativeExecutionPauseReasonSchema = z.enum([
+  "provider-paused",
+  "quota-blocked",
+  "owner-waiting",
+]);
+export type AdministrativeExecutionPauseReason = z.infer<
+  typeof administrativeExecutionPauseReasonSchema
+>;
+
+export const administrativeExecutionPauseSchema = z
+  .object({
+    pausedAt: timestampSchema,
+    reason: administrativeExecutionPauseReasonSchema,
+  })
+  .strict();
+export type AdministrativeExecutionPause = z.infer<
+  typeof administrativeExecutionPauseSchema
+>;
+
 export const administrativePolicyActivationSourceSchema = z.enum([
   "fresh-passkey-action",
   "trusted-browser-session",
@@ -582,6 +606,16 @@ export const suspendAdministrativePolicyRequestSchema = z
   })
   .strict();
 
+/**
+ * Stop and resume act on one Durable Task. Neither widens authority, so both
+ * take an authenticated state-changing session rather than a Fresh Passkey.
+ */
+export const administrativeTaskLifetimeRequestSchema = z
+  .object({ csrfToken: z.string().min(16).max(200) })
+  .strict();
+
+
+
 export const administrativeRequestedOutcomeSchema = z.enum([
   "fix",
   "repair",
@@ -802,9 +836,20 @@ export type LivePatchRollbackActivationRequest = z.infer<
   typeof livePatchRollbackActivationRequestSchema
 >;
 
+export const administrativeCompensationTriggerSchema = z.enum([
+  "administrative-suspension",
+  "task-stopped",
+]);
+export type AdministrativeCompensationTrigger = z.infer<
+  typeof administrativeCompensationTriggerSchema
+>;
+
 export const pendingLivePatchRollbackActivationSchema = z
   .object({
     attemptCount: z.number().int().nonnegative(),
+    /** The moment compensation became owed; every proof must postdate it. */
+    compensationRequestedAt: timestampSchema,
+    compensationTrigger: administrativeCompensationTriggerSchema,
     lastFailureReason:
       livePatchRollbackActivationFailureReasonSchema.nullable(),
     nextAttemptAt: timestampSchema,
@@ -1456,9 +1501,16 @@ export function isLivePatchMutationProofBoundToRequest(
 export const administrativeTaskSchema = z
   .object({
     activeExecutionDeadline: timestampSchema.nullable(),
+    /** Budget already spent working; a paused Task never adds to it. */
+    activeExecutionConsumedMilliseconds: z
+      .number()
+      .int()
+      .min(0)
+      .max(administrativeActiveExecutionMilliseconds),
     authority: administrativeAuthoritySnapshotSchema,
     conclusion: z.string().min(1).max(240),
     createdAt: timestampSchema,
+    executionPause: administrativeExecutionPauseSchema.nullable(),
     id: administrativeTaskIdSchema,
     intendedState: administrativeIntendedStateSchema,
     kind: z.literal("administrative.work"),
@@ -1471,12 +1523,36 @@ export const administrativeTaskSchema = z
       "running",
       "completed",
       "denied",
+      "stopped",
     ]),
     target: administrativeTaskTargetSchema,
     updatedAt: timestampSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((task, context) => {
+    if (task.executionPause !== null && task.activeExecutionDeadline !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "A paused Administrative Task cannot hold an active deadline",
+        path: ["activeExecutionDeadline"],
+      });
+    }
+  });
 export type AdministrativeTask = z.infer<typeof administrativeTaskSchema>;
+
+/**
+ * Remaining budget while running. A paused Task keeps what it has not spent,
+ * so the six-hour bound covers active execution alone.
+ */
+export function administrativeRemainingActiveExecutionMilliseconds(
+  task: Pick<AdministrativeTask, "activeExecutionConsumedMilliseconds">,
+): number {
+  return Math.max(
+    0,
+    administrativeActiveExecutionMilliseconds -
+      task.activeExecutionConsumedMilliseconds,
+  );
+}
 
 export const administrativeTaskPreparationResponseSchema = z.discriminatedUnion(
   "decision",
@@ -1501,6 +1577,27 @@ export const administrativeTaskPreparationResponseSchema = z.discriminatedUnion(
 );
 export type AdministrativeTaskPreparationResponse = z.infer<
   typeof administrativeTaskPreparationResponseSchema
+>;
+
+export const administrativeTaskLifetimeResponseSchema = z.discriminatedUnion(
+  "decision",
+  [
+    z
+      .object({
+        decision: z.enum(["stopped", "paused", "resumed"]),
+        task: administrativeTaskSchema,
+      })
+      .strict(),
+    z
+      .object({
+        decision: z.literal("denied"),
+        reason: z.string().min(1).max(240),
+      })
+      .strict(),
+  ],
+);
+export type AdministrativeTaskLifetimeResponse = z.infer<
+  typeof administrativeTaskLifetimeResponseSchema
 >;
 
 export const administrativeTaskAdmissionResponseSchema = z.discriminatedUnion(
@@ -1659,6 +1756,59 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
     ...eventFields,
     details: z.object({ reason: z.string().min(1).max(240) }),
     kind: z.literal("administrative.task.denied"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z
+      .object({
+        consumedMilliseconds: z
+          .number()
+          .int()
+          .min(0)
+          .max(administrativeActiveExecutionMilliseconds),
+        reason: administrativeExecutionPauseReasonSchema,
+        remainingMilliseconds: z
+          .number()
+          .int()
+          .min(0)
+          .max(administrativeActiveExecutionMilliseconds),
+      })
+      .strict(),
+    kind: z.literal("administrative.task.paused"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z
+      .object({
+        activeExecutionDeadline: timestampSchema,
+        consumedMilliseconds: z
+          .number()
+          .int()
+          .min(0)
+          .max(administrativeActiveExecutionMilliseconds),
+        pausedFor: administrativeExecutionPauseReasonSchema,
+        remainingMilliseconds: z
+          .number()
+          .int()
+          .min(0)
+          .max(administrativeActiveExecutionMilliseconds),
+      })
+      .strict(),
+    kind: z.literal("administrative.task.resumed"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z
+      .object({
+        compensatingOperationIds: z
+          .array(administrativeOperationIdSchema)
+          .max(12),
+        policyRevision: z.number().int().positive(),
+        preservedWorktrees: z.literal(true),
+        stoppedOperationIds: z.array(administrativeOperationIdSchema).max(12),
+      })
+      .strict(),
+    kind: z.literal("administrative.task.stopped"),
   }),
 ]);
 export type AdministrativeEvidenceEvent = z.infer<

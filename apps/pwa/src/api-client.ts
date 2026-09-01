@@ -42,6 +42,7 @@ import {
   type AuthenticationStatus,
   type AdministrativeAutonomyStatus,
   type AdministrativePolicyActivationExpectation,
+  type AdministrativePolicySuspensionExpectation,
   type AdministrativePolicyStatus,
   type AdministrativeRestartWitnessObservation,
   type AdministrativeRestartWitnessObservationIdentity,
@@ -112,6 +113,31 @@ export async function activateAdministrativePolicy(
             response,
             "Administrative Autonomy could not be activated.",
           ),
+    );
+  }
+  return administrativePolicyStatusSchema.parse(await response.json());
+}
+
+/**
+ * Administrative Suspension. It reaches the durable policy through the
+ * authenticated API alone, so it works when the provider, worker, and
+ * Telephone Session are all gone.
+ */
+export async function suspendAdministrativePolicy(
+  csrfToken: string,
+  expectation: AdministrativePolicySuspensionExpectation,
+): Promise<AdministrativePolicyStatus> {
+  const response = await fetch("/api/administrative-autonomy/suspend", {
+    body: JSON.stringify({ csrfToken, expectation }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      await denialReason(
+        response,
+        "Administrative Autonomy could not be suspended.",
+      ),
     );
   }
   return administrativePolicyStatusSchema.parse(await response.json());
