@@ -19,9 +19,7 @@ import {
   administrativeRestartWitnessRecord,
   administrativeRestartWitnessHostObservationSchema,
   administrativeRestartWitnessReleaseCommitSchema,
-  administrativeRestartWitnessServiceInstanceIdSchema,
   administrativeTimestampSchema,
-  agentHostBootIdentitySchema,
   administrativeUnavailableExecutionManifest,
   type AdministrativeRestartWitnessCampaign,
   type AdministrativeRestartWitnessHostObservation,
@@ -32,6 +30,9 @@ import { administrativeAutonomyPolicyDefinition } from "@voice-agent/policy";
 import {
   administrativeRestartWitnessReleaseProvenanceIsExact,
   administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable,
+  administrativeRestartWitnessIdentityFingerprint,
+  administrativeRestartWitnessServiceReleaseProvenanceIsExact,
+  AdministrativeRestartWitnessWorkerObservationError,
   createAdministrativeRestartWitnessRuntime,
 } from "@voice-agent/runtime";
 import {
@@ -126,6 +127,14 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
       })
     ).statusCode,
   ).toBe(400);
+  expect(
+    (
+      await observe(api, {
+        ...baselineRequest,
+        workerServiceInstanceId: "caller-supplied-worker",
+      })
+    ).statusCode,
+  ).toBe(400);
 
   const baseline = await observe(api, baselineRequest);
   expect(baseline.statusCode).toBe(200);
@@ -135,8 +144,13 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
     provenance: "server-recorded-authenticated-api",
     releaseCommit,
   });
-  expect(JSON.stringify(baseline.body)).not.toContain("service-baseline");
-  expect(JSON.stringify(baseline.body)).not.toContain("boot-baseline");
+  expect(JSON.stringify(baseline.body)).not.toContain(
+    fixture.identities.api,
+  );
+  expect(JSON.stringify(baseline.body)).not.toContain(
+    fixture.identities.worker,
+  );
+  expect(JSON.stringify(baseline.body)).not.toContain(fixture.bootIdentity);
   expect((await observe(api, baselineRequest)).statusCode).toBe(409);
 
   let campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
@@ -156,12 +170,12 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
 
   const unchangedService = await observe(api, serviceRequest);
   expect(unchangedService).toMatchObject({
-    body: { reason: "service-instance-unchanged" },
+    body: { reason: "api-service-instance-unchanged" },
     statusCode: 409,
   });
   campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
   expect(campaign?.observations.at(-1)).toMatchObject({
-    failure: "service-instance-unchanged",
+    failure: "api-service-instance-unchanged",
     outcome: "failed",
     phase: "service-restart",
   });
@@ -170,14 +184,32 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
   );
   expect((await observe(api, serviceRequest)).statusCode).toBe(409);
 
-  fixture.host.serviceInstanceId =
-    administrativeRestartWitnessServiceInstanceIdSchema.parse(
-      "service-after-restart",
-    );
+  await restartService(fixture, "worker");
+  if (campaign?.nextObservation === null || campaign === undefined) {
+    throw new Error("The worker-only retry challenge was not issued");
+  }
+  expect(await observe(api, requestBody(campaign))).toMatchObject({
+    body: { reason: "api-service-instance-unchanged" },
+    statusCode: 409,
+  });
+  campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
+  await restartService(fixture, "api");
   if (campaign?.nextObservation === null || campaign === undefined) {
     throw new Error("The retry challenge was not issued");
   }
-  expect((await observe(api, requestBody(campaign))).statusCode).toBe(200);
+  expect(await observe(api, requestBody(campaign))).toMatchObject({
+    body: {
+      checks: {
+        apiServiceInstanceChanged: true,
+        authorityUnchanged: true,
+        bootIdentityUnchanged: true,
+        workerServiceInstanceChanged: true,
+      },
+      outcome: "passed",
+      phase: "service-restart",
+    },
+    statusCode: 200,
+  });
 
   campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
   if (campaign?.nextObservation === null || campaign === undefined) {
@@ -191,13 +223,23 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
   });
   campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
   expect(campaign?.nextObservation?.challenge).not.toBe(hostRequest.challenge);
-  fixture.host.bootIdentity = agentHostBootIdentitySchema.parse(
-    "boot-after-reboot",
-  );
+  await rebootServices(fixture);
   if (campaign?.nextObservation === null || campaign === undefined) {
     throw new Error("The host-reboot retry challenge was not issued");
   }
-  expect((await observe(api, requestBody(campaign))).statusCode).toBe(200);
+  expect(await observe(api, requestBody(campaign))).toMatchObject({
+    body: {
+      checks: {
+        apiServiceInstanceStable: true,
+        authorityUnchanged: true,
+        bootIdentityChanged: true,
+        workerServiceInstanceStable: true,
+      },
+      outcome: "passed",
+      phase: "host-reboot",
+    },
+    statusCode: 200,
+  });
 
   campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
   expect(campaign).toMatchObject({
@@ -206,7 +248,7 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
   });
   expect(campaign?.observations.filter(({ outcome }) => outcome === "passed"))
     .toHaveLength(3);
-  expect(campaign?.observations).toHaveLength(5);
+  expect(campaign?.observations).toHaveLength(6);
   if (campaign === undefined) {
     throw new Error("The completed campaign was not persisted");
   }
@@ -230,6 +272,121 @@ test("the authenticated API records a single-use, phase-ordered restart campaign
   await fixture.policyStore.close();
 });
 
+test("service restart requires both API and worker identities to change", async () => {
+  for (const unchangedService of ["api", "worker"] as const) {
+    const fixture = await createFixture();
+    await fixture.runtime.observe(identity(requestBody(fixture.campaign)));
+    let campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
+    if (campaign === undefined || campaign.nextObservation === null) {
+      throw new Error("The service-restart challenge was not issued");
+    }
+    await restartService(fixture, unchangedService === "api" ? "worker" : "api");
+
+    expect(
+      await fixture.runtime.observe({
+        campaignId: fixture.campaign.campaignId,
+        ...campaign.nextObservation,
+      }),
+    ).toEqual({
+      decision: "denied",
+      reason:
+        unchangedService === "api"
+          ? "api-service-instance-unchanged"
+          : "worker-service-instance-unchanged",
+    });
+    campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
+    expect(campaign?.observations.at(-1)).toMatchObject({
+      outcome: "failed",
+      phase: "service-restart",
+    });
+
+    await fixture.store.close();
+    await fixture.policyStore.close();
+  }
+});
+
+test("worker observation failure is append-only, retry-safe, and resumable", async () => {
+  const fixture = await createFixture();
+  const request = requestBody(fixture.campaign);
+  fixture.workerObservationFailure.active = true;
+
+  expect(await fixture.runtime.observe(identity(request))).toEqual({
+    decision: "denied",
+    reason: "worker-observation-unavailable",
+  });
+  let campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
+  expect(campaign?.observations).toEqual([
+    expect.objectContaining({
+      failure: "worker-observation-unavailable",
+      outcome: "failed",
+      phase: "baseline",
+    }),
+  ]);
+  expect(await fixture.runtime.observe(identity(request))).toEqual({
+    decision: "denied",
+    reason: "challenge-consumed",
+  });
+
+  await fixture.store.close();
+  const restartedStore = createSqliteAdministrativeRestartWitnessStore(
+    fixture.databasePath,
+  );
+  fixture.workerObservationFailure.active = false;
+  campaign = await restartedStore.readCampaign(fixture.campaign.campaignId);
+  if (campaign === undefined || campaign.nextObservation === null) {
+    throw new Error("The worker observation retry challenge was not persisted");
+  }
+  const restarted = createAdministrativeRestartWitnessRuntime({
+    host: restartWitnessHost(fixture, restartedStore),
+    identifiers: challengeIdentifiers("worker-observation-restart"),
+    now: () => "2026-09-01T14:02:00.000Z",
+    store: restartedStore,
+  });
+  expect(
+    await restarted.observe({
+      campaignId: fixture.campaign.campaignId,
+      ...campaign.nextObservation,
+    }),
+  ).toMatchObject({ decision: "recorded" });
+
+  await restartedStore.close();
+  await fixture.policyStore.close();
+});
+
+test("host reboot requires the accepted API and worker identities to remain stable", async () => {
+  const fixture = await createFixture();
+  await fixture.runtime.observe(identity(requestBody(fixture.campaign)));
+  await restartService(fixture, "api");
+  await restartService(fixture, "worker");
+  let campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
+  if (campaign === undefined || campaign.nextObservation === null) {
+    throw new Error("The service-restart challenge was not issued");
+  }
+  await fixture.runtime.observe({
+    campaignId: fixture.campaign.campaignId,
+    ...campaign.nextObservation,
+  });
+  await rebootServices(fixture);
+  await restartService(fixture, "worker");
+  campaign = await fixture.store.readCampaign(fixture.campaign.campaignId);
+  if (campaign === undefined || campaign.nextObservation === null) {
+    throw new Error("The host-reboot challenge was not issued");
+  }
+
+  expect(
+    await fixture.runtime.observe({
+      campaignId: fixture.campaign.campaignId,
+      ...campaign.nextObservation,
+    }),
+  ).toEqual({
+    decision: "denied",
+    reason: "worker-service-instance-changed-during-host-reboot",
+  });
+
+  await fixture.store.close();
+  await fixture.policyStore.close();
+});
+
 test("phase challenges and authenticated observations survive process restart", async () => {
   const fixture = await createFixture();
   const baselineRequest = requestBody(fixture.campaign);
@@ -245,7 +402,7 @@ test("phase challenges and authenticated observations survive process restart", 
     fixture.databasePath,
   );
   const restartedRuntime = createAdministrativeRestartWitnessRuntime({
-    host: { async read() { return fixture.host; } },
+    host: restartWitnessHost(fixture, restartedStore),
     identifiers: challengeIdentifiers("restart"),
     now: () => "2026-09-01T14:05:00.000Z",
     store: restartedStore,
@@ -253,10 +410,8 @@ test("phase challenges and authenticated observations survive process restart", 
   if (serviceChallenge === null || serviceChallenge === undefined) {
     throw new Error("The service challenge was not persisted");
   }
-  fixture.host.serviceInstanceId =
-    administrativeRestartWitnessServiceInstanceIdSchema.parse(
-      "service-after-process-restart",
-    );
+  await restartService(fixture, "api", restartedStore);
+  await restartService(fixture, "worker", restartedStore);
   expect(
     (
       await restartedRuntime.observe({
@@ -346,6 +501,45 @@ test("the host observation rejects a stale or non-root API process", () => {
   }
 });
 
+test("worker service identity rejects stale, mutable, or unowned deployment provenance", () => {
+  const activeReleasePath = `/opt/voice-agent/releases/${releaseCommit}`;
+  const exact = {
+    activeReleaseMode: 0o40555,
+    activeReleaseOwnerUid: 0,
+    activeReleasePath,
+    releaseCommit,
+    service: "worker" as const,
+    serviceEntrypointMode: 0o100444,
+    serviceEntrypointOwnerUid: 0,
+    serviceEntrypointPath: `${activeReleasePath}/apps/worker/src/server.ts`,
+    witnessModuleMode: 0o100444,
+    witnessModuleOwnerUid: 0,
+    witnessModulePath:
+      `${activeReleasePath}/packages/runtime/src/administrative-restart-witness.ts`,
+  };
+
+  expect(
+    administrativeRestartWitnessServiceReleaseProvenanceIsExact(exact),
+  ).toBe(true);
+  for (const mutation of [
+    {
+      serviceEntrypointPath:
+        `/opt/voice-agent/releases/${"c".repeat(40)}/apps/worker/src/server.ts`,
+    },
+    { serviceEntrypointOwnerUid: 501 },
+    { serviceEntrypointMode: 0o100644 },
+    { activeReleaseOwnerUid: 501 },
+    { activeReleaseMode: 0o40755 },
+  ]) {
+    expect(
+      administrativeRestartWitnessServiceReleaseProvenanceIsExact({
+        ...exact,
+        ...mutation,
+      }),
+    ).toBe(false);
+  }
+});
+
 test("the host observation rejects mutable or unowned transitive Release files", async () => {
   const parent = await mkdtemp(join(tmpdir(), "voice-agent-api-release-"));
   temporaryDirectories.push(parent);
@@ -399,8 +593,19 @@ test("campaign challenges and observations remain append-only after restart", as
     }),
   ).toEqual({
     decision: "denied",
-    reason: "service-instance-unchanged",
+    reason: "api-service-instance-unchanged",
   });
+  expect(
+    await fixture.store.readServiceInstances({
+      bootIdentityFingerprint: fingerprint(
+        "agent-host-boot",
+        fixture.bootIdentity,
+      ),
+      releaseCommit: administrativeRestartWitnessReleaseCommitSchema.parse(
+        "b".repeat(40),
+      ),
+    }),
+  ).toEqual({});
   await fixture.store.close();
   const database = new Database(fixture.databasePath);
 
@@ -410,18 +615,23 @@ test("campaign challenges and observations remain append-only after restart", as
   expect(columns.map(({ name }) => name)).toContain(
     "service_instance_fingerprint",
   );
+  expect(columns.map(({ name }) => name)).toContain(
+    "worker_service_instance_fingerprint",
+  );
   expect(columns.map(({ name }) => name)).toContain("boot_identity_fingerprint");
   expect(columns.map(({ name }) => name)).not.toContain("service_instance_id");
   expect(columns.map(({ name }) => name)).not.toContain("boot_identity");
   const privateComparisons = database
     .prepare(
-      `SELECT service_instance_fingerprint, boot_identity_fingerprint
+      `SELECT service_instance_fingerprint,
+        worker_service_instance_fingerprint, boot_identity_fingerprint
        FROM administrative_restart_witness_observations
        ORDER BY sequence`,
     )
     .all() as ReadonlyArray<{
     readonly boot_identity_fingerprint: string | null;
     readonly service_instance_fingerprint: string | null;
+    readonly worker_service_instance_fingerprint: string | null;
   }>;
   expect(privateComparisons[0]?.service_instance_fingerprint).toMatch(
     /^[0-9a-f]{64}$/u,
@@ -429,12 +639,60 @@ test("campaign challenges and observations remain append-only after restart", as
   expect(privateComparisons[0]?.boot_identity_fingerprint).toMatch(
     /^[0-9a-f]{64}$/u,
   );
+  expect(privateComparisons[0]?.worker_service_instance_fingerprint).toMatch(
+    /^[0-9a-f]{64}$/u,
+  );
   expect(privateComparisons[1]).toEqual({
     boot_identity_fingerprint: null,
     service_instance_fingerprint: null,
+    worker_service_instance_fingerprint: null,
   });
-  expect(JSON.stringify(privateComparisons)).not.toContain("service-baseline");
-  expect(JSON.stringify(privateComparisons)).not.toContain("boot-baseline");
+  expect(JSON.stringify(privateComparisons)).not.toContain(
+    fixture.identities.api,
+  );
+  expect(JSON.stringify(privateComparisons)).not.toContain(
+    fixture.identities.worker,
+  );
+  expect(JSON.stringify(privateComparisons)).not.toContain(fixture.bootIdentity);
+  const serviceInstanceColumns = database
+    .prepare(
+      "PRAGMA table_info(administrative_restart_witness_service_instances)",
+    )
+    .all() as ReadonlyArray<{ readonly name: string }>;
+  expect(serviceInstanceColumns.map(({ name }) => name)).toContain(
+    "instance_fingerprint",
+  );
+  expect(serviceInstanceColumns.map(({ name }) => name)).not.toContain(
+    "instance_id",
+  );
+  expect(serviceInstanceColumns.map(({ name }) => name)).not.toContain(
+    "boot_identity",
+  );
+  const serviceInstances = database
+    .prepare(
+      `SELECT service, instance_fingerprint, boot_identity_fingerprint
+       FROM administrative_restart_witness_service_instances
+       ORDER BY sequence`,
+    )
+    .all();
+  expect(serviceInstances).toHaveLength(2);
+  expect(JSON.stringify(serviceInstances)).not.toContain(fixture.identities.api);
+  expect(JSON.stringify(serviceInstances)).not.toContain(
+    fixture.identities.worker,
+  );
+  expect(() =>
+    database
+      .prepare(
+        `UPDATE administrative_restart_witness_service_instances
+         SET instance_fingerprint = ?`,
+      )
+      .run("f".repeat(64)),
+  ).toThrow(/service instances are immutable/u);
+  expect(() =>
+    database
+      .prepare("DELETE FROM administrative_restart_witness_service_instances")
+      .run(),
+  ).toThrow(/service instances are append-only/u);
 
   expect(() =>
     database
@@ -491,6 +749,36 @@ async function createFixture() {
     stateVersion: 1,
   });
   const store = createSqliteAdministrativeRestartWitnessStore(databasePath);
+  const bootState = { raw: "boot-baseline" };
+  const identities = {
+    api: "api-service-baseline",
+    worker: "worker-service-baseline",
+  };
+  const serviceSequence = { api: 0, worker: 0 };
+  await store.registerServiceInstance({
+    bootIdentityFingerprint: fingerprint("agent-host-boot", bootState.raw),
+    candidateInstanceFingerprint: fingerprint(
+      "api-service-instance",
+      identities.api,
+    ),
+    registeredAt: administrativeTimestampSchema.parse(
+      "2026-09-01T14:00:00.000Z",
+    ),
+    releaseCommit,
+    service: "api",
+  });
+  await store.registerServiceInstance({
+    bootIdentityFingerprint: fingerprint("agent-host-boot", bootState.raw),
+    candidateInstanceFingerprint: fingerprint(
+      "worker-service-instance",
+      identities.worker,
+    ),
+    registeredAt: administrativeTimestampSchema.parse(
+      "2026-09-01T14:00:00.000Z",
+    ),
+    releaseCommit,
+    service: "worker",
+  });
   const campaign = await store.ensureCampaign({
     campaignId: administrativeRestartWitnessCampaignIdSchema.parse(
       "administrative-restart-campaign-release-a",
@@ -503,34 +791,138 @@ async function createFixture() {
     ),
     releaseCommit,
   });
-  const host: AdministrativeRestartWitnessHostObservation = administrativeRestartWitnessHostObservationSchema.parse({
-    bootIdentity: agentHostBootIdentitySchema.parse("boot-baseline"),
-    releaseCommit,
-    serviceInstanceId: administrativeRestartWitnessServiceInstanceIdSchema.parse(
-      "service-baseline",
-    ),
-  });
   const hostReadFailure = { active: false };
+  const workerObservationFailure = { active: false };
+  const fixtureState = {
+    bootState,
+    databasePath,
+    hostReadFailure,
+    identities,
+    policyStore,
+    releaseCommit,
+    serviceSequence,
+    store,
+    workerObservationFailure,
+  };
+  const runtimeHost = restartWitnessHost(fixtureState, store);
   const runtime = createAdministrativeRestartWitnessRuntime({
-    host: {
-      async read() {
-        if (hostReadFailure.active) throw new Error("host read unavailable");
-        return host;
-      },
-    },
+    host: runtimeHost,
     identifiers: challengeIdentifiers("first-process"),
     now: () => "2026-09-01T14:01:00.000Z",
     store,
   });
   return {
     campaign,
+    bootState,
+    get bootIdentity() {
+      return bootState.raw;
+    },
     databasePath,
-    host,
     hostReadFailure,
+    identities,
     policyStore,
     runtime,
+    runtimeHost,
+    serviceSequence,
     store,
+    workerObservationFailure,
   };
+}
+
+type RestartWitnessStore = ReturnType<
+  typeof createSqliteAdministrativeRestartWitnessStore
+>;
+interface RestartWitnessServiceState {
+  readonly bootState: { raw: string };
+  readonly hostReadFailure: { active: boolean };
+  readonly identities: { api: string; worker: string };
+  readonly serviceSequence: { api: number; worker: number };
+  readonly store: RestartWitnessStore;
+  readonly workerObservationFailure: { active: boolean };
+}
+
+function restartWitnessHost(
+  fixture: Pick<
+    RestartWitnessServiceState,
+    "bootState" | "hostReadFailure" | "workerObservationFailure"
+  >,
+  store: RestartWitnessStore,
+) {
+  return {
+    async read(): Promise<AdministrativeRestartWitnessHostObservation> {
+      if (fixture.hostReadFailure.active) {
+        throw new Error("host read unavailable");
+      }
+      if (fixture.workerObservationFailure.active) {
+        throw new AdministrativeRestartWitnessWorkerObservationError();
+      }
+      const serviceInstances = await store.readServiceInstances({
+        bootIdentityFingerprint: fingerprint(
+          "agent-host-boot",
+          fixture.bootState.raw,
+        ),
+        releaseCommit,
+      });
+      if (serviceInstances.worker === undefined) {
+        throw new AdministrativeRestartWitnessWorkerObservationError();
+      }
+      if (serviceInstances.api === undefined) {
+        throw new Error("API service observation unavailable");
+      }
+      return administrativeRestartWitnessHostObservationSchema.parse({
+        apiServiceInstanceFingerprint: serviceInstances.api,
+        bootIdentityFingerprint: fingerprint(
+          "agent-host-boot",
+          fixture.bootState.raw,
+        ),
+        releaseCommit,
+        workerServiceInstanceFingerprint: serviceInstances.worker,
+      });
+    },
+  };
+}
+
+async function restartService(
+  fixture: RestartWitnessServiceState,
+  service: "api" | "worker",
+  store: RestartWitnessStore = fixture.store,
+): Promise<void> {
+  fixture.serviceSequence[service] += 1;
+  fixture.identities[service] =
+    `${service}-service-restart-${fixture.serviceSequence[service]}`;
+  await store.registerServiceInstance({
+    bootIdentityFingerprint: fingerprint(
+      "agent-host-boot",
+      fixture.bootState.raw,
+    ),
+    candidateInstanceFingerprint: fingerprint(
+      `${service}-service-instance`,
+      fixture.identities[service],
+    ),
+    registeredAt: administrativeTimestampSchema.parse(
+      "2026-09-01T14:03:00.000Z",
+    ),
+    releaseCommit,
+    service,
+  });
+}
+
+async function rebootServices(
+  fixture: RestartWitnessServiceState,
+): Promise<void> {
+  fixture.bootState.raw = "boot-after-reboot";
+  await restartService(fixture, "api");
+  await restartService(fixture, "worker");
+}
+
+function fingerprint(
+  kind:
+    | "agent-host-boot"
+    | "api-service-instance"
+    | "worker-service-instance",
+  raw: string,
+) {
+  return administrativeRestartWitnessIdentityFingerprint(kind, raw);
 }
 
 function challengeIdentifiers(prefix: string) {

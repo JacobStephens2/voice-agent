@@ -61,6 +61,7 @@ test("the acceptance contract rejects caller provenance, challenges, and raw hos
     { bootIdentity: "raw-boot-id" },
     { challenge: "administrative-restart-challenge-replayed" },
     { serviceInstanceId: "raw-process-id" },
+    { workerServiceInstanceId: "raw-worker-process-id" },
     { sessionCookie: "secret" },
   ]) {
     expect(() =>
@@ -106,7 +107,7 @@ test("durable failed attempts remain visible without replacing later server-reco
     observations: [
       record.observations[0],
       {
-        failure: "service-instance-unchanged",
+        failure: "worker-service-instance-unchanged",
         observedAt: "2026-09-01T14:04:00.000Z",
         outcome: "failed",
         phase: "service-restart",
@@ -140,7 +141,7 @@ function completedWitness(): AdministrativeRestartWitnessRecord {
       passingObservation("host-reboot", 3, "2026-09-01T14:15:00.000Z"),
     ],
     releaseCommit,
-    schemaVersion: 2,
+    schemaVersion: 3,
     status: "completed",
   });
 }
@@ -155,13 +156,16 @@ function passingObservation(
       ? { authorityCaptured: true as const }
       : phase === "service-restart"
         ? {
+            apiServiceInstanceChanged: true as const,
             authorityUnchanged: true as const,
             bootIdentityUnchanged: true as const,
-            serviceInstanceChanged: true as const,
+            workerServiceInstanceChanged: true as const,
           }
         : {
+            apiServiceInstanceStable: true as const,
             authorityUnchanged: true as const,
             bootIdentityChanged: true as const,
+            workerServiceInstanceStable: true as const,
           };
   return {
     checks,

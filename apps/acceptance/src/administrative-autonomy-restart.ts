@@ -34,13 +34,22 @@ export function evaluateAdministrativeAutonomyRestartWitness(
   }
   if (serviceRestart === undefined) {
     errors.push("The API and worker service restart has not been witnessed.");
-  } else if (!serviceRestart.checks.serviceInstanceChanged) {
-    errors.push("The service-restart identity checks did not pass.");
+  } else if (
+    !serviceRestart.checks.apiServiceInstanceChanged ||
+    !serviceRestart.checks.workerServiceInstanceChanged
+  ) {
+    errors.push("The API and worker service-restart identity checks did not pass.");
   }
   if (hostReboot === undefined) {
     errors.push("The real Agent Host reboot has not been witnessed.");
-  } else if (!hostReboot.checks.bootIdentityChanged) {
-    errors.push("The Agent Host boot identity did not change.");
+  } else if (
+    !hostReboot.checks.bootIdentityChanged ||
+    !hostReboot.checks.apiServiceInstanceStable ||
+    !hostReboot.checks.workerServiceInstanceStable
+  ) {
+    errors.push(
+      "The Agent Host boot or post-service identity checks did not pass.",
+    );
   }
   if (record.status !== "completed") {
     errors.push("The durable Restart Witness campaign is not complete.");

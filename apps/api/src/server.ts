@@ -51,6 +51,7 @@ import {
   readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
   createNodeAdministrativeRestartWitnessHost,
+  registerNodeAdministrativeRestartWitnessServiceInstance,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   formatTelephoneBoundaryPrometheusMetrics,
@@ -102,20 +103,29 @@ const administrativeRuntime = createAdministrativeAutonomyRuntime({
 await administrativeRuntime.reconcileOperations();
 const administrativeRestartWitnessStore =
   createSqliteAdministrativeRestartWitnessStore(databasePath);
-const administrativeRestartWitnessRuntime =
-  createAdministrativeRestartWitnessRuntime({
-    host: createNodeAdministrativeRestartWitnessHost({
-      serviceInstanceId: `administrative-api-service-instance-${randomUUID()}`,
-    }),
-    identifiers: {
-      nextChallenge: () =>
-        administrativeRestartWitnessChallengeSchema.parse(
-          `administrative-restart-challenge-${randomUUID()}`,
-        ),
-    },
-    now: () => new Date().toISOString(),
-    store: administrativeRestartWitnessStore,
-  });
+const administrativeRestartWitnessRuntime = testMode
+  ? undefined
+  : createAdministrativeRestartWitnessRuntime({
+      host: createNodeAdministrativeRestartWitnessHost({
+        apiServiceInstanceFingerprint:
+          await registerNodeAdministrativeRestartWitnessServiceInstance({
+            nextServiceInstanceId: () =>
+              `administrative-api-service-instance-${randomUUID()}`,
+            now: () => new Date().toISOString(),
+            service: "api",
+            store: administrativeRestartWitnessStore,
+          }),
+        services: administrativeRestartWitnessStore,
+      }),
+      identifiers: {
+        nextChallenge: () =>
+          administrativeRestartWitnessChallengeSchema.parse(
+            `administrative-restart-challenge-${randomUUID()}`,
+          ),
+      },
+      now: () => new Date().toISOString(),
+      store: administrativeRestartWitnessStore,
+    });
 const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({
@@ -369,7 +379,9 @@ const api = createVoiceApi({
     },
     recordPolicyDenial: () => runtime.recordPolicyDenial(),
   },
-  restartWitnessControls: administrativeRestartWitnessRuntime,
+  ...(administrativeRestartWitnessRuntime === undefined
+    ? {}
+    : { restartWitnessControls: administrativeRestartWitnessRuntime }),
   telephoneControls: callbackRuntime,
 });
 await api.register(staticFiles, {

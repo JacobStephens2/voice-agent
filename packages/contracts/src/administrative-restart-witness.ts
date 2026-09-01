@@ -49,20 +49,31 @@ export type AdministrativeRestartWitnessServiceInstanceId = z.infer<
   typeof administrativeRestartWitnessServiceInstanceIdSchema
 >;
 
-export const agentHostBootIdentitySchema = z
+export const administrativeRestartWitnessServiceInstanceFingerprintSchema = z
   .string()
-  .min(1)
-  .max(200)
-  .brand<"AgentHostBootIdentity">();
-export type AgentHostBootIdentity = z.infer<
-  typeof agentHostBootIdentitySchema
+  .regex(/^[0-9a-f]{64}$/u)
+  .brand<"AdministrativeRestartWitnessServiceInstanceFingerprint">();
+export type AdministrativeRestartWitnessServiceInstanceFingerprint = z.infer<
+  typeof administrativeRestartWitnessServiceInstanceFingerprintSchema
+>;
+
+export const administrativeRestartWitnessServiceSchema = z.enum([
+  "api",
+  "worker",
+]);
+export type AdministrativeRestartWitnessService = z.infer<
+  typeof administrativeRestartWitnessServiceSchema
 >;
 
 export const administrativeRestartWitnessHostObservationSchema = z
   .object({
-    bootIdentity: agentHostBootIdentitySchema,
+    apiServiceInstanceFingerprint:
+      administrativeRestartWitnessServiceInstanceFingerprintSchema,
+    bootIdentityFingerprint:
+      administrativeRestartWitnessServiceInstanceFingerprintSchema,
     releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
-    serviceInstanceId: administrativeRestartWitnessServiceInstanceIdSchema,
+    workerServiceInstanceFingerprint:
+      administrativeRestartWitnessServiceInstanceFingerprintSchema,
   })
   .strict();
 export type AdministrativeRestartWitnessHostObservation = z.infer<
@@ -70,6 +81,8 @@ export type AdministrativeRestartWitnessHostObservation = z.infer<
 >;
 
 export const administrativeRestartWitnessFailureReasonSchema = z.enum([
+  "api-service-instance-changed-during-host-reboot",
+  "api-service-instance-unchanged",
   "authority-changed",
   "boot-identity-changed-during-service-restart",
   "boot-identity-unchanged",
@@ -82,7 +95,9 @@ export const administrativeRestartWitnessFailureReasonSchema = z.enum([
   "phase-out-of-order",
   "policy-inactive",
   "release-changed",
-  "service-instance-unchanged",
+  "worker-observation-unavailable",
+  "worker-service-instance-changed-during-host-reboot",
+  "worker-service-instance-unchanged",
 ]);
 export type AdministrativeRestartWitnessFailureReason = z.infer<
   typeof administrativeRestartWitnessFailureReasonSchema
@@ -125,8 +140,9 @@ const passedObservationSchema = z.discriminatedUnion("phase", [
       checks: z
         .object({
           authorityUnchanged: z.literal(true),
+          apiServiceInstanceChanged: z.literal(true),
           bootIdentityUnchanged: z.literal(true),
-          serviceInstanceChanged: z.literal(true),
+          workerServiceInstanceChanged: z.literal(true),
         })
         .strict(),
       phase: z.literal("service-restart"),
@@ -138,7 +154,9 @@ const passedObservationSchema = z.discriminatedUnion("phase", [
       checks: z
         .object({
           authorityUnchanged: z.literal(true),
+          apiServiceInstanceStable: z.literal(true),
           bootIdentityChanged: z.literal(true),
+          workerServiceInstanceStable: z.literal(true),
         })
         .strict(),
       phase: z.literal("host-reboot"),
@@ -202,7 +220,7 @@ export const administrativeRestartWitnessCampaignSchema = z
     nextObservation: nextObservationSchema.nullable(),
     observations: z.array(administrativeRestartWitnessObservationSchema).max(100),
     releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     status: z.enum(["completed", "pending"]),
   })
   .strict()
@@ -225,7 +243,7 @@ export const administrativeRestartWitnessRecordSchema = z
     createdAt: administrativeTimestampSchema,
     observations: z.array(administrativeRestartWitnessObservationSchema).max(100),
     releaseCommit: administrativeRestartWitnessReleaseCommitSchema,
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     status: z.enum(["completed", "pending"]),
   })
   .strict();

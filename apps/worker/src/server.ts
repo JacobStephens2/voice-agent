@@ -14,9 +14,11 @@ import {
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   createUnixSocketKeeploreSubagentRunner,
+  registerNodeAdministrativeRestartWitnessServiceInstance,
 } from "@voice-agent/runtime";
 import {
   createSqliteAdministrativeAutonomyStore,
+  createSqliteAdministrativeRestartWitnessStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteKeeploreDelegationStore,
@@ -78,6 +80,22 @@ const telephoneUsageRates = telephoneUsageRatesFromEnvironment();
 const continuityStore = createSqliteTaskContinuityStore(databasePath);
 const administrativeEvidenceStore =
   createSqliteAdministrativeAutonomyStore(databasePath);
+if (process.env.NODE_ENV !== "test") {
+  const restartWitnessStore = createSqliteAdministrativeRestartWitnessStore(
+    databasePath,
+  );
+  try {
+    await registerNodeAdministrativeRestartWitnessServiceInstance({
+      nextServiceInstanceId: () =>
+        `administrative-worker-service-instance-${randomUUID()}`,
+      now: () => new Date().toISOString(),
+      service: "worker",
+      store: restartWitnessStore,
+    });
+  } finally {
+    await restartWitnessStore.close();
+  }
+}
 const continuityRuntime = createTaskContinuityRuntime({
   administrativeEvidenceRetention: administrativeEvidenceStore,
   callbackEvidenceRetention: callbackStore,

@@ -6,6 +6,8 @@ import type {
   AdministrativeRestartWitnessObservationIdentity,
   AdministrativeRestartWitnessObservationResponse,
   AdministrativeRestartWitnessReleaseCommit,
+  AdministrativeRestartWitnessService,
+  AdministrativeRestartWitnessServiceInstanceFingerprint,
   AdministrativeTimestamp,
 } from "@voice-agent/contracts";
 
@@ -24,10 +26,27 @@ export interface AdministrativeRestartWitnessStore {
     readonly observation: AdministrativeRestartWitnessHostObservation;
   }): Promise<AdministrativeRestartWitnessObservationResponse>;
   recordHostObservationFailure(input: {
+    readonly failure:
+      | "host-observation-unavailable"
+      | "worker-observation-unavailable";
     readonly identity: AdministrativeRestartWitnessObservationIdentity;
     readonly nextChallenge: AdministrativeRestartWitnessChallenge;
     readonly observedAt: AdministrativeTimestamp;
   }): Promise<AdministrativeRestartWitnessObservationResponse>;
+  registerServiceInstance(input: {
+    readonly bootIdentityFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly candidateInstanceFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly registeredAt: AdministrativeTimestamp;
+    readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+    readonly service: AdministrativeRestartWitnessService;
+  }): Promise<AdministrativeRestartWitnessServiceInstanceFingerprint>;
+  readServiceInstances(input: {
+    readonly bootIdentityFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+  }): Promise<{
+    readonly api?: AdministrativeRestartWitnessServiceInstanceFingerprint;
+    readonly worker?: AdministrativeRestartWitnessServiceInstanceFingerprint;
+  }>;
   readCampaign(
     campaignId: AdministrativeRestartWitnessCampaignId,
   ): Promise<AdministrativeRestartWitnessCampaign | undefined>;

@@ -283,15 +283,20 @@ if campaign_has_passed service-restart; then
   note "The changed API service instance on the same Linux boot is already witnessed."
 else
   sudo systemctl restart voice-agent-api.service voice-agent-worker.service
-  step "Wait for both systemd units to settle, then sign in to the PWA again if needed."
+  if ! sudo systemctl is-active --quiet \
+    voice-agent-api.service voice-agent-worker.service; then
+    warn "Both the API and worker must be active after their real restart. The campaign remains pending."
+    exit 1
+  fi
+  step "Sign in to the PWA again if needed. The server rejects this phase unless both service identities changed on this same boot."
   record_current_observation
 fi
 
 stage "Real Agent Host reboot"
 if campaign_has_passed host-reboot; then
-  note "The changed Linux boot identity is already witnessed."
+  note "The changed Linux boot and stable post-service API/worker identities are already witnessed."
 elif sudo test -f "$REBOOT_MARKER"; then
-  note "The wizard resumed after requesting a reboot; the server verifies the changed Linux boot identity."
+  note "The wizard resumed after requesting a reboot; the server verifies the changed Linux boot and the stable post-service API/worker identities."
 else
   warn "This step really reboots the Agent Host and ends the current shell."
   if ! confirm "Reboot now, then reconnect and run this same command again?"; then

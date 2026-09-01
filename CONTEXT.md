@@ -142,7 +142,7 @@ The exact reviewed Grok provider pin and typed Operation-adapter implementations
 _Avoid_: Adapters configured, latent authority, install-time authority
 
 **Agent Host Restart Witness**:
-An attended, append-only, server-recorded acceptance campaign, executed only from the exact active immutable Release, proving that one exact active Administrative Autonomy Policy revision, state version, Administrative Execution Manifest, and Release remain observable through the deployed authenticated API after both the Voice Agent API/worker services restart and the Agent Host acquires a new real boot identity; raw process and boot identities remain transient composition inputs and only one-way comparison fingerprints may persist.
+An attended, append-only, server-recorded acceptance campaign, executed only from the exact active immutable Release, proving that one exact active Administrative Autonomy Policy revision, state version, Administrative Execution Manifest, and Release remain observable through the deployed authenticated API after both the Voice Agent API/worker services restart and the Agent Host acquires a new real boot identity. Each service appends a Release-bound comparison fingerprint at startup: a same-boot restart rotates it, while the first startup on a new boot carries the accepted post-service fingerprint forward so the campaign can prove both the intended service restart and the later host reboot. Raw service-instance and boot identities remain transient composition inputs and never enter the durable store or exported record.
 _Avoid_: SQLite reopen test, simulated process recovery, simulated reboot
 
 **Administrative Suspension**:

@@ -1,22 +1,26 @@
+import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  agentHostBootIdentitySchema,
   administrativeRestartWitnessChallengeSchema,
   administrativeRestartWitnessHostObservationSchema,
   administrativeRestartWitnessObservationIdentitySchema,
   administrativeRestartWitnessObservationResponseSchema,
   administrativeRestartWitnessReleaseCommitSchema,
+  administrativeRestartWitnessServiceInstanceFingerprintSchema,
   administrativeRestartWitnessServiceInstanceIdSchema,
+  administrativeRestartWitnessServiceSchema,
   administrativeTimestampSchema,
   type AdministrativeRestartWitnessChallenge,
   type AdministrativeRestartWitnessHostObservation,
   type AdministrativeRestartWitnessObservationIdentity,
   type AdministrativeRestartWitnessObservationResponse,
   type AdministrativeRestartWitnessReleaseCommit,
+  type AdministrativeRestartWitnessService,
+  type AdministrativeRestartWitnessServiceInstanceFingerprint,
 } from "@voice-agent/contracts";
 import type { AdministrativeRestartWitnessStore } from "@voice-agent/durable-store";
 
@@ -43,6 +47,26 @@ export interface AdministrativeRestartWitnessReleaseProvenance {
   readonly witnessModulePath: string;
 }
 
+export interface AdministrativeRestartWitnessServiceReleaseProvenance {
+  readonly activeReleaseMode: number;
+  readonly activeReleaseOwnerUid: number;
+  readonly activeReleasePath: string;
+  readonly releaseCommit: AdministrativeRestartWitnessReleaseCommit;
+  readonly service: AdministrativeRestartWitnessService;
+  readonly serviceEntrypointMode: number;
+  readonly serviceEntrypointOwnerUid: number;
+  readonly serviceEntrypointPath: string;
+  readonly witnessModuleMode: number;
+  readonly witnessModuleOwnerUid: number;
+  readonly witnessModulePath: string;
+}
+
+export class AdministrativeRestartWitnessWorkerObservationError extends Error {
+  constructor() {
+    super("The worker service observation is unavailable");
+  }
+}
+
 /**
  * Proves that the live API and this witness boundary are the root-owned,
  * immutable source in the exact Release named by the active marker.
@@ -50,20 +74,43 @@ export interface AdministrativeRestartWitnessReleaseProvenance {
 export function administrativeRestartWitnessReleaseProvenanceIsExact(
   input: AdministrativeRestartWitnessReleaseProvenance,
 ): boolean {
+  return administrativeRestartWitnessServiceReleaseProvenanceIsExact({
+    activeReleaseMode: input.activeReleaseMode,
+    activeReleaseOwnerUid: input.activeReleaseOwnerUid,
+    activeReleasePath: input.activeReleasePath,
+    releaseCommit: input.releaseCommit,
+    service: "api",
+    serviceEntrypointMode: input.apiEntrypointMode,
+    serviceEntrypointOwnerUid: input.apiEntrypointOwnerUid,
+    serviceEntrypointPath: input.apiEntrypointPath,
+    witnessModuleMode: input.witnessModuleMode,
+    witnessModuleOwnerUid: input.witnessModuleOwnerUid,
+    witnessModulePath: input.witnessModulePath,
+  });
+}
+
+/** Binds an API/worker service registration to its immutable active Release. */
+export function administrativeRestartWitnessServiceReleaseProvenanceIsExact(
+  input: AdministrativeRestartWitnessServiceReleaseProvenance,
+): boolean {
   const releasePath = `/opt/voice-agent/releases/${input.releaseCommit}`;
+  const entrypoint =
+    input.service === "api"
+      ? `${releasePath}/apps/api/src/server.ts`
+      : `${releasePath}/apps/worker/src/server.ts`;
   return (
     input.activeReleasePath === releasePath &&
-    input.apiEntrypointPath === `${releasePath}/apps/api/src/server.ts` &&
+    input.serviceEntrypointPath === entrypoint &&
     input.witnessModulePath ===
       `${releasePath}/packages/runtime/src/administrative-restart-witness.ts` &&
     input.activeReleaseOwnerUid === 0 &&
-    input.apiEntrypointOwnerUid === 0 &&
+    input.serviceEntrypointOwnerUid === 0 &&
     input.witnessModuleOwnerUid === 0 &&
     (input.activeReleaseMode & 0o170000) === 0o040000 &&
-    (input.apiEntrypointMode & 0o170000) === 0o100000 &&
+    (input.serviceEntrypointMode & 0o170000) === 0o100000 &&
     (input.witnessModuleMode & 0o170000) === 0o100000 &&
     modeIsImmutable(input.activeReleaseMode) &&
-    modeIsImmutable(input.apiEntrypointMode) &&
+    modeIsImmutable(input.serviceEntrypointMode) &&
     modeIsImmutable(input.witnessModuleMode)
   );
 }
@@ -128,9 +175,13 @@ export function createAdministrativeRestartWitnessRuntime(options: {
         observation = administrativeRestartWitnessHostObservationSchema.parse(
           await options.host.read(),
         );
-      } catch {
+      } catch (error) {
         return administrativeRestartWitnessObservationResponseSchema.parse(
           await options.store.recordHostObservationFailure({
+            failure:
+              error instanceof AdministrativeRestartWitnessWorkerObservationError
+                ? "worker-observation-unavailable"
+                : "host-observation-unavailable",
             identity,
             nextChallenge,
             observedAt,
@@ -151,11 +202,15 @@ export function createAdministrativeRestartWitnessRuntime(options: {
 
 /** Reads the real Agent Host identities from fixed deployment-owned paths. */
 export function createNodeAdministrativeRestartWitnessHost(input: {
-  readonly serviceInstanceId: string;
+  readonly apiServiceInstanceFingerprint: AdministrativeRestartWitnessServiceInstanceFingerprint;
+  readonly services: Pick<
+    AdministrativeRestartWitnessStore,
+    "readServiceInstances"
+  >;
 }): AdministrativeRestartWitnessHost {
-  const serviceInstanceId =
-    administrativeRestartWitnessServiceInstanceIdSchema.parse(
-      input.serviceInstanceId,
+  const apiServiceInstanceFingerprint =
+    administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+      input.apiServiceInstanceFingerprint,
     );
   const apiEntrypoint = process.argv[1];
   if (apiEntrypoint === undefined) {
@@ -199,13 +254,101 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
       ) {
         throw new Error("The active immutable Voice Agent Release is invalid");
       }
-      return administrativeRestartWitnessHostObservationSchema.parse({
-        bootIdentity: agentHostBootIdentitySchema.parse(bootIdentity.trim()),
+      const bootIdentityFingerprint = administrativeRestartWitnessIdentityFingerprint(
+        "agent-host-boot",
+        bootIdentity.trim(),
+      );
+      const serviceInstances = await input.services.readServiceInstances({
+        bootIdentityFingerprint,
         releaseCommit,
-        serviceInstanceId,
+      });
+      if (serviceInstances.api !== apiServiceInstanceFingerprint) {
+        throw new Error("The API service observation changed concurrently");
+      }
+      if (serviceInstances.worker === undefined) {
+        throw new AdministrativeRestartWitnessWorkerObservationError();
+      }
+      return administrativeRestartWitnessHostObservationSchema.parse({
+        apiServiceInstanceFingerprint,
+        bootIdentityFingerprint,
+        releaseCommit,
+        workerServiceInstanceFingerprint: serviceInstances.worker,
       });
     },
   };
+}
+
+/**
+ * Registers one concrete service startup after validating the executing bytes.
+ * Only domain-separated hashes cross into the append-only durable ledger.
+ */
+export async function registerNodeAdministrativeRestartWitnessServiceInstance(input: {
+  readonly nextServiceInstanceId: () => string;
+  readonly now: () => string;
+  readonly service: AdministrativeRestartWitnessService;
+  readonly store: Pick<
+    AdministrativeRestartWitnessStore,
+    "registerServiceInstance"
+  >;
+}): Promise<AdministrativeRestartWitnessServiceInstanceFingerprint> {
+  const service = administrativeRestartWitnessServiceSchema.parse(input.service);
+  const serviceInstanceId =
+    administrativeRestartWitnessServiceInstanceIdSchema.parse(
+      input.nextServiceInstanceId(),
+    );
+  const serviceEntrypoint = process.argv[1];
+  if (serviceEntrypoint === undefined) {
+    throw new Error(`The running Voice Agent ${service} entrypoint is unavailable`);
+  }
+  const serviceEntrypointPath = realpathSync(serviceEntrypoint);
+  const witnessModulePath = realpathSync(fileURLToPath(import.meta.url));
+  const serviceEntrypointMetadata = statSync(serviceEntrypointPath);
+  const witnessModuleMetadata = statSync(witnessModulePath);
+  const [bootIdentity, marker, activeReleasePath] = await Promise.all([
+    readFile("/proc/sys/kernel/random/boot_id", "utf8"),
+    readFile("/opt/voice-agent/current/.voice-agent-release", "utf8"),
+    realpath("/opt/voice-agent/current"),
+  ]);
+  const releaseCommit = administrativeRestartWitnessReleaseCommitSchema.parse(
+    marker.trim(),
+  );
+  const activeReleaseMetadata = await stat(activeReleasePath);
+  if (
+    !administrativeRestartWitnessServiceReleaseProvenanceIsExact({
+      activeReleaseMode: activeReleaseMetadata.mode,
+      activeReleaseOwnerUid: activeReleaseMetadata.uid,
+      activeReleasePath,
+      releaseCommit,
+      service,
+      serviceEntrypointMode: serviceEntrypointMetadata.mode,
+      serviceEntrypointOwnerUid: serviceEntrypointMetadata.uid,
+      serviceEntrypointPath,
+      witnessModuleMode: witnessModuleMetadata.mode,
+      witnessModuleOwnerUid: witnessModuleMetadata.uid,
+      witnessModulePath,
+    }) ||
+    !(await administrativeRestartWitnessReleaseTreeIsOwnedAndImmutable(
+      activeReleasePath,
+      0,
+    ))
+  ) {
+    throw new Error(
+      `The ${service} service cannot register mutable or unowned Release provenance`,
+    );
+  }
+  return input.store.registerServiceInstance({
+    bootIdentityFingerprint: administrativeRestartWitnessIdentityFingerprint(
+      "agent-host-boot",
+      bootIdentity.trim(),
+    ),
+    candidateInstanceFingerprint: administrativeRestartWitnessIdentityFingerprint(
+      `${service}-service-instance`,
+      serviceInstanceId,
+    ),
+    registeredAt: administrativeTimestampSchema.parse(input.now()),
+    releaseCommit,
+    service,
+  });
 }
 
 function modeIsImmutable(mode: number): boolean {
@@ -219,5 +362,20 @@ function releasePathIsWithin(root: string, candidate: string): boolean {
     (!isAbsolute(pathFromRoot) &&
       pathFromRoot !== ".." &&
       !pathFromRoot.startsWith(`..${sep}`))
+  );
+}
+
+export function administrativeRestartWitnessIdentityFingerprint(
+  kind:
+    | "agent-host-boot"
+    | "api-service-instance"
+    | "worker-service-instance",
+  identity: string,
+): AdministrativeRestartWitnessServiceInstanceFingerprint {
+  return administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+    createHash("sha256")
+      .update(`voice-agent:administrative-restart-witness:${kind}:v1\0`)
+      .update(identity)
+      .digest("hex"),
   );
 }

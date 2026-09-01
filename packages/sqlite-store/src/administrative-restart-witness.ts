@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import Database from "better-sqlite3";
 
 import {
@@ -14,6 +12,8 @@ import {
   administrativeRestartWitnessObservationSchema,
   administrativeRestartWitnessObservationResponseSchema,
   administrativeRestartWitnessReleaseCommitSchema,
+  administrativeRestartWitnessServiceInstanceFingerprintSchema,
+  administrativeRestartWitnessServiceSchema,
   administrativeTimestampSchema,
   type AdministrativeRestartWitnessCampaign,
   type AdministrativeRestartWitnessFailureReason,
@@ -47,6 +47,12 @@ interface ObservationRow {
   readonly release_commit: string | null;
   readonly sequence: number;
   readonly service_instance_fingerprint: string | null;
+  readonly worker_service_instance_fingerprint: string | null;
+}
+
+interface ServiceInstanceRow {
+  readonly boot_identity_fingerprint: string;
+  readonly instance_fingerprint: string;
 }
 
 interface PolicyAuthorityRow {
@@ -129,7 +135,8 @@ export function createSqliteAdministrativeRestartWitnessStore(
   >(`
     SELECT sequence, challenge, phase, outcome, failure, observed_at,
       policy_revision, policy_state_version, execution_manifest_fingerprint,
-      release_commit, service_instance_fingerprint, boot_identity_fingerprint
+      release_commit, service_instance_fingerprint,
+      worker_service_instance_fingerprint, boot_identity_fingerprint
     FROM administrative_restart_witness_observations
     WHERE campaign_id = ?
     ORDER BY sequence
@@ -146,8 +153,25 @@ export function createSqliteAdministrativeRestartWitnessStore(
     INSERT INTO administrative_restart_witness_observations (
       campaign_id, sequence, challenge, phase, outcome, failure, observed_at,
       policy_revision, policy_state_version, execution_manifest_fingerprint,
-      release_commit, service_instance_fingerprint, boot_identity_fingerprint
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      release_commit, service_instance_fingerprint,
+      worker_service_instance_fingerprint, boot_identity_fingerprint
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const readLatestServiceInstance = database.prepare<
+    [releaseCommit: string, service: string],
+    ServiceInstanceRow
+  >(`
+    SELECT boot_identity_fingerprint, instance_fingerprint
+    FROM administrative_restart_witness_service_instances
+    WHERE release_commit = ? AND service = ?
+    ORDER BY sequence DESC
+    LIMIT 1
+  `);
+  const insertServiceInstance = database.prepare(`
+    INSERT INTO administrative_restart_witness_service_instances (
+      release_commit, service, instance_fingerprint,
+      boot_identity_fingerprint, registered_at
+    ) VALUES (?, ?, ?, ?, ?)
   `);
 
   function projectCampaign(row: CampaignRow): AdministrativeRestartWitnessCampaign {
@@ -161,7 +185,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
       nextObservation,
       observations,
       releaseCommit: row.release_commit,
-      schemaVersion: 2,
+      schemaVersion: 3,
       status: nextObservation === null ? "completed" : "pending",
     });
   }
@@ -191,6 +215,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
       row.execution_manifest_fingerprint === null ||
       row.release_commit === null ||
       row.service_instance_fingerprint === null ||
+      row.worker_service_instance_fingerprint === null ||
       row.boot_identity_fingerprint === null
     ) {
       throw new Error("A passing restart observation has incomplete authority");
@@ -200,13 +225,16 @@ export function createSqliteAdministrativeRestartWitnessStore(
         ? { authorityCaptured: true as const }
         : row.phase === "service-restart"
           ? {
+              apiServiceInstanceChanged: true as const,
               authorityUnchanged: true as const,
               bootIdentityUnchanged: true as const,
-              serviceInstanceChanged: true as const,
+              workerServiceInstanceChanged: true as const,
             }
           : {
+              apiServiceInstanceStable: true as const,
               authorityUnchanged: true as const,
               bootIdentityChanged: true as const,
+              workerServiceInstanceStable: true as const,
             };
     return administrativeRestartWitnessObservationSchema.parse({
       ...common,
@@ -310,19 +338,21 @@ export function createSqliteAdministrativeRestartWitnessStore(
       const host = administrativeRestartWitnessHostObservationSchema.parse(
         input.observation,
       );
-      const hostComparison = privateHostComparisonState(host);
       const admission = admitObservation(input.identity);
       if (admission.decision === "denied") return admission;
 
       const authority = readPolicyAuthority.get();
       const baseline = admission.passedRows[0];
+      const serviceRestart = admission.passedRows.find(
+        (row) => row.phase === "service-restart",
+      );
       const failure = evaluateObservation({
         authority,
         baseline,
         campaign: admission.campaign,
         host,
-        hostComparison,
         phase: admission.phase,
+        serviceRestart,
       });
       const sequence = admission.rows.length + 1;
       if (failure !== undefined) {
@@ -338,6 +368,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
           null,
           null,
           host.releaseCommit,
+          null,
           null,
           null,
         );
@@ -371,8 +402,9 @@ export function createSqliteAdministrativeRestartWitnessStore(
         authority.state_version,
         administrativeExecutionManifestFingerprint(revision.executionManifest),
         host.releaseCommit,
-        hostComparison.serviceInstanceFingerprint,
-        hostComparison.bootIdentityFingerprint,
+        host.apiServiceInstanceFingerprint,
+        host.workerServiceInstanceFingerprint,
+        host.bootIdentityFingerprint,
       );
       const nextPhase = orderedPhases[admission.passedRows.length + 1];
       if (nextPhase !== undefined) {
@@ -414,8 +446,9 @@ export function createSqliteAdministrativeRestartWitnessStore(
         admission.identity.challenge,
         admission.phase,
         "failed",
-        "host-observation-unavailable",
+        input.failure,
         observedAt,
+        null,
         null,
         null,
         null,
@@ -429,7 +462,49 @@ export function createSqliteAdministrativeRestartWitnessStore(
         admission.phase,
         observedAt,
       );
-      return denied("host-observation-unavailable");
+      return denied(input.failure);
+    },
+  );
+
+  const registerServiceInstanceTransaction = database.transaction(
+    (
+      input: Parameters<
+        AdministrativeRestartWitnessStore["registerServiceInstance"]
+      >[0],
+    ) => {
+      const bootIdentityFingerprint =
+        administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+          input.bootIdentityFingerprint,
+        );
+      const candidateInstanceFingerprint =
+        administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+          input.candidateInstanceFingerprint,
+        );
+      const registeredAt = administrativeTimestampSchema.parse(
+        input.registeredAt,
+      );
+      const releaseCommit = administrativeRestartWitnessReleaseCommitSchema.parse(
+        input.releaseCommit,
+      );
+      const service = administrativeRestartWitnessServiceSchema.parse(
+        input.service,
+      );
+      const previous = readLatestServiceInstance.get(releaseCommit, service);
+      const instanceFingerprint =
+        previous !== undefined &&
+        previous.boot_identity_fingerprint !== bootIdentityFingerprint
+          ? administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+              previous.instance_fingerprint,
+            )
+          : candidateInstanceFingerprint;
+      insertServiceInstance.run(
+        releaseCommit,
+        service,
+        instanceFingerprint,
+        bootIdentityFingerprint,
+        registeredAt,
+      );
+      return instanceFingerprint;
     },
   );
 
@@ -465,6 +540,37 @@ export function createSqliteAdministrativeRestartWitnessStore(
       const row = findCampaignForRelease.get(parsed.data);
       return row === undefined ? undefined : projectCampaign(row);
     },
+    async readServiceInstances(input) {
+      const release = administrativeRestartWitnessReleaseCommitSchema.parse(
+        input.releaseCommit,
+      );
+      const boot =
+        administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+          input.bootIdentityFingerprint,
+        );
+      const api = readLatestServiceInstance.get(release, "api");
+      const worker = readLatestServiceInstance.get(release, "worker");
+      return {
+        ...(api?.boot_identity_fingerprint === boot
+          ? {
+              api: administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+                api.instance_fingerprint,
+              ),
+            }
+          : {}),
+        ...(worker?.boot_identity_fingerprint === boot
+          ? {
+              worker:
+                administrativeRestartWitnessServiceInstanceFingerprintSchema.parse(
+                  worker.instance_fingerprint,
+                ),
+            }
+          : {}),
+      };
+    },
+    async registerServiceInstance(input) {
+      return registerServiceInstanceTransaction.immediate(input);
+    },
   };
 }
 
@@ -475,8 +581,8 @@ function evaluateObservation(input: {
   readonly host: ReturnType<
     typeof administrativeRestartWitnessHostObservationSchema.parse
   >;
-  readonly hostComparison: ReturnType<typeof privateHostComparisonState>;
   readonly phase: AdministrativeRestartWitnessPhase;
+  readonly serviceRestart: ObservationRow | undefined;
 }): AdministrativeRestartWitnessFailureReason | undefined {
   if (
     input.authority === undefined ||
@@ -506,6 +612,7 @@ function evaluateObservation(input: {
     input.baseline.execution_manifest_fingerprint !== manifestFingerprint ||
     input.baseline.release_commit !== input.host.releaseCommit ||
     input.baseline.service_instance_fingerprint === null ||
+    input.baseline.worker_service_instance_fingerprint === null ||
     input.baseline.boot_identity_fingerprint === null
   ) {
     return "authority-changed";
@@ -513,44 +620,47 @@ function evaluateObservation(input: {
   if (input.phase === "service-restart") {
     if (
       input.baseline.service_instance_fingerprint ===
-      input.hostComparison.serviceInstanceFingerprint
+      input.host.apiServiceInstanceFingerprint
     ) {
-      return "service-instance-unchanged";
+      return "api-service-instance-unchanged";
+    }
+    if (
+      input.baseline.worker_service_instance_fingerprint ===
+      input.host.workerServiceInstanceFingerprint
+    ) {
+      return "worker-service-instance-unchanged";
     }
     if (
       input.baseline.boot_identity_fingerprint !==
-      input.hostComparison.bootIdentityFingerprint
+      input.host.bootIdentityFingerprint
     ) {
       return "boot-identity-changed-during-service-restart";
     }
     return undefined;
   }
+  if (
+    input.serviceRestart === undefined ||
+    input.serviceRestart.service_instance_fingerprint === null ||
+    input.serviceRestart.worker_service_instance_fingerprint === null
+  ) {
+    return "authority-changed";
+  }
+  if (
+    input.serviceRestart.service_instance_fingerprint !==
+    input.host.apiServiceInstanceFingerprint
+  ) {
+    return "api-service-instance-changed-during-host-reboot";
+  }
+  if (
+    input.serviceRestart.worker_service_instance_fingerprint !==
+    input.host.workerServiceInstanceFingerprint
+  ) {
+    return "worker-service-instance-changed-during-host-reboot";
+  }
   return input.baseline.boot_identity_fingerprint ===
-    input.hostComparison.bootIdentityFingerprint
+    input.host.bootIdentityFingerprint
     ? "boot-identity-unchanged"
     : undefined;
-}
-
-function privateHostComparisonState(
-  host: ReturnType<typeof administrativeRestartWitnessHostObservationSchema.parse>,
-) {
-  return {
-    bootIdentityFingerprint: privateIdentityFingerprint(
-      "agent-host-boot",
-      host.bootIdentity,
-    ),
-    serviceInstanceFingerprint: privateIdentityFingerprint(
-      "api-service-instance",
-      host.serviceInstanceId,
-    ),
-  };
-}
-
-function privateIdentityFingerprint(kind: string, identity: string): string {
-  return createHash("sha256")
-    .update(`voice-agent:administrative-restart-witness:${kind}:v1\0`)
-    .update(identity)
-    .digest("hex");
 }
 
 function denied(
@@ -612,6 +722,7 @@ function createSchema(database: Database.Database): void {
       execution_manifest_fingerprint TEXT,
       release_commit TEXT,
       service_instance_fingerprint TEXT,
+      worker_service_instance_fingerprint TEXT,
       boot_identity_fingerprint TEXT,
       PRIMARY KEY (campaign_id, sequence),
       FOREIGN KEY (campaign_id)
@@ -627,8 +738,18 @@ function createSchema(database: Database.Database): void {
           execution_manifest_fingerprint IS NOT NULL AND
           release_commit IS NOT NULL AND
           service_instance_fingerprint IS NOT NULL AND
+          worker_service_instance_fingerprint IS NOT NULL AND
           boot_identity_fingerprint IS NOT NULL)
       )
+    );
+
+    CREATE TABLE IF NOT EXISTS administrative_restart_witness_service_instances (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      release_commit TEXT NOT NULL,
+      service TEXT NOT NULL CHECK (service IN ('api', 'worker')),
+      instance_fingerprint TEXT NOT NULL,
+      boot_identity_fingerprint TEXT NOT NULL,
+      registered_at TEXT NOT NULL
     );
 
     CREATE TRIGGER IF NOT EXISTS administrative_restart_campaigns_no_update
@@ -666,5 +787,30 @@ function createSchema(database: Database.Database): void {
     BEGIN
       SELECT RAISE(ABORT, 'Restart Witness observations are append-only');
     END;
+
+    CREATE TRIGGER IF NOT EXISTS administrative_restart_service_instances_no_update
+    BEFORE UPDATE ON administrative_restart_witness_service_instances
+    BEGIN
+      SELECT RAISE(ABORT, 'Restart Witness service instances are immutable');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS administrative_restart_service_instances_no_delete
+    BEFORE DELETE ON administrative_restart_witness_service_instances
+    BEGIN
+      SELECT RAISE(ABORT, 'Restart Witness service instances are append-only');
+    END;
   `);
+  const observationColumns = database
+    .prepare("PRAGMA table_info(administrative_restart_witness_observations)")
+    .all() as ReadonlyArray<{ readonly name: string }>;
+  if (
+    !observationColumns.some(
+      ({ name }) => name === "worker_service_instance_fingerprint",
+    )
+  ) {
+    database.exec(`
+      ALTER TABLE administrative_restart_witness_observations
+      ADD COLUMN worker_service_instance_fingerprint TEXT
+    `);
+  }
 }

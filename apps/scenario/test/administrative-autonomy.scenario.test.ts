@@ -1207,13 +1207,6 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
     failedOperations: [
       {
         details: {
-          kind: "production.observe",
-          operationId: "administrative-operation-1",
-          reason: "Administrative Autonomy policy state is stale",
-        },
-      },
-      {
-        details: {
           kind: "delegated-worktree.change",
           operationId: "administrative-operation-2",
           reason: "Administrative Autonomy policy state is stale",
@@ -1249,7 +1242,177 @@ test("a policy revision after one effect blocks every not-yet-started Operation"
     (await restarted.readTask("administrative-task-1"))?.evidence.filter(
       (event) => event.kind === "administrative.operation.failed",
     ),
-  ).toHaveLength(2);
+  ).toHaveLength(1);
+  await restarted.close();
+});
+
+test("a completed Delegation remains durable when policy changes before settlement", async () => {
+  const effectLedger = new Set<string>();
+  const operationAttempts: string[] = [];
+  const { databasePath, scenario } = await createActivatedScenario(
+    {
+      effectLedger,
+      now: "2026-09-01T02:30:00.000Z",
+      operationAttempts,
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+    },
+    temporaryDirectories,
+  );
+  scenario.interleavePolicyRevisionAfterFirstOperation();
+
+  const result = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "A verified candidate is preserved on its isolated branch.",
+    outcome: "propose",
+    ownerId: "owner",
+    requestId: "delegation-post-effect-policy-revision",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const record = await scenario.readTask("administrative-task-1");
+  const completed = record?.evidence.find(
+    (event) => event.kind === "administrative.operation.completed",
+  );
+
+  expect({
+    completed,
+    operationAttempts,
+    result,
+    status: record?.task.status,
+  }).toMatchObject({
+    completed: {
+      details: {
+        kind: "delegated-worktree.change",
+        result: {
+          delegation: {
+            branch: "administrative/administrative-operation-1",
+            commits: ["a".repeat(40)],
+            status: "completed",
+            verification: {
+              automated: [
+                { command: "pnpm typecheck", outcome: "passed" },
+                { command: "pnpm test", outcome: "passed" },
+              ],
+            },
+          },
+          operationId: "administrative-operation-1",
+        },
+      },
+    },
+    operationAttempts: ["administrative-operation-1"],
+    result: { decision: "admitted" },
+    status: "completed",
+  });
+
+  await scenario.close();
+  const restartedAttempts: string[] = [];
+  const restarted = await createAdministrativeAutonomyScenario({
+    databasePath,
+    effectLedger,
+    identifierNamespace: "settlement-restart-",
+    now: "2026-09-01T02:31:00.000Z",
+    operationAttempts: restartedAttempts,
+    providerPlan: [{ kind: "delegated-worktree.change" }],
+  });
+  await restarted.reconcileOperations();
+  const restartedRecord = await restarted.readTask("administrative-task-1");
+  expect({
+    completed: restartedRecord?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    restartedAttempts,
+  }).toMatchObject({
+    completed: [
+      {
+        details: {
+          result: {
+            delegation: { commits: ["a".repeat(40)], status: "completed" },
+          },
+        },
+      },
+    ],
+    restartedAttempts: [],
+  });
+  await restarted.close();
+});
+
+test("a suspended Live Patch preserves its completed effect proof beside rollback evidence", async () => {
+  const rollbackActivationEffects: string[] = [];
+  let runningScenario: Awaited<
+    ReturnType<typeof createActivatedScenario>
+  >["scenario"] | undefined;
+  const activated = await createActivatedScenario(
+    {
+      beforeExecutorResultReturn: async (request) => {
+        if (request.kind === "live-patch.apply") {
+          await runningScenario?.suspendPolicyState();
+        }
+      },
+      now: "2026-09-01T02:45:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationEffects,
+    },
+    temporaryDirectories,
+  );
+  runningScenario = activated.scenario;
+
+  await runningScenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The bounded production response is restored.",
+    outcome: "repair",
+    ownerId: "owner",
+    requestId: "live-patch-suspended-after-effect",
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+  });
+  const record = await runningScenario.readTask("administrative-task-1");
+
+  expect({
+    completed: record?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+    rollbackActivated: record?.evidence.filter(
+      (event) =>
+        event.kind === "administrative.live-patch.rollback-activated",
+    ),
+    rollbackActivationEffects,
+    status: record?.task.status,
+  }).toMatchObject({
+    completed: [
+      {
+        details: {
+          kind: "live-patch.apply",
+          operationId: "administrative-operation-1",
+          result: { kind: "live-patch.apply" },
+        },
+      },
+    ],
+    rollbackActivated: [
+      { details: { operationId: "administrative-operation-1" } },
+    ],
+    rollbackActivationEffects: ["administrative-operation-1"],
+    status: "running",
+  });
+
+  await runningScenario.close();
+  const restarted = await createAdministrativeAutonomyScenario({
+    databasePath: activated.databasePath,
+    identifierNamespace: "suspended-settlement-restart-",
+    now: "2026-09-01T02:46:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationEffects,
+  });
+  await restarted.reconcileOperations();
+  expect(
+    (await restarted.readTask("administrative-task-1"))?.evidence.filter(
+      (event) => event.kind === "administrative.operation.completed",
+    ),
+  ).toHaveLength(1);
+  expect(rollbackActivationEffects).toEqual(["administrative-operation-1"]);
   await restarted.close();
 });
 

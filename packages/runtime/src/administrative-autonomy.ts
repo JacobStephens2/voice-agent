@@ -22,7 +22,6 @@ import {
   administrativeTaskTargetBinding,
   administrativeTaskTargetSchema,
   administrativeTaskTargetRequestSchema,
-  delegationIdSchema,
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
   livePatchRollbackActivationAttemptMilliseconds,
@@ -33,6 +32,7 @@ import {
   sameAdministrativeRegisteredCodebase,
   sameAdministrativeTaskTargetBinding,
   sameGrokRunnerPin,
+  validateAdministrativeDelegatedWorktreeResultBinding,
   type AdministrativeEvidenceRecord,
   type AdministrativeAutonomyStatus,
   type AdministrativeAuthoritySnapshot,
@@ -1319,11 +1319,6 @@ export function createAdministrativeAutonomyRuntime(options: {
         );
         return false;
       }
-      const lossReason = claimMaintenance.lossReason();
-      if (lossReason !== undefined) {
-        await denyClaimedOperation(claim, lossReason);
-        return true;
-      }
       const completedAt = now();
       if (completedAt >= claim.activeExecutionDeadline) {
         await denyClaimedOperation(
@@ -1978,7 +1973,7 @@ const administrativeOperationHandlers = {
             : { kind: "branch-only", productionMutation: false },
       });
     },
-    validateResult: validateDelegatedWorktreeResult,
+    validateResult: validateAdministrativeDelegatedWorktreeResultBinding,
   },
   "live-patch.apply": {
     buildRequest(input) {
@@ -2155,115 +2150,6 @@ function validateObservationResult(
   _result: AdministrativeOperationResultFor<"production.observe">,
   _timing: AdministrativeOperationResultValidation,
 ): void {
-}
-
-function validateDelegatedWorktreeResult(
-  request: AdministrativeOperationRequestFor<"delegated-worktree.change">,
-  result: AdministrativeOperationResultFor<"delegated-worktree.change">,
-  timing: AdministrativeOperationResultValidation,
-): void {
-  const delegation = result.delegation;
-  const candidate = delegation.verification.candidate;
-  const reportedCompleted = new Date(timing.reportedCompletedAt).getTime();
-  const expectedWorktree = request.delegation.worktree;
-  const expectedDelegationId = delegationIdSchema.parse(
-    request.delegation.brief.delegationId,
-  );
-  const expectedCommands =
-    request.delegation.brief.acceptanceCriteria.automaticVerification.commands;
-  const headCommit = delegation.commits.at(-1);
-  const verificationPassed =
-    expectedCommands.every((command) =>
-      delegation.verification.automated.some(
-        (verification) =>
-          verification.command === command &&
-          verification.outcome === "passed",
-      ),
-    ) &&
-    delegation.verification.automated.every(
-      (verification) => verification.outcome === "passed",
-    );
-  const commonProofMismatch =
-    delegation.delegationId !== expectedDelegationId ||
-    delegation.completedAt !== timing.reportedCompletedAt ||
-    reportedCompleted < timing.effectStarted ||
-    reportedCompleted > timing.completed ||
-    delegation.branch !== expectedWorktree.branch ||
-    delegation.worktree.id !== expectedWorktree.id ||
-    delegation.worktree.baseCommit !== expectedWorktree.baseCommit ||
-    delegation.worktree.branch !== expectedWorktree.branch ||
-    delegation.worktree.path !== expectedWorktree.path;
-  if (commonProofMismatch) {
-    throw new Error(
-      "Administrative Delegation Result is incomplete, mismatched, or unverified",
-    );
-  }
-  if (delegation.status !== "completed") {
-    const expectedPublicationReason =
-      delegation.status === "failed"
-        ? "delegation-failed"
-        : "delegation-stopped";
-    const verificationIsBounded = delegation.verification.automated.every(
-      (verification) => expectedCommands.includes(verification.command),
-    );
-    const candidateMatches =
-      candidate === null ||
-      (headCommit !== undefined &&
-        candidate.branch === delegation.branch &&
-        candidate.commit === headCommit &&
-        candidate.worktreeId === delegation.worktree.id);
-    const terminalEvidenceMatches =
-      delegation.status === "failed"
-        ? delegation.failure !== null && delegation.termination === null
-        : delegation.failure === null && delegation.termination !== null;
-    if (
-      delegation.worktree.state !== delegation.status ||
-      result.publication.kind !== "not-published" ||
-      result.publication.reason !== expectedPublicationReason ||
-      !terminalEvidenceMatches ||
-      !verificationIsBounded ||
-      !candidateMatches
-    ) {
-      throw new Error(
-        "Administrative terminal Delegation Result is incomplete or mismatched",
-      );
-    }
-    return;
-  }
-  if (
-    delegation.failure !== null ||
-    delegation.termination !== null ||
-    delegation.changedFiles.length === 0 ||
-    delegation.commits.length === 0 ||
-    delegation.worktree.state !== "completed" ||
-    delegation.worktree.dirty ||
-    candidate === null ||
-    candidate.branch !== delegation.branch ||
-    candidate.commit !== headCommit ||
-    candidate.worktreeId !== delegation.worktree.id ||
-    !verificationPassed
-  ) {
-    throw new Error(
-      "Administrative Delegation Result is incomplete, mismatched, or unverified",
-    );
-  }
-  const matchingPublication =
-    (request.publication.kind === "branch-only" &&
-      result.publication.kind === "isolated-branch-prepared" &&
-      result.publication.branch === delegation.branch &&
-      result.publication.headCommit === headCommit) ||
-    (request.publication.kind === "open-pull-request" &&
-      result.publication.kind === "isolated-pull-request-opened" &&
-      result.publication.registeredCodebaseId ===
-        request.target.registeredCodebaseId &&
-      result.publication.headBranch === delegation.branch &&
-      result.publication.headCommit === headCommit &&
-      result.publication.url.startsWith(
-        `https://github.com/${request.target.registeredCodebase.repository}/pull/`,
-      ));
-  if (!matchingPublication) {
-    throw new Error("Administrative publication proof does not match its request");
-  }
 }
 
 function validateLivePatchResult(

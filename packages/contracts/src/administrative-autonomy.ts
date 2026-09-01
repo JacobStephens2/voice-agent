@@ -4,6 +4,7 @@ import { grokRunnerPinSchema } from "./grok-delegation.ts";
 import { grokEnrollmentCampaignIdSchema } from "./grok-enrollment.ts";
 import {
   delegationCommitSchema,
+  delegationIdSchema,
   delegationResultCoreSchema,
   delegationWorktreeSchema,
 } from "./delegation.ts";
@@ -1243,6 +1244,132 @@ export const administrativeOperationResultSchema = z.discriminatedUnion(
 export type AdministrativeOperationResult = z.infer<
   typeof administrativeOperationResultSchema
 >;
+
+export interface AdministrativeDelegatedWorktreeResultValidation {
+  readonly completed: number;
+  readonly effectStarted: number;
+  readonly reportedCompletedAt: AdministrativeTimestamp;
+}
+
+/**
+ * Correlates the canonical Delegation Result with the exact Administrative
+ * Delegation request that owns it. Runtime code supplies only trusted timing;
+ * structural traversal remains encapsulated beside the contracts themselves.
+ */
+export function validateAdministrativeDelegatedWorktreeResultBinding(
+  request: Extract<
+    AdministrativeOperationRequest,
+    { readonly kind: "delegated-worktree.change" }
+  >,
+  result: Extract<
+    AdministrativeOperationResult,
+    { readonly kind: "delegated-worktree.change" }
+  >,
+  timing: AdministrativeDelegatedWorktreeResultValidation,
+): void {
+  const delegation = result.delegation;
+  const candidate = delegation.verification.candidate;
+  const reportedCompleted = new Date(timing.reportedCompletedAt).getTime();
+  const expectedWorktree = request.delegation.worktree;
+  const expectedDelegationId = delegationIdSchema.parse(
+    request.delegation.brief.delegationId,
+  );
+  const expectedCommands =
+    request.delegation.brief.acceptanceCriteria.automaticVerification.commands;
+  const headCommit = delegation.commits.at(-1);
+  const verificationPassed =
+    expectedCommands.every((command) =>
+      delegation.verification.automated.some(
+        (verification) =>
+          verification.command === command &&
+          verification.outcome === "passed",
+      ),
+    ) &&
+    delegation.verification.automated.every(
+      (verification) => verification.outcome === "passed",
+    );
+  const commonProofMismatch =
+    delegation.delegationId !== expectedDelegationId ||
+    delegation.completedAt !== timing.reportedCompletedAt ||
+    reportedCompleted < timing.effectStarted ||
+    reportedCompleted > timing.completed ||
+    delegation.branch !== expectedWorktree.branch ||
+    delegation.worktree.id !== expectedWorktree.id ||
+    delegation.worktree.baseCommit !== expectedWorktree.baseCommit ||
+    delegation.worktree.branch !== expectedWorktree.branch ||
+    delegation.worktree.path !== expectedWorktree.path;
+  if (commonProofMismatch) {
+    throw new Error(
+      "Administrative Delegation Result is incomplete, mismatched, or unverified",
+    );
+  }
+  if (delegation.status !== "completed") {
+    const expectedPublicationReason =
+      delegation.status === "failed"
+        ? "delegation-failed"
+        : "delegation-stopped";
+    const verificationIsBounded = delegation.verification.automated.every(
+      (verification) => expectedCommands.includes(verification.command),
+    );
+    const candidateMatches =
+      candidate === null ||
+      (headCommit !== undefined &&
+        candidate.branch === delegation.branch &&
+        candidate.commit === headCommit &&
+        candidate.worktreeId === delegation.worktree.id);
+    const terminalEvidenceMatches =
+      delegation.status === "failed"
+        ? delegation.failure !== null && delegation.termination === null
+        : delegation.failure === null && delegation.termination !== null;
+    if (
+      delegation.worktree.state !== delegation.status ||
+      result.publication.kind !== "not-published" ||
+      result.publication.reason !== expectedPublicationReason ||
+      !terminalEvidenceMatches ||
+      !verificationIsBounded ||
+      !candidateMatches
+    ) {
+      throw new Error(
+        "Administrative terminal Delegation Result is incomplete or mismatched",
+      );
+    }
+    return;
+  }
+  if (
+    delegation.failure !== null ||
+    delegation.termination !== null ||
+    delegation.changedFiles.length === 0 ||
+    delegation.commits.length === 0 ||
+    delegation.worktree.state !== "completed" ||
+    delegation.worktree.dirty ||
+    candidate === null ||
+    candidate.branch !== delegation.branch ||
+    candidate.commit !== headCommit ||
+    candidate.worktreeId !== delegation.worktree.id ||
+    !verificationPassed
+  ) {
+    throw new Error(
+      "Administrative Delegation Result is incomplete, mismatched, or unverified",
+    );
+  }
+  const matchingPublication =
+    (request.publication.kind === "branch-only" &&
+      result.publication.kind === "isolated-branch-prepared" &&
+      result.publication.branch === delegation.branch &&
+      result.publication.headCommit === headCommit) ||
+    (request.publication.kind === "open-pull-request" &&
+      result.publication.kind === "isolated-pull-request-opened" &&
+      result.publication.registeredCodebaseId ===
+        request.target.registeredCodebaseId &&
+      result.publication.headBranch === delegation.branch &&
+      result.publication.headCommit === headCommit &&
+      result.publication.url.startsWith(
+        `https://github.com/${request.target.registeredCodebase.repository}/pull/`,
+      ));
+  if (!matchingPublication) {
+    throw new Error("Administrative publication proof does not match its request");
+  }
+}
 
 export function livePatchCaptureBranch(
   operationId: AdministrativeOperationId,

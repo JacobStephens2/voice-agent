@@ -339,6 +339,15 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(apiUnit).toContain("deployment-authority-upgrade.challenge");
   expect(apiServer).toContain("deployment-authority-upgrade.request");
   expect(apiServer).toContain("deployment-authority-upgrade.challenge");
+  expect(apiServer).toContain(
+    "registerNodeAdministrativeRestartWitnessServiceInstance",
+  );
+  expect(apiServer).toContain('service: "api"');
+  expect(apiServer).toContain("services: administrativeRestartWitnessStore");
+  expect(workerServer).toContain(
+    "registerNodeAdministrativeRestartWitnessServiceInstance",
+  );
+  expect(workerServer).toContain('service: "worker"');
   expect(workerUnit).toContain("SupplementaryGroups=voice-broker-client");
   expect(workerUnit).toContain("voice-subagent-client");
   expect(workerUnit).toContain("EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env");

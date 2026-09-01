@@ -36,6 +36,7 @@ import {
   sameAdministrativeAuthoritySnapshot,
   sameAdministrativeExecutionManifest,
   sameAdministrativeTaskTargetBinding,
+  validateAdministrativeDelegatedWorktreeResultBinding,
   type AdministrativeAuthoritySnapshot,
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
@@ -237,6 +238,28 @@ function validateLivePatchCompletion(
   ) {
     throw new Error("Live Patch completion changed its trusted target");
   }
+}
+
+function validateDelegatedWorktreeCompletion(
+  request: AdministrativeOperationRequest,
+  result: AdministrativeOperationResult,
+): void {
+  if (request.kind !== "delegated-worktree.change") return;
+  if (result.kind !== request.kind) {
+    throw new Error("Administrative Delegation completion kind changed");
+  }
+  const effectStarted = new Date(
+    result.effect.kind === "effect-performed"
+      ? result.effect.startedAt
+      : result.effect.originallyStartedAt,
+  ).getTime();
+  validateAdministrativeDelegatedWorktreeResultBinding(request, result, {
+    completed: new Date(result.completedAt).getTime(),
+    effectStarted,
+    reportedCompletedAt: administrativeTimestampSchema.parse(
+      result.delegation.completedAt,
+    ),
+  });
 }
 
 function sameAdministrativeResult(
@@ -1648,6 +1671,7 @@ export function createSqliteAdministrativeAutonomyStore(
         submittedResult,
         input.completedEvent,
       );
+      validateDelegatedWorktreeCompletion(request, submittedResult);
       validateLivePatchCompletion(request, submittedResult);
       if (operation.status === "completed") {
         if (operation.result_json === null) {
@@ -1687,12 +1711,16 @@ export function createSqliteAdministrativeAutonomyStore(
         }
       }
       const task = requireTask(input.taskId);
+      // Authority is fenced immediately before the external effect. Once the
+      // typed result exists, a later policy transition must not rewrite that
+      // historical fact as failure. Settlement still requires the exact live
+      // claim, mutation lane, task deadline, request correlation, and rollback
+      // obligation above and below this point.
       if (
         task.active_execution_deadline === null ||
-        submittedResult.completedAt >= task.active_execution_deadline ||
-        !matchesAuthoritySnapshot(request.authority)
+        submittedResult.completedAt >= task.active_execution_deadline
       ) {
-        throw new Error("Administrative Operation authority is no longer active");
+        throw new Error("Administrative Operation execution deadline elapsed");
       }
       if (request.kind === "live-patch.apply") {
         const rollback = readLivePatchRollback.get(input.operationId);
@@ -1700,8 +1728,14 @@ export function createSqliteAdministrativeAutonomyStore(
           submittedResult.kind === "live-patch.apply"
             ? submittedResult
             : undefined;
-        if (rollback?.status !== "armed" || result === undefined) {
-          throw new Error("Live Patch rollback is not armed");
+        if (
+          rollback === undefined ||
+          !["activation-pending", "activated", "armed"].includes(
+            rollback.status,
+          ) ||
+          result === undefined
+        ) {
+          throw new Error("Live Patch rollback obligation is unavailable");
         }
         const activationRequest =
           livePatchRollbackActivationRequestSchema.parse(

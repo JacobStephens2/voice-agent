@@ -17,8 +17,16 @@ test("the attended witness performs real service and Agent Host restarts", () =>
   expect(wizard).toContain(
     "systemctl restart voice-agent-api.service voice-agent-worker.service",
   );
+  expect(wizard).toContain(
+    "systemctl is-active --quiet",
+  );
+  expect(wizard).toContain(
+    "unless both service identities changed on this same boot",
+  );
   expect(wizard).toContain("sudo systemctl reboot");
-  expect(wizard).toContain("server verifies the changed Linux boot identity");
+  expect(wizard).toContain(
+    "server verifies the changed Linux boot and the stable post-service API/worker identities",
+  );
   expect(wizard).not.toContain("simulated reboot");
 });
 
