@@ -812,6 +812,74 @@ test("superseded service startup fingerprints retain a bounded current projectio
   await fixture.policyStore.close();
 });
 
+test("service startup fingerprints discard inactive Release partitions", async () => {
+  const fixture = await createFixture();
+  if (fixture.campaign.nextObservation === null) {
+    throw new Error("The baseline Restart Witness challenge is unavailable");
+  }
+  await fixture.runtime.observe({
+    campaignId: fixture.campaign.campaignId,
+    ...fixture.campaign.nextObservation,
+  });
+  let activeRelease = releaseCommit;
+  for (let release = 1; release <= 20; release += 1) {
+    activeRelease = administrativeRestartWitnessReleaseCommitSchema.parse(
+      release.toString(16).padStart(40, "0"),
+    );
+    await fixture.store.registerServiceInstance({
+      bootIdentityFingerprint: fingerprint(
+        "agent-host-boot",
+        fixture.bootIdentity,
+      ),
+      candidateInstanceFingerprint: fingerprint(
+        "api-service-instance",
+        `api-release-${release}`,
+      ),
+      registeredAt: administrativeTimestampSchema.parse(
+        `2026-09-${String(release).padStart(2, "0")}T14:00:00.000Z`,
+      ),
+      releaseCommit: activeRelease,
+      service: "api",
+    });
+    await fixture.store.registerServiceInstance({
+      bootIdentityFingerprint: fingerprint(
+        "agent-host-boot",
+        fixture.bootIdentity,
+      ),
+      candidateInstanceFingerprint: fingerprint(
+        "worker-service-instance",
+        `worker-release-${release}`,
+      ),
+      registeredAt: administrativeTimestampSchema.parse(
+        `2026-09-${String(release).padStart(2, "0")}T14:00:01.000Z`,
+      ),
+      releaseCommit: activeRelease,
+      service: "worker",
+    });
+  }
+  await fixture.store.close();
+  const database = new Database(fixture.databasePath);
+  expect(
+    database
+      .prepare(
+        `SELECT release_commit AS releaseCommit, COUNT(*) AS count
+         FROM administrative_restart_witness_service_instances
+         GROUP BY release_commit`,
+      )
+      .all(),
+  ).toEqual([{ count: 2, releaseCommit: activeRelease }]);
+  expect(
+    database
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM administrative_restart_witness_observations`,
+      )
+      .get(),
+  ).toEqual({ count: 1 });
+  database.close();
+  await fixture.policyStore.close();
+});
+
 test("a V2 campaign remains readable and resumes with a worker-bound V3 baseline", async () => {
   const directory = await mkdtemp(join(tmpdir(), "voice-agent-restart-v2-"));
   temporaryDirectories.push(directory);

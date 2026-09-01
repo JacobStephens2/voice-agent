@@ -23,6 +23,7 @@ import {
   administrativeOperationClaimIdSchema,
   administrativeOperationIdSchema,
   administrativeRestartWitnessChallengeSchema,
+  type AdministrativeRestartWitnessApiServiceInstanceFingerprint,
   administrativeTaskIdSchema,
   administrativeUnavailableExecutionManifest,
 } from "@voice-agent/contracts";
@@ -104,18 +105,15 @@ const administrativeRuntime = createAdministrativeAutonomyRuntime({
 await administrativeRuntime.reconcileOperations();
 const administrativeRestartWitnessStore =
   createSqliteAdministrativeRestartWitnessStore(databasePath);
+let apiServiceInstanceFingerprint:
+  | AdministrativeRestartWitnessApiServiceInstanceFingerprint
+  | undefined;
 const administrativeRestartWitnessRuntime = testMode
   ? undefined
   : createAdministrativeRestartWitnessRuntime({
       host: createNodeAdministrativeRestartWitnessHost({
-        apiServiceInstanceFingerprint:
-          await registerNodeAdministrativeRestartWitnessServiceInstance({
-            nextServiceInstanceId: () =>
-              `administrative-api-service-instance-${randomUUID()}`,
-            now: () => new Date().toISOString(),
-            service: "api",
-            store: administrativeRestartWitnessStore,
-          }),
+        readApiServiceInstanceFingerprint: () =>
+          apiServiceInstanceFingerprint,
         services: administrativeRestartWitnessStore,
         workerHealth: createNodeAdministrativeRestartWitnessWorkerHealth({
           port: Number(requireEnvironment("VOICE_AGENT_WORKER_PORT")),
@@ -410,6 +408,16 @@ await api.listen({
   host: "127.0.0.1",
   port: Number(process.env.VOICE_AGENT_PORT ?? "3472"),
 });
+if (!testMode) {
+  apiServiceInstanceFingerprint =
+    await registerNodeAdministrativeRestartWitnessServiceInstance({
+      nextServiceInstanceId: () =>
+        `administrative-api-service-instance-${randomUUID()}`,
+      now: () => new Date().toISOString(),
+      service: "api",
+      store: administrativeRestartWitnessStore,
+    });
+}
 
 async function requestPromotionResume(
   path: string,

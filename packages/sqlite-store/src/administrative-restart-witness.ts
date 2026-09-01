@@ -221,6 +221,10 @@ export function createSqliteAdministrativeRestartWitnessStore(
       LIMIT -1 OFFSET ${maximumServiceInstancesPerReleaseAndService}
     )
   `);
+  const pruneInactiveReleaseServiceInstances = database.prepare(`
+    DELETE FROM administrative_restart_witness_service_instances
+    WHERE release_commit != ?
+  `);
 
   function projectCampaign(row: CampaignRow): AdministrativeRestartWitnessCampaign {
     const allObservations = readObservations.all(row.campaign_id);
@@ -614,6 +618,7 @@ export function createSqliteAdministrativeRestartWitnessStore(
         bootIdentityFingerprint,
         registeredAt,
       );
+      pruneInactiveReleaseServiceInstances.run(releaseCommit);
       pruneSupersededServiceInstances.run(releaseCommit, service);
       return instanceFingerprint;
     },
@@ -909,16 +914,25 @@ function createSchema(database: Database.Database): void {
     END;
 
     DROP TRIGGER IF EXISTS administrative_restart_service_instances_no_delete;
+    DROP TRIGGER IF EXISTS administrative_restart_service_instances_retention_delete_only;
 
-    CREATE TRIGGER IF NOT EXISTS administrative_restart_service_instances_retention_delete_only
+    CREATE TRIGGER administrative_restart_service_instances_retention_delete_only
     BEFORE DELETE ON administrative_restart_witness_service_instances
     WHEN (
-      SELECT COUNT(*)
-      FROM administrative_restart_witness_service_instances AS newer
-      WHERE newer.release_commit = OLD.release_commit
-        AND newer.service = OLD.service
-        AND newer.sequence > OLD.sequence
-    ) < ${maximumServiceInstancesPerReleaseAndService}
+      OLD.release_commit = (
+        SELECT latest.release_commit
+        FROM administrative_restart_witness_service_instances AS latest
+        ORDER BY latest.sequence DESC
+        LIMIT 1
+      )
+      AND (
+        SELECT COUNT(*)
+        FROM administrative_restart_witness_service_instances AS newer
+        WHERE newer.release_commit = OLD.release_commit
+          AND newer.service = OLD.service
+          AND newer.sequence > OLD.sequence
+      ) < ${maximumServiceInstancesPerReleaseAndService}
+    )
     BEGIN
       SELECT RAISE(
         ABORT,

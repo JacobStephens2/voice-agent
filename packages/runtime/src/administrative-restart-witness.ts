@@ -210,17 +210,13 @@ export function createAdministrativeRestartWitnessRuntime(options: {
 
 /** Reads the real Agent Host identities from fixed deployment-owned paths. */
 export function createNodeAdministrativeRestartWitnessHost(input: {
-  readonly apiServiceInstanceFingerprint: AdministrativeRestartWitnessApiServiceInstanceFingerprint;
+  readonly readApiServiceInstanceFingerprint: () => unknown;
   readonly services: Pick<
     AdministrativeRestartWitnessStore,
     "readServiceInstances"
   >;
   readonly workerHealth: AdministrativeRestartWitnessWorkerHealth;
 }): AdministrativeRestartWitnessHost {
-  const apiServiceInstanceFingerprint =
-    administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
-      input.apiServiceInstanceFingerprint,
-    );
   const apiEntrypoint = process.argv[1];
   if (apiEntrypoint === undefined) {
     throw new Error("The running Voice Agent API entrypoint is unavailable");
@@ -234,6 +230,10 @@ export function createNodeAdministrativeRestartWitnessHost(input: {
   const witnessModuleMetadata = statSync(witnessModulePath);
   return {
     async read() {
+      const apiServiceInstanceFingerprint =
+        administrativeRestartWitnessApiServiceInstanceFingerprintSchema.parse(
+          input.readApiServiceInstanceFingerprint(),
+        );
       const [bootIdentity, marker, activeReleasePath] = await Promise.all([
         readFile("/proc/sys/kernel/random/boot_id", "utf8"),
         readFile("/opt/voice-agent/current/.voice-agent-release", "utf8"),

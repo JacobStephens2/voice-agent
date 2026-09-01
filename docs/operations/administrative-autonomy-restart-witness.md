@@ -71,9 +71,10 @@ comparison projection. If a reboot request fails or the API still observes the
 old boot, the wizard clears its procedural reboot marker so the append-only
 campaign can resume with its new challenge and request another real reboot.
 The CLI can only create/resume, inspect, evaluate, and export the server-recorded
-campaign through the fixed production database path. Superseded startup
-fingerprints form a bounded private comparison projection; accepted phase
-observations remain append-only evidence.
+campaign through the fixed production database path. Recent current-Release
+startup fingerprints form a bounded private comparison projection and
+inactive-Release fingerprints are pruned; accepted phase observations remain
+append-only evidence.
 
 By default the record is:
 

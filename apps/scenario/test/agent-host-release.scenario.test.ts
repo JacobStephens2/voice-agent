@@ -321,8 +321,8 @@ test("the Agent Host release preserves its private ports and service boundaries"
         "ops/systemd/voice-agent-promotion-resume.service",
       ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
     );
-  if (workerServer === undefined) {
-    throw new Error("The worker server source was not loaded");
+  if (apiServer === undefined || workerServer === undefined) {
+    throw new Error("The API and worker server sources were not loaded");
   }
 
   for (const portConsumer of [apiServer, apache, health, apiUnit]) {
@@ -349,6 +349,11 @@ test("the Agent Host release preserves its private ports and service boundaries"
   expect(apiServer).toContain("services: administrativeRestartWitnessStore");
   expect(apiServer).toContain(
     "createNodeAdministrativeRestartWitnessWorkerHealth",
+  );
+  expect(apiServer.indexOf("await api.listen")).toBeLessThan(
+    apiServer.lastIndexOf(
+      "registerNodeAdministrativeRestartWitnessServiceInstance",
+    ),
   );
   expect(apiUnit).toContain("Environment=VOICE_AGENT_WORKER_PORT=3474");
   expect(workerServer).toContain(
