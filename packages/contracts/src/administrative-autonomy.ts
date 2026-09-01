@@ -64,50 +64,114 @@ export type AdministrativeOperationKind = z.infer<
   typeof administrativeOperationKindSchema
 >;
 
-const implementationDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export const administrativeImplementationDigestSchema = z
+  .string()
+  .regex(/^[a-f0-9]{64}$/);
 
-const administrativeExecutionProviderSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("unavailable") }).strict(),
-  z
-    .object({
-      implementationDigest: implementationDigestSchema,
-      kind: z.literal("scenario-fake"),
-    })
-    .strict(),
-  z
-    .object({
-      enrollmentId: identifierSchema,
-      kind: z.literal("grok-build"),
-      runnerPin: implementationDigestSchema,
-    })
-    .strict(),
-]);
+const administrativeUnavailableProviderSchema = z
+  .object({ kind: z.literal("unavailable") })
+  .strict();
+const administrativeScenarioProviderSchema = z
+  .object({
+    implementationDigest: administrativeImplementationDigestSchema,
+    kind: z.literal("scenario-fake"),
+  })
+  .strict();
+const administrativeGrokProviderSchema = z
+  .object({
+    enrollmentId: identifierSchema,
+    kind: z.literal("grok-build"),
+    runnerPin: administrativeImplementationDigestSchema,
+  })
+  .strict();
+
+export const administrativeExecutionProviderSchema = z.discriminatedUnion(
+  "kind",
+  [
+    administrativeUnavailableProviderSchema,
+    administrativeScenarioProviderSchema,
+    administrativeGrokProviderSchema,
+  ],
+);
+
+export const administrativePlanProviderIdentitySchema = z.discriminatedUnion(
+  "kind",
+  [administrativeScenarioProviderSchema, administrativeGrokProviderSchema],
+);
+export type AdministrativePlanProviderIdentity = z.infer<
+  typeof administrativePlanProviderIdentitySchema
+>;
+
+const administrativeObserveImplementationSchema = z
+  .object({
+    implementationDigest: administrativeImplementationDigestSchema,
+    kind: z.literal("production.observe"),
+  })
+  .strict();
+const administrativeWorktreeImplementationSchema = z
+  .object({
+    implementationDigest: administrativeImplementationDigestSchema,
+    kind: z.literal("delegated-worktree.change"),
+  })
+  .strict();
+const administrativeLivePatchExecutorImplementationSchema = z
+  .object({
+    implementationDigest: administrativeImplementationDigestSchema,
+    kind: z.literal("live-patch.apply"),
+  })
+  .strict();
+const administrativeLivePatchManifestImplementationSchema =
+  administrativeLivePatchExecutorImplementationSchema.extend({
+    rollbackActivationImplementationDigest:
+      administrativeImplementationDigestSchema,
+  });
+
+const administrativeOperationExecutorImplementationSchema =
+  z.discriminatedUnion("kind", [
+    administrativeObserveImplementationSchema,
+    administrativeWorktreeImplementationSchema,
+    administrativeLivePatchExecutorImplementationSchema,
+  ]);
+
+export const administrativeOperationExecutorIdentitySchema = z
+  .object({
+    operationAdapters: z
+      .array(administrativeOperationExecutorImplementationSchema)
+      .max(3),
+  })
+  .strict()
+  .superRefine((identity, context) => {
+    const kinds = identity.operationAdapters.map((adapter) => adapter.kind);
+    if (new Set(kinds).size !== kinds.length) {
+      context.addIssue({
+        code: "custom",
+        message: "Operation executor implementation identities must be unique",
+        path: ["operationAdapters"],
+      });
+    }
+  });
+export type AdministrativeOperationExecutorIdentity = z.infer<
+  typeof administrativeOperationExecutorIdentitySchema
+>;
+
+export const administrativeLivePatchRollbackActivatorIdentitySchema = z
+  .object({
+    implementationDigest: administrativeImplementationDigestSchema,
+    kind: z.literal("live-patch.apply"),
+  })
+  .strict();
+export type AdministrativeLivePatchRollbackActivatorIdentity = z.infer<
+  typeof administrativeLivePatchRollbackActivatorIdentitySchema
+>;
 
 export const administrativeExecutionManifestSchema = z
   .object({
     operationAdapters: z
       .array(
         z.discriminatedUnion("kind", [
-          z
-            .object({
-              implementationDigest: implementationDigestSchema,
-              kind: z.literal("production.observe"),
-            })
-            .strict(),
-          z
-            .object({
-              implementationDigest: implementationDigestSchema,
-              kind: z.literal("delegated-worktree.change"),
-            })
-            .strict(),
-          z
-            .object({
-              implementationDigest: implementationDigestSchema,
-              kind: z.literal("live-patch.apply"),
-              rollbackActivationImplementationDigest:
-                implementationDigestSchema,
-            })
-            .strict(),
+          administrativeObserveImplementationSchema,
+          administrativeWorktreeImplementationSchema,
+          administrativeLivePatchManifestImplementationSchema,
         ]),
       )
       .max(3),
@@ -139,6 +203,17 @@ export type AdministrativeExecutionManifest = z.infer<
   typeof administrativeExecutionManifestSchema
 >;
 
+export const administrativeAuthoritySnapshotSchema = z
+  .object({
+    executionManifest: administrativeExecutionManifestSchema,
+    policyRevision: z.number().int().positive(),
+    policyStateVersion: z.number().int().positive(),
+  })
+  .strict();
+export type AdministrativeAuthoritySnapshot = z.infer<
+  typeof administrativeAuthoritySnapshotSchema
+>;
+
 export const administrativeUnavailableExecutionManifest: AdministrativeExecutionManifest =
   administrativeExecutionManifestSchema.parse({
     operationAdapters: [],
@@ -165,6 +240,22 @@ export function sameAdministrativeExecutionManifest(
   return (
     administrativeExecutionManifestFingerprint(left) ===
     administrativeExecutionManifestFingerprint(right)
+  );
+}
+
+export function sameAdministrativeAuthoritySnapshot(
+  left: AdministrativeAuthoritySnapshot,
+  right: AdministrativeAuthoritySnapshot,
+): boolean {
+  const parsedLeft = administrativeAuthoritySnapshotSchema.parse(left);
+  const parsedRight = administrativeAuthoritySnapshotSchema.parse(right);
+  return (
+    parsedLeft.policyRevision === parsedRight.policyRevision &&
+    parsedLeft.policyStateVersion === parsedRight.policyStateVersion &&
+    sameAdministrativeExecutionManifest(
+      parsedLeft.executionManifest,
+      parsedRight.executionManifest,
+    )
   );
 }
 
@@ -364,7 +455,9 @@ export type AdministrativeTaskTarget = z.infer<
 export const livePatchRollbackActivationRequestSchema = z
   .object({
     armedAt: timestampSchema,
+    armedRollbackDeadline: timestampSchema,
     kind: z.literal("activate-armed-live-patch-rollback"),
+    mutationAuthorizedAt: timestampSchema.nullable(),
     operationId: administrativeOperationIdSchema,
     rollbackDeadline: timestampSchema,
     target: administrativeTaskTargetSchema,
@@ -406,10 +499,8 @@ export type AdministrativeProviderPlan = z.infer<
 >;
 
 const administrativeOperationRequestFields = {
-  executionManifest: administrativeExecutionManifestSchema,
+  authority: administrativeAuthoritySnapshotSchema,
   operationId: administrativeOperationIdSchema,
-  policyRevision: z.number().int().positive(),
-  policyStateVersion: z.number().int().positive(),
   target: administrativeTaskTargetSchema,
   taskId: administrativeTaskIdSchema,
 };

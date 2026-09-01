@@ -116,6 +116,11 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly effectLedger?: Set<string>;
   readonly executorFailures?: number;
   readonly executionAdapters?: "available" | "unavailable";
+  readonly executionImplementationVersions?: {
+    readonly executor?: 1 | 2;
+    readonly provider?: 1 | 2;
+    readonly rollbackActivator?: 1 | 2;
+  };
   readonly executionManifestVersion?: 1 | 2;
   readonly holdOperationUntilAbort?: boolean;
   readonly identifierNamespace?: string;
@@ -168,8 +173,35 @@ export async function createAdministrativeAutonomyScenario(options: {
     options.executionAdapters === "unavailable"
       ? administrativeUnavailableExecutionManifest
       : createScenarioExecutionManifest(options.executionManifestVersion ?? 1);
+  const implementationVersion = options.executionManifestVersion ?? 1;
+  const executorManifest = createScenarioExecutionManifest(
+    options.executionImplementationVersions?.executor ?? implementationVersion,
+  );
+  const providerManifest = createScenarioExecutionManifest(
+    options.executionImplementationVersions?.provider ?? implementationVersion,
+  );
+  const rollbackActivatorManifest = createScenarioExecutionManifest(
+    options.executionImplementationVersions?.rollbackActivator ??
+      implementationVersion,
+  );
+  if (providerManifest.provider.kind !== "scenario-fake") {
+    throw new Error("The scenario provider identity is unavailable");
+  }
+  const providerIdentity = providerManifest.provider;
+  const rollbackActivatorImplementation =
+    rollbackActivatorManifest.operationAdapters.find(
+      (adapter) => adapter.kind === "live-patch.apply",
+    );
+  if (rollbackActivatorImplementation === undefined) {
+    throw new Error("The scenario rollback activator identity is unavailable");
+  }
   let runtime: ReturnType<typeof createAdministrativeAutonomyRuntime>;
   const executor = {
+    identity: {
+      operationAdapters: executorManifest.operationAdapters.map(
+        ({ implementationDigest, kind }) => ({ implementationDigest, kind }),
+      ),
+    },
     async execute(execution: AdministrativeOperationExecution) {
       const { request } = execution;
       const {
@@ -196,22 +228,46 @@ export async function createAdministrativeAutonomyScenario(options: {
         await options.beforeOperationEffect?.(request);
         effectPerformedAt = administrativeTimestampSchema.parse(currentTime());
         if (request.kind === "live-patch.apply") {
-          livePatchProof = createLivePatchProof(
-            request,
-            effectPerformedAt,
-            options.livePatchRollbackArmLeadMilliseconds ?? 0,
+          const armedAt = administrativeTimestampSchema.parse(
+            new Date(
+              new Date(effectPerformedAt).getTime() -
+                (options.livePatchRollbackArmLeadMilliseconds ?? 0),
+            ).toISOString(),
+          );
+          const rollbackDuration =
             options.livePatchRollbackDurationMilliseconds ??
-              livePatchRollbackWindowMilliseconds,
+            livePatchRollbackWindowMilliseconds;
+          const initialRollbackDeadline = administrativeTimestampSchema.parse(
+            new Date(
+              new Date(armedAt).getTime() + rollbackDuration,
+            ).toISOString(),
           );
           await execution.fence.armLivePatchRollback({
-            armedAt: livePatchProof.independentRollback.armedAt,
-            rollbackDeadline:
-              livePatchProof.independentRollback.rollbackDeadline,
+            armedAt,
+            rollbackDeadline: initialRollbackDeadline,
+          });
+          await options.afterLivePatchRollbackArmed?.(request);
+          effectPerformedAt = administrativeTimestampSchema.parse(currentTime());
+          const rollbackDeadline = administrativeTimestampSchema.parse(
+            new Date(
+              new Date(effectPerformedAt).getTime() + rollbackDuration,
+            ).toISOString(),
+          );
+          livePatchProof = createLivePatchProof(
+            request,
+            armedAt,
+            effectPerformedAt,
+            rollbackDeadline,
+          );
+          await execution.fence.activateLivePatchRollbackWindow({
+            armedAt,
+            mutationStartedAt: effectPerformedAt,
+            rollbackDeadline,
           });
           livePatchProofLedger.set(request.operationId, livePatchProof);
-          await options.afterLivePatchRollbackArmed?.(request);
+        } else {
+          await execution.fence.recheckEffectAuthority();
         }
-        await execution.fence.recheckEffectAuthority();
         if (signal.aborted || currentTime() >= activeExecutionDeadline) {
           throw new Error("The bounded administrative execution was aborted");
         }
@@ -307,6 +363,7 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
   };
   const provider = {
+    identity: providerIdentity,
     async choosePlan(input: { readonly taskId: string }) {
       options.providerAttempts?.push(input.taskId);
       if (providerFailuresRemaining > 0) {
@@ -331,6 +388,11 @@ export async function createAdministrativeAutonomyScenario(options: {
     },
   };
   const rollbackActivator = {
+    identity: {
+      implementationDigest:
+        rollbackActivatorImplementation.rollbackActivationImplementationDigest,
+      kind: "live-patch.apply" as const,
+    },
     async activate(request: LivePatchRollbackActivationRequest) {
       options.rollbackActivationAttempts?.push(request);
       if (rollbackActivationFailuresRemaining > 0) {
@@ -375,35 +437,40 @@ export async function createAdministrativeAutonomyScenario(options: {
       });
     },
   };
-  runtime = createAdministrativeAutonomyRuntime({
-    ...(options.executionAdapters === "unavailable"
-      ? {}
-      : { executor, provider, rollbackActivator }),
-    executionManifest,
-    identifiers: {
-      nextCapability: () =>
-        `${identifierNamespace}administrative-confirmation-capability-${(capabilitySequence += 1)}`,
-      nextClaimId: () =>
-        administrativeOperationClaimIdSchema.parse(
-          `${identifierNamespace}administrative-claim-${(claimSequence += 1)}`,
-        ),
-      nextEventId: () =>
-        `${identifierNamespace}administrative-event-${(eventSequence += 1)}`,
-      nextOperationId: () =>
-        administrativeOperationIdSchema.parse(
-          `${identifierNamespace}administrative-operation-${(operationSequence += 1)}`,
-        ),
-      nextTaskId: () =>
-        administrativeTaskIdSchema.parse(
-          `${identifierNamespace}administrative-task-${(taskSequence += 1)}`,
-        ),
-    },
-    now: currentTime,
-    ...(options.operationLeaseMilliseconds === undefined
-      ? {}
-      : { operationLeaseMilliseconds: options.operationLeaseMilliseconds }),
-    store,
-  });
+  try {
+    runtime = createAdministrativeAutonomyRuntime({
+      ...(options.executionAdapters === "unavailable"
+        ? {}
+        : { executor, provider, rollbackActivator }),
+      executionManifest,
+      identifiers: {
+        nextCapability: () =>
+          `${identifierNamespace}administrative-confirmation-capability-${(capabilitySequence += 1)}`,
+        nextClaimId: () =>
+          administrativeOperationClaimIdSchema.parse(
+            `${identifierNamespace}administrative-claim-${(claimSequence += 1)}`,
+          ),
+        nextEventId: () =>
+          `${identifierNamespace}administrative-event-${(eventSequence += 1)}`,
+        nextOperationId: () =>
+          administrativeOperationIdSchema.parse(
+            `${identifierNamespace}administrative-operation-${(operationSequence += 1)}`,
+          ),
+        nextTaskId: () =>
+          administrativeTaskIdSchema.parse(
+            `${identifierNamespace}administrative-task-${(taskSequence += 1)}`,
+          ),
+      },
+      now: currentTime,
+      ...(options.operationLeaseMilliseconds === undefined
+        ? {}
+        : { operationLeaseMilliseconds: options.operationLeaseMilliseconds }),
+      store,
+    });
+  } catch (error) {
+    await store.close();
+    throw error;
+  }
   await runtime.reconcileOperations();
   const ordinaryTaskStore = createSqliteDurableTaskStore(options.databasePath);
   const continuity = createTaskContinuityRuntime({
@@ -591,32 +658,27 @@ export async function createAdministrativeAutonomyScenario(options: {
 
 function createLivePatchProof(
   request: Extract<AdministrativeOperationRequest, { kind: "live-patch.apply" }>,
-  effectStartedAt: AdministrativeTimestamp,
-  rollbackArmLeadMilliseconds: number,
-  rollbackDurationMilliseconds: number,
+  armedAt: AdministrativeTimestamp,
+  mutationStartedAt: AdministrativeTimestamp,
+  rollbackDeadline: AdministrativeTimestamp,
 ): LivePatchMutationProof {
-  const rollbackArmedAt = new Date(
-    new Date(effectStartedAt).getTime() - rollbackArmLeadMilliseconds,
-  ).toISOString();
   return livePatchMutationProofSchema.parse({
     healthCheck: {
       kind: "registered-application-health",
-      observedAt: rollbackArmedAt,
+      observedAt: armedAt,
       status: "healthy",
     },
     independentRollback: {
       armedBeforeMutation: true,
-      armedAt: rollbackArmedAt,
+      armedAt,
       kind: "independent-live-patch-rollback",
-      rollbackDeadline: new Date(
-        new Date(rollbackArmedAt).getTime() + rollbackDurationMilliseconds,
-      ).toISOString(),
+      rollbackDeadline,
     },
-    mutationStartedAt: effectStartedAt,
+    mutationStartedAt,
     reconciliation: {
       baseBranch: "registered-production-branch",
       kind: "captured-as-isolated-pull-request",
-      observedAt: effectStartedAt,
+      observedAt: mutationStartedAt,
       productionMutationRetained: true,
       reconciledPatch: "accepted-live-patch-diff",
       registeredCodebaseId: request.target.registeredCodebaseId,
@@ -625,7 +687,7 @@ function createLivePatchProof(
     },
     verification: {
       kind: "independent-application-health-proof",
-      observedAt: effectStartedAt,
+      observedAt: mutationStartedAt,
       status: "healthy",
     },
   });

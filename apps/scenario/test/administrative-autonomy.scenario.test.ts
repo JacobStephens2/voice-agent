@@ -104,10 +104,9 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     },
     executed: [
       {
+        authority: { policyRevision: 1, policyStateVersion: 1 },
         kind: "production.observe",
         operationId: "administrative-operation-1",
-        policyRevision: 1,
-        policyStateVersion: 1,
         taskId: "administrative-task-1",
         target: {
           environment: "production",
@@ -115,10 +114,9 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
         },
       },
       {
+        authority: { policyRevision: 1, policyStateVersion: 1 },
         kind: "delegated-worktree.change",
         operationId: "administrative-operation-2",
-        policyRevision: 1,
-        policyStateVersion: 1,
         taskId: "administrative-task-1",
         target: {
           environment: "production",
@@ -126,6 +124,7 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
         },
       },
       {
+        authority: { policyRevision: 1, policyStateVersion: 1 },
         kind: "live-patch.apply",
         mutationBoundary: {
           healthCheck: {
@@ -151,8 +150,6 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
           },
         },
         operationId: "administrative-operation-3",
-        policyRevision: 1,
-        policyStateVersion: 1,
         taskId: "administrative-task-1",
         target: {
           environment: "production",
@@ -760,6 +757,7 @@ test("Live Patch requests carry the complete pre-mutation safety boundary", asyn
         "The live-patch.apply Operation completed through the fake executor.",
     },
     request: {
+      authority: { policyRevision: 1, policyStateVersion: 1 },
       kind: "live-patch.apply",
       mutationBoundary: {
         healthCheck: {
@@ -785,8 +783,6 @@ test("Live Patch requests carry the complete pre-mutation safety boundary", asyn
         },
       },
       operationId: "administrative-operation-1",
-      policyRevision: 1,
-      policyStateVersion: 1,
       taskId: "administrative-task-1",
       target: {
         environment: "production",

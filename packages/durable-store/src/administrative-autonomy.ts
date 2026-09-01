@@ -1,7 +1,7 @@
 import type {
   AdministrativeEvidenceEvent,
   AdministrativeEvidenceRecord,
-  AdministrativeExecutionManifest,
+  AdministrativeAuthoritySnapshot,
   AdministrativeOperationRequest,
   AdministrativeOperationResult,
   AdministrativeOperationClaimId,
@@ -106,9 +106,9 @@ export interface AdministrativeAutonomyStore {
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeConfirmationClaim>;
   claimNextOperation(input: {
+    readonly authority: AdministrativeAuthoritySnapshot;
     readonly claimId: AdministrativeOperationClaimId;
     readonly claimedAt: AdministrativeTimestamp;
-    readonly executionManifest: AdministrativeExecutionManifest;
     readonly leaseExpiresAt: AdministrativeTimestamp;
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeOperationClaim>;
@@ -153,9 +153,14 @@ export interface AdministrativeAutonomyStore {
   listTasks(): Promise<readonly AdministrativeTask[]>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
   recheckOperationEffect(input: {
+    readonly authority: AdministrativeAuthoritySnapshot;
     readonly claimId: AdministrativeOperationClaimId;
     readonly effectAt: AdministrativeTimestamp;
-    readonly executionManifest: AdministrativeExecutionManifest;
+    readonly livePatchRollbackWindow?: {
+      readonly armedAt: AdministrativeTimestamp;
+      readonly mutationStartedAt: AdministrativeTimestamp;
+      readonly rollbackDeadline: AdministrativeTimestamp;
+    };
     readonly operationId: AdministrativeOperationId;
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEffectAuthority>;

@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 
 import {
   administrativeActiveExecutionMilliseconds,
+  administrativeAuthoritySnapshotSchema,
   administrativeEvidenceEventSchema,
   administrativeEvidenceRecordSchema,
   administrativeExecutionManifestFingerprint,
@@ -17,7 +18,9 @@ import {
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
   livePatchRollbackWindowMilliseconds,
+  sameAdministrativeAuthoritySnapshot,
   sameAdministrativeExecutionManifest,
+  type AdministrativeAuthoritySnapshot,
   type AdministrativeExecutionManifest,
   type AdministrativeEvidenceEvent,
   type AdministrativeEvidenceRecord,
@@ -379,6 +382,11 @@ export function createSqliteAdministrativeAutonomyStore(
     SET status = 'activation-pending', updated_at = ?
     WHERE status = 'armed'
   `);
+  const activateLivePatchRollbackWindow = database.prepare(`
+    UPDATE administrative_live_patch_rollbacks
+    SET request_json = ?, updated_at = ?
+    WHERE operation_id = ? AND status = 'armed'
+  `);
   const listLivePatchRollbacks = database.prepare<[], LivePatchRollbackRow>(`
     SELECT operation_id, task_id, status, request_json, result_json
     FROM administrative_live_patch_rollbacks
@@ -392,6 +400,14 @@ export function createSqliteAdministrativeAutonomyStore(
     FROM administrative_live_patch_rollbacks
     WHERE status = 'activation-pending'
     ORDER BY operation_id
+  `);
+  const countPendingLivePatchRollbacks = database.prepare<
+    [],
+    { readonly count: number }
+  >(`
+    SELECT COUNT(*) AS count
+    FROM administrative_live_patch_rollbacks
+    WHERE status = 'activation-pending'
   `);
   const completeLivePatchRollbackActivation = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -471,16 +487,25 @@ export function createSqliteAdministrativeAutonomyStore(
         );
   }
 
-  function matchesAuthoritySnapshot(input: {
-    readonly executionManifest: AdministrativeExecutionManifest;
-    readonly policyRevision: number;
-    readonly stateVersion: number;
-  }): boolean {
+  function taskAuthoritySnapshot(
+    task: AdministrativeTaskRow,
+  ): AdministrativeAuthoritySnapshot {
+    return administrativeAuthoritySnapshotSchema.parse({
+      executionManifest: taskExecutionManifest(task),
+      policyRevision: task.policy_revision,
+      policyStateVersion: task.state_version,
+    });
+  }
+
+  function matchesAuthoritySnapshot(
+    untrusted: AdministrativeAuthoritySnapshot,
+  ): boolean {
+    const input = administrativeAuthoritySnapshotSchema.parse(untrusted);
     const policy = requirePolicyState();
     if (
       policy.status !== "active" ||
       policy.active_revision !== input.policyRevision ||
-      policy.state_version !== input.stateVersion
+      policy.state_version !== input.policyStateVersion
     ) {
       return false;
     }
@@ -555,6 +580,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (
         activeRevision !== input.expectedActiveRevision ||
         current.state_version !== input.expectedStateVersion ||
+        (countPendingLivePatchRollbacks.get()?.count ?? 0) > 0 ||
         administrativeExecutionManifestFingerprint(
           input.revision.executionManifest,
         ) !== input.expectedExecutionManifestFingerprint ||
@@ -633,15 +659,13 @@ export function createSqliteAdministrativeAutonomyStore(
           request.target.registeredCodebaseId ||
         task.active_execution_deadline === null ||
         request.armedAt >= task.active_execution_deadline ||
+        request.mutationAuthorizedAt !== null ||
+        request.armedRollbackDeadline !== request.rollbackDeadline ||
         request.rollbackDeadline > task.active_execution_deadline ||
-        new Date(request.rollbackDeadline).getTime() -
+        new Date(request.armedRollbackDeadline).getTime() -
           new Date(request.armedAt).getTime() !==
           livePatchRollbackWindowMilliseconds ||
-        !matchesAuthoritySnapshot({
-          executionManifest: operationRequest.executionManifest,
-          policyRevision: operationRequest.policyRevision,
-          stateVersion: operationRequest.policyStateVersion,
-        })
+        !matchesAuthoritySnapshot(operationRequest.authority)
       ) {
         return false;
       }
@@ -707,19 +731,12 @@ export function createSqliteAdministrativeAutonomyStore(
         return { decision: "denied", reason: "claim-lost" } as const;
       }
       if (
-        !sameAdministrativeExecutionManifest(
-          request.executionManifest,
-          input.executionManifest,
-        )
+        !sameAdministrativeAuthoritySnapshot(request.authority, input.authority)
       ) {
         return { decision: "denied", reason: "execution-manifest" } as const;
       }
       if (
-        !matchesAuthoritySnapshot({
-          executionManifest: request.executionManifest,
-          policyRevision: request.policyRevision,
-          stateVersion: request.policyStateVersion,
-        })
+        !matchesAuthoritySnapshot(request.authority)
       ) {
         return { decision: "denied", reason: "stale-policy" } as const;
       }
@@ -749,18 +766,53 @@ export function createSqliteAdministrativeAutonomyStore(
           livePatchRollbackActivationRequestSchema.parse(
             JSON.parse(rollback.request_json),
           );
+        const window = input.livePatchRollbackWindow;
         if (
+          window === undefined ||
           activationRequest.taskId !== input.taskId ||
-          activationRequest.armedAt > input.effectAt ||
-          new Date(activationRequest.rollbackDeadline).getTime() -
-            new Date(input.effectAt).getTime() !==
-            livePatchRollbackWindowMilliseconds
+          window.armedAt !== activationRequest.armedAt ||
+          window.mutationStartedAt !== input.effectAt ||
+          activationRequest.armedAt > window.mutationStartedAt ||
+          activationRequest.armedRollbackDeadline <=
+            window.mutationStartedAt ||
+          window.rollbackDeadline > task.active_execution_deadline ||
+          new Date(window.rollbackDeadline).getTime() -
+            new Date(window.mutationStartedAt).getTime() !==
+            livePatchRollbackWindowMilliseconds ||
+          (activationRequest.mutationAuthorizedAt !== null &&
+            (activationRequest.mutationAuthorizedAt !==
+              window.mutationStartedAt ||
+              activationRequest.rollbackDeadline !== window.rollbackDeadline))
         ) {
           return {
             decision: "denied",
             reason: "live-patch-rollback",
           } as const;
         }
+        if (activationRequest.mutationAuthorizedAt === null) {
+          const activatedRequest = livePatchRollbackActivationRequestSchema.parse({
+            ...activationRequest,
+            mutationAuthorizedAt: window.mutationStartedAt,
+            rollbackDeadline: window.rollbackDeadline,
+          });
+          if (
+            activateLivePatchRollbackWindow.run(
+              JSON.stringify(activatedRequest),
+              window.mutationStartedAt,
+              input.operationId,
+            ).changes !== 1
+          ) {
+            return {
+              decision: "denied",
+              reason: "live-patch-rollback",
+            } as const;
+          }
+        }
+      } else if (input.livePatchRollbackWindow !== undefined) {
+        return {
+          decision: "denied",
+          reason: "live-patch-rollback",
+        } as const;
       }
       return { decision: "authorized" } as const;
     },
@@ -818,11 +870,15 @@ export function createSqliteAdministrativeAutonomyStore(
 
   const prepareTransaction = database.transaction(
     (input: AdministrativePreparedTaskPersistence) => {
-      if (!matchesAuthoritySnapshot({
-        executionManifest: input.task.executionManifest,
-        policyRevision: input.task.policyRevision,
-        stateVersion: input.stateVersion,
-      })) {
+      if (
+        !matchesAuthoritySnapshot(
+          administrativeAuthoritySnapshotSchema.parse({
+            executionManifest: input.task.executionManifest,
+            policyRevision: input.task.policyRevision,
+            policyStateVersion: input.stateVersion,
+          }),
+        )
+      ) {
         return undefined;
       }
       try {
@@ -872,11 +928,7 @@ export function createSqliteAdministrativeAutonomyStore(
           "Task Confirmation evidence has an invalid active-execution deadline",
         );
       }
-      if (!matchesAuthoritySnapshot({
-        executionManifest: taskExecutionManifest(task),
-        policyRevision: task.policy_revision,
-        stateVersion: task.state_version,
-      })) {
+      if (!matchesAuthoritySnapshot(taskAuthoritySnapshot(task))) {
         return { decision: "denied", reason: "stale-policy" };
       }
       const result = consumeConfirmation.run(
@@ -929,11 +981,7 @@ export function createSqliteAdministrativeAutonomyStore(
           ? loadRecord(task)
           : undefined;
       }
-      if (!matchesAuthoritySnapshot({
-        executionManifest: taskExecutionManifest(task),
-        policyRevision: task.policy_revision,
-        stateVersion: task.state_version,
-      })) {
+      if (!matchesAuthoritySnapshot(taskAuthoritySnapshot(task))) {
         return undefined;
       }
       if (
@@ -949,11 +997,9 @@ export function createSqliteAdministrativeAutonomyStore(
         );
         if (
           request.taskId !== input.taskId ||
-          request.policyRevision !== task.policy_revision ||
-          request.policyStateVersion !== task.state_version ||
-          !sameAdministrativeExecutionManifest(
-            request.executionManifest,
-            taskExecutionManifest(task),
+          !sameAdministrativeAuthoritySnapshot(
+            request.authority,
+            taskAuthoritySnapshot(task),
           )
         ) {
           throw new Error(
@@ -965,7 +1011,7 @@ export function createSqliteAdministrativeAutonomyStore(
           request.taskId,
           ordinal,
           request.kind,
-          request.policyRevision,
+          request.authority.policyRevision,
           JSON.stringify(request),
           input.planEvent.occurredAt,
           input.planEvent.occurredAt,
@@ -1000,18 +1046,11 @@ export function createSqliteAdministrativeAutonomyStore(
         JSON.parse(operation.request_json),
       );
       if (
-        !sameAdministrativeExecutionManifest(
-          request.executionManifest,
-          input.executionManifest,
-        )
+        !sameAdministrativeAuthoritySnapshot(request.authority, input.authority)
       ) {
         return { decision: "denied", reason: "execution-manifest" };
       }
-      if (!matchesAuthoritySnapshot({
-        executionManifest: request.executionManifest,
-        policyRevision: request.policyRevision,
-        stateVersion: request.policyStateVersion,
-      })) {
+      if (!matchesAuthoritySnapshot(request.authority)) {
         return { decision: "denied", reason: "stale-policy" };
       }
       if (
@@ -1102,11 +1141,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (
         task.active_execution_deadline === null ||
         input.result.completedAt >= task.active_execution_deadline ||
-        !matchesAuthoritySnapshot({
-          executionManifest: request.executionManifest,
-          policyRevision: request.policyRevision,
-          stateVersion: request.policyStateVersion,
-        })
+        !matchesAuthoritySnapshot(request.authority)
       ) {
         throw new Error("Administrative Operation authority is no longer active");
       }
@@ -1124,6 +1159,8 @@ export function createSqliteAdministrativeAutonomyStore(
         if (
           activationRequest.armedAt !==
             result.mutationProof.independentRollback.armedAt ||
+          activationRequest.mutationAuthorizedAt !==
+            result.mutationProof.mutationStartedAt ||
           activationRequest.rollbackDeadline !==
             result.mutationProof.independentRollback.rollbackDeadline
         ) {
@@ -1167,11 +1204,7 @@ export function createSqliteAdministrativeAutonomyStore(
         input.renewedAt >= task.active_execution_deadline ||
         input.leaseExpiresAt <= input.renewedAt ||
         input.leaseExpiresAt > task.active_execution_deadline ||
-        !matchesAuthoritySnapshot({
-          executionManifest: request.executionManifest,
-          policyRevision: request.policyRevision,
-          stateVersion: request.policyStateVersion,
-        })
+        !matchesAuthoritySnapshot(request.authority)
       ) {
         return false;
       }

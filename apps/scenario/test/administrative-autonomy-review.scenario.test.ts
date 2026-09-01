@@ -125,6 +125,86 @@ test("an Administrative Execution Manifest cannot gain authority after Human Mer
   await mergedAdapterProcess.close();
 });
 
+test.each([
+  ["provider", { provider: 2 }],
+  ["Operation executor", { executor: 2 }],
+  ["Live Patch rollback activator", { rollbackActivator: 2 }],
+] as const)(
+  "a restarted runtime refuses a mismatched %s identity until Fresh Passkey activation",
+  async (_implementation, executionImplementationVersions) => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "voice-agent-administrative-"),
+    );
+    temporaryDirectories.push(directory);
+    const databasePath = join(directory, "voice-agent.sqlite");
+    const firstProcess = await createAdministrativeAutonomyScenario({
+      databasePath,
+      now: "2026-10-02T10:10:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    });
+    await firstProcess.activatePolicy({
+      expectedActiveRevision: null,
+      expectedStateVersion: 0,
+      freshPasskey: true,
+    });
+    await firstProcess.close();
+
+    await expect(
+      createAdministrativeAutonomyScenario({
+        databasePath,
+        executionImplementationVersions,
+        identifierNamespace: "mismatch-",
+        now: "2026-10-02T10:11:00.000Z",
+        providerPlan: [{ kind: "production.observe" }],
+      }),
+    ).rejects.toThrow(/implementation identity does not match/u);
+
+    const replacementProcess = await createAdministrativeAutonomyScenario({
+      databasePath,
+      executionImplementationVersions: {
+        executor: 2,
+        provider: 2,
+        rollbackActivator: 2,
+      },
+      executionManifestVersion: 2,
+      identifierNamespace: "replacement-",
+      now: "2026-10-02T10:12:00.000Z",
+      providerPlan: [{ kind: "production.observe" }],
+    });
+    const blocked = await replacementProcess.prepareTask({
+      intendedState: "Production health is understood.",
+      outcome: "investigate",
+      ownerId: "owner",
+      requestId: `identity-${_implementation}-blocked`,
+      target,
+    });
+    const beforeActivation = await replacementProcess.readAutonomyStatus();
+    const activated = await replacementProcess.activatePolicy({
+      expectedActiveRevision: 1,
+      expectedStateVersion: 1,
+      freshPasskey: true,
+    });
+
+    expect({ activated, beforeActivation, blocked }).toMatchObject({
+      activated: {
+        body: { revision: 2, stateVersion: 2, status: "active" },
+        statusCode: 200,
+      },
+      beforeActivation: {
+        body: { taskExecution: { status: "activation-required" } },
+        statusCode: 200,
+      },
+      blocked: {
+        decision: "denied",
+        reason:
+          "The active policy revision does not authorize the configured execution manifest.",
+      },
+    });
+
+    await replacementProcess.close();
+  },
+);
+
 test("confirmed publication intent becomes a bounded request and provider payload injection is denied", async () => {
   const { scenario } = await createActivatedScenario(
     {
@@ -438,33 +518,101 @@ test("a delayed Live Patch arms a fresh thirty-minute rollback and must reconcil
   await shortenedRollback.close();
 
   const rollbackClock = { current: "2026-10-02T13:45:00.000Z" };
-  const { scenario: armedTooEarly } = await createActivatedScenario(
+  const { scenario: expiredBeforeMutation } = await createActivatedScenario(
     {
-      beforeOperationEffect: async () => {
-        rollbackClock.current = "2026-10-02T13:46:00.000Z";
+      afterLivePatchRollbackArmed: async () => {
+        rollbackClock.current = "2026-10-02T14:16:00.000Z";
       },
       clock: rollbackClock,
-      livePatchRollbackArmLeadMilliseconds: 60 * 1_000,
       now: rollbackClock.current,
-      operationLeaseMilliseconds: 2 * 60 * 1_000,
+      operationLeaseMilliseconds: 40 * 60 * 1_000,
       providerPlan: [{ kind: "live-patch.apply" }],
     },
     temporaryDirectories,
   );
-  const reducedPostMutationWindow = await armedTooEarly.confirmAndRunTask({
+  const staleRollback = await expiredBeforeMutation.confirmAndRunTask({
     confirmation: "confirmed",
     intendedState: "The urgent production behavior is restored.",
     outcome: "restore",
     ownerId: "owner",
-    requestId: "early-armed-live-patch-rollback-request",
+    requestId: "expired-live-patch-rollback-request",
     target,
   });
-  expect(reducedPostMutationWindow).toEqual({
+  expect(staleRollback).toEqual({
     decision: "denied",
     reason:
       "Administrative executor returned incomplete or mismatched bounded proof",
   });
-  await armedTooEarly.close();
+  await expiredBeforeMutation.close();
+});
+
+test("a Live Patch armed before a delayed mutation retains thirty minutes after mutation", async () => {
+  const clock = { current: "2026-10-02T13:50:00.000Z" };
+  const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+  const { scenario } = await createActivatedScenario(
+    {
+      afterLivePatchRollbackArmed: async () => {
+        clock.current = "2026-10-02T13:51:00.000Z";
+      },
+      clock,
+      now: clock.current,
+      operationLeaseMilliseconds: 2 * 60 * 1_000,
+      providerPlan: [{ kind: "live-patch.apply" }],
+      rollbackActivationAttempts,
+    },
+    temporaryDirectories,
+  );
+  const admission = await scenario.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "delayed-after-arming-live-patch-request",
+    target,
+  });
+  const record =
+    admission.decision === "admitted"
+      ? await scenario.readTask(admission.taskId)
+      : undefined;
+  const completed = record?.evidence.find(
+    (event) => event.kind === "administrative.operation.completed",
+  );
+  await scenario.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+
+  expect({
+    admission,
+    completed,
+    rollbackRequest: rollbackActivationAttempts[0],
+    task: record?.task,
+  }).toMatchObject({
+    admission: { decision: "admitted" },
+    completed: {
+      details: {
+        result: {
+          mutationProof: {
+            independentRollback: {
+              armedAt: "2026-10-02T13:50:00.000Z",
+              rollbackDeadline: "2026-10-02T14:21:00.000Z",
+            },
+            mutationStartedAt: "2026-10-02T13:51:00.000Z",
+          },
+        },
+      },
+    },
+    rollbackRequest: {
+      armedAt: "2026-10-02T13:50:00.000Z",
+      armedRollbackDeadline: "2026-10-02T14:20:00.000Z",
+      mutationAuthorizedAt: "2026-10-02T13:51:00.000Z",
+      rollbackDeadline: "2026-10-02T14:21:00.000Z",
+    },
+    task: { status: "completed" },
+  });
+
+  await scenario.close();
 });
 
 test("authenticated Administrative Suspension is durable and blocks new admission", async () => {
@@ -732,6 +880,103 @@ test("Administrative Suspension retains failed Live Patch rollback activation fo
         status: "suspended",
       },
       statusCode: 200,
+    },
+  });
+
+  await restartedProcess.close();
+});
+
+test("pending Live Patch rollback activation blocks Fresh Passkey reactivation until restart recovery", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "voice-agent-administrative-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "voice-agent.sqlite");
+  const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+  const rollbackActivationLedger = new Set<string>();
+  const firstProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    now: "2026-10-02T14:35:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationFailures: 2,
+    rollbackActivationLedger,
+  });
+  await firstProcess.activatePolicy({
+    expectedActiveRevision: null,
+    expectedStateVersion: 0,
+    freshPasskey: true,
+  });
+  await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "pending-reactivation-request",
+    target,
+  });
+  await firstProcess.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  const blockedReactivation = await firstProcess.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 2,
+    freshPasskey: true,
+  });
+  const stillPending = await firstProcess.readPolicyStatus();
+  await firstProcess.close();
+
+  const restartedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "pending-reactivation-restart-",
+    now: "2026-10-02T14:36:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+    rollbackActivationLedger,
+  });
+  const recovered = await restartedProcess.readPolicyStatus();
+  const reactivated = await restartedProcess.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 2,
+    freshPasskey: true,
+  });
+
+  expect({
+    attempts: rollbackActivationAttempts.map((request) => request.operationId),
+    blockedReactivation,
+    reactivated,
+    recovered,
+    stillPending,
+  }).toMatchObject({
+    attempts: [
+      "administrative-operation-1",
+      "administrative-operation-1",
+      "administrative-operation-1",
+    ],
+    blockedReactivation: {
+      body: {
+        error:
+          "Administrative Suspension has pending Live Patch rollback activation",
+      },
+      statusCode: 409,
+    },
+    reactivated: {
+      body: { revision: 2, stateVersion: 3, status: "active" },
+      statusCode: 200,
+    },
+    recovered: {
+      rollbackActivations: {
+        activatedOperationIds: ["administrative-operation-1"],
+        pendingOperationIds: [],
+      },
+      status: "suspended",
+    },
+    stillPending: {
+      rollbackActivations: {
+        activatedOperationIds: [],
+        pendingOperationIds: ["administrative-operation-1"],
+      },
+      status: "suspended",
     },
   });
 
