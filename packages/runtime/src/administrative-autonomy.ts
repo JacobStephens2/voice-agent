@@ -533,16 +533,31 @@ export function createAdministrativeAutonomyRuntime(options: {
     ) {
       return false;
     }
+    const resolvedCustodyPaths = await Promise.all(
+      custodyPaths.map((custodyPath) => authority.resolvePath(custodyPath)),
+    );
+    if (
+      resolvedCustodyPaths.some(
+        (custodyPath) => !isCanonicalAbsolutePath(custodyPath),
+      )
+    ) {
+      return false;
+    }
     for (const [field, registeredPath] of fields) {
       if (!isCanonicalAbsolutePath(registeredPath)) return false;
       const resolvedPath = await authority.resolvePath(registeredPath);
       if (!isCanonicalAbsolutePath(resolvedPath)) return false;
       if (
-        custodyPaths.some(
-          (custodyPath) =>
-            isWithinPath(registeredPath, custodyPath) ||
-            isWithinPath(resolvedPath, custodyPath),
-        )
+        custodyPaths.some((custodyPath, index) => {
+          const resolvedCustodyPath = resolvedCustodyPaths[index];
+          return (
+            resolvedCustodyPath === undefined ||
+            pathsOverlap(registeredPath, custodyPath) ||
+            pathsOverlap(registeredPath, resolvedCustodyPath) ||
+            pathsOverlap(resolvedPath, custodyPath) ||
+            pathsOverlap(resolvedPath, resolvedCustodyPath)
+          );
+        })
       ) {
         return false;
       }
@@ -2051,6 +2066,10 @@ function isCanonicalAbsolutePath(candidate: string): boolean {
 
 function isWithinPath(candidate: string, root: string): boolean {
   return candidate === root || candidate.startsWith(`${root}/`);
+}
+
+function pathsOverlap(left: string, right: string): boolean {
+  return isWithinPath(left, right) || isWithinPath(right, left);
 }
 
 function operationRequest(

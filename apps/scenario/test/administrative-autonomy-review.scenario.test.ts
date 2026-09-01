@@ -1142,7 +1142,7 @@ test("Administrative Tasks fail closed for unavailable, absent, expired, or drif
   ]);
 });
 
-test("Registered Codebase filesystem authority rejects roots, traversal, symlink escape, and custody stores", async () => {
+test("Registered Codebase filesystem authority rejects roots, traversal, symlink escape, and custody overlap", async () => {
   const { directory } = await createScenarioDatabase(temporaryDirectories);
   const allowed = {
     liveCheckoutPath: join(directory, "allowed-live"),
@@ -1151,20 +1151,29 @@ test("Registered Codebase filesystem authority rejects roots, traversal, symlink
   };
   const outside = join(directory, "outside");
   const custody = join(directory, "credential-custody");
+  const canonicalSourceParent = join(directory, "canonical-source-parent");
+  const canonicalCustody = join(canonicalSourceParent, "credential-custody");
+  const sourceParentAlias = join(directory, "source-parent-alias");
   await Promise.all(
-    [...Object.values(allowed), outside, join(custody, "registered")].map(
-      (path) => mkdir(path, { recursive: true }),
-    ),
+    [
+      ...Object.values(allowed),
+      outside,
+      join(custody, "registered"),
+      canonicalCustody,
+    ].map((path) => mkdir(path, { recursive: true })),
   );
   const escapedWorktree = join(allowed.worktreeRoot, "escaped");
-  await symlink(outside, escapedWorktree);
+  await Promise.all([
+    symlink(outside, escapedWorktree),
+    symlink(canonicalSourceParent, sourceParentAlias),
+  ]);
   const pathAuthority = {
     allowedRoots: {
       liveCheckoutPath: [directory],
-      sourceCheckoutRoot: [allowed.sourceCheckoutRoot],
+      sourceCheckoutRoot: [directory],
       worktreeRoot: [allowed.worktreeRoot],
     },
-    credentialCustodyBoundaryPaths: [custody, "/root"],
+    credentialCustodyBoundaryPaths: [custody, canonicalCustody],
     resolvePath: realpath,
   };
   const validRegistration = {
@@ -1207,6 +1216,20 @@ test("Registered Codebase filesystem authority rejects roots, traversal, symlink
         liveCheckoutPath: join(custody, "registered"),
       },
     },
+    {
+      name: "lexical ancestor of a Credential Custody Boundary",
+      registration: {
+        ...validRegistration,
+        sourceCheckoutRoot: directory,
+      },
+    },
+    {
+      name: "resolved ancestor of a Credential Custody Boundary",
+      registration: {
+        ...validRegistration,
+        sourceCheckoutRoot: sourceParentAlias,
+      },
+    },
   ];
 
   for (const boundaryCase of cases) {
@@ -1233,6 +1256,27 @@ test("Registered Codebase filesystem authority rejects roots, traversal, symlink
     expect(scenario.executedOperations, boundaryCase.name).toEqual([]);
     await scenario.close();
   }
+
+  const { scenario: disjointScenario } = await createActivatedScenario(
+    {
+      now: "2026-10-02T11:50:00.000Z",
+      providerPlan: [{ kind: "delegated-worktree.change" }],
+      registeredCodebase: validRegistration,
+      registeredCodebasePathAuthority: pathAuthority,
+    },
+    temporaryDirectories,
+  );
+  expect(
+    await disjointScenario.prepareTask({
+      intendedState:
+        "The registered sibling paths remain disjoint from credential custody.",
+      outcome: "propose",
+      ownerId: "owner",
+      requestId: "path-disjoint-from-custody",
+      target,
+    }),
+  ).toMatchObject({ decision: "prepared" });
+  await disjointScenario.close();
 });
 
 test("Registered Codebase symlink drift is rechecked before provider planning or effect", async () => {

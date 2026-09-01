@@ -38,11 +38,16 @@ import {
   registerBountywellRequestSchema,
   activateKeeploreDeploymentContractRequestSchema,
   activateAdministrativePolicyRequestSchema,
+  administrativeTaskAdmissionResponseSchema,
+  administrativeTaskIdSchema,
+  administrativeTaskPreparationResponseSchema,
   administrativeAutonomyStatusSchema,
   administrativePolicyEvidencePageRequestSchema,
   administrativePolicyEvidencePageSchema,
   administrativePolicyStatusSchema,
   suspendAdministrativePolicyRequestSchema,
+  answerAdministrativeTaskConfirmationRequestSchema,
+  prepareAdministrativeTaskConfirmationRequestSchema,
   enrollKeeploreRequestSchema,
   keeploreDeploymentContractSchema,
   keeploreLiveInspectionSchema,
@@ -85,6 +90,11 @@ import {
   type AdministrativePolicyEvidencePageRequest,
   type AdministrativePolicySuspensionExpectation,
   type AdministrativeAutonomyStatus,
+  type AdministrativeRequestedOutcome,
+  type AdministrativeTaskAdmissionResponse,
+  type AdministrativeTaskId,
+  type AdministrativeTaskPreparationResponse,
+  type AdministrativeTaskTargetRequest,
 } from "@voice-agent/contracts";
 
 import { DeploymentAuthorityChallengeError } from "./deployment-authority-challenge.ts";
@@ -142,6 +152,7 @@ export interface EvidenceRecordReader {
 }
 
 export interface EvidenceRecordAuthentication {
+  authenticatedOwnerId?(sessionToken: string): Promise<string | undefined>;
   canChangeState?(input: {
     readonly csrfToken: string;
     readonly sessionToken: string;
@@ -228,10 +239,23 @@ export interface AdministrativeAutonomyApiControls {
       }
     | { readonly decision: "denied"; readonly reason: string }
   >;
+  answerTaskConfirmation(input: {
+    readonly confirmation: "ambiguous" | "confirmed" | "declined";
+    readonly confirmationCapability: string;
+    readonly ownerId: string;
+    readonly taskId: AdministrativeTaskId;
+  }): Promise<AdministrativeTaskAdmissionResponse>;
   getStatus(): Promise<AdministrativeAutonomyStatus>;
   getPolicyEvidencePage(
     input: AdministrativePolicyEvidencePageRequest,
   ): Promise<AdministrativePolicyEvidencePage>;
+  prepareTaskConfirmation(input: {
+    readonly intendedState: string;
+    readonly outcome: AdministrativeRequestedOutcome;
+    readonly ownerId: string;
+    readonly requestId: string;
+    readonly target: AdministrativeTaskTargetRequest;
+  }): Promise<AdministrativeTaskPreparationResponse>;
   suspendPolicy(input: {
     readonly expectation: AdministrativePolicySuspensionExpectation;
   }): Promise<
@@ -537,6 +561,65 @@ function registerAdministrativeAutonomyRoutes(
       return administrativePolicyEvidencePageSchema.parse(
         await options.controls.getPolicyEvidencePage(pageRequest),
       );
+    },
+  );
+
+  api.post(
+    "/api/administrative-autonomy/task-confirmations",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = prepareAdministrativeTaskConfirmationRequestSchema.parse(
+        request.body,
+      );
+      const ownerId = await authorizeAdministrativeOwner(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (ownerId === undefined) return;
+      const result = administrativeTaskPreparationResponseSchema.parse(
+        await options.controls.prepareTaskConfirmation({
+          intendedState: body.intendedState,
+          outcome: body.outcome,
+          ownerId,
+          requestId: body.requestId,
+          target: body.target,
+        }),
+      );
+      return result.decision === "denied"
+        ? reply.code(409).send(result)
+        : result;
+    },
+  );
+
+  api.post<{ Params: { taskId: string } }>(
+    "/api/administrative-autonomy/task-confirmations/:taskId",
+    async (request, reply) => {
+      if (!requireOrigin(request, reply, options.origin)) return;
+      const body = answerAdministrativeTaskConfirmationRequestSchema.parse(
+        request.body,
+      );
+      const ownerId = await authorizeAdministrativeOwner(
+        request,
+        reply,
+        options.authentication,
+        body.csrfToken,
+        options.records,
+      );
+      if (ownerId === undefined) return;
+      const result = administrativeTaskAdmissionResponseSchema.parse(
+        await options.controls.answerTaskConfirmation({
+          confirmation: body.confirmation,
+          confirmationCapability: body.confirmationCapability,
+          ownerId,
+          taskId: administrativeTaskIdSchema.parse(request.params.taskId),
+        }),
+      );
+      return result.decision === "denied"
+        ? reply.code(409).send(result)
+        : result;
     },
   );
 
@@ -1457,6 +1540,30 @@ async function authorizeStateChange(
     return undefined;
   }
   return sessionToken;
+}
+
+async function authorizeAdministrativeOwner(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  authentication: EvidenceRecordAuthentication,
+  csrfToken: string,
+  records: EvidenceRecordReader,
+): Promise<string | undefined> {
+  const sessionToken = await authorizeStateChange(
+    request,
+    reply,
+    authentication,
+    csrfToken,
+    records,
+  );
+  if (sessionToken === undefined) return undefined;
+  const ownerId = await authentication.authenticatedOwnerId?.(sessionToken);
+  if (ownerId === undefined) {
+    await records.recordPolicyDenial?.();
+    void reply.code(403).send({ error: "Owner session required" });
+    return undefined;
+  }
+  return ownerId;
 }
 
 async function authorizeFreshAction(

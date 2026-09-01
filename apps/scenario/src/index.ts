@@ -657,6 +657,7 @@ class DeterministicBountywellHealthBroker implements BountywellHealthObserver {
 }
 
 export interface AuthenticationScenario {
+  authenticatedOwnerId(sessionToken: string): Promise<string | undefined>;
   beginFreshPasskeyAction(input: {
     readonly csrfToken: string;
     readonly sessionToken: string;
@@ -866,6 +867,8 @@ export async function createAuthenticationScenario(
   }
 
   return {
+    authenticatedOwnerId: (sessionToken) =>
+      authentication.authenticatedOwnerId(sessionToken),
     beginFreshPasskeyAction,
     beginLogin,
     canChangeState: (input) => authentication.canChangeState(input),

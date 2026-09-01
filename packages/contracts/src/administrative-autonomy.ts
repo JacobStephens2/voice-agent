@@ -625,6 +625,29 @@ export type AdministrativeTaskTargetRequestInput = z.input<
   typeof administrativeTaskTargetRequestSchema
 >;
 
+export const administrativeConfirmationCapabilitySchema = z
+  .string()
+  .min(16)
+  .max(500);
+
+export const prepareAdministrativeTaskConfirmationRequestSchema = z
+  .object({
+    csrfToken: z.string().min(16).max(200),
+    intendedState: administrativeIntendedStateSchema,
+    outcome: administrativeRequestedOutcomeSchema,
+    requestId: identifierSchema,
+    target: administrativeTaskTargetRequestSchema,
+  })
+  .strict();
+
+export const answerAdministrativeTaskConfirmationRequestSchema = z
+  .object({
+    confirmation: z.enum(["ambiguous", "confirmed", "declined"]),
+    confirmationCapability: administrativeConfirmationCapabilitySchema,
+    csrfToken: z.string().min(16).max(200),
+  })
+  .strict();
+
 const administrativeRegisteredCodebasePathSchema = z
   .string()
   .min(1)
@@ -1205,6 +1228,53 @@ export const administrativeTaskSchema = z
   })
   .strict();
 export type AdministrativeTask = z.infer<typeof administrativeTaskSchema>;
+
+export const administrativeTaskPreparationResponseSchema = z.discriminatedUnion(
+  "decision",
+  [
+    z
+      .object({
+        confirmationCapability: administrativeConfirmationCapabilitySchema,
+        decision: z.literal("prepared"),
+        policyRevision: z.number().int().positive(),
+        stateVersion: z.number().int().positive(),
+        task: administrativeTaskSchema,
+        taskId: administrativeTaskIdSchema,
+      })
+      .strict(),
+    z
+      .object({
+        decision: z.literal("denied"),
+        reason: z.string().min(1).max(240),
+      })
+      .strict(),
+  ],
+);
+export type AdministrativeTaskPreparationResponse = z.infer<
+  typeof administrativeTaskPreparationResponseSchema
+>;
+
+export const administrativeTaskAdmissionResponseSchema = z.discriminatedUnion(
+  "decision",
+  [
+    z
+      .object({
+        decision: z.literal("admitted"),
+        policyRevision: z.number().int().positive(),
+        taskId: administrativeTaskIdSchema,
+      })
+      .strict(),
+    z
+      .object({
+        decision: z.literal("denied"),
+        reason: z.string().min(1).max(240),
+      })
+      .strict(),
+  ],
+);
+export type AdministrativeTaskAdmissionResponse = z.infer<
+  typeof administrativeTaskAdmissionResponseSchema
+>;
 
 /** The single authority value persisted with and recovered from a Task. */
 export function administrativeTaskAuthoritySnapshot(

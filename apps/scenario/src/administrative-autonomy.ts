@@ -95,6 +95,23 @@ export interface AdministrativeAutonomyScenario {
   prepareTask: ReturnType<
     typeof createAdministrativeAutonomyRuntime
   >["prepareTaskConfirmation"];
+  requestTaskConfirmation(
+    input: {
+      readonly intendedState: string;
+      readonly outcome: AdministrativeRequestedOutcome;
+      readonly requestId: string;
+      readonly target: AdministrativeTaskTargetRequestInput;
+    },
+    authorization: ScenarioAdministrativeAuthorization,
+  ): Promise<{ readonly body: unknown; readonly statusCode: number }>;
+  respondToTaskConfirmation(
+    input: {
+      readonly confirmation: "ambiguous" | "confirmed" | "declined";
+      readonly confirmationCapability: string;
+      readonly taskId: string;
+    },
+    authorization: ScenarioAdministrativeAuthorization,
+  ): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   readTask(taskId: string): Promise<AdministrativeEvidenceRecord | undefined>;
   readTaskByOperationId(
     operationId: string,
@@ -116,6 +133,12 @@ export interface AdministrativeAutonomyScenario {
   }): Promise<{ readonly body: unknown; readonly statusCode: number }>;
   suspendPolicyState(): Promise<AdministrativePolicyStatus>;
 }
+
+export type ScenarioAdministrativeAuthorization =
+  | "owner-session"
+  | "unauthenticated"
+  | "wrong-csrf"
+  | "wrong-session";
 
 interface ScenarioOperationResultContext {
   readonly common: Pick<
@@ -478,6 +501,26 @@ export async function createAdministrativeAutonomyScenario(options: {
     csrfToken: scenarioCsrf,
     sessionToken: scenarioSession,
   };
+  const administrativeRequestAuthorization = (
+    authorization: ScenarioAdministrativeAuthorization,
+  ) => ({
+    csrfToken:
+      authorization === "wrong-csrf"
+        ? "wrong-csrf-token-0001"
+        : authenticationSession.csrfToken,
+    headers: {
+      ...(authorization === "unauthenticated"
+        ? {}
+        : {
+            cookie: `${trustedSessionCookieName}=${
+              authorization === "wrong-session"
+                ? "wrong-session-token"
+                : authenticationSession.sessionToken
+            }`,
+          }),
+      origin: scenarioOrigin,
+    },
+  });
   let registeredCodebaseLookup = 0;
   const store = createSqliteAdministrativeAutonomyStore(options.databasePath);
   const runtimeStore: ReturnType<
@@ -1149,7 +1192,45 @@ export async function createAdministrativeAutonomyScenario(options: {
       revisePolicyBeforePlanAdmission = true;
     },
     prepareTask: (input) => runtime.prepareTaskConfirmation(input),
+    async requestTaskConfirmation(input, authorization) {
+      const requestAuthorization =
+        administrativeRequestAuthorization(authorization);
+      const response = await api.inject({
+        headers: requestAuthorization.headers,
+        method: "POST",
+        payload: {
+          csrfToken: requestAuthorization.csrfToken,
+          intendedState: input.intendedState,
+          outcome: input.outcome,
+          requestId: input.requestId,
+          target: input.target,
+        },
+        url: "/api/administrative-autonomy/task-confirmations",
+      });
+      return {
+        body: response.json<unknown>(),
+        statusCode: response.statusCode,
+      };
+    },
     readPolicyStatus: () => runtime.getPolicyStatus(),
+    async respondToTaskConfirmation(input, authorization) {
+      const requestAuthorization =
+        administrativeRequestAuthorization(authorization);
+      const response = await api.inject({
+        headers: requestAuthorization.headers,
+        method: "POST",
+        payload: {
+          confirmation: input.confirmation,
+          confirmationCapability: input.confirmationCapability,
+          csrfToken: requestAuthorization.csrfToken,
+        },
+        url: `/api/administrative-autonomy/task-confirmations/${encodeURIComponent(input.taskId)}`,
+      });
+      return {
+        body: response.json<unknown>(),
+        statusCode: response.statusCode,
+      };
+    },
     async readPolicyEvidencePage(input = {}) {
       const query = new URLSearchParams();
       if (input.beforeSequence !== undefined) {

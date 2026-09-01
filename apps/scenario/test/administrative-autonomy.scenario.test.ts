@@ -7,7 +7,9 @@ import {
   administrativeOperationClaimIdSchema,
   administrativeOperationIdSchema,
   administrativeOperationRequestSchema,
+  administrativeTaskAdmissionResponseSchema,
   administrativeTaskIdSchema,
+  administrativeTaskPreparationResponseSchema,
 } from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
@@ -116,6 +118,58 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     expectedActiveRevision: null,
     expectedStateVersion: 0,
   });
+  const taskRequest = {
+    intendedState: "The requested administrative outcome is achieved.",
+    outcome: "repair" as const,
+    requestId: "request-83",
+    target: {
+      environment: "production" as const,
+      registeredCodebaseId: "voice-agent",
+    },
+  };
+  const unauthenticatedTaskRequest = await scenario.requestTaskConfirmation(
+    taskRequest,
+    "unauthenticated",
+  );
+  const wrongSessionTaskRequest = await scenario.requestTaskConfirmation(
+    taskRequest,
+    "wrong-session",
+  );
+  const wrongCsrfTaskRequest = await scenario.requestTaskConfirmation(
+    taskRequest,
+    "wrong-csrf",
+  );
+  const preparedResponse = await scenario.requestTaskConfirmation(
+    taskRequest,
+    "owner-session",
+  );
+  expect(preparedResponse).toMatchObject({ statusCode: 200 });
+  const prepared = administrativeTaskPreparationResponseSchema.parse(
+    preparedResponse.body,
+  );
+  if (prepared.decision !== "prepared") {
+    throw new Error("The authenticated Task Confirmation was not prepared");
+  }
+  const wrongCsrfConfirmation = await scenario.respondToTaskConfirmation(
+    {
+      confirmation: "confirmed",
+      confirmationCapability: prepared.confirmationCapability,
+      taskId: prepared.taskId,
+    },
+    "wrong-csrf",
+  );
+  const confirmationResponse = await scenario.respondToTaskConfirmation(
+    {
+      confirmation: "confirmed",
+      confirmationCapability: prepared.confirmationCapability,
+      taskId: prepared.taskId,
+    },
+    "owner-session",
+  );
+  expect(confirmationResponse).toMatchObject({ statusCode: 200 });
+  const result = administrativeTaskAdmissionResponseSchema.parse(
+    confirmationResponse.body,
+  );
   authentication.setTime("2026-08-31T15:06:00.000Z");
   const ordinaryRevision = await scenario.activatePolicy({
     expectedActiveRevision: 1,
@@ -125,17 +179,6 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     expectedActiveRevision: 1,
     expectedStateVersion: 1,
     source: "voice",
-  });
-  const result = await scenario.confirmAndRunTask({
-    confirmation: "confirmed",
-    intendedState: "The requested administrative outcome is achieved.",
-    outcome: "repair",
-    ownerId: "owner",
-    requestId: "request-83",
-    target: {
-      environment: "production",
-      registeredCodebaseId: "voice-agent",
-    },
   });
   const record =
     result.decision === "admitted"
@@ -154,8 +197,12 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     usedPolicyRevision: record?.evidence.find(
       (event) => event.kind === "administrative.plan.accepted",
     )?.details.policyRevision,
+    unauthenticatedTaskRequest,
     voice,
     voiceRevision,
+    wrongCsrfTaskRequest,
+    wrongCsrfConfirmation,
+    wrongSessionTaskRequest,
   }).toMatchObject({
     activation: {
       body: {
@@ -227,6 +274,10 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
       body: { error: "Fresh Passkey Action required" },
       statusCode: 403,
     },
+    unauthenticatedTaskRequest: {
+      body: { error: "Authentication required" },
+      statusCode: 401,
+    },
     ordinaryRevision: {
       body: { error: "Fresh Passkey Action required" },
       statusCode: 403,
@@ -275,6 +326,18 @@ test("a Fresh Passkey Action activates the policy used by one confirmed repair p
     voiceRevision: {
       decision: "denied",
       reason: "Voice cannot activate Administrative Autonomy",
+    },
+    wrongCsrfTaskRequest: {
+      body: { error: "CSRF validation failed" },
+      statusCode: 403,
+    },
+    wrongCsrfConfirmation: {
+      body: { error: "CSRF validation failed" },
+      statusCode: 403,
+    },
+    wrongSessionTaskRequest: {
+      body: { error: "CSRF validation failed" },
+      statusCode: 403,
     },
   });
 
