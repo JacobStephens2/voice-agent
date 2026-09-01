@@ -19,6 +19,7 @@ const now = () => Date.parse("2026-08-20T12:00:00Z");
 const branchRules = (activeRules: readonly string[], observedAt = collectedAt) =>
   JSON.stringify({
     activeRules,
+    // Historical journal spelling remains readable at the persistence seam.
     application: "keeplore-production",
     branch: "main",
     kind: "branch-rules",
@@ -30,7 +31,7 @@ const branchRules = (activeRules: readonly string[], observedAt = collectedAt) =
 
 const bypassAttestation = (bypassActors: readonly string[]) =>
   JSON.stringify({
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     attestedAt: collectedAt,
     attestedBy: "owner",
     branch: "main",
@@ -47,7 +48,7 @@ const gitHubApp = (
   JSON.stringify({
     appId: 123,
     appSlug: "keeplore-publisher",
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     installationId: 456,
     kind: "github-app",
     observedAt: collectedAt,
@@ -70,7 +71,10 @@ const collectedJournal = [
   bypassAttestation([]),
   gitHubApp(),
   "{ truncated line the collector is still appending",
-  JSON.stringify({ application: "other-application", kind: "github-app" }),
+  JSON.stringify({
+    kind: "github-app",
+    registeredCodebaseId: "other-application",
+  }),
 ].join("\n");
 
 afterEach(async () => {

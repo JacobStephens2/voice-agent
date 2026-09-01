@@ -66,6 +66,9 @@ export interface TaskContinuityRuntime {
 }
 
 export function createTaskContinuityRuntime(options: {
+  readonly administrativeEvidenceRetention?: {
+    applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
+  };
   readonly callbackEvidenceRetention?: {
     applyEvidenceRetention(input: { readonly cutoff: string }): Promise<void>;
   };
@@ -210,6 +213,9 @@ export function createTaskContinuityRuntime(options: {
     ).toISOString();
     await options.tasks.applyEvidenceRetention({ cutoff });
     await options.callbackEvidenceRetention?.applyEvidenceRetention({ cutoff });
+    await options.administrativeEvidenceRetention?.applyEvidenceRetention({
+      cutoff,
+    });
     return { cutoff };
   }
 

@@ -9,11 +9,12 @@ import {
   type FixtureGitHubEvent,
   type KeeploreOnboardingScenario,
 } from "@voice-agent/scenario";
-import type {
-  KeeploreBranchProtection,
-  KeeploreGitHubAppInstallation,
-  KeeploreLiveInspection,
-  KeeploreWorkingTreeReconciliation,
+import {
+  registeredCodebaseIdSchema,
+  type KeeploreBranchProtection,
+  type KeeploreGitHubAppInstallation,
+  type KeeploreLiveInspection,
+  type KeeploreWorkingTreeReconciliation,
 } from "@voice-agent/contracts";
 
 const temporaryDirectories: string[] = [];
@@ -135,7 +136,9 @@ test("a Fresh Passkey Action enrolls Keeplore with fixed boundaries that no othe
 
   expect(enrolled).toMatchObject({ decision: "enrolled" });
   expect(await scenario.getRegistration()).toMatchObject({
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath,
       releaseRoot,
@@ -253,8 +256,8 @@ test("a versioned Deployment Contract is activated by a Fresh Passkey Action and
   expect(activated).toMatchObject({
     contract: {
       activatedBy: "fresh-passkey-action",
-      applicationId: "keeplore-production",
       health: { expectedStatus: 200, path: "/api/health" },
+      registeredCodebaseId: "keeplore-production",
       releaseRoot,
       retainedReleases: 2,
       revision: 1,

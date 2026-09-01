@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, expect, test } from "vitest";
 
 import {
@@ -44,14 +45,14 @@ test("a Human Merge promotes its exact commit through the active Deployment Cont
   const registration = await scenario.getRegistration();
   const contract = await scenario.getActiveContract();
   expect(registration).toMatchObject({
-    applicationId: "fixture-production",
     productionBranch: "main",
+    registeredCodebaseId: "fixture-production",
     repository: "JacobStephens2/fixture-application",
   });
   expect(contract).toMatchObject({
     activatedBy: "fresh-passkey-action",
-    applicationId: "fixture-production",
     health: { expectedStatus: 204, path: "/health" },
+    registeredCodebaseId: "fixture-production",
     revision: 1,
     source: "voice-agent-policy",
   });
@@ -141,6 +142,69 @@ test("a Human Merge promotes its exact commit through the active Deployment Cont
   expect(page.html).toContain("Circuit closed");
 
   await scenario.close();
+});
+
+test("a queued pre-upgrade Promotion Attempt resumes while new attempts stay canonical", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "promotion-legacy-queue-"));
+  temporaryDirectories.push(directory);
+  const databasePath = join(directory, "scenario.sqlite");
+  const initial = await createHumanMergePromotionScenario({
+    databasePath,
+    ids: ["task-legacy-queue", "attempt-legacy-queue"],
+    now: "2026-08-15T12:00:00.000Z",
+    webhookSecret,
+  });
+  await deliverSigned(
+    initial,
+    "delivery-legacy-queue",
+    humanMerge(healthyCommit, previousCommit),
+  );
+  await initial.close();
+
+  const database = new Database(databasePath);
+  const stored = database
+    .prepare("SELECT contract_json FROM promotion_attempts WHERE id = ?")
+    .get("attempt-legacy-queue") as { readonly contract_json: string };
+  const parsed = JSON.parse(stored.contract_json) as Readonly<
+    Record<string, unknown>
+  >;
+  const { registeredCodebaseId, ...historical } = parsed;
+  database
+    .prepare("UPDATE promotion_attempts SET contract_json = ? WHERE id = ?")
+    .run(
+      JSON.stringify({ ...historical, applicationId: registeredCodebaseId }),
+      "attempt-legacy-queue",
+    );
+  database.close();
+
+  const restarted = await createHumanMergePromotionScenario({
+    databasePath,
+    ids: ["task-canonical-queue", "attempt-canonical-queue"],
+    now: "2026-08-15T12:01:00.000Z",
+    webhookSecret,
+  });
+  const recovered = await restarted.processNext();
+  expect(recovered?.promotion).toMatchObject({
+    attempt: { id: "attempt-legacy-queue", status: "succeeded" },
+    contract: { revision: 1 },
+    release: { id: `fixture-production-${healthyCommit}` },
+  });
+
+  await deliverSigned(
+    restarted,
+    "delivery-canonical-queue",
+    humanMerge(serialHealthyCommit, healthyCommit, "2026-08-15T12:00:30.000Z"),
+  );
+  const reopened = new Database(databasePath, { readonly: true });
+  const canonical = reopened
+    .prepare("SELECT contract_json FROM promotion_attempts WHERE id = ?")
+    .get("attempt-canonical-queue") as { readonly contract_json: string };
+  reopened.close();
+  expect(JSON.parse(canonical.contract_json)).toMatchObject({
+    registeredCodebaseId: "fixture-production",
+  });
+  expect(canonical.contract_json).not.toContain("applicationId");
+  await restarted.close();
 });
 
 test("untrusted and ineligible GitHub deliveries are denied with evidence and no Promotion", async () => {

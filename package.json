@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "acceptance:administrative-autonomy-restart": "pnpm --filter @voice-agent/acceptance administrative-autonomy-restart-cli --",
     "acceptance:grok-enrollment": "pnpm --filter @voice-agent/acceptance grok-enrollment-cli --",
     "acceptance:slice-one": "pnpm --filter @voice-agent/acceptance cli --",
     "acceptance:slice-three": "pnpm --filter @voice-agent/acceptance slice-three-cli --",

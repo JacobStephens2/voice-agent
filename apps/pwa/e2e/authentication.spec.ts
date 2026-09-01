@@ -139,6 +139,28 @@ test("two independent passkeys protect live evidence and recovery replaces only 
   await secondPage.getByRole("button", { name: "Perform Fresh Passkey Action" }).click();
   await expect(secondPage.getByText(/Fresh Passkey Action valid until/u)).toBeVisible();
   await secondPage
+    .getByRole("button", { name: "Activate Administrative Autonomy" })
+    .click();
+  await expect(
+    secondPage.getByText("Policy revision 1 is active.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    secondPage.getByText(
+      "Task execution is unavailable because an executable Administrative Execution Manifest is not present. Policy activation alone does not grant executable administrative authority.",
+    ),
+  ).toBeVisible();
+  expect(
+    await secondPage.evaluate(async () =>
+      fetch("/api/administrative-autonomy").then((response) => response.json()),
+    ),
+  ).toMatchObject({
+    policy: { revision: 1, status: "active" },
+    taskExecution: {
+      reason: "An executable Administrative Execution Manifest is not present.",
+      status: "unavailable",
+    },
+  });
+  await secondPage
     .getByRole("button", { name: "Register Bountywell read-only access" })
     .click();
   await expect(

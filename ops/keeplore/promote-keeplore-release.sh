@@ -88,7 +88,7 @@ record_attempt() {
   local result=$1 stage=$2 restored=${3:-} previous_commit
   previous_commit=$(basename "${previous:--}")
   {
-    printf '{"attemptedAt":"%s","application":"keeplore-production"' \
+    printf '{"attemptedAt":"%s","registeredCodebaseId":"keeplore-production"' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     if [[ -n ${KEEPLORE_CHECKS:-} ]]; then
       printf ',"checks":%s' "$KEEPLORE_CHECKS"

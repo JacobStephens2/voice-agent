@@ -84,6 +84,10 @@ _Avoid_: Delegation, code edit, repository dump
 A repository enrolled explicitly or through policy-authorized discovery for Code Inquiry and Delegation with a fixed path, remote, production branch, isolated-worktree location, verification commands, and, when deployed, a Deployment Contract.
 _Avoid_: Application directory, discovered repository, arbitrary path
 
+**Registered Codebase ID**:
+The durable identity used to look up one complete Registered Codebase registration; the ID never stands in for the registration snapshot whose paths, remote, branch, revision, verification scope, and lifetime carry authority.
+_Avoid_: Repository slug, generic identifier
+
 **Configuration Repository**:
 The private Registered Codebase that represents reproducible Agent Host packages, services, network policy, device setup, recovery inventory, and other Host Patch targets.
 _Avoid_: Server notes, live host configuration, backup
@@ -132,6 +136,14 @@ _Avoid_: Blanket permission, unrestricted access
 A Fresh-Passkey-activated Standing Autonomy Policy that permits broad multi-codebase work and brokered Agent Host administration without per-Operation approval while withholding designated credential-store access, production-branch mutation, ad hoc production-data mutation, and self-activation of authority.
 Its authenticated revision remains active until Administrative Suspension or another Fresh Passkey Action revises it.
 _Avoid_: YOLO mode, always approve, unrestricted root
+
+**Administrative Execution Manifest**:
+The exact reviewed Grok provider pin and typed Operation-adapter implementations bound into an Administrative Autonomy Policy revision by its Fresh Passkey Action; a different configured manifest has no authority until another Fresh Passkey Action activates a new revision.
+_Avoid_: Adapters configured, latent authority, install-time authority
+
+**Agent Host Restart Witness**:
+An attended, append-only, server-recorded acceptance campaign, executed only from the exact active immutable Release, proving that one exact active Administrative Autonomy Policy revision, state version, Administrative Execution Manifest, and Release remain observable through the deployed authenticated API after both the Voice Agent API/worker services restart and the Agent Host acquires a new real boot identity. Each service appends a Release-bound comparison fingerprint only after its fixed deployment health seam is live: a same-boot restart rotates it, while the first startup on a new boot carries the accepted post-service fingerprint forward so the campaign can prove both the intended service restart and the later host reboot. The bounded comparison projection retains only recent startup fingerprints for the current Release and prunes inactive-Release fingerprints; accepted phase observations remain append-only evidence. At every observation the API requires the live worker-owned Unix-socket response to match the exact registered worker fingerprint and active Release. Raw service-instance and boot identities remain transient composition inputs and never enter the durable store or exported record; earlier witness versions remain immutable evidence but cannot satisfy the current worker-bound ceremony.
+_Avoid_: SQLite reopen test, simulated process recovery, simulated reboot
 
 **Administrative Suspension**:
 An owner-triggered state that refuses new administrative Operations, activates every armed Live Patch and Host Patch rollback, and preserves Delegated Worktrees and Evidence Records until a Fresh Passkey Action reactivates Administrative Autonomy.

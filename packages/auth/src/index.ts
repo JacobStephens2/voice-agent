@@ -112,6 +112,7 @@ export interface PasskeyAdapter {
 }
 
 export interface AuthenticationLifecycle {
+  authenticatedOwnerId(sessionToken: string): Promise<string | undefined>;
   beginBootstrapRegistration(input: {
     readonly bootstrapCode: string;
     readonly label: string;
@@ -261,6 +262,17 @@ export function createAuthenticationLifecycle(
   }
 
   return {
+    async authenticatedOwnerId(sessionToken) {
+      const snapshot = await readState();
+      const session = findActiveSession(
+        snapshot.state,
+        options.secrets.digest(sessionToken),
+        options.now(),
+      );
+      return session?.kind === "trusted"
+        ? snapshot.state.ownerUserId
+        : undefined;
+    },
     async beginLogin() {
       const snapshot = await readState();
       if (!projectStatus(snapshot.state).unattendedAuthorityEnabled) {

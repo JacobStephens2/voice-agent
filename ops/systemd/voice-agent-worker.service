@@ -34,6 +34,8 @@ Environment=VOICE_AGENT_REALTIME_MEDIA_MICROUSD_PER_MINUTE=100000
 EnvironmentFile=/etc/voice-agent/livekit.env
 EnvironmentFile=/etc/voice-agent/resend.env
 EnvironmentFile=-/etc/voice-agent/keeplore-delegation.env
+RuntimeDirectory=voice-agent-worker
+RuntimeDirectoryMode=0750
 ExecStart=/usr/bin/node --experimental-strip-types /opt/voice-agent/current/apps/worker/src/server.ts
 Restart=on-failure
 RestartSec=3s

@@ -42,7 +42,7 @@ jq -cn \
     | unique' <<<"$rules")" \
   '{
     activeRules: $activeRules,
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     branch: $branch,
     kind: "branch-rules",
     observedAt: $observedAt,
@@ -82,7 +82,7 @@ jq -cn \
   '{
     appId: $appId,
     appSlug: $appSlug,
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     installationId: $installationId,
     kind: "github-app",
     observedAt: $observedAt,
