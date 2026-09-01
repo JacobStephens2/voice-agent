@@ -18,7 +18,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 
@@ -108,6 +108,25 @@ test("release immutability accepts internal package symlinks but rejects mutable
     'voice_agent_release_tree_is_immutable "$REPOSITORY_ROOT"',
   );
   expect(helper).toContain('voice_agent_release_tree_is_immutable "$release"');
+});
+
+test("an attended upgrade fails closed and names missing reviewed authority", async () => {
+  const missingReviewedFile =
+    "ops/systemd/voice-agent-grok-contract@.service";
+  const fixture = await deploymentAuthorityFixture({ missingReviewedFile });
+
+  await expect(
+    execFileAsync(fixture.upgrader, ["--activate", fixture.commit], {
+      env: {
+        ...process.env,
+        VOICE_AGENT_AUTHORITY_TEST_ROOT: fixture.root,
+      },
+    }),
+  ).rejects.toMatchObject({
+    stderr: expect.stringContaining(
+      "Reviewed deployment authority is missing voice-agent-grok-contract@.service.",
+    ),
+  });
 });
 
 test("an attended upgrade installs the Keeplore policy tools the pinned publisher reads", async () => {
@@ -222,7 +241,15 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
       ),
       "utf8",
     ),
-  ).resolves.toContain("voice-agent-keeplore-publisher.service");
+  ).resolves.toBe(
+    await readFile(
+      join(
+        fixture.release,
+        "ops/systemd/voice-agent-keeplore-publisher.service",
+      ),
+      "utf8",
+    ),
+  );
   await expect(
     readFile(
       join(fixture.authority, "keeplore-github-app-publisher.ts"),
@@ -663,6 +690,7 @@ test("the root verifier enrolls only a signing credential from completed owner r
 });
 
 async function deploymentAuthorityFixture(options?: {
+  readonly missingReviewedFile?: string;
   readonly oldPromoterSucceeds?: boolean;
 }): Promise<{
   readonly authority: string;
@@ -675,6 +703,7 @@ async function deploymentAuthorityFixture(options?: {
   readonly reviewedBwrapProfile: string;
   readonly reviewedPromoter: string;
   readonly reviewedSubagentUnit: string;
+  readonly release: string;
   readonly root: string;
   readonly upgrader: string;
 }> {
@@ -708,6 +737,9 @@ async function deploymentAuthorityFixture(options?: {
       join(authorityState, "backups"),
       join(root, "var/lib/voice-agent-promotion-resume"),
     ].map((directory) => mkdir(directory, { recursive: true })),
+  );
+  const reviewedSourcePaths = await copyReviewedAuthorityReleaseSources(
+    release,
   );
 
   await writeFile(join(release, ".voice-agent-release"), `${commit}\n`);
@@ -761,6 +793,12 @@ process.stdout.write("{}\\n");
     join(releaseScripts, "keeplore-github-app-publisher.ts"),
     "export {};\n",
   );
+  for (const program of ["grok-token-broker", "grok-token-helper"]) {
+    await writeExecutable(
+      join(release, "ops/grok", program),
+      "#!/usr/bin/env node\n",
+    );
+  }
   for (const tool of keeploreAuthorityTools) {
     await writeExecutable(
       join(release, "ops/keeplore", tool),
@@ -777,48 +815,6 @@ process.stdout.write("{}\\n");
     `${"b".repeat(40)}\t${commit}\n`,
   );
   await writeFile(join(authorityState, "current"), `${previousCommit}\n`);
-
-  const scripts = [
-    "candidate-preflight.sh",
-    "deployment-authority-drift.sh",
-    "deployment-authority-manifest.sh",
-    "deployment-health.sh",
-    "git-credential-github-app.sh",
-    "github-source-token.sh",
-    "install-release.sh",
-    "promote-main.sh",
-    "promotion-state.sh",
-    "record-promotion-failure.sh",
-    "release-immutability.sh",
-    "resume-promotion.sh",
-    "rollback-release.sh",
-    "upgrade-deployment-authority.sh",
-    "verify-human-merge.sh",
-  ];
-  for (const script of scripts) {
-    await writeExecutable(
-      join(releaseScripts, script),
-      `#!/usr/bin/env bash\nprintf 'reviewed ${script}\\n'\n`,
-    );
-  }
-  const realReleaseScripts = [
-    "deployment-authority-manifest.sh",
-    "release-immutability.sh",
-    "upgrade-deployment-authority.sh",
-  ];
-  await Promise.all(
-    realReleaseScripts.map((script) =>
-      copyFile(
-        join(repositoryRoot, "ops/release", script),
-        join(releaseScripts, script),
-      )
-    ),
-  );
-  await Promise.all(
-    realReleaseScripts.map((script) =>
-      chmod(join(releaseScripts, script), 0o755)
-    ),
-  );
 
   const reviewedPromoter = `#!/usr/bin/env bash
 set -euo pipefail
@@ -853,27 +849,12 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     : "#!/usr/bin/env bash\nprintf 'old promoter must not run\\n' >&2\nexit 1\n";
   await writeExecutable(join(authority, "promote-release.sh"), oldPromoter);
 
-  const units = [
-    "voice-agent-api.service",
-    "voice-agent-broker.service",
-    "voice-agent-probes.service",
-    "voice-agent-probes.timer",
-    "voice-agent-promotion-resume.path",
-    "voice-agent-promotion-resume.service",
-    "voice-agent-keeplore-publisher.service",
-    "voice-agent-subagent.service",
-    "voice-agent-worker.service",
-  ];
   const reviewedSubagentUnit = "[Service]\nUser=voice-codex\n";
   const reviewedBwrapProfile = "profile bwrap /usr/bin/bwrap { userns, }\n";
-  for (const unit of units) {
-    await writeFile(
-      join(releaseUnits, unit),
-      unit === "voice-agent-subagent.service"
-        ? reviewedSubagentUnit
-        : `[Unit]\nDescription=reviewed ${unit}\n`,
-    );
-  }
+  await writeFile(
+    join(releaseUnits, "voice-agent-subagent.service"),
+    reviewedSubagentUnit,
+  );
   await writeFile(
     join(releaseAppArmor, "bwrap-userns-restrict"),
     reviewedBwrapProfile,
@@ -890,6 +871,14 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     join(release, "ops/grafana/install-dashboard.sh"),
     "#!/usr/bin/env bash\nexit 0\n",
   );
+  if (options?.missingReviewedFile !== undefined) {
+    if (!reviewedSourcePaths.has(options.missingReviewedFile)) {
+      throw new Error(
+        `Cannot omit undeclared deployment authority: ${options.missingReviewedFile}`,
+      );
+    }
+    await rm(join(release, options.missingReviewedFile));
+  }
 
   return {
     authority,
@@ -902,9 +891,41 @@ printf '%s\\n' "$1" > "$VOICE_AGENT_AUTHORITY_TEST_ROOT/var/lib/voice-agent-depl
     reviewedBwrapProfile,
     reviewedPromoter,
     reviewedSubagentUnit,
+    release,
     root,
     upgrader: join(releaseScripts, "upgrade-deployment-authority.sh"),
   };
+}
+
+async function copyReviewedAuthorityReleaseSources(
+  release: string,
+): Promise<ReadonlySet<string>> {
+  const manifest = join(
+    repositoryRoot,
+    "ops/release/deployment-authority-manifest.sh",
+  );
+  const { stdout } = await execFileAsync("bash", [
+    "-c",
+    'source "$1"\nvoice_agent_authority_pinned_paths',
+    "deployment-authority-fixture",
+    manifest,
+  ]);
+  const sourcePaths = new Set<string>();
+  for (const mapping of stdout.trimEnd().split("\n")) {
+    const separator = mapping.indexOf("\t");
+    if (separator <= 0) {
+      throw new Error(`Invalid deployment-authority mapping: ${mapping}`);
+    }
+    sourcePaths.add(mapping.slice(0, separator));
+  }
+  await Promise.all(
+    [...sourcePaths].map(async (sourcePath) => {
+      const target = join(release, sourcePath);
+      await mkdir(dirname(target), { recursive: true });
+      await copyFile(join(repositoryRoot, sourcePath), target);
+    }),
+  );
+  return sourcePaths;
 }
 
 async function writeExecutable(path: string, contents: string): Promise<void> {
