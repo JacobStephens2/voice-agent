@@ -10,6 +10,10 @@ import {
   administrativeMutationOperationKinds,
   administrativeOperationRequestSchema,
   administrativePolicyRevisionSchema,
+  administrativePolicyActivationExpectationSchema,
+  administrativePolicyEvidenceEventInputSchema,
+  administrativePolicyEvidenceEventSchema,
+  administrativePolicyEvidenceProjectionSchema,
   administrativePolicyStatusSchema,
   administrativeTaskIdSchema,
   administrativeTaskAuthoritySnapshot,
@@ -26,6 +30,7 @@ import {
   type AdministrativeEvidenceEvent,
   type AdministrativeEvidenceRecord,
   type AdministrativePolicyStatus,
+  type AdministrativePolicyEvidenceEvent,
   type AdministrativeTask,
 } from "@voice-agent/contracts";
 import type {
@@ -48,6 +53,15 @@ interface PolicyRevisionRow {
   readonly definition_json: string;
 }
 
+interface AdministrativePolicyEvidenceRow {
+  readonly details_json: string;
+  readonly id: string;
+  readonly kind: AdministrativePolicyEvidenceEvent["kind"];
+  readonly occurred_at: string;
+  readonly sequence: number;
+  readonly summary: string;
+}
+
 interface AdministrativeTaskRow {
   readonly active_execution_deadline: string | null;
   readonly capability_consumed_at: string | null;
@@ -66,6 +80,34 @@ interface AdministrativeTaskRow {
   readonly status: AdministrativeTask["status"];
   readonly target_json: string;
   readonly updated_at: string;
+}
+
+const administrativeTaskProjectionColumns = [
+  "id",
+  "owner_id",
+  "capability_hash",
+  "capability_consumed_at",
+  "active_execution_deadline",
+  "outcome",
+  "publication_intent",
+  "execution_manifest_json",
+  "policy_revision",
+  "state_version",
+  "status",
+  "question",
+  "conclusion",
+  "intended_state",
+  "target_json",
+  "created_at",
+  "updated_at",
+] as const;
+
+function administrativeTaskProjectionSql(table?: string): string {
+  return administrativeTaskProjectionColumns
+    .map((column) =>
+      table === undefined ? column : `${table}.${column} AS ${column}`,
+    )
+    .join(", ");
 }
 
 interface AdministrativeEvidenceRow {
@@ -99,6 +141,10 @@ interface LivePatchRollbackRow {
   readonly result_json: string | null;
   readonly status: "activated" | "activation-pending" | "armed";
   readonly task_id: string;
+}
+
+interface LivePatchRollbackIdRow {
+  readonly operation_id: string;
 }
 
 type AdministrativeConfirmationDenialReason = Extract<
@@ -151,6 +197,31 @@ export function createSqliteAdministrativeAutonomyStore(
       revision, activated_at, activated_by, definition_json
     ) VALUES (?, ?, ?, ?)
   `);
+  const insertPolicyEvidenceEvent = database.prepare(`
+    INSERT INTO administrative_policy_evidence_events (
+      id, kind, occurred_at, summary, details_json
+    ) VALUES (?, ?, ?, ?, ?)
+  `);
+  const readPolicyEvidenceEvents = database.prepare<
+    [],
+    AdministrativePolicyEvidenceRow
+  >(`
+    SELECT id, sequence, kind, occurred_at, summary, details_json
+    FROM (
+      SELECT id, sequence, kind, occurred_at, summary, details_json
+      FROM administrative_policy_evidence_events
+      ORDER BY sequence DESC
+      LIMIT 100
+    )
+    ORDER BY sequence
+  `);
+  const countPolicyEvidenceEvents = database.prepare<
+    [],
+    { readonly count: number }
+  >(`
+    SELECT COUNT(*) AS count
+    FROM administrative_policy_evidence_events
+  `);
   const activatePolicyState = database.prepare(`
     UPDATE administrative_policy_state
     SET status = 'active', active_revision = ?, state_version = ?,
@@ -173,11 +244,7 @@ export function createSqliteAdministrativeAutonomyStore(
     ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const readTask = database.prepare<[taskId: string], AdministrativeTaskRow>(`
-    SELECT id, owner_id, capability_hash, capability_consumed_at,
-      active_execution_deadline, outcome,
-      publication_intent, execution_manifest_json, policy_revision,
-      state_version, status, question, conclusion,
-      intended_state, target_json, created_at, updated_at
+    SELECT ${administrativeTaskProjectionSql()}
     FROM administrative_tasks
     WHERE id = ?
   `);
@@ -185,12 +252,7 @@ export function createSqliteAdministrativeAutonomyStore(
     [operationId: string],
     AdministrativeTaskRow
   >(`
-    SELECT tasks.id, tasks.owner_id, tasks.capability_hash,
-      tasks.capability_consumed_at, tasks.active_execution_deadline,
-      tasks.outcome, tasks.publication_intent, tasks.execution_manifest_json,
-      tasks.policy_revision, tasks.state_version, tasks.status,
-      tasks.question, tasks.conclusion, tasks.intended_state, tasks.target_json,
-      tasks.created_at, tasks.updated_at
+    SELECT ${administrativeTaskProjectionSql("tasks")}
     FROM administrative_tasks AS tasks
     JOIN administrative_operations AS operations ON operations.task_id = tasks.id
     WHERE operations.id = ?
@@ -338,11 +400,7 @@ export function createSqliteAdministrativeAutonomyStore(
     )
   `);
   const listTasks = database.prepare<[], AdministrativeTaskRow>(`
-    SELECT id, owner_id, capability_hash, capability_consumed_at,
-      active_execution_deadline, outcome,
-      publication_intent, execution_manifest_json, policy_revision,
-      state_version, status, question, conclusion,
-      intended_state, target_json, created_at, updated_at
+    SELECT ${administrativeTaskProjectionSql()}
     FROM administrative_tasks
     ORDER BY updated_at DESC, id DESC
     LIMIT 100
@@ -388,10 +446,25 @@ export function createSqliteAdministrativeAutonomyStore(
     SET request_json = ?, updated_at = ?
     WHERE operation_id = ? AND status = 'armed'
   `);
-  const listLivePatchRollbacks = database.prepare<[], LivePatchRollbackRow>(`
-    SELECT operation_id, task_id, status, request_json, result_json
+  const listActivatedLivePatchRollbackIds = database.prepare<
+    [],
+    LivePatchRollbackIdRow
+  >(`
+    SELECT operation_id
     FROM administrative_live_patch_rollbacks
+    WHERE status = 'activated'
     ORDER BY operation_id
+    LIMIT 100
+  `);
+  const listUnresolvedLivePatchRollbackIds = database.prepare<
+    [],
+    LivePatchRollbackIdRow
+  >(`
+    SELECT operation_id
+    FROM administrative_live_patch_rollbacks
+    WHERE status != 'activated'
+    ORDER BY operation_id
+    LIMIT 100
   `);
   const listPendingLivePatchRollbacks = database.prepare<
     [],
@@ -409,6 +482,14 @@ export function createSqliteAdministrativeAutonomyStore(
     SELECT COUNT(*) AS count
     FROM administrative_live_patch_rollbacks
     WHERE status IN ('armed', 'activation-pending')
+  `);
+  const countActivatedLivePatchRollbacks = database.prepare<
+    [],
+    { readonly count: number }
+  >(`
+    SELECT COUNT(*) AS count
+    FROM administrative_live_patch_rollbacks
+    WHERE status = 'activated'
   `);
   const completeLivePatchRollbackActivation = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -431,17 +512,28 @@ export function createSqliteAdministrativeAutonomyStore(
       if (row.suspended_at === null) {
         throw new Error("Administrative Suspension has no timestamp");
       }
-      const rollbacks = listLivePatchRollbacks.all();
+      const activatedOperationIds = listActivatedLivePatchRollbackIds
+        .all()
+        .map((rollback) => rollback.operation_id);
+      const pendingOperationIds = listUnresolvedLivePatchRollbackIds
+        .all()
+        .map((rollback) => rollback.operation_id);
+      const activatedOperationCount =
+        countActivatedLivePatchRollbacks.get()?.count ?? 0;
+      const pendingOperationCount =
+        countUnresolvedLivePatchRollbacks.get()?.count ?? 0;
       return administrativePolicyStatusSchema.parse({
         executionManifest: requirePolicyRevision(row.active_revision)
           .executionManifest,
         rollbackActivations: {
-          activatedOperationIds: rollbacks
-            .filter((rollback) => rollback.status === "activated")
-            .map((rollback) => rollback.operation_id),
-          pendingOperationIds: rollbacks
-            .filter((rollback) => rollback.status !== "activated")
-            .map((rollback) => rollback.operation_id),
+          activatedOperationCount,
+          activatedOperationIds,
+          activatedOperationIdsTruncated:
+            activatedOperationCount > activatedOperationIds.length,
+          pendingOperationCount,
+          pendingOperationIds,
+          pendingOperationIdsTruncated:
+            pendingOperationCount > pendingOperationIds.length,
         },
         revision: row.active_revision,
         stateVersion: row.state_version,
@@ -476,6 +568,25 @@ export function createSqliteAdministrativeAutonomyStore(
     return administrativePolicyRevisionSchema.parse(
       JSON.parse(row.definition_json),
     );
+  }
+
+  function policyEvidenceProjection() {
+    const totalCount = countPolicyEvidenceEvents.get()?.count ?? 0;
+    const events = readPolicyEvidenceEvents.all().map((row) =>
+      administrativePolicyEvidenceEventSchema.parse({
+        details: JSON.parse(row.details_json) as unknown,
+        id: row.id,
+        kind: row.kind,
+        occurredAt: row.occurred_at,
+        sequence: row.sequence,
+        summary: row.summary,
+      }),
+    );
+    return administrativePolicyEvidenceProjectionSchema.parse({
+      events,
+      totalCount,
+      truncated: totalCount > events.length,
+    });
   }
 
   function taskExecutionManifest(
@@ -575,16 +686,19 @@ export function createSqliteAdministrativeAutonomyStore(
 
   const activateTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["activatePolicy"]>[0]) => {
+      const expectation = administrativePolicyActivationExpectationSchema.parse(
+        input.expectation,
+      );
       const current = requirePolicyState();
       const activeRevision =
         current.status === "inactive" ? null : current.active_revision;
       if (
-        activeRevision !== input.expectedActiveRevision ||
-        current.state_version !== input.expectedStateVersion ||
+        activeRevision !== expectation.expectedActiveRevision ||
+        current.state_version !== expectation.expectedStateVersion ||
         (countUnresolvedLivePatchRollbacks.get()?.count ?? 0) > 0 ||
         administrativeExecutionManifestFingerprint(
           input.revision.executionManifest,
-        ) !== input.expectedExecutionManifestFingerprint ||
+        ) !== expectation.expectedExecutionManifestFingerprint ||
         input.revision.revision !== (activeRevision ?? 0) + 1 ||
         input.stateVersion !== current.state_version + 1
       ) {
@@ -610,6 +724,10 @@ export function createSqliteAdministrativeAutonomyStore(
 
   const suspendTransaction = database.transaction(
     (input: Parameters<AdministrativeAutonomyStore["suspendPolicy"]>[0]) => {
+      const suspensionEvent =
+        administrativePolicyEvidenceEventInputSchema.parse(
+          input.suspensionEvent,
+        );
       const current = requirePolicyState();
       if (
         current.status === "suspended" &&
@@ -626,6 +744,23 @@ export function createSqliteAdministrativeAutonomyStore(
         input.expectedStateVersion,
       );
       if (result.changes !== 1) return undefined;
+      if (
+        suspensionEvent.occurredAt !== input.suspendedAt ||
+        suspensionEvent.details.policyRevision !== input.expectedRevision ||
+        suspensionEvent.details.resultingStateVersion !==
+          input.expectedStateVersion + 1
+      ) {
+        throw new Error(
+          "Administrative Suspension evidence does not match its transition",
+        );
+      }
+      insertPolicyEvidenceEvent.run(
+        suspensionEvent.id,
+        suspensionEvent.kind,
+        suspensionEvent.occurredAt,
+        suspensionEvent.summary,
+        JSON.stringify(suspensionEvent.details),
+      );
       markArmedRollbacksPending.run(input.suspendedAt);
       return policyStatus();
     },
@@ -830,6 +965,7 @@ export function createSqliteAdministrativeAutonomyStore(
       >[0],
     ) => {
       const result = livePatchRollbackActivationResultSchema.parse(input.result);
+      const completedEvent = input.completedEvent;
       const rollback = readLivePatchRollback.get(result.operationId);
       if (rollback === undefined) return false;
       const request = livePatchRollbackActivationRequestSchema.parse(
@@ -863,13 +999,28 @@ export function createSqliteAdministrativeAutonomyStore(
       ) {
         return false;
       }
-      return (
+      if (
+        completedEvent.kind !==
+          "administrative.live-patch.rollback-activated" ||
+        completedEvent.occurredAt !== result.activatedAt ||
+        completedEvent.details.operationId !== result.operationId ||
+        JSON.stringify(completedEvent.details.result) !== JSON.stringify(result)
+      ) {
+        throw new Error(
+          "Live Patch rollback Evidence Event does not match its result",
+        );
+      }
+      if (
         completeLivePatchRollbackActivation.run(
           JSON.stringify(result),
           result.activatedAt,
           result.operationId,
-        ).changes === 1
-      );
+        ).changes !== 1
+      ) {
+        return false;
+      }
+      appendEvents(request.taskId, [completedEvent]);
+      return true;
     },
   );
 
@@ -1350,6 +1501,9 @@ export function createSqliteAdministrativeAutonomyStore(
     async readPolicyStatus() {
       return policyStatus();
     },
+    async readPolicyEvidence() {
+      return policyEvidenceProjection();
+    },
     async recheckOperationEffect(input) {
       return recheckOperationEffectTransaction.immediate(input);
     },
@@ -1386,6 +1540,15 @@ function createSchema(database: Database.Database): void {
       suspended_at TEXT,
       FOREIGN KEY (active_revision)
         REFERENCES administrative_policy_revisions(revision)
+    );
+
+    CREATE TABLE IF NOT EXISTS administrative_policy_evidence_events (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL CHECK (kind = 'administrative.policy.suspended'),
+      occurred_at TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details_json TEXT NOT NULL
     );
 
     INSERT OR IGNORE INTO administrative_policy_state (
@@ -1487,6 +1650,18 @@ function createSchema(database: Database.Database): void {
     BEFORE DELETE ON administrative_policy_revisions
     BEGIN
       SELECT RAISE(ABORT, 'Administrative policy revisions are immutable');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS administrative_policy_evidence_no_update
+    BEFORE UPDATE ON administrative_policy_evidence_events
+    BEGIN
+      SELECT RAISE(ABORT, 'Administrative policy evidence is immutable');
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS administrative_policy_evidence_no_delete
+    BEFORE DELETE ON administrative_policy_evidence_events
+    BEGIN
+      SELECT RAISE(ABORT, 'Administrative policy evidence is append-only');
     END;
 
     CREATE TRIGGER IF NOT EXISTS administrative_evidence_no_update

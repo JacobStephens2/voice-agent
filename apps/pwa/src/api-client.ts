@@ -7,7 +7,6 @@ import {
 
 import {
   authenticationStatusSchema,
-  administrativeExecutionManifestFingerprint,
   administrativeAutonomyStatusSchema,
   administrativePolicyStatusSchema,
   authorizeRawAudioDebugResultSchema,
@@ -40,7 +39,7 @@ import {
   webAuthnOptionsSchema,
   type AuthenticationStatus,
   type AdministrativeAutonomyStatus,
-  type AdministrativeExecutionManifest,
+  type AdministrativePolicyActivationExpectation,
   type AdministrativePolicyStatus,
   type TelephoneBoundaryStatus,
   type BountywellOutageInjection,
@@ -91,19 +90,12 @@ export async function loadAdministrativeAutonomyStatus(): Promise<
 
 export async function activateAdministrativePolicy(
   csrfToken: string,
-  expectedActiveRevision: number | null,
-  expectedExecutionManifest: AdministrativeExecutionManifest,
-  expectedStateVersion: number,
+  expectation: AdministrativePolicyActivationExpectation,
 ): Promise<AdministrativePolicyStatus> {
   const response = await fetch("/api/administrative-autonomy/activate", {
     body: JSON.stringify({
       csrfToken,
-      expectedActiveRevision,
-      expectedExecutionManifestFingerprint:
-        administrativeExecutionManifestFingerprint(
-          expectedExecutionManifest,
-        ),
-      expectedStateVersion,
+      expectation,
     }),
     headers: { "Content-Type": "application/json" },
     method: "POST",

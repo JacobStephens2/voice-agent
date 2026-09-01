@@ -3,6 +3,7 @@ import {
   forbiddenAdministrativeOperationKinds,
   type AdministrativeOperationKind,
   type AdministrativePolicyActivationSource,
+  type AdministrativePolicyActivationExpectation,
   type AdministrativePolicyDefinition,
   type AdministrativePolicyStatus,
   type AdministrativePublicationIntent,
@@ -26,9 +27,7 @@ export type AdministrativePolicyDecision =
 
 export function authorizeAdministrativePolicyActivation(input: {
   readonly current: AdministrativePolicyStatus;
-  readonly expectedActiveRevision: number | null;
-  readonly expectedExecutionManifestFingerprint: string;
-  readonly expectedStateVersion: number;
+  readonly expectation: AdministrativePolicyActivationExpectation;
   readonly runtimeExecutionManifestFingerprint: string;
   readonly source: AdministrativePolicyActivationSource;
 }): AdministrativePolicyDecision {
@@ -46,8 +45,8 @@ export function authorizeAdministrativePolicyActivation(input: {
   const activeRevision =
     input.current.status === "inactive" ? null : input.current.revision;
   if (
-    input.expectedActiveRevision !== activeRevision ||
-    input.expectedStateVersion !== input.current.stateVersion
+    input.expectation.expectedActiveRevision !== activeRevision ||
+    input.expectation.expectedStateVersion !== input.current.stateVersion
   ) {
     return {
       decision: "deny",
@@ -55,7 +54,7 @@ export function authorizeAdministrativePolicyActivation(input: {
     };
   }
   if (
-    input.expectedExecutionManifestFingerprint !==
+    input.expectation.expectedExecutionManifestFingerprint !==
     input.runtimeExecutionManifestFingerprint
   ) {
     return {

@@ -7,6 +7,8 @@ const eventLabels: Record<
   "administrative.confirmation.accepted": "Task Confirmation accepted",
   "administrative.confirmation.declined": "Task Confirmation declined",
   "administrative.confirmation.prepared": "Task Confirmation prepared",
+  "administrative.live-patch.rollback-activated":
+    "Live Patch rollback activated",
   "administrative.operation.accepted": "Operation accepted",
   "administrative.operation.completed": "Operation completed",
   "administrative.plan.accepted": "Operation plan accepted",

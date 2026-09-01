@@ -7,6 +7,9 @@ import type {
   AdministrativeOperationClaimId,
   AdministrativeOperationId,
   AdministrativePolicyRevision,
+  AdministrativePolicyActivationExpectation,
+  AdministrativePolicyEvidenceEventInput,
+  AdministrativePolicyEvidenceProjection,
   AdministrativePolicyStatus,
   AdministrativeTask,
   AdministrativeTaskId,
@@ -91,9 +94,7 @@ export interface AdministrativeAutonomyStore {
     readonly request: LivePatchRollbackActivationRequest;
   }): Promise<boolean>;
   activatePolicy(input: {
-    readonly expectedActiveRevision: number | null;
-    readonly expectedExecutionManifestFingerprint: string;
-    readonly expectedStateVersion: number;
+    readonly expectation: AdministrativePolicyActivationExpectation;
     readonly revision: AdministrativePolicyRevision;
     readonly stateVersion: number;
   }): Promise<AdministrativePolicyStatus | undefined>;
@@ -126,6 +127,7 @@ export interface AdministrativeAutonomyStore {
     readonly taskId: AdministrativeTaskId;
   }): Promise<AdministrativeEvidenceRecord>;
   completeLivePatchRollbackActivation(input: {
+    readonly completedEvent: UnsequencedAdministrativeEvidenceEvent;
     readonly result: LivePatchRollbackActivationResult;
   }): Promise<boolean>;
   completeTask(input: {
@@ -150,6 +152,7 @@ export interface AdministrativeAutonomyStore {
     readonly LivePatchRollbackActivationRequest[]
   >;
   listTasks(): Promise<readonly AdministrativeTask[]>;
+  readPolicyEvidence(): Promise<AdministrativePolicyEvidenceProjection>;
   readPolicyStatus(): Promise<AdministrativePolicyStatus>;
   recheckOperationEffect(input: {
     readonly authority: AdministrativeAuthoritySnapshot;
@@ -186,6 +189,7 @@ export interface AdministrativeAutonomyStore {
   suspendPolicy(input: {
     readonly expectedRevision: number;
     readonly expectedStateVersion: number;
+    readonly suspensionEvent: AdministrativePolicyEvidenceEventInput;
     readonly suspendedAt: AdministrativeTimestamp;
   }): Promise<AdministrativePolicyStatus | undefined>;
   close(): Promise<void>;

@@ -103,6 +103,9 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly beforeOperationEffect?: (
     request: AdministrativeOperationRequest,
   ) => Promise<void>;
+  readonly beforeProviderPlanReturn?: (input: {
+    readonly signal?: AbortSignal;
+  }) => Promise<void>;
   readonly afterLivePatchRollbackArmed?: (
     request: Extract<
       AdministrativeOperationRequest,
@@ -129,12 +132,15 @@ export async function createAdministrativeAutonomyScenario(options: {
   readonly livePatchProofLedger?: Map<string, LivePatchMutationProof>;
   readonly now: string;
   readonly onOperationStart?: () => void;
+  readonly onProviderPlanStart?: () => void;
   readonly operationLeaseMilliseconds?: number;
   readonly operationAttempts?: string[];
   readonly omitLivePatchReconciliation?: boolean;
   readonly providerAttempts?: string[];
   readonly providerFailures?: number;
+  readonly planningDeadlineCallbacks?: Array<() => void>;
   readonly providerPlan: AdministrativeProviderPlan | unknown;
+  readonly providerSignals?: Array<AbortSignal | undefined>;
   readonly reportedCompletionTime?: string;
   readonly rollbackActivationAttempts?: LivePatchRollbackActivationRequest[];
   readonly rollbackActivationEffects?: string[];
@@ -280,10 +286,12 @@ export async function createAdministrativeAutonomyScenario(options: {
             throw new Error("The interleaved policy revision has no active base");
           }
           await runtime.activatePolicy({
-            expectedActiveRevision: policy.revision,
-            expectedExecutionManifestFingerprint:
-              administrativeExecutionManifestFingerprint(executionManifest),
-            expectedStateVersion: policy.stateVersion,
+            expectation: {
+              expectedActiveRevision: policy.revision,
+              expectedExecutionManifestFingerprint:
+                administrativeExecutionManifestFingerprint(executionManifest),
+              expectedStateVersion: policy.stateVersion,
+            },
             source: "fresh-passkey-action",
           });
         }
@@ -364,8 +372,16 @@ export async function createAdministrativeAutonomyScenario(options: {
   };
   const provider = {
     identity: providerIdentity,
-    async choosePlan(input: { readonly taskId: string }) {
+    async choosePlan(input: {
+      readonly signal?: AbortSignal;
+      readonly taskId: string;
+    }) {
       options.providerAttempts?.push(input.taskId);
+      options.providerSignals?.push(input.signal);
+      options.onProviderPlanStart?.();
+      await options.beforeProviderPlanReturn?.(
+        input.signal === undefined ? {} : { signal: input.signal },
+      );
       if (providerFailuresRemaining > 0) {
         providerFailuresRemaining -= 1;
         throw new Error("Simulated provider failure during planning");
@@ -377,10 +393,12 @@ export async function createAdministrativeAutonomyScenario(options: {
           throw new Error("The interleaved policy revision has no active base");
         }
         await runtime.activatePolicy({
-          expectedActiveRevision: policy.revision,
-          expectedExecutionManifestFingerprint:
-            administrativeExecutionManifestFingerprint(executionManifest),
-          expectedStateVersion: policy.stateVersion,
+          expectation: {
+            expectedActiveRevision: policy.revision,
+            expectedExecutionManifestFingerprint:
+              administrativeExecutionManifestFingerprint(executionManifest),
+            expectedStateVersion: policy.stateVersion,
+          },
           source: "fresh-passkey-action",
         });
       }
@@ -465,6 +483,21 @@ export async function createAdministrativeAutonomyScenario(options: {
       ...(options.operationLeaseMilliseconds === undefined
         ? {}
         : { operationLeaseMilliseconds: options.operationLeaseMilliseconds }),
+      ...(options.planningDeadlineCallbacks === undefined
+        ? {}
+        : {
+            planningDeadlineTimer: {
+              arm(_deadline: AdministrativeTimestamp, onDeadline: () => void) {
+                let armed = true;
+                options.planningDeadlineCallbacks?.push(() => {
+                  if (armed) onDeadline();
+                });
+                return () => {
+                  armed = false;
+                };
+              },
+            },
+          }),
       store,
     });
   } catch (error) {
@@ -536,11 +569,13 @@ export async function createAdministrativeAutonomyScenario(options: {
         method: "POST",
         payload: {
           csrfToken: scenarioCsrf,
-          expectedActiveRevision: input.expectedActiveRevision,
-          expectedExecutionManifestFingerprint:
-            input.expectedExecutionManifestFingerprint ??
-            administrativeExecutionManifestFingerprint(executionManifest),
-          expectedStateVersion: input.expectedStateVersion,
+          expectation: {
+            expectedActiveRevision: input.expectedActiveRevision,
+            expectedExecutionManifestFingerprint:
+              input.expectedExecutionManifestFingerprint ??
+              administrativeExecutionManifestFingerprint(executionManifest),
+            expectedStateVersion: input.expectedStateVersion,
+          },
         },
         url: "/api/administrative-autonomy/activate",
       });
@@ -567,9 +602,13 @@ export async function createAdministrativeAutonomyScenario(options: {
       }),
     attemptPolicyActivation: (input) =>
       runtime.activatePolicy({
-        ...input,
-        expectedExecutionManifestFingerprint:
-          administrativeExecutionManifestFingerprint(executionManifest),
+        expectation: {
+          expectedActiveRevision: input.expectedActiveRevision,
+          expectedExecutionManifestFingerprint:
+            administrativeExecutionManifestFingerprint(executionManifest),
+          expectedStateVersion: input.expectedStateVersion,
+        },
+        source: input.source,
       }),
     async confirmAndRunTask(input) {
       const prepared = await runtime.prepareTaskConfirmation({

@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 
 import {
+  administrativeExecutionManifestFingerprint,
+  administrativePolicyActivationExpectationSchema,
   type AuthenticationStatus,
   type AdministrativeAutonomyStatus,
   type BountywellRegistration,
@@ -279,15 +281,21 @@ function App() {
           : administrativeAutonomy.taskExecution.executionManifest;
       const activated = await activateAdministrativePolicy(
         csrfToken,
-        expectedActiveRevision,
-        expectedExecutionManifest,
-        administrativeAutonomy.policy.stateVersion,
+        administrativePolicyActivationExpectationSchema.parse({
+          expectedActiveRevision,
+          expectedExecutionManifestFingerprint:
+            administrativeExecutionManifestFingerprint(
+              expectedExecutionManifest,
+            ),
+          expectedStateVersion: administrativeAutonomy.policy.stateVersion,
+        }),
       );
       if (activated.status !== "active") {
         throw new Error("Administrative Autonomy did not become active.");
       }
       setAdministrativeAutonomy({
         policy: activated,
+        policyEvidence: administrativeAutonomy.policyEvidence,
         taskExecution:
           activated.executionManifest.provider.kind === "unavailable"
             ? {

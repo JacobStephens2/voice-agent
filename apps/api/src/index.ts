@@ -78,6 +78,7 @@ import {
   type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
   type AdministrativePolicyStatus,
+  type AdministrativePolicyActivationExpectation,
   type AdministrativeAutonomyStatus,
 } from "@voice-agent/contracts";
 
@@ -213,9 +214,7 @@ export interface KeeploreOnboardingApiControls {
 
 export interface AdministrativeAutonomyApiControls {
   activatePolicy(input: {
-    readonly expectedActiveRevision: number | null;
-    readonly expectedExecutionManifestFingerprint: string;
-    readonly expectedStateVersion: number;
+    readonly expectation: AdministrativePolicyActivationExpectation;
     readonly source: "fresh-passkey-action";
   }): Promise<
     | {
@@ -538,10 +537,7 @@ function registerAdministrativeAutonomyRoutes(
       return reply.code(403).send({ error: "Fresh Passkey Action required" });
     }
     const result = await options.controls.activatePolicy({
-      expectedActiveRevision: body.expectedActiveRevision,
-      expectedExecutionManifestFingerprint:
-        body.expectedExecutionManifestFingerprint,
-      expectedStateVersion: body.expectedStateVersion,
+      expectation: body.expectation,
       source: "fresh-passkey-action",
     });
     if (result.decision === "denied") {

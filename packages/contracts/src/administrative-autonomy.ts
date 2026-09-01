@@ -317,10 +317,28 @@ export type AdministrativePolicyRevision = z.infer<
 
 export const administrativeRollbackActivationsSchema = z
   .object({
+    activatedOperationCount: z.number().int().nonnegative(),
     activatedOperationIds: z.array(administrativeOperationIdSchema).max(100),
+    activatedOperationIdsTruncated: z.boolean(),
+    pendingOperationCount: z.number().int().nonnegative(),
     pendingOperationIds: z.array(administrativeOperationIdSchema).max(100),
+    pendingOperationIdsTruncated: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((projection, context) => {
+    for (const state of ["activated", "pending"] as const) {
+      const count = projection[`${state}OperationCount`];
+      const ids = projection[`${state}OperationIds`];
+      const truncated = projection[`${state}OperationIdsTruncated`];
+      if (count < ids.length || truncated !== (count > ids.length)) {
+        context.addIssue({
+          code: "custom",
+          message: `${state} rollback activation projection is inconsistent`,
+          path: [`${state}OperationCount`],
+        });
+      }
+    }
+  });
 
 export const administrativePolicyStatusSchema = z.discriminatedUnion(
   "status",
@@ -350,6 +368,57 @@ export const administrativePolicyStatusSchema = z.discriminatedUnion(
 );
 export type AdministrativePolicyStatus = z.infer<
   typeof administrativePolicyStatusSchema
+>;
+
+const administrativePolicySuspensionDetailsSchema = z
+  .object({
+    policyRevision: z.number().int().positive(),
+    resultingStateVersion: z.number().int().positive(),
+  })
+  .strict();
+
+export const administrativePolicyEvidenceEventInputSchema = z
+  .object({
+    details: administrativePolicySuspensionDetailsSchema,
+    id: identifierSchema,
+    kind: z.literal("administrative.policy.suspended"),
+    occurredAt: timestampSchema,
+    summary: z.literal("Administrative Autonomy was suspended."),
+  })
+  .strict();
+export type AdministrativePolicyEvidenceEventInput = z.infer<
+  typeof administrativePolicyEvidenceEventInputSchema
+>;
+
+export const administrativePolicyEvidenceEventSchema =
+  administrativePolicyEvidenceEventInputSchema.extend({
+    sequence: z.number().int().positive(),
+  });
+export type AdministrativePolicyEvidenceEvent = z.infer<
+  typeof administrativePolicyEvidenceEventSchema
+>;
+
+export const administrativePolicyEvidenceProjectionSchema = z
+  .object({
+    events: z.array(administrativePolicyEvidenceEventSchema).max(100),
+    totalCount: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+  })
+  .strict()
+  .superRefine((projection, context) => {
+    if (
+      projection.totalCount < projection.events.length ||
+      projection.truncated !==
+        (projection.totalCount > projection.events.length)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Administrative policy evidence projection is inconsistent",
+      });
+    }
+  });
+export type AdministrativePolicyEvidenceProjection = z.infer<
+  typeof administrativePolicyEvidenceProjectionSchema
 >;
 
 export const administrativeTaskExecutionStatusSchema = z.discriminatedUnion(
@@ -389,6 +458,7 @@ export type AdministrativeTaskExecutionStatus = z.infer<
 export const administrativeAutonomyStatusSchema = z
   .object({
     policy: administrativePolicyStatusSchema,
+    policyEvidence: administrativePolicyEvidenceProjectionSchema,
     taskExecution: administrativeTaskExecutionStatusSchema,
   })
   .strict();
@@ -396,13 +466,22 @@ export type AdministrativeAutonomyStatus = z.infer<
   typeof administrativeAutonomyStatusSchema
 >;
 
-export const activateAdministrativePolicyRequestSchema = z
+export const administrativePolicyActivationExpectationSchema = z
   .object({
-    csrfToken: z.string().min(16).max(200),
     expectedActiveRevision: z.number().int().positive().nullable(),
     expectedExecutionManifestFingerprint:
       administrativeExecutionManifestFingerprintSchema,
     expectedStateVersion: z.number().int().nonnegative(),
+  })
+  .strict();
+export type AdministrativePolicyActivationExpectation = z.infer<
+  typeof administrativePolicyActivationExpectationSchema
+>;
+
+export const activateAdministrativePolicyRequestSchema = z
+  .object({
+    csrfToken: z.string().min(16).max(200),
+    expectation: administrativePolicyActivationExpectationSchema,
   })
   .strict();
 
@@ -839,6 +918,16 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
       result: administrativeOperationResultSchema,
     }),
     kind: z.literal("administrative.operation.completed"),
+  }),
+  z.object({
+    ...eventFields,
+    details: z
+      .object({
+        operationId: administrativeOperationIdSchema,
+        result: livePatchRollbackActivationResultSchema,
+      })
+      .strict(),
+    kind: z.literal("administrative.live-patch.rollback-activated"),
   }),
   z.object({
     ...eventFields,
