@@ -16,6 +16,7 @@ import {
   administrativeRequestedOutcomeSchema,
   administrativeTimestampSchema,
   administrativeTaskIdSchema,
+  administrativeTaskAuthoritySnapshot,
   administrativeTaskTargetSchema,
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
@@ -448,18 +449,18 @@ export function createAdministrativeAutonomyRuntime(options: {
   async function reconcileLivePatchRollbackActivations(
     policy: Extract<AdministrativePolicyStatus, { status: "suspended" }>,
   ): Promise<void> {
-    if (
-      options.rollbackActivator === undefined ||
-      !rollbackActivatorIdentityMatchesManifest(
-        rollbackActivatorIdentity,
-        policy.executionManifest,
-      )
-    ) {
-      return;
-    }
+    if (options.rollbackActivator === undefined) return;
     const requests =
       await options.store.listPendingLivePatchRollbackActivations();
     for (const request of requests) {
+      if (
+        !rollbackActivatorIdentityMatchesManifest(
+          rollbackActivatorIdentity,
+          request.authority.executionManifest,
+        )
+      ) {
+        continue;
+      }
       try {
         const untrusted = await options.rollbackActivator.activate(request);
         const result = livePatchRollbackActivationResultSchema.parse(untrusted);
@@ -573,11 +574,7 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
     }
     const plannedAt = now();
-    const authority = administrativeAuthoritySnapshotSchema.parse({
-      executionManifest,
-      policyRevision: policy.revision,
-      policyStateVersion: task.policyStateVersion,
-    });
+    const authority = administrativeTaskAuthoritySnapshot(task);
     const operations = parsedPlan.data.map((operation) => {
       const request = operationRequest({
         authority,
@@ -646,11 +643,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     const claimedAt = now();
     const activeExecutionDeadline = record.task.activeExecutionDeadline;
     const claim = await options.store.claimNextOperation({
-      authority: administrativeAuthoritySnapshotSchema.parse({
-        executionManifest,
-        policyRevision: record.task.policyRevision,
-        policyStateVersion: record.task.policyStateVersion,
-      }),
+      authority: administrativeTaskAuthoritySnapshot(record.task),
       claimId: administrativeOperationClaimIdSchema.parse(
         options.identifiers.nextClaimId(),
       ),
@@ -717,6 +710,7 @@ export function createAdministrativeAutonomyRuntime(options: {
         }
         const request = livePatchRollbackActivationRequestSchema.parse({
           ...input,
+          authority: claim.request.authority,
           armedRollbackDeadline: input.rollbackDeadline,
           kind: "activate-armed-live-patch-rollback",
           mutationAuthorizedAt: null,
@@ -1180,6 +1174,11 @@ export function createAdministrativeAutonomyRuntime(options: {
       );
       const confirmationCapability = options.identifiers.nextCapability();
       const preparedAt = now();
+      const authority = administrativeAuthoritySnapshotSchema.parse({
+        executionManifest,
+        policyRevision: policy.revision,
+        policyStateVersion: policy.stateVersion,
+      });
       const saved = await options.store.savePreparedTask({
         capabilityHash: hashCapability(confirmationCapability),
         event: {
@@ -1198,7 +1197,6 @@ export function createAdministrativeAutonomyRuntime(options: {
         },
         ownerId: input.ownerId,
         requestId: input.requestId,
-        stateVersion: policy.stateVersion,
         task: {
           activeExecutionDeadline: null,
           conclusion: "Administrative Task confirmation is pending.",
@@ -1207,9 +1205,7 @@ export function createAdministrativeAutonomyRuntime(options: {
           intendedState,
           kind: "administrative.work",
           outcome,
-          executionManifest,
-          policyRevision: policy.revision,
-          policyStateVersion: policy.stateVersion,
+          ...authority,
           publicationIntent,
           question: confirmationQuestion(
             intendedState,

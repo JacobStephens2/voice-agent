@@ -12,6 +12,7 @@ import {
   administrativePolicyRevisionSchema,
   administrativePolicyStatusSchema,
   administrativeTaskIdSchema,
+  administrativeTaskAuthoritySnapshot,
   administrativeTaskSchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
@@ -401,13 +402,13 @@ export function createSqliteAdministrativeAutonomyStore(
     WHERE status = 'activation-pending'
     ORDER BY operation_id
   `);
-  const countPendingLivePatchRollbacks = database.prepare<
+  const countUnresolvedLivePatchRollbacks = database.prepare<
     [],
     { readonly count: number }
   >(`
     SELECT COUNT(*) AS count
     FROM administrative_live_patch_rollbacks
-    WHERE status = 'activation-pending'
+    WHERE status IN ('armed', 'activation-pending')
   `);
   const completeLivePatchRollbackActivation = database.prepare(`
     UPDATE administrative_live_patch_rollbacks
@@ -580,7 +581,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (
         activeRevision !== input.expectedActiveRevision ||
         current.state_version !== input.expectedStateVersion ||
-        (countPendingLivePatchRollbacks.get()?.count ?? 0) > 0 ||
+        (countUnresolvedLivePatchRollbacks.get()?.count ?? 0) > 0 ||
         administrativeExecutionManifestFingerprint(
           input.revision.executionManifest,
         ) !== input.expectedExecutionManifestFingerprint ||
@@ -657,6 +658,10 @@ export function createSqliteAdministrativeAutonomyStore(
         operationRequest.target.environment !== request.target.environment ||
         operationRequest.target.registeredCodebaseId !==
           request.target.registeredCodebaseId ||
+        !sameAdministrativeAuthoritySnapshot(
+          operationRequest.authority,
+          request.authority,
+        ) ||
         task.active_execution_deadline === null ||
         request.armedAt >= task.active_execution_deadline ||
         request.mutationAuthorizedAt !== null ||
@@ -871,13 +876,7 @@ export function createSqliteAdministrativeAutonomyStore(
   const prepareTransaction = database.transaction(
     (input: AdministrativePreparedTaskPersistence) => {
       if (
-        !matchesAuthoritySnapshot(
-          administrativeAuthoritySnapshotSchema.parse({
-            executionManifest: input.task.executionManifest,
-            policyRevision: input.task.policyRevision,
-            policyStateVersion: input.stateVersion,
-          }),
-        )
+        !matchesAuthoritySnapshot(administrativeTaskAuthoritySnapshot(input.task))
       ) {
         return undefined;
       }
@@ -891,7 +890,7 @@ export function createSqliteAdministrativeAutonomyStore(
           input.task.publicationIntent,
           JSON.stringify(input.task.executionManifest),
           input.task.policyRevision,
-          input.stateVersion,
+          input.task.policyStateVersion,
           input.task.status,
           input.task.question,
           input.task.intendedState,

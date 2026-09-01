@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, expect, test } from "vitest";
 
-import type { LivePatchRollbackActivationRequest } from "@voice-agent/contracts";
+import {
+  administrativeTimestampSchema,
+  type LivePatchRollbackActivationRequest,
+} from "@voice-agent/contracts";
 
 import { createAdministrativeAutonomyScenario } from "../src/administrative-autonomy.ts";
 import { createActivatedScenario } from "./administrative-autonomy.fixture.ts";
@@ -197,6 +200,23 @@ test.each([
     await replacementProcess.close();
   },
 );
+
+test("administrative safety timestamps require canonical UTC millisecond precision", () => {
+  expect(
+    administrativeTimestampSchema.safeParse("2026-10-02T10:00:00.000Z")
+      .success,
+  ).toBe(true);
+  expect(
+    [
+      "2026-10-02T10:00:00Z",
+      "2026-10-02T10:00:00.5Z",
+      "2026-10-02T10:00:00.000+00:00",
+    ].every(
+      (timestamp) =>
+        !administrativeTimestampSchema.safeParse(timestamp).success,
+    ),
+  ).toBe(true);
+});
 
 test("confirmed publication intent becomes a bounded request and provider payload injection is denied", async () => {
   const { scenario } = await createActivatedScenario(
@@ -1022,6 +1042,115 @@ test("pending Live Patch rollback activation blocks Fresh Passkey reactivation u
   });
 
   await replacementProcess.close();
+});
+
+test("an armed Live Patch blocks manifest replacement and retains its rollback implementation identity", async () => {
+  const effectLedger = new Set<string>();
+  const livePatchProofLedger = new Map();
+  const rollbackActivationAttempts: LivePatchRollbackActivationRequest[] = [];
+  const { databasePath, scenario: firstProcess } = await createActivatedScenario(
+    {
+      crashAfterFirstEffect: true,
+      effectLedger,
+      livePatchProofLedger,
+      now: "2026-10-02T14:40:00.000Z",
+      providerPlan: [{ kind: "live-patch.apply" }],
+    },
+    temporaryDirectories,
+  );
+  await firstProcess.confirmAndRunTask({
+    confirmation: "confirmed",
+    intendedState: "The urgent production behavior is restored.",
+    outcome: "restore",
+    ownerId: "owner",
+    requestId: "armed-manifest-replacement-request",
+    target,
+  });
+  await firstProcess.close();
+
+  const mismatchedProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    executionImplementationVersions: {
+      executor: 2,
+      provider: 2,
+      rollbackActivator: 2,
+    },
+    executionManifestVersion: 2,
+    identifierNamespace: "armed-mismatch-",
+    now: "2026-10-02T14:41:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+  });
+  const replacement = await mismatchedProcess.activatePolicy({
+    expectedActiveRevision: 1,
+    expectedStateVersion: 1,
+    freshPasskey: true,
+  });
+  const suspension = await mismatchedProcess.suspendPolicy({
+    authenticated: true,
+    expectedRevision: 1,
+    expectedStateVersion: 1,
+  });
+  await mismatchedProcess.close();
+
+  const matchingProcess = await createAdministrativeAutonomyScenario({
+    databasePath,
+    identifierNamespace: "armed-recovery-",
+    now: "2026-10-02T14:42:00.000Z",
+    providerPlan: [{ kind: "live-patch.apply" }],
+    rollbackActivationAttempts,
+  });
+  const recovered = await matchingProcess.readPolicyStatus();
+
+  expect({
+    activatorAuthority: rollbackActivationAttempts[0]?.authority,
+    activatorAttempts: rollbackActivationAttempts.map(
+      (request) => request.operationId,
+    ),
+    recovered,
+    replacement,
+    suspension,
+  }).toMatchObject({
+    activatorAuthority: {
+      executionManifest: {
+        operationAdapters: [
+          { kind: "production.observe" },
+          { kind: "delegated-worktree.change" },
+          {
+            kind: "live-patch.apply",
+            rollbackActivationImplementationDigest:
+              "4444444444444444444444444444444444444444444444444444444444444444",
+          },
+        ],
+      },
+      policyRevision: 1,
+      policyStateVersion: 1,
+    },
+    activatorAttempts: ["administrative-operation-1"],
+    recovered: {
+      rollbackActivations: {
+        activatedOperationIds: ["administrative-operation-1"],
+        pendingOperationIds: [],
+      },
+      status: "suspended",
+    },
+    replacement: {
+      body: { error: "Administrative Autonomy policy state is stale" },
+      statusCode: 409,
+    },
+    suspension: {
+      body: {
+        rollbackActivations: {
+          activatedOperationIds: [],
+          pendingOperationIds: ["administrative-operation-1"],
+        },
+        status: "suspended",
+      },
+      statusCode: 200,
+    },
+  });
+
+  await matchingProcess.close();
 });
 
 test("Administrative Suspension replays rollback activation without repeating its effect", async () => {

@@ -33,7 +33,7 @@ export type AdministrativeOperationClaimId = z.infer<
 >;
 
 export const administrativeTimestampSchema = z.iso
-  .datetime()
+  .datetime({ local: false, offset: false, precision: 3 })
   .brand<"AdministrativeTimestamp">();
 export type AdministrativeTimestamp = z.infer<
   typeof administrativeTimestampSchema
@@ -454,6 +454,7 @@ export type AdministrativeTaskTarget = z.infer<
 
 export const livePatchRollbackActivationRequestSchema = z
   .object({
+    authority: administrativeAuthoritySnapshotSchema,
     armedAt: timestampSchema,
     armedRollbackDeadline: timestampSchema,
     kind: z.literal("activate-armed-live-patch-rollback"),
@@ -760,6 +761,20 @@ export const administrativeTaskSchema = z
   })
   .strict();
 export type AdministrativeTask = z.infer<typeof administrativeTaskSchema>;
+
+/** The single authority value persisted with and recovered from a Task. */
+export function administrativeTaskAuthoritySnapshot(
+  task: Pick<
+    AdministrativeTask,
+    "executionManifest" | "policyRevision" | "policyStateVersion"
+  >,
+): AdministrativeAuthoritySnapshot {
+  return administrativeAuthoritySnapshotSchema.parse({
+    executionManifest: task.executionManifest,
+    policyRevision: task.policyRevision,
+    policyStateVersion: task.policyStateVersion,
+  });
+}
 
 const eventFields = {
   id: identifierSchema,

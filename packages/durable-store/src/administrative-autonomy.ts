@@ -27,7 +27,6 @@ export interface AdministrativePreparedTaskPersistence {
   readonly event: UnsequencedAdministrativeEvidenceEvent;
   readonly ownerId: string;
   readonly requestId: string;
-  readonly stateVersion: number;
   readonly task: AdministrativeTask;
 }
 
