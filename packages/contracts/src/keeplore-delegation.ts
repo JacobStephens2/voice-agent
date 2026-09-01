@@ -269,6 +269,7 @@ export const keeploreScreenshotSchema = z
 export const keeploreDelegationResultSchema = z
   .object({
     ...delegationResultSharedFields,
+    delegationId: identifierSchema,
     cleanup: z
       .object({
         eligible: z.boolean(),

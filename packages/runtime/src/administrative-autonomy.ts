@@ -20,6 +20,7 @@ import {
   administrativeTaskAuthoritySnapshot,
   administrativeTaskTargetSchema,
   administrativeTaskTargetRequestSchema,
+  delegationIdSchema,
   livePatchRollbackActivationRequestSchema,
   livePatchRollbackActivationResultSchema,
   livePatchRollbackActivationAttemptMilliseconds,
@@ -2054,6 +2055,9 @@ function validateDelegatedWorktreeResult(
   const candidate = delegation.verification.candidate;
   const reportedCompleted = new Date(timing.reportedCompletedAt).getTime();
   const expectedWorktree = request.delegation.worktree;
+  const expectedDelegationId = delegationIdSchema.parse(
+    request.delegation.brief.delegationId,
+  );
   const expectedCommands =
     request.delegation.brief.acceptanceCriteria.automaticVerification.commands;
   const headCommit = delegation.commits.at(-1);
@@ -2069,7 +2073,7 @@ function validateDelegatedWorktreeResult(
       (verification) => verification.outcome === "passed",
     );
   const commonProofMismatch =
-    delegation.delegationId !== request.delegation.brief.delegationId ||
+    delegation.delegationId !== expectedDelegationId ||
     delegation.completedAt !== timing.reportedCompletedAt ||
     reportedCompleted < timing.effectStarted ||
     reportedCompleted > timing.completed ||

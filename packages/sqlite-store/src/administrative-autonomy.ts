@@ -139,7 +139,7 @@ interface AdministrativeOperationRow {
   readonly task_id: string;
 }
 
-interface AdministrativeAcceptedOperationRow {
+interface AdministrativeOutstandingOperationRow {
   readonly id: string;
   readonly kind: AdministrativeOperationKind;
 }
@@ -427,19 +427,20 @@ export function createSqliteAdministrativeAutonomyStore(
       claim_id = NULL, lease_expires_at = NULL
     WHERE id = ? AND task_id = ? AND status = 'running' AND claim_id = ?
   `);
-  const listAcceptedOperations = database.prepare<
+  const listOutstandingOperations = database.prepare<
     [taskId: string],
-    AdministrativeAcceptedOperationRow
+    AdministrativeOutstandingOperationRow
   >(`
     SELECT id, kind
     FROM administrative_operations
-    WHERE task_id = ? AND status = 'accepted'
+    WHERE task_id = ? AND status IN ('accepted', 'running')
     ORDER BY ordinal
   `);
-  const settleAcceptedOperations = database.prepare(`
+  const settleOutstandingOperations = database.prepare(`
     UPDATE administrative_operations
-    SET status = 'failed', updated_at = ?
-    WHERE task_id = ? AND status = 'accepted'
+    SET status = 'failed', updated_at = ?, claim_id = NULL,
+      lease_expires_at = NULL
+    WHERE task_id = ? AND status IN ('accepted', 'running')
   `);
   const countIncompleteOperations = database.prepare<
     [taskId: string],
@@ -800,18 +801,21 @@ export function createSqliteAdministrativeAutonomyStore(
     }
   }
 
-  function settleUnstartedOperations(
+  function settleOutstandingTaskOperations(
     taskId: string,
     reason: string,
     failedAt: string,
   ): readonly Omit<AdministrativeEvidenceEvent, "sequence">[] {
     const occurredAt = administrativeTimestampSchema.parse(failedAt);
-    const accepted = listAcceptedOperations.all(taskId);
-    if (accepted.length === 0) return [];
-    if (settleAcceptedOperations.run(failedAt, taskId).changes !== accepted.length) {
-      throw new Error("Accepted Administrative Operations changed concurrently");
+    const outstanding = listOutstandingOperations.all(taskId);
+    if (outstanding.length === 0) return [];
+    if (
+      settleOutstandingOperations.run(failedAt, taskId).changes !==
+      outstanding.length
+    ) {
+      throw new Error("Outstanding Administrative Operations changed concurrently");
     }
-    return accepted.map((operation) => ({
+    return outstanding.map((operation) => ({
       details: {
         kind: operation.kind,
         operationId: operation.id,
@@ -820,7 +824,7 @@ export function createSqliteAdministrativeAutonomyStore(
       id: operationFailureEventId(operation.id),
       kind: "administrative.operation.failed" as const,
       occurredAt,
-      summary: `The unstarted ${operation.kind} Operation failed closed with its Task.`,
+      summary: `The outstanding ${operation.kind} Operation failed closed with its Task.`,
     }));
   }
 
@@ -1634,14 +1638,14 @@ export function createSqliteAdministrativeAutonomyStore(
         operation.result_json === encodedResult &&
         task.status === "denied"
       ) {
-        const unstartedEvents = settleUnstartedOperations(
+        const outstandingEvents = settleOutstandingTaskOperations(
           input.taskId,
           input.deniedEvent.kind === "administrative.task.denied"
             ? input.deniedEvent.details.reason
             : "Administrative Task denied.",
           input.deniedAt,
         );
-        appendEvents(input.taskId, unstartedEvents);
+        appendEvents(input.taskId, outstandingEvents);
         return loadRecord(task);
       }
       if (
@@ -1711,7 +1715,7 @@ export function createSqliteAdministrativeAutonomyStore(
       if (denyTask.run(reason, input.deniedAt, input.taskId).changes !== 1) {
         throw new Error("Administrative Task changed concurrently");
       }
-      const unstartedEvents = settleUnstartedOperations(
+      const outstandingEvents = settleOutstandingTaskOperations(
         input.taskId,
         reason,
         input.deniedAt,
@@ -1719,7 +1723,7 @@ export function createSqliteAdministrativeAutonomyStore(
       releaseMutationLane.run(input.operationId, input.claimId);
       appendEvents(input.taskId, [
         input.operationEvent,
-        ...unstartedEvents,
+        ...outstandingEvents,
         input.deniedEvent,
       ]);
       return loadRecord(requireTask(input.taskId));
@@ -1809,19 +1813,23 @@ export function createSqliteAdministrativeAutonomyStore(
         if (task.status === "denied") {
           appendEvents(
             input.taskId,
-            settleUnstartedOperations(input.taskId, reason, input.deniedAt),
+            settleOutstandingTaskOperations(
+              input.taskId,
+              reason,
+              input.deniedAt,
+            ),
           );
           return loadRecord(task);
         }
         throw new Error("Administrative Task cannot be denied from its current state");
       }
-      const unstartedEvents = settleUnstartedOperations(
+      const outstandingEvents = settleOutstandingTaskOperations(
         input.taskId,
         reason,
         input.deniedAt,
       );
       releaseTaskMutationLane.run(input.taskId);
-      appendEvents(input.taskId, [...unstartedEvents, input.deniedEvent]);
+      appendEvents(input.taskId, [...outstandingEvents, input.deniedEvent]);
       return loadRecord(requireTask(input.taskId));
     },
   );

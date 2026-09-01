@@ -7,6 +7,7 @@ import {
   administrativeTaskIdSchema,
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
+  delegationIdSchema,
   livePatchMutationProofSchema,
   livePatchRollbackActivationResultSchema,
   livePatchRollbackWindowMilliseconds,
@@ -118,6 +119,7 @@ interface ScenarioOperationResultContext {
     | "mismatched-publication"
     | "missing"
     | "terminated"
+    | "traversal-delegation-id"
     | "traversal-evidence"
     | "valid";
   readonly livePatchProof: LivePatchMutationProof | undefined;
@@ -167,7 +169,9 @@ const scenarioOperationResultHandlers = {
             : ["src/preserved-administrative-work.ts"],
         commits: terminalStatus === undefined ? ["a".repeat(40)] : [],
         completedAt: context.common.completedAt,
-        delegationId: request.delegation.brief.delegationId,
+        delegationId: delegationIdSchema.parse(
+          request.delegation.brief.delegationId,
+        ),
         failure:
           terminalStatus === "failed"
             ? {
@@ -266,6 +270,12 @@ const scenarioOperationResultHandlers = {
     if (context.delegatedWorktreeProof === "missing") {
       const { delegation: _delegation, ...missingProof } = result;
       return missingProof as unknown as ScenarioOperationResultFor<"delegated-worktree.change">;
+    }
+    if (context.delegatedWorktreeProof === "traversal-delegation-id") {
+      return {
+        ...result,
+        delegation: { ...result.delegation, delegationId: ".." },
+      } as unknown as ScenarioOperationResultFor<"delegated-worktree.change">;
     }
     return result;
   },
@@ -389,6 +399,7 @@ export async function createAdministrativeAutonomyScenario(options: {
     | "mismatched-publication"
     | "missing"
     | "terminated"
+    | "traversal-delegation-id"
     | "traversal-evidence"
     | "valid";
   readonly registeredCodebaseAvailability?: "available" | "unavailable";

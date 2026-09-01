@@ -4,6 +4,15 @@ const identifierSchema = z.string().min(1).max(120);
 const timestampSchema = z.iso.datetime();
 const absolutePathSchema = z.string().min(1).max(500).startsWith("/");
 
+export const delegationIdSchema = z
+  .string()
+  .min(1)
+  .max(120)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u)
+  .refine((identifier) => identifier !== "." && identifier !== "..")
+  .brand<"DelegationId">();
+export type DelegationId = z.infer<typeof delegationIdSchema>;
+
 export const delegationCommitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 
 export const delegationRepositoryPathSchema = z
@@ -71,7 +80,7 @@ export const delegationResultSharedFields = {
   changedFiles: z.array(delegationRepositoryPathSchema).max(20),
   commits: z.array(delegationCommitSchema).max(20),
   completedAt: timestampSchema,
-  delegationId: identifierSchema,
+  delegationId: delegationIdSchema,
   failure: delegationFailureSchema.nullable(),
   risks: z.array(z.string().min(1).max(300)).max(20),
   status: z.enum(["completed", "failed", "stopped"]),
@@ -85,20 +94,24 @@ export const delegationResultOutcomeSchema = z.discriminatedUnion("status", [
   z.object({ failure: z.null(), status: z.literal("stopped") }),
 ]);
 
-export function delegationEvidenceDirectory(delegationId: string): string {
+export function delegationEvidenceDirectory(delegationId: DelegationId): string {
   return `/var/lib/voice-agent-evidence/${delegationId}`;
 }
 
 export function isOwnedDelegationEvidencePath(
-  delegationId: string,
+  delegationId: DelegationId,
   evidencePath: string,
 ): boolean {
-  const directory = delegationEvidenceDirectory(delegationId);
-  const suffix = evidencePath.slice(directory.length + 1);
+  const expected = ["", "var", "lib", "voice-agent-evidence", delegationId];
+  const segments = evidencePath.split("/");
   return (
-    evidencePath.startsWith(`${directory}/`) &&
-    suffix.length > 0 &&
-    !suffix.split("/").some((segment) => segment === "" || segment === "..")
+    segments.length > expected.length &&
+    expected.every((segment, index) => segments[index] === segment) &&
+    !segments
+      .slice(1)
+      .some(
+        (segment) => segment === "" || segment === "." || segment === "..",
+      )
   );
 }
 

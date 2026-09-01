@@ -526,6 +526,7 @@ test.each([
   "mismatched-publication",
   "failed-verification",
   "foreign-evidence",
+  "traversal-delegation-id",
   "traversal-evidence",
 ] as const)(
   "a %s Delegation Result cannot complete its Operation or Task",

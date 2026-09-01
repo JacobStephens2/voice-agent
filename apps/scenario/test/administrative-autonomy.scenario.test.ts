@@ -1399,15 +1399,30 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
     operationAttempts,
     providerPlan: [{ kind: "production.observe" }],
   });
+  const restartedRecord = await restartedProcess.readTask(
+    "administrative-task-1",
+  );
 
   expect({
     attempts: operationAttempts,
+    failedOperations: restartedRecord?.evidence.filter(
+      (event) => event.kind === "administrative.operation.failed",
+    ),
     renewalAtDeadline,
     renewalPastDeadline,
     restartedEffects: restartedProcess.executedOperations,
-    task: (await restartedProcess.readTask("administrative-task-1"))?.task,
+    task: restartedRecord?.task,
   }).toMatchObject({
     attempts: ["administrative-operation-1"],
+    failedOperations: [
+      {
+        details: {
+          kind: "delegated-worktree.change",
+          operationId: "administrative-operation-1",
+          reason: "Administrative Task active-execution deadline elapsed",
+        },
+      },
+    ],
     renewalAtDeadline: false,
     renewalPastDeadline: false,
     restartedEffects: [],
@@ -1417,6 +1432,13 @@ test("the persisted six-hour execution deadline stops Operation recovery after r
       status: "denied",
     },
   });
+
+  await restartedProcess.reconcileOperations();
+  expect(
+    (await restartedProcess.readTask("administrative-task-1"))?.evidence.filter(
+      (event) => event.kind === "administrative.operation.failed",
+    ),
+  ).toHaveLength(1);
 
   await restartedProcess.close();
 });
