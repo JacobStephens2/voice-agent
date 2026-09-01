@@ -7,6 +7,7 @@ import {
 
 import {
   authenticationStatusSchema,
+  administrativePolicyStatusSchema,
   authorizeRawAudioDebugResultSchema,
   bountywellOutageInjectionSchema,
   bountywellRecoveryTimerProofSchema,
@@ -36,6 +37,7 @@ import {
   telephoneBoundaryStatusSchema,
   webAuthnOptionsSchema,
   type AuthenticationStatus,
+  type AdministrativePolicyStatus,
   type TelephoneBoundaryStatus,
   type BountywellOutageInjection,
   type BountywellRecoveryTimer,
@@ -70,6 +72,39 @@ export async function loadAuthenticationStatus(): Promise<AuthenticationStatus> 
   const response = await fetch("/api/auth/status");
   if (!response.ok) throw new Error("Authentication status is unavailable.");
   return authenticationStatusSchema.parse(await response.json());
+}
+
+export async function loadAdministrativePolicyStatus(): Promise<
+  AdministrativePolicyStatus | undefined
+> {
+  const response = await fetch("/api/administrative-autonomy");
+  if (response.status === 401) return undefined;
+  if (!response.ok) {
+    throw new Error("Administrative Autonomy policy state is unavailable.");
+  }
+  return administrativePolicyStatusSchema.parse(await response.json());
+}
+
+export async function activateAdministrativePolicy(
+  csrfToken: string,
+  expectedActiveRevision: number | null,
+): Promise<AdministrativePolicyStatus> {
+  const response = await fetch("/api/administrative-autonomy/activate", {
+    body: JSON.stringify({ csrfToken, expectedActiveRevision }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      response.status === 403
+        ? "Perform a Fresh Passkey Action before activating Administrative Autonomy."
+        : await denialReason(
+            response,
+            "Administrative Autonomy could not be activated.",
+          ),
+    );
+  }
+  return administrativePolicyStatusSchema.parse(await response.json());
 }
 
 export async function loadBountywellRegistration(): Promise<

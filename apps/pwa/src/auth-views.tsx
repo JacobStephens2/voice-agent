@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 
 import type {
+  AdministrativePolicyStatus,
   BountywellRegistration,
   EvidenceRecordSummary,
   KeeploreLiveInspection,
@@ -189,6 +190,7 @@ export function RecoveryCodesView(props: {
 }
 
 export function TaskList(props: {
+  administrativePolicy?: AdministrativePolicyStatus | undefined;
   bountywellRegistration?: BountywellRegistration | undefined;
   keeploreInspection?: KeeploreLiveInspection | undefined;
   keeploreRegistration?: KeeploreRegistration | undefined;
@@ -205,6 +207,7 @@ export function TaskList(props: {
   message?: string | undefined;
   busy: boolean;
   onAuthorizeDeploymentAuthorityUpgrade(): Promise<void>;
+  onActivateAdministrativeAutonomy(): Promise<void>;
   onFresh(): Promise<void>;
   onApplyEvidenceRetention(): Promise<void>;
   onResumePromotions(): Promise<void>;
@@ -245,6 +248,39 @@ export function TaskList(props: {
         onUpdate={props.onUpdateNotificationPreference}
         preference={props.notificationPreference}
       />
+      <section
+        className="bountywell-control"
+        aria-labelledby="administrative-autonomy-heading"
+      >
+        <p className="eyebrow">Standing authority</p>
+        <h2 id="administrative-autonomy-heading">Administrative Autonomy</h2>
+        {props.administrativePolicy?.status === "active" ? (
+          <p>
+            Policy revision {props.administrativePolicy.revision} is active. A
+            confirmed Durable Task may choose only the typed Operations allowed
+            by its confirmed outcome.
+          </p>
+        ) : props.administrativePolicy?.status === "suspended" ? (
+          <p>
+            Policy revision {props.administrativePolicy.revision} is suspended.
+            A new Fresh Passkey Action is required before reactivation.
+          </p>
+        ) : (
+          <p>
+            Administrative Autonomy is inactive. Activation requires a Fresh
+            Passkey Action and does not grant arbitrary shell, credential,
+            merge, or deployment authority.
+          </p>
+        )}
+        <button
+          disabled={props.busy}
+          onClick={() => void props.onActivateAdministrativeAutonomy()}
+        >
+          {props.administrativePolicy?.status === "active"
+            ? "Activate a new policy revision"
+            : "Activate Administrative Autonomy"}
+        </button>
+      </section>
       <section className="bountywell-control" aria-labelledby="retention-heading">
         <p className="eyebrow">Lifecycle policy</p>
         <h2 id="retention-heading">Evidence retention</h2>

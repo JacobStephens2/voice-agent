@@ -4,6 +4,7 @@ import { registerSW } from "virtual:pwa-register";
 
 import {
   type AuthenticationStatus,
+  type AdministrativePolicyStatus,
   type BountywellRegistration,
   type KeeploreLiveInspection,
   type KeeploreRegistration,
@@ -18,6 +19,7 @@ import {
 } from "@voice-agent/contracts";
 import {
   applyEvidenceLifecyclePolicy,
+  activateAdministrativePolicy,
   authorizeDeploymentAuthorityUpgrade,
   authorizeRawAudioDebug,
   changeTelephoneSpendingCeiling,
@@ -25,6 +27,7 @@ import {
   enrollBootstrapPasskey,
   enrollReplacementPasskey,
   loadAuthenticationStatus,
+  loadAdministrativePolicyStatus,
   loadBountywellRegistration,
   loadRegisteredTelephone,
   loadTelephoneBoundaryStatus,
@@ -76,6 +79,8 @@ const pendingBountywellRequestIdKey =
 
 function App() {
   const [status, setStatus] = useState<AuthenticationStatus>();
+  const [administrativePolicy, setAdministrativePolicy] =
+    useState<AdministrativePolicyStatus>();
   const [tasks, setTasks] = useState<readonly EvidenceRecordSummary[]>();
   const [record, setRecord] = useState<VoiceAgentEvidenceRecordProjection>();
   const [bountywellRegistration, setBountywellRegistration] =
@@ -115,12 +120,15 @@ function App() {
     if (content.kind === "tasks") {
       setTasks(content.tasks);
       setRecord(undefined);
-      const [bountywell, telephone, notification, boundaries] = await Promise.all([
-        loadBountywellRegistration(),
-        loadRegisteredTelephone(),
-        loadNotificationPreference(),
-        loadTelephoneBoundaryStatus(),
-      ]);
+      const [administrative, bountywell, telephone, notification, boundaries] =
+        await Promise.all([
+          loadAdministrativePolicyStatus(),
+          loadBountywellRegistration(),
+          loadRegisteredTelephone(),
+          loadNotificationPreference(),
+          loadTelephoneBoundaryStatus(),
+        ]);
+      setAdministrativePolicy(administrative);
       setBountywellRegistration(bountywell);
       setRegisteredTelephone(telephone);
       setTelephoneRegistrationLoaded(true);
@@ -249,6 +257,31 @@ function App() {
     await run(async () => {
       setBountywellRegistration(await registerBountywell(csrfToken));
       setMessage("Bountywell read-only access is registered.");
+    });
+  }
+
+  async function activateAdministrativeAutonomy() {
+    if (csrfToken === undefined) {
+      setMessage("Sign in again before activating Administrative Autonomy.");
+      return;
+    }
+    await run(async () => {
+      const expectedActiveRevision =
+        administrativePolicy === undefined ||
+        administrativePolicy.status === "inactive"
+          ? null
+          : administrativePolicy.revision;
+      const activated = await activateAdministrativePolicy(
+        csrfToken,
+        expectedActiveRevision,
+      );
+      setAdministrativePolicy(activated);
+      if (activated.status !== "active") {
+        throw new Error("Administrative Autonomy did not become active.");
+      }
+      setMessage(
+        `Administrative Autonomy Policy revision ${activated.revision} is active.`,
+      );
     });
   }
 
@@ -549,6 +582,7 @@ function App() {
   }
   return (
     <TaskList
+      administrativePolicy={administrativePolicy}
       bountywellRegistration={bountywellRegistration}
       registeredTelephone={registeredTelephone}
       telephoneRegistrationLoaded={telephoneRegistrationLoaded}
@@ -558,6 +592,7 @@ function App() {
       message={message}
       busy={busy}
       onAuthorizeDeploymentAuthorityUpgrade={authorizeAuthorityUpgrade}
+      onActivateAdministrativeAutonomy={activateAdministrativeAutonomy}
       onFresh={freshPasskeyAction}
       onApplyEvidenceRetention={retainOrdinaryEvidence}
       onResumePromotions={resumePromotions}

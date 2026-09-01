@@ -37,6 +37,8 @@ import {
   recoverySessionResponseSchema,
   registerBountywellRequestSchema,
   activateKeeploreDeploymentContractRequestSchema,
+  activateAdministrativePolicyRequestSchema,
+  administrativePolicyStatusSchema,
   enrollKeeploreRequestSchema,
   keeploreDeploymentContractSchema,
   keeploreLiveInspectionSchema,
@@ -73,6 +75,7 @@ import {
   type TelephoneBoundaryStatus,
   type NotificationPreferenceInput,
   type VoiceAgentEvidenceRecordProjection,
+  type AdministrativePolicyStatus,
 } from "@voice-agent/contracts";
 
 import { DeploymentAuthorityChallengeError } from "./deployment-authority-challenge.ts";
@@ -205,6 +208,20 @@ export interface KeeploreOnboardingApiControls {
   inspectKeeploreLiveCheckout(): Promise<KeeploreLiveInspection>;
 }
 
+export interface AdministrativeAutonomyApiControls {
+  activatePolicy(input: {
+    readonly expectedActiveRevision: number | null;
+    readonly source: "fresh-passkey-action";
+  }): Promise<
+    | {
+        readonly decision: "activated";
+        readonly policy: AdministrativePolicyStatus;
+      }
+    | { readonly decision: "denied"; readonly reason: string }
+  >;
+  getPolicyStatus(): Promise<AdministrativePolicyStatus>;
+}
+
 export interface TelephoneControls {
   findRegisteredTelephone(): Promise<RegisteredTelephone | undefined>;
   registerTelephone(input: RegisteredTelephoneInput): Promise<RegisteredTelephone>;
@@ -244,6 +261,9 @@ export interface TelephoneBoundaryControls {
 
 export interface TaskApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
+  readonly administrativeControls?:
+    | AdministrativeAutonomyApiControls
+    | undefined;
   readonly authentication: EvidenceRecordAuthentication;
   readonly boundaryControls?: TelephoneBoundaryControls | undefined;
   readonly controls?: BountywellTaskControls;
@@ -263,6 +283,9 @@ export interface TaskApiOptions {
 
 export interface VoiceApiOptions {
   readonly additionalMetrics?: (() => Promise<string>) | undefined;
+  readonly administrativeControls?:
+    | AdministrativeAutonomyApiControls
+    | undefined;
   readonly authentication: AuthenticationLifecycle;
   readonly boundaryControls?: TelephoneBoundaryControls | undefined;
   readonly controls?: BountywellTaskControls;
@@ -409,6 +432,17 @@ function createApi(options: TaskApiOptions): FastifyInstance {
       records: options.records,
     });
   }
+  if (
+    options.administrativeControls !== undefined &&
+    options.origin !== undefined
+  ) {
+    registerAdministrativeAutonomyRoutes(api, {
+      authentication: options.authentication,
+      controls: options.administrativeControls,
+      origin: options.origin,
+      records: options.records,
+    });
+  }
   if (options.keeploreControls !== undefined && options.origin !== undefined) {
     registerKeeploreOnboardingRoutes(api, {
       authentication: options.authentication,
@@ -450,6 +484,54 @@ function createApi(options: TaskApiOptions): FastifyInstance {
     });
   }
   return api;
+}
+
+function registerAdministrativeAutonomyRoutes(
+  api: FastifyInstance,
+  options: {
+    readonly authentication: EvidenceRecordAuthentication;
+    readonly controls: AdministrativeAutonomyApiControls;
+    readonly origin: string;
+    readonly records: EvidenceRecordReader;
+  },
+): void {
+  api.get("/api/administrative-autonomy", async (request, reply) => {
+    if (!(await authorizeEvidence(request, options.authentication))) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return administrativePolicyStatusSchema.parse(
+      await options.controls.getPolicyStatus(),
+    );
+  });
+
+  api.post("/api/administrative-autonomy/activate", async (request, reply) => {
+    if (!requireOrigin(request, reply, options.origin)) return;
+    const body = activateAdministrativePolicyRequestSchema.parse(request.body);
+    const sessionToken = await authorizeStateChange(
+      request,
+      reply,
+      options.authentication,
+      body.csrfToken,
+      options.records,
+    );
+    if (sessionToken === undefined) return;
+    if (
+      options.authentication.hasFreshPasskeyAction === undefined ||
+      !(await options.authentication.hasFreshPasskeyAction(sessionToken))
+    ) {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(403).send({ error: "Fresh Passkey Action required" });
+    }
+    const result = await options.controls.activatePolicy({
+      expectedActiveRevision: body.expectedActiveRevision,
+      source: "fresh-passkey-action",
+    });
+    if (result.decision === "denied") {
+      await options.records.recordPolicyDenial?.();
+      return reply.code(409).send({ error: result.reason });
+    }
+    return administrativePolicyStatusSchema.parse(result.policy);
+  });
 }
 
 function registerKeeploreOnboardingRoutes(

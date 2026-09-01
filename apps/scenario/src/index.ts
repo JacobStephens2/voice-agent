@@ -30,6 +30,7 @@ export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";
 export * from "./keeplore-button-trial.ts";
+export * from "./administrative-autonomy.ts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAuthenticationLifecycle,

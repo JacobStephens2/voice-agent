@@ -5,6 +5,7 @@ import {
 } from "@voice-agent/auth";
 import {
   createSqliteAuthenticationStore,
+  createSqliteAdministrativeAutonomyStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteKeeploreOnboardingStore,
@@ -30,6 +31,7 @@ import {
 } from "./deployment-authority-challenge.ts";
 import {
   createCallbackHandshakeRuntime,
+  createAdministrativeAutonomyRuntime,
   createDurableTaskRuntime,
   createKeeploreOnboardingControls,
   createNodeKeeploreLiveInspector,
@@ -60,6 +62,16 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
+const administrativeRuntime = createAdministrativeAutonomyRuntime({
+  identifiers: {
+    nextCapability: randomUUID,
+    nextEventId: randomUUID,
+    nextOperationId: randomUUID,
+    nextTaskId: randomUUID,
+  },
+  now: () => new Date().toISOString(),
+  store: createSqliteAdministrativeAutonomyStore(databasePath),
+});
 const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({
@@ -207,6 +219,7 @@ const deploymentAuthorityChallengePaths = {
 };
 
 const api = createVoiceApi({
+  administrativeControls: administrativeRuntime,
   additionalMetrics: async () => {
     const [promotionMetrics, probeMetrics, boundaryMetrics] = await Promise.all([
       readAdditionalMetrics(
@@ -274,11 +287,13 @@ const api = createVoiceApi({
       }
       return (
         (await callbackRuntime.readEvidenceRecord(taskId)) ??
+        (await administrativeRuntime.getTask(taskId)) ??
         (await runtime.getEvidenceRecord(taskId))
       );
     },
     listEvidenceRecords: async () => {
       const records = [
+        ...(await administrativeRuntime.listTasks()),
         ...(await runtime.listEvidenceRecords()),
         ...(await callbackRuntime.listEvidenceRecords()),
         ...(await readKeeploreEvidenceRecords()).map((record) => record.task),
@@ -315,6 +330,7 @@ await api.register(staticFiles, {
 const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
+  await administrativeRuntime.close();
   await boundaries.close();
   await callbackRuntime.close();
   await continuityRuntime.close();

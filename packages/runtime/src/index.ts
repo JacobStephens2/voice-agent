@@ -33,6 +33,7 @@ export * from "./telephone-session-fault.ts";
 export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-delegation.ts";
+export * from "./administrative-autonomy.ts";
 
 export interface TelephoneBountywellHealthInquiry {
   readonly interpretation: TelephoneTurnInterpretation;
