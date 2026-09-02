@@ -48,9 +48,12 @@ voice_agent_authority_programs=(
   "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts"
   # The Repository Administration Broker holds the owner credential that may
   # create a repository and write its production-branch rules — the one
-  # authority the Publisher App is deliberately denied. A host running an
+  # authority the Administrative Publisher App is deliberately denied. A host
+  # running an
   # unreviewed copy at this path would hold that credential behind whatever
-  # operations that copy happened to expose.
+  # operations that copy happened to expose. Its unit is pinned above, and the
+  # promoter, the health reading, and the host wizard all name the service, so
+  # installed authority is authority something actually starts and observes.
   "ops/release/repository-administration-broker.ts:repository-administration-broker.ts"
   # The Grok token crossing. The broker is what the runner invokes as its
   # configured auth provider and the helper is the only thing that may read the

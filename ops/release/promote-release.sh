@@ -26,6 +26,7 @@ runtime_units=(
   voice-agent-api.service
   voice-agent-worker.service
   voice-agent-keeplore-publisher.service
+  voice-agent-repository-administration.service
   voice-agent-subagent.service
   voice-agent-broker.service
 )
@@ -147,6 +148,12 @@ rollback_failed_promotion() {
       systemctl restart voice-agent-keeplore-publisher.service
     else
       systemctl stop voice-agent-keeplore-publisher.service || true
+    fi
+    if systemctl cat voice-agent-repository-administration.service \
+      >/dev/null 2>&1; then
+      systemctl restart voice-agent-repository-administration.service
+    else
+      systemctl stop voice-agent-repository-administration.service || true
     fi
     systemctl restart "${legacy_runtime_units[@]}"
     if systemctl cat voice-agent-probes.timer >/dev/null 2>&1; then
@@ -293,7 +300,8 @@ ln -sfn "$release" "$candidate"
 mv -Tf "$candidate" /opt/voice-agent/current
 switched=true
 systemctl restart voice-agent-broker.service \
-  voice-agent-keeplore-publisher.service voice-agent-subagent.service \
+  voice-agent-keeplore-publisher.service \
+  voice-agent-repository-administration.service voice-agent-subagent.service \
   voice-agent-api.service voice-agent-worker.service
 systemctl restart voice-agent-probes.timer
 systemctl start voice-agent-probes.service

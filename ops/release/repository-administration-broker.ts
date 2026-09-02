@@ -8,10 +8,10 @@ import { DatabaseSync } from "node:sqlite";
  * The Repository Administration Broker.
  *
  * This file is installed as a standalone pinned authority beside the
- * Administrative Publisher App publisher. It holds the owner credential that
- * may create a repository and write its rules — authority the Publisher App
- * deliberately does not have — and it exposes exactly three registered
- * operations over that credential. Everything else a caller might ask for,
+ * Administrative Publisher App's publication service. It holds the owner
+ * credential that may create a repository and write its rules — authority the
+ * Administrative Publisher App deliberately does not have — and it exposes
+ * exactly three registered operations over that credential. Everything else a caller might ask for,
  * including reading or writing repository contents, weakening a rule,
  * approving, merging, closing, or deleting anything, bypassing a check,
  * deploying, or reading the credential itself, has no endpoint here at all.
@@ -43,6 +43,14 @@ const maximumRefusalReasonLength = 300;
 const maximumRequestBytes = 64 * 1_024;
 const apiVersion = "2026-03-10";
 const brokerRuntimeDirectory = "/run/voice-agent-repository-administration";
+const administrativeIdentityPatterns = {
+  operation: /^(?:[A-Za-z0-9._:-]+-)?administrative-operation-[A-Za-z0-9._:-]+$/u,
+  task: /^(?:[A-Za-z0-9._:-]+-)?administrative-task-[A-Za-z0-9._:-]+$/u,
+} as const;
+const ownerRepositoryPattern = new RegExp(
+  `^${administrativeOwner}/[A-Za-z0-9_.-]{1,100}$`,
+  "u",
+);
 
 /**
  * The operations this broker has. A request naming anything else is refused
@@ -72,6 +80,7 @@ export interface RepositoryAdministrationDiscoveryEligibility {
   readonly eligibility: "policy-authorized";
   readonly freshPasskeyActionRequired: false;
   readonly policyRevision: number;
+  readonly registeredCodebaseId: string;
 }
 
 export interface RepositoryAdministrationRepository {
@@ -206,9 +215,23 @@ async function refusing<Result>(
   }
 }
 
+/**
+ * One authorized administration: the credential it may use and the target the
+ * durable Task fixed for it. Nothing here came from the request.
+ */
+interface AdministrationSession {
+  readonly branch: string;
+  readonly credential: string;
+  readonly dependencies: RepositoryAdministrationBrokerDependencies;
+  readonly policyRevision: number;
+  readonly registeredCodebaseId: string;
+  readonly repository: RepositoryAdministrationRepository;
+}
+
 interface AdministrableRepository {
   readonly branch: string;
   readonly policyRevision: number;
+  readonly registeredCodebaseId: string;
   readonly repository: RepositoryAdministrationRepository;
 }
 
@@ -237,18 +260,19 @@ export function createRepositoryAdministrationBroker(
       const credential = await refusing("policy", async () =>
         dependencies.readOwnerCredential(),
       );
+      const session: AdministrationSession = {
+        ...target,
+        credential,
+        dependencies,
+      };
       return refusing("administration", async () => {
         if (request.operation === "create-private-repository") {
-          return createPrivateRepository(dependencies, credential, target);
+          return createPrivateRepository(session);
         }
         if (request.operation === "protect-production-branch") {
-          return protectProductionBranch(dependencies, credential, target);
+          return protectProductionBranch(session);
         }
-        return observeAdministrativePublisherApp(
-          dependencies,
-          credential,
-          target,
-        );
+        return observeAdministrativePublisherApp(session);
       });
     },
   };
@@ -264,11 +288,9 @@ export function createRepositoryAdministrationBroker(
  * broker-side ledger, which a crash before its own commit would lose.
  */
 async function createPrivateRepository(
-  dependencies: RepositoryAdministrationBrokerDependencies,
-  credential: string,
-  target: AdministrableRepository,
+  session: AdministrationSession,
 ): Promise<RepositoryAdministrationResult> {
-  const { repository } = target;
+  const { credential, dependencies, repository } = session;
   const existing = await dependencies.github({
     auth: credential,
     method: "GET",
@@ -305,7 +327,8 @@ async function createPrivateRepository(
     discovery: {
       eligibility: "policy-authorized",
       freshPasskeyActionRequired: false,
-      policyRevision: target.policyRevision,
+      policyRevision: session.policyRevision,
+      registeredCodebaseId: session.registeredCodebaseId,
     },
     operation: "create-private-repository",
     outcome,
@@ -323,11 +346,9 @@ async function createPrivateRepository(
  * refusal for the owner to resolve, not something to overwrite.
  */
 async function protectProductionBranch(
-  dependencies: RepositoryAdministrationBrokerDependencies,
-  credential: string,
-  target: AdministrableRepository,
+  session: AdministrationSession,
 ): Promise<RepositoryAdministrationResult> {
-  const { branch, repository } = target;
+  const { branch, credential, dependencies, repository } = session;
   const listed = await dependencies.github({
     auth: credential,
     method: "GET",
@@ -392,10 +413,9 @@ async function protectProductionBranch(
  * quietly closes.
  */
 async function observeAdministrativePublisherApp(
-  dependencies: RepositoryAdministrationBrokerDependencies,
-  credential: string,
-  target: AdministrableRepository,
+  session: AdministrationSession,
 ): Promise<RepositoryAdministrationResult> {
+  const { credential, dependencies, repository } = session;
   const publisherApp = await dependencies.readAdministrativePublisherApp();
   const listed = await dependencies.github({
     auth: credential,
@@ -416,7 +436,7 @@ async function observeAdministrativePublisherApp(
     return {
       installation: { installed: false },
       operation: "observe-administrative-publisher-app",
-      repository: target.repository,
+      repository,
     };
   }
   if (installation.app_slug !== publisherApp.appSlug) {
@@ -439,7 +459,7 @@ async function observeAdministrativePublisherApp(
         repositorySelection: "all",
       },
       operation: "observe-administrative-publisher-app",
-      repository: target.repository,
+      repository,
     };
   }
   if (installation.repository_selection !== "selected") {
@@ -459,7 +479,7 @@ async function observeAdministrativePublisherApp(
   }
   const reaches = repositories
     .filter(isRecord)
-    .some((entry) => entry.full_name === target.repository.fullName);
+    .some((entry) => entry.full_name === repository.fullName);
   return {
     installation: reaches
       ? {
@@ -470,7 +490,7 @@ async function observeAdministrativePublisherApp(
         }
       : { installed: false },
     operation: "observe-administrative-publisher-app",
-    repository: target.repository,
+    repository,
   };
 }
 
@@ -486,6 +506,11 @@ function standardProductionRuleset(branch: string): unknown {
       { type: "deletion" },
       { type: "non_fast_forward" },
       {
+        // A Human Merge on a single-owner repository is the owner merging their
+        // own pull request, and GitHub will not let an author approve their own.
+        // Requiring an approval here would therefore forbid the one merge this
+        // ruleset exists to preserve, so the rule requires the pull request and
+        // leaves the review count to the owner.
         parameters: {
           allowed_merge_methods: ["merge", "squash", "rebase"],
           dismiss_stale_reviews_on_push: false,
@@ -595,17 +620,14 @@ function isAdministrativeIdentity(
   kind: "operation" | "task",
 ): boolean {
   return (
-    candidate.length <= 120 &&
-    new RegExp(
-      `^(?:[A-Za-z0-9._:-]+-)?administrative-${kind}-[A-Za-z0-9._:-]+$`,
-      "u",
-    ).test(candidate)
+    candidate.length <= 120 && administrativeIdentityPatterns[kind].test(candidate)
   );
 }
 
 interface ConfirmedAdministrativeTask {
   readonly branch: string;
   readonly policyRevision: number;
+  readonly registeredCodebaseId: string;
   readonly repository: RepositoryAdministrationRepository;
   readonly stateVersion: number;
 }
@@ -647,21 +669,17 @@ function parseConfirmedTask(
     target.registeredCodebase,
     "Registered Codebase",
   );
+  const registeredCodebaseId = codebase.registeredCodebaseId;
   if (
-    typeof codebase.registeredCodebaseId !== "string" ||
-    codebase.registeredCodebaseId !== target.registeredCodebaseId
+    typeof registeredCodebaseId !== "string" ||
+    !/^[a-z][a-z0-9-]{2,60}$/u.test(registeredCodebaseId) ||
+    registeredCodebaseId !== target.registeredCodebaseId
   ) {
     throw new Error("The Registered Codebase snapshot does not match its identity");
   }
   const fullName = codebase.repository;
   const branch = codebase.productionBranch;
-  if (
-    typeof fullName !== "string" ||
-    !new RegExp(
-      `^${administrativeOwner}/[A-Za-z0-9_.-]{1,100}$`,
-      "u",
-    ).test(fullName)
-  ) {
+  if (typeof fullName !== "string" || !ownerRepositoryPattern.test(fullName)) {
     throw new Error("The Registered Codebase is not an owner repository");
   }
   if (
@@ -677,6 +695,7 @@ function parseConfirmedTask(
   return {
     branch,
     policyRevision,
+    registeredCodebaseId,
     repository: {
       fullName,
       name,
@@ -709,6 +728,7 @@ function authorizeAdministration(
   return {
     branch: task.branch,
     policyRevision: task.policyRevision,
+    registeredCodebaseId: task.registeredCodebaseId,
     repository: task.repository,
   };
 }
@@ -775,9 +795,6 @@ export function createRepositoryAdministrationStateReader(
       if (row === undefined) return undefined;
       return {
         activeExecutionDeadline: row.active_execution_deadline,
-        // A paused Task banks its budget; it is not executing, so it is not
-        // administering either.
-        executionPaused: row.execution_pause_json !== null,
         policyRevision: row.policy_revision,
         stateVersion: row.state_version,
         status: row.execution_pause_json === null ? row.status : "paused",
@@ -837,6 +854,7 @@ export async function handleRepositoryAdministrationRequest(input: {
     msg: "repository administration completed",
     ...named,
     operation: administered.operation,
+    ...("outcome" in administered ? { outcome: administered.outcome } : {}),
     repository: administered.repository.fullName,
   });
   sendJson(response, 200, administered);

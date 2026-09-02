@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, test } from "vitest";
 
+import { createSqliteAdministrativeAutonomyStore } from "@voice-agent/sqlite-store";
+
 import {
   createRepositoryAdministrationBroker,
   createRepositoryAdministrationStateReader,
@@ -58,6 +60,7 @@ test("a confirmed Task creates the owner's private repository with no further ga
       eligibility: "policy-authorized",
       freshPasskeyActionRequired: false,
       policyRevision: 4,
+      registeredCodebaseId,
     },
     operation: "create-private-repository",
     outcome: "created",
@@ -80,12 +83,35 @@ test("a confirmed Task creates the owner's private repository with no further ga
   });
 });
 
+test("discovery eligibility names the revision that authorized the creation", async () => {
+  const github = fakeGitHub();
+  const broker = createRepositoryAdministrationBroker(
+    dependencies({
+      github,
+      policy: { activeRevision: 7, stateVersion: 12, status: "active" },
+      task: { ...runningTask(), policyRevision: 7, stateVersion: 12 },
+    }),
+  );
+
+  const created = await broker.administer(request("create-private-repository"));
+
+  expect(created).toMatchObject({
+    discovery: {
+      eligibility: "policy-authorized",
+      freshPasskeyActionRequired: false,
+      policyRevision: 7,
+      registeredCodebaseId,
+    },
+  });
+});
+
 test("a replayed creation observes the repository instead of creating a second one", async () => {
   const github = fakeGitHub();
   const broker = createRepositoryAdministrationBroker(dependencies({ github }));
 
   const first = await broker.administer(request("create-private-repository"));
   github.invocations.length = 0;
+  github.writes.length = 0;
   const replayed = await broker.administer(request("create-private-repository"));
 
   expect(first).toMatchObject({ outcome: "created" });
@@ -100,6 +126,7 @@ test("the broker establishes the standard rules and reads them back independentl
   const broker = createRepositoryAdministrationBroker(dependencies({ github }));
   await broker.administer(request("create-private-repository"));
   github.invocations.length = 0;
+  github.writes.length = 0;
 
   const result = await broker.administer(request("protect-production-branch"));
 
@@ -126,6 +153,9 @@ test("the broker establishes the standard rules and reads them back independentl
     { method: "POST", path: `/repos/${fullName}/rulesets` },
     { method: "GET", path: `/repos/${fullName}/rulesets/1` },
   ]);
+  expect(github.writes).toEqual([
+    { method: "POST", path: `/repos/${fullName}/rulesets` },
+  ]);
   const installed = github.rulesets[0];
   expect(installed?.enforcement).toBe("active");
   expect(installed?.bypass_actors).toEqual([]);
@@ -142,6 +172,7 @@ test("a partial failure between creation and protection replays to the same rule
   await broker.administer(request("create-private-repository"));
   await broker.administer(request("protect-production-branch"));
   github.invocations.length = 0;
+  github.writes.length = 0;
 
   const replayed = await broker.administer(request("protect-production-branch"));
 
@@ -157,6 +188,7 @@ test("rules the broker cannot observe as standard are refused, never rewritten",
   const github = fakeGitHub();
   const broker = createRepositoryAdministrationBroker(dependencies({ github }));
   await broker.administer(request("create-private-repository"));
+  github.writes.length = 0;
   github.rulesets.push({
     bypass_actors: [],
     conditions: { ref_name: { exclude: [], include: ["refs/heads/main"] } },
@@ -172,6 +204,9 @@ test("rules the broker cannot observe as standard are refused, never rewritten",
   ).rejects.toThrow();
   expect(github.rulesets).toHaveLength(1);
   expect(github.rulesets[0]?.rules).toEqual([{ type: "pull_request" }]);
+  // The fake accepts a rewrite, so an attempt to make the weak ruleset match
+  // the standard would be recorded here rather than failing indistinguishably.
+  expect(github.writes).toEqual([]);
 });
 
 test("a ruleset a bypass actor can step around is refused", async () => {
@@ -384,6 +419,7 @@ test("the owner credential never leaves the broker", async () => {
       msg: "repository administration completed",
       operation: "create-private-repository",
       operationId,
+      outcome: "created",
       repository: fullName,
       taskId,
     },
@@ -402,31 +438,32 @@ test("the installed reader reads the confirmed Task and policy from the durable 
   const directory = await mkdtemp(join(tmpdir(), "repository-administration-"));
   temporaryDirectories.push(directory);
   const databasePath = join(directory, "voice-agent.sqlite");
+  // The real store owns the schema, so a column this reader depends on cannot
+  // drift away without failing here.
+  const store = createSqliteAdministrativeAutonomyStore(databasePath);
+  await store.close();
   const database = new DatabaseSync(databasePath);
   database.exec(`
-    CREATE TABLE administrative_policy_state (
-      singleton INTEGER PRIMARY KEY,
-      status TEXT NOT NULL,
-      active_revision INTEGER,
-      state_version INTEGER NOT NULL
-    );
-    CREATE TABLE administrative_tasks (
-      id TEXT PRIMARY KEY,
-      active_execution_deadline TEXT,
-      execution_pause_json TEXT,
-      policy_revision INTEGER NOT NULL,
-      state_version INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      target_json TEXT NOT NULL
-    );
-    INSERT INTO administrative_policy_state VALUES (1, 'active', 4, 9);
+    INSERT INTO administrative_policy_revisions (
+      revision, activated_at, activated_by, definition_json
+    ) VALUES (4, '2026-09-01T09:00:00.000Z', 'fresh-passkey-action', '{}');
+    UPDATE administrative_policy_state
+    SET status = 'active', active_revision = 4, state_version = 9
+    WHERE singleton = 1;
   `);
   database
     .prepare(`
       INSERT INTO administrative_tasks (
-        id, active_execution_deadline, execution_pause_json,
-        policy_revision, state_version, status, target_json
-      ) VALUES (?, ?, NULL, 4, 9, 'running', ?)
+        id, request_id, owner_id, capability_hash,
+        active_execution_deadline, execution_pause_json, outcome,
+        policy_revision, state_version, status, question, intended_state,
+        conclusion, target_json, created_at, updated_at
+      ) VALUES (?, 'request-host-configuration', 'owner', 'capability-hash',
+        ?, NULL, 'intervention', 4, 9, 'running',
+        'Bootstrap the configuration repository.',
+        'The configuration repository exists and is protected.',
+        'Administrative work is pending.', ?,
+        '2026-09-02T09:00:00.000Z', '2026-09-02T09:00:00.000Z')
     `)
     .run(taskId, activeExecutionDeadline, JSON.stringify(target()));
   database.close();
@@ -519,6 +556,7 @@ function dependencies(options: {
 
 interface FakeGitHub {
   created?: unknown;
+  readonly writes: Array<{ readonly method: string; readonly path: string }>;
   readonly installations: Array<Record<string, unknown>>;
   readonly invocations: Array<{
     readonly method: string;
@@ -535,6 +573,7 @@ function fakeGitHub(): FakeGitHub {
     invocations: [],
     request: async () => ({ body: undefined, status: 500 }),
     rulesets: [],
+    writes: [],
   };
   let repositoryPresent = false;
   state.request = async (githubRequest) => {
@@ -545,6 +584,12 @@ function fakeGitHub(): FakeGitHub {
       method: githubRequest.method,
       path: githubRequest.path,
     });
+    if (githubRequest.method !== "GET") {
+      state.writes.push({
+        method: githubRequest.method,
+        path: githubRequest.path,
+      });
+    }
     if (
       githubRequest.method === "GET" &&
       githubRequest.path === `/repos/${fullName}`
@@ -589,6 +634,18 @@ function fakeGitHub(): FakeGitHub {
     const rulesetMatch = /^\/repos\/(?<name>.+)\/rulesets\/(?<id>[0-9]+)$/u.exec(
       githubRequest.path,
     );
+    if (rulesetMatch !== null && githubRequest.method !== "GET") {
+      // GitHub would accept a rewrite here. The broker must never send one.
+      const index = state.rulesets.findIndex(
+        (candidate) => candidate.id === Number(rulesetMatch.groups?.id),
+      );
+      if (index === -1) return { body: { message: "Not Found" }, status: 404 };
+      state.rulesets[index] = {
+        ...(githubRequest.body as Record<string, unknown>),
+        id: Number(rulesetMatch.groups?.id),
+      };
+      return { body: state.rulesets[index], status: 200 };
+    }
     if (githubRequest.method === "GET" && rulesetMatch !== null) {
       const ruleset = state.rulesets.find(
         (candidate) => candidate.id === Number(rulesetMatch.groups?.id),

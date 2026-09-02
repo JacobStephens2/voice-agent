@@ -45,3 +45,30 @@ own answer, therefore converges on the same result and the same repository
 state without a second effect. A broker-side idempotency ledger would have to
 be committed *after* the external write it describes, so exactly the crash it
 is meant to cover is the one that loses it. Observation has no such window.
+
+## The evidence this broker leaves is its result and its own journal
+
+ADR-0056 keeps a standalone unit's refusal reasons on the host, and this broker
+follows it: the response carries a phase code, the reason is journalled beside
+the service that derived it, and the successful line names the Task, the
+Operation, the operation performed, its outcome, and the repository. Nothing
+carries the owner credential. The broker appends no Evidence Event of its own —
+it does not own the Durable Task store, writes nothing on this host, and its
+unit mounts `/var/lib/voice-agent` read-only. The Task's Evidence Record is
+appended by the runtime that called it, from the result it was returned. That
+also means this file duplicates the publisher's small helpers rather than
+sharing a module, for the reason ADR-0056 gives: a standalone pinned authority
+resolves nothing outside its own reviewed artifact.
+
+## The registration a repository does not have yet
+
+The administration target is re-derived from `target.registeredCodebase` on the
+confirmed Durable Task, because that is the only durable, non-model-selected
+field naming a repository today. Issue #89 will ask this broker to create a
+repository that has *no* registration yet, and a Registered Codebase snapshot
+carries an `initialProductionCommit` and checkout paths that an unborn
+repository cannot have. That is a contract question for #89 — a provisioning
+intent the Task Confirmation fixes, distinct from a registration — and it is
+deliberately not answered here. What this ADR fixes is that the answer must
+still come from durable Task state: the broker will read a new durable field,
+never a field of the request.

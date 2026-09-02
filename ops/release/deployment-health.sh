@@ -4,7 +4,8 @@ exec 8>&-
 exec 9>&-
 
 for unit in voice-agent-api.service voice-agent-worker.service \
-  voice-agent-keeplore-publisher.service voice-agent-subagent.service \
+  voice-agent-keeplore-publisher.service \
+  voice-agent-repository-administration.service voice-agent-subagent.service \
   voice-agent-broker.service; do
   systemctl is-active --quiet "$unit"
 done
@@ -55,9 +56,16 @@ test -f /opt/voice-agent/current/apps/pwa/dist/index.html
 test -S /run/voice-agent-broker/broker.sock
 test -S /run/voice-agent-subagent/runner.sock
 test -S /run/voice-agent-keeplore-publisher/publisher.sock
+test -S /run/voice-agent-repository-administration/broker.sock
 runuser --user voice-codex --group voice-subagent-client -- /usr/bin/curl \
   --fail --silent --show-error --max-time 5 \
   --unix-socket /run/voice-agent-keeplore-publisher/publisher.sock \
+  http://localhost/healthz >/dev/null
+# The Repository Administration Broker answers root alone here. Its socket
+# carries the client group so a caller can be given the path, but no caller has
+# been granted it yet, and health must not be the thing that grants it.
+curl --fail --silent --show-error --max-time 5 \
+  --unix-socket /run/voice-agent-repository-administration/broker.sock \
   http://localhost/healthz >/dev/null
 curl --fail --silent --show-error --max-time 5 \
   http://127.0.0.1:3472/healthz >/dev/null
