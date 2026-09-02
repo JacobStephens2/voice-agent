@@ -1,0 +1,56 @@
+[Unit]
+Description=Root-owned typed Repository Administration Broker
+After=network-online.target
+Wants=network-online.target
+Before=voice-agent-subagent.service
+
+[Service]
+Type=simple
+User=root
+Group=voice-subagent-client
+SupplementaryGroups=voice-agent
+WorkingDirectory=/usr/local/libexec/voice-agent
+Environment=NODE_ENV=production
+Environment=VOICE_AGENT_DATABASE_PATH=/var/lib/voice-agent/voice-agent.sqlite
+Environment=VOICE_AGENT_REPOSITORY_ADMINISTRATION_SOCKET_PATH=/run/voice-agent-repository-administration/broker.sock
+Environment=VOICE_AGENT_REPOSITORY_ADMINISTRATION_CREDENTIAL=%d/repository-administration-token
+Environment=VOICE_AGENT_ADMINISTRATIVE_PUBLISHER_APP_CONFIGURATION=%d/administrative-publisher-app
+LoadCredential=repository-administration-token:/etc/voice-agent/repository-administration-token
+LoadCredential=administrative-publisher-app:/etc/voice-agent/administrative-publisher-app.conf
+# Empty defaults let the broker stay healthy before credential enrollment;
+# absolute LoadCredential sources override them as soon as they exist.
+SetCredential=repository-administration-token:
+SetCredential=administrative-publisher-app:
+ExecStart=/usr/bin/node --experimental-strip-types /usr/local/libexec/voice-agent/repository-administration-broker.ts
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+UMask=0007
+RuntimeDirectory=voice-agent-repository-administration
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+# The broker reads the durable Task and policy state and writes nothing on this
+# host: it holds no worktree, no checkout, and no repository contents.
+ReadOnlyPaths=/var/lib/voice-agent
+InaccessiblePaths=/var/lib/voice-agent-worktrees /var/lib/voice-codex /var/lib/voice-agent-broker /var/www /opt/keeplore /run/voice-agent-broker /run/docker.sock /var/run/docker.sock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
