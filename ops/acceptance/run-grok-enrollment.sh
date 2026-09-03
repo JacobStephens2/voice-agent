@@ -319,13 +319,35 @@ stage "Pin the runner"
 say "The version is the runner's claim about itself; the digest is the only statement about the bytes that will execute."
 GROK_VERSION_OUTPUT=$(grok_as_executor "$GROK" --version)
 note "$GROK_VERSION_OUTPUT"
+# The channel label is recorded rather than checked. The same released 1.0.13
+# reports [alpha] on this host's Linux build and [stable] on a macOS build of
+# the same version, unexplained; the pin is the digest, so the label is
+# evidence about the release channel rather than a boundary.
+step "Note the channel label the version line carries, and whether it is the one the previous enrollment recorded."
 GROK_VERSION=$(printf '%s' "$GROK_VERSION_OUTPUT" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)
 GROK_DIGEST=$(sudo sha256sum "$GROK" | cut -d' ' -f1)
 note "digest $GROK_DIGEST"
 say "Reading the runner's own effective configuration. Its config_sources names where this build reads system configuration; the root-managed profile belongs at that path rather than at one this wizard assumed."
 GROK_INSPECT=$(grok_as_executor "$GROK" inspect --json)
 printf '%s\n' "$GROK_INSPECT" | /usr/bin/jq . || note "$GROK_INSPECT"
-step "Confirm grokVersion matches, loginPolicy.apiKeyAuthDisabled is true, no MCP servers, plugins, skills, hooks, or marketplaces are declared, no third-party vendor surface is enabled, and configSources names exactly one non-empty layer - the system-requirements one. A run's own requirements layer carrying the auth crossing appears beside it only inside a Delegation's own Grok home."
+# The subscription being the only reachable route is the one boundary the
+# runner reports on itself, and it is resolved from the requirements layer
+# above rather than from the account. This is machine-checked rather than left
+# to the confirmation below, because a host whose layer lost the key reaches
+# every later stage looking well and then pauses every Delegation.
+if [[ "$(printf '%s' "$GROK_INSPECT" | /usr/bin/jq -r '.loginPolicy.apiKeyAuthDisabled')" != "true" ]]; then
+  warn "loginPolicy.apiKeyAuthDisabled is not true. $GROK_REQUIREMENTS must pin [grok_com_config] disable_api_key_auth = true; install the reviewed ops/grok/requirements.toml and re-run."
+  exit 1
+fi
+printf '  %s✓%s the runner refuses API-key authentication by policy\n' "$GREEN" "$RESET"
+# Login policy is enforced every time a session is issued or reused, and a
+# session that no longer complies is cleared. That is documented of
+# force_login_team_uuid rather than of disable_api_key_auth, and it was not
+# observed either way - so a host that has just gained the pin is treated as one
+# whose enrolled credential may have to be authorized again. The stage below is
+# where that surfaces, and it is cheaper to expect it than to read it as a fault.
+say "If this host gained the API-key refusal since its last enrollment, the enrolled login may have been cleared by it. The next stage re-authorizes if so."
+step "Confirm grokVersion matches, no MCP servers, plugins, skills, hooks, or marketplaces are declared, no third-party vendor surface is enabled, and configSources names exactly one non-empty layer - the system-requirements one. A run's own requirements layer carrying the auth crossing appears beside it only inside a Delegation's own Grok home."
 ask GROK_CONFIG_PATH "Which path does the system-requirements layer in configSources name?"
 if [[ "$GROK_CONFIG_PATH" != /* ]]; then
   warn "The configuration source must be an absolute path."
@@ -389,9 +411,12 @@ fi
 # A host-wide auth provider would bind voice-grok-auth too, and the runner
 # prefers a provider command over renewing an expired cached login - so the one
 # identity that can renew this credential would be sent to the broker that
-# reads it. The crossing belongs in each run's own home. See ADR-0069.
-if sudo grep -q '^\[auth\]' "$GROK_REQUIREMENTS"; then
-  warn "$GROK_REQUIREMENTS declares [auth]. That layer binds voice-grok-auth as well and would preempt its own credential renewal. Install the reviewed ops/grok/requirements.toml and re-run."
+# reads it. The crossing belongs in each run's own home. See ADR-0069. The key
+# is refused rather than the table, because `[auth]` is an alias of
+# `[grok_com_config]` - which this layer now carries for the API-key refusal -
+# and a check on the table name would read one spelling and miss the other.
+if sudo grep -Eq '^[[:space:]]*(auth\.|grok_com_config\.)?auth_provider_command[[:space:]]*=' "$GROK_REQUIREMENTS"; then
+  warn "$GROK_REQUIREMENTS names an auth provider command. That layer binds voice-grok-auth as well and would preempt its own credential renewal. Install the reviewed ops/grok/requirements.toml and re-run."
   exit 1
 fi
 printf '  %s✓%s no executor credential, no API key, both broker crossings hold\n' "$GREEN" "$RESET"
