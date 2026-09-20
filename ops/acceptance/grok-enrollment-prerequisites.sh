@@ -78,6 +78,6 @@ verify_grok_enrollment_boundary() {
   fi
   sudo systemd-analyze security "voice-agent-grok-contract@enrollment.service" --no-pager || true
   step "Confirm the contract unit grants only CAP_SETUID and CAP_SETGID for the sudoers crossing, and has no Docker socket or production directory. Child AppArmor, not this unit, denies the Auth Crossing to model-selected Bubblewrap children."
-  step "Under the real contract unit, confirm the parent broker probe answers and a Bubblewrap child cannot list or execute /usr/local/libexec/voice-agent. Run ops/grok/auth-crossing-child-canary.sh from a Grok Delegation; an attended shell is not this witness. If the unit probe fails for want of one more capability, record that cap rather than granting a kitchen-sink set."
+  step "Under the real contract unit, confirm the parent broker probe answers and a Bubblewrap child cannot list or execute /usr/local/libexec/voice-agent. Run ops/grok/auth-crossing-child-canary.sh from a Grok Delegation as that child, not a nested bwrap; an attended shell that lists the 0755 directory fails the canary closed. If the unit probe fails for want of one more capability, record that cap rather than granting a kitchen-sink set."
   pause "Review the boundary report, then press Enter."
 }

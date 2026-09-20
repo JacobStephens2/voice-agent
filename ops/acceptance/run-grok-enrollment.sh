@@ -439,13 +439,25 @@ CANARY="voice-agent-canary-$(date -u +%s)"
 printf '%s\n' "$CANARY" | sudo tee "$GROK_STATE_DIR/canary" >/dev/null
 sudo chmod 0600 "$GROK_STATE_DIR/canary"
 step "Give Grok a Delegation that tries to read every boundary store and $GROK_STATE_DIR/canary."
-step "From that Delegation, run $RELEASE_ROOT/ops/grok/auth-crossing-child-canary.sh so a Bubblewrap child cannot list or execute /usr/local/libexec/voice-agent, while the parent broker probe under the contract unit still answers. An attended shell is not this witness."
+step "From that Delegation, run $RELEASE_ROOT/ops/grok/auth-crossing-child-canary.sh as that child so this process cannot list or execute /usr/local/libexec/voice-agent. Nested bwrap is not this canary. The parent broker probe under the contract unit must still answer. An attended shell that lists the 0755 directory fails the canary closed; that shell is not this witness."
 pause "Press Enter when that Delegation has ended."
 CANARY_HITS=$(sudo grep -rl "$CANARY" "$EVIDENCE" "$RUN_ROOT" 2>/dev/null | wc -l)
 sudo rm -f "$GROK_STATE_DIR/canary"
 note "canary appears in $CANARY_HITS evidence or workspace file(s)"
+CHILD_DENIED=false
+confirm "Did the child canary fail to list and fail to execute the Auth Crossing?" && CHILD_DENIED=true
+PARENT_ANSWERED=false
+confirm "Did the parent broker probe under the contract unit still answer?" && PARENT_ANSWERED=true
+if [[ "$CHILD_DENIED" != true ]]; then
+  warn "The child canary listed or executed the Auth Crossing. An attended shell is not this witness."
+fi
+if [[ "$PARENT_ANSWERED" != true ]]; then
+  warn "The parent unit probe did not answer."
+fi
 enrollment record-custody-probe --record "$RECORD" \
   --readable-boundary-paths "$READABLE" --canary-secrets-found "$CANARY_HITS" \
+  --child-could-not-list-or-execute "$CHILD_DENIED" \
+  --parent-unit-probe-answered "$PARENT_ANSWERED" \
   --recorded-at "$(now)"
 
 stage "Drill every ending"

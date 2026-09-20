@@ -88,6 +88,28 @@ test("a custody probe that read a boundary store or found a canary is not ready"
   );
 });
 
+test("a custody probe that did not confirm the child canary is not ready", () => {
+  const evaluation = evaluateGrokEnrollment(
+    provedEnrollment({ childCouldNotListOrExecute: false }),
+  );
+
+  expect(evaluation.ready).toBe(false);
+  expect(evaluation.errors).toContain(
+    "A model-selected Bubblewrap child listed or executed the Auth Crossing.",
+  );
+});
+
+test("a custody probe that did not confirm the parent unit probe is not ready", () => {
+  const evaluation = evaluateGrokEnrollment(
+    provedEnrollment({ parentUnitProbeAnswered: false }),
+  );
+
+  expect(evaluation.ready).toBe(false);
+  expect(evaluation.errors).toContain(
+    "The parent broker probe under the contract unit did not answer.",
+  );
+});
+
 test("a drill that fell back to another provider is not ready", () => {
   const record = appendGrokEnrollmentEvent(
     provedEnrollment({ conditions: [] }),
@@ -170,9 +192,11 @@ test("events are appended in recorded-time order", () => {
 });
 
 function provedEnrollment(options: {
+  readonly childCouldNotListOrExecute?: boolean;
   readonly conditions?: readonly string[];
   readonly destructiveGitCommands?: number;
   readonly omit?: readonly string[];
+  readonly parentUnitProbeAnswered?: boolean;
   readonly readableBoundaryPaths?: number;
 } = {}): GrokEnrollmentRecord {
   const omitted = options.omit ?? [];
@@ -208,7 +232,9 @@ function provedEnrollment(options: {
   });
   append({
     canarySecretsFound: 0,
+    childCouldNotListOrExecute: options.childCouldNotListOrExecute ?? true,
     kind: "custody-probe",
+    parentUnitProbeAnswered: options.parentUnitProbeAnswered ?? true,
     readableBoundaryPaths: options.readableBoundaryPaths ?? 0,
   });
   for (const condition of options.conditions ?? grokContractFailureConditions) {

@@ -200,12 +200,16 @@ test("the contract unit grants only the sudoers crossing capabilities", () => {
 
 /**
  * Child AppArmor, not the Grok sandbox deny list, holds the parent/child
- * split. The mechanical gate is the overlay, the canary fixture, and the
- * wizard step; the live unit is an attended trap.
+ * split. Nested bwrap can fail on audit deny capability before the file deny
+ * is tested, so the canary is this process's own ls and exec. The live unit
+ * is an attended trap; the record holds the operator's confirmation, not a
+ * second store count.
  */
 test("enrollment canaries a Bubblewrap child that cannot list or execute the Auth Crossing", () => {
-  expect(childCanary).toContain("bwrap");
-  expect(childCanary).toContain("ls");
+  expect(childCanary).not.toMatch(/\bbwrap\s+--/u);
+  expect(childCanary).not.toContain("command -v bwrap");
+  expect(childCanary).toContain('ls "$CROSSING"');
+  expect(childCanary).toContain('"$BROKER"');
   expect(childCanary).toContain("/usr/local/libexec/voice-agent");
   expect(childCanary).toContain("grok-token-broker");
   expect(childCanary).toContain("unpriv_bwrap");
@@ -213,4 +217,56 @@ test("enrollment canaries a Bubblewrap child that cannot list or execute the Aut
     expect(copy).toContain("auth-crossing-child-canary.sh");
     expect(copy).toContain("/etc/apparmor.d/local/unpriv_bwrap");
   }
+  expect(wizard).toContain("--child-could-not-list-or-execute");
+  expect(wizard).toContain("--parent-unit-probe-answered");
+  expect(operations).toContain("--child-could-not-list-or-execute");
+  expect(operations).toContain("--parent-unit-probe-answered");
 });
+
+test("an unconfined process that can list a 0755 Auth Crossing fails the child canary closed", async () => {
+  const crossing = await mkdtemp(join(tmpdir(), "auth-crossing-open-"));
+  temporaryDirectories.push(crossing);
+  await chmod(crossing, 0o755);
+  await writeFile(join(crossing, "grok-token-broker"), "#!/bin/sh\nexit 0\n", {
+    mode: 0o755,
+  });
+
+  const result = runChildCanaryAgainstCrossing(crossing);
+
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain("listed the Auth Crossing");
+});
+
+test("a process that cannot list or execute the Auth Crossing passes the child canary", async () => {
+  const crossing = await mkdtemp(join(tmpdir(), "auth-crossing-denied-"));
+  temporaryDirectories.push(crossing);
+  await writeFile(join(crossing, "grok-token-broker"), "#!/bin/sh\nexit 0\n", {
+    mode: 0o755,
+  });
+  await chmod(crossing, 0o000);
+  try {
+    const result = runChildCanaryAgainstCrossing(crossing);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "could not list or execute the Auth Crossing",
+    );
+  } finally {
+    await chmod(crossing, 0o700);
+  }
+});
+
+function runChildCanaryAgainstCrossing(crossing: string) {
+  expect(childCanary).toContain(
+    "readonly CROSSING=/usr/local/libexec/voice-agent",
+  );
+  const script = childCanary.replace(
+    "readonly CROSSING=/usr/local/libexec/voice-agent",
+    `readonly CROSSING='${crossing.replaceAll("'", "'\\''")}'`,
+  );
+  const unprivilegedIdentity =
+    process.getuid?.() === 0 ? { gid: 65_534, uid: 65_534 } : {};
+  return spawnSync("/bin/bash", ["-c", script], {
+    encoding: "utf8",
+    ...unprivilegedIdentity,
+  });
+}

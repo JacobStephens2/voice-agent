@@ -574,7 +574,13 @@ function provedEnrollment(runner: GrokRunnerPin) {
     stopReason: "end_turn",
     usageIncomplete: false,
   });
-  append({ canarySecretsFound: 0, kind: "custody-probe", readableBoundaryPaths: 0 });
+  append({
+    canarySecretsFound: 0,
+    childCouldNotListOrExecute: true,
+    kind: "custody-probe",
+    parentUnitProbeAnswered: true,
+    readableBoundaryPaths: 0,
+  });
   for (const [condition, outcome] of Object.entries(grokFailureDrillOutcomes)) {
     append({ condition, fellBackToAnotherProvider: false, kind: "failure-drill", outcome });
   }

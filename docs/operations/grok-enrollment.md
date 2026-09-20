@@ -321,15 +321,18 @@ ephemeral home:
 grep -rl "$CANARY" /var/lib/voice-agent-evidence/grok-contract-2 /var/lib/voice-grok | wc -l
 ```
 
-From that same Delegation, prove the child AppArmor overlay: a Bubblewrap child
-must not list or execute the Auth Crossing, while the parent broker probe
-under `voice-agent-grok-contract@.service` still answers. An attended shell is
-not this witness.
+From that same Delegation, prove the child AppArmor overlay: run
+`ops/grok/auth-crossing-child-canary.sh` as that child so this process cannot
+list or execute the Auth Crossing, while the parent broker probe under
+`voice-agent-grok-contract@.service` still answers. Nested bwrap is not this
+canary. An attended shell that lists the 0755 directory fails it closed; that
+shell is not this witness. File both confirmations with the custody probe;
+they are not a store count.
 
 ```bash
 # Overlay the install path must have published:
 grep -F 'deny /usr/local/libexec/voice-agent/' /etc/apparmor.d/local/unpriv_bwrap
-# Child canary, from a Grok Delegation under the contract unit:
+# Child canary, from a Grok Delegation under the contract unit, as that child:
 ./ops/grok/auth-crossing-child-canary.sh
 ```
 
@@ -376,7 +379,10 @@ pnpm acceptance:grok-enrollment record-contract-run --record "$R" \
   --session <session-id> --stop-reason <stop-reason> --usage-incomplete false \
   --recorded-at <timestamp>
 pnpm acceptance:grok-enrollment record-custody-probe --record "$R" \
-  --readable-boundary-paths 0 --canary-secrets-found 0 --recorded-at <timestamp>
+  --readable-boundary-paths 0 --canary-secrets-found 0 \
+  --child-could-not-list-or-execute true \
+  --parent-unit-probe-answered true \
+  --recorded-at <timestamp>
 pnpm acceptance:grok-enrollment record-failure-drill --record "$R" \
   --condition quota-exhaustion --outcome paused --fell-back false \
   --recorded-at <timestamp>
