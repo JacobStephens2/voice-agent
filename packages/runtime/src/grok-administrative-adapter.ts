@@ -21,7 +21,9 @@ import {
 } from "@voice-agent/contracts";
 
 import {
+  AdministrativeExecutionFailed,
   AdministrativeExecutionPaused,
+  AdministrativeExecutionStopped,
   type AdministrativeImplementationCatalog,
   type AdministrativeOperationExecution,
   type AdministrativeOperationExecutor,
@@ -104,7 +106,6 @@ export function createGrokAdministrativeAdapter(
   });
   const executorIdentity = administrativeOperationExecutorIdentitySchema.parse({
     operationAdapters: [
-      { implementationDigest, kind: "production.observe" },
       { implementationDigest, kind: "delegated-worktree.change" },
     ],
   });
@@ -117,14 +118,7 @@ export function createGrokAdministrativeAdapter(
     async choosePlan(input) {
       await requireActivatedEnrollment(options.evaluateEnrollment);
       const run = await options.runner.runPlan(input);
-      if (run.state === "paused") {
-        throw new AdministrativeExecutionPaused(
-          administrativePauseReasonFromGrok(run.reason),
-        );
-      }
-      if (run.state !== "completed") {
-        throw new Error(run.detail);
-      }
+      throwUnlessGrokRunCompleted(run);
       return administrativePlanChoiceSchema.parse({
         plan: run.plan,
         providerRun: run.providerRun,
@@ -136,14 +130,7 @@ export function createGrokAdministrativeAdapter(
     async execute(execution) {
       await requireActivatedEnrollment(options.evaluateEnrollment);
       const run = await options.runner.runOperation(execution);
-      if (run.state === "paused") {
-        throw new AdministrativeExecutionPaused(
-          administrativePauseReasonFromGrok(run.reason),
-        );
-      }
-      if (run.state !== "completed") {
-        throw new Error(run.detail);
-      }
+      throwUnlessGrokRunCompleted(run);
       return administrativeOperationResultSchema.parse({
         ...run.result,
         providerRun: run.providerRun,
@@ -226,6 +213,34 @@ function grokTerminalRun(
     reason: reason.success ? reason.data : "runner-execution",
     state: "failed",
   };
+}
+
+function throwUnlessGrokRunCompleted(
+  run: GrokAdministrativePlanRun,
+): asserts run is Extract<GrokAdministrativePlanRun, { state: "completed" }>;
+function throwUnlessGrokRunCompleted(
+  run: GrokAdministrativeOperationRun,
+): asserts run is Extract<
+  GrokAdministrativeOperationRun,
+  { state: "completed" }
+>;
+function throwUnlessGrokRunCompleted(
+  run: GrokAdministrativePlanRun | GrokAdministrativeOperationRun,
+): asserts run is Extract<
+  GrokAdministrativePlanRun | GrokAdministrativeOperationRun,
+  { readonly state: "completed" }
+> {
+  if (run.state === "paused") {
+    throw new AdministrativeExecutionPaused(
+      administrativePauseReasonFromGrok(run.reason),
+    );
+  }
+  if (run.state === "failed") {
+    throw new AdministrativeExecutionFailed(run.reason, run.detail);
+  }
+  if (run.state === "stopped") {
+    throw new AdministrativeExecutionStopped(run.detail);
+  }
 }
 
 async function requireActivatedEnrollment(

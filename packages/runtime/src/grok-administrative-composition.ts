@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { userInfo } from "node:os";
 
 import {
   administrativeUnavailableExecutionManifest,
@@ -79,24 +80,75 @@ export async function evaluateDeployedGrokEnrollment(
   }
 }
 
+export const grokExecutorIdentity = "voice-grok";
+
+export interface HostGrokAdministrativeRunnerOptions {
+  /**
+   * Process identity that may invoke the reviewed contract path. Production
+   * reads the current username; tests inject `voice-grok` or the API identity.
+   */
+  readonly executorIdentity?: string;
+  /**
+   * The reviewed Grok contract path, invoked only as `voice-grok`. The
+   * contract unit and worker bind this; the API process does not.
+   */
+  readonly runContract?: GrokAdministrativeRunner;
+}
+
 /**
- * The production Grok runner. Until the reviewed executor can be invoked
- * from this process as `voice-grok`, a run the enrollment has accepted
- * still pauses rather than executing as the wrong identity.
+ * The production Grok runner.
+ *
+ * Work uses the reviewed Grok contract as `voice-grok`. This process is the
+ * API identity unless a contract unit crosses onto that runner, so a missing
+ * identity crossing pauses by that name rather than as configuration drift.
+ * Unenrolled `work` still pauses `runner-pin-drift` before this runner runs.
  */
-export function createHostGrokAdministrativeRunner(): GrokAdministrativeRunner {
+export function createHostGrokAdministrativeRunner(
+  input?: HostGrokAdministrativeRunnerOptions,
+): GrokAdministrativeRunner {
+  const identity = input?.executorIdentity ?? currentGrokExecutorIdentity();
+  if (identity === grokExecutorIdentity) {
+    return input?.runContract ?? unboundVoiceGrokContractRunner();
+  }
+  return missingVoiceGrokIdentityRunner();
+}
+
+function currentGrokExecutorIdentity(): string {
+  try {
+    return userInfo().username;
+  } catch {
+    return "";
+  }
+}
+
+function missingVoiceGrokIdentityRunner(): GrokAdministrativeRunner {
+  const paused = {
+    reason: "runner-identity-crossing",
+    state: "paused",
+  } as const;
   return {
     async runOperation() {
-      return {
-        reason: "provider-contract-drift",
-        state: "paused",
-      };
+      return paused;
     },
     async runPlan() {
-      return {
-        reason: "provider-contract-drift",
-        state: "paused",
-      };
+      return paused;
+    },
+  };
+}
+
+function unboundVoiceGrokContractRunner(): GrokAdministrativeRunner {
+  const failed = {
+    detail:
+      "The reviewed Grok contract path is not bound for this voice-grok process.",
+    reason: "runner-execution",
+    state: "failed",
+  } as const;
+  return {
+    async runOperation() {
+      return failed;
+    },
+    async runPlan() {
+      return failed;
     },
   };
 }

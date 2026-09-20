@@ -12,6 +12,7 @@ import {
   administrativeRegisteredCodebaseSchema,
   administrativeTaskIdSchema,
   credentialCustodyBoundaryPaths,
+  delegationIdSchema,
   grokRunEvidenceSchema,
   grokRunnerPinSchema,
   type GrokPauseReason,
@@ -21,6 +22,8 @@ import {
   composeDeployedAdministrativeGrokExecution,
   createAdministrativeAutonomyRuntime,
   createGrokAdministrativeAdapter,
+  createHostGrokAdministrativeRunner,
+  grokExecutorIdentity,
   grokPlanRunFromOutcome,
   type GrokAdministrativeRunner,
 } from "@voice-agent/runtime";
@@ -71,6 +74,7 @@ test("Grok pause reasons map onto the closed Administrative pause enum", () => {
     "provider-contract-drift": "provider-paused",
     "provider-entitlement": "provider-paused",
     "provider-quota": "quota-blocked",
+    "runner-identity-crossing": "provider-paused",
     "runner-pin-drift": "provider-paused",
   } as const satisfies Record<GrokPauseReason, string>;
 
@@ -92,7 +96,7 @@ test("a Grok quota refusal pauses as quota-blocked rather than inventing a provi
       },
       async runPlan() {
         return {
-          plan: [{ kind: "production.observe" }],
+          plan: [{ kind: "delegated-worktree.change" }],
           providerRun: grokEvidence,
           state: "completed",
         };
@@ -100,7 +104,7 @@ test("a Grok quota refusal pauses as quota-blocked rather than inventing a provi
     },
   });
 
-  const admission = await confirmInvestigate(runtime, taskId);
+  const admission = await confirmGrokTask(runtime, taskId);
   const record = await runtime.getTask(taskId);
 
   expect({
@@ -131,7 +135,7 @@ test("an unaccepted enrollment pauses work as provider-paused instead of minting
     },
   });
 
-  const admission = await confirmInvestigate(runtime, taskId);
+  const admission = await confirmGrokTask(runtime, taskId);
   const record = await runtime.getTask(taskId);
 
   expect({
@@ -154,7 +158,7 @@ test("Grok planning usage is recorded on the plan Evidence Event", async () => {
     runner: completingGrokRunner(),
   });
 
-  await confirmInvestigate(runtime, taskId);
+  await confirmGrokTask(runtime, taskId);
   const record = await runtime.getTask(taskId);
   const plan = record?.evidence.find(
     (event) => event.kind === "administrative.plan.accepted",
@@ -162,7 +166,7 @@ test("Grok planning usage is recorded on the plan Evidence Event", async () => {
 
   expect(plan).toMatchObject({
     details: {
-      operations: ["production.observe"],
+      operations: ["delegated-worktree.change"],
       providerRun: {
         apiKeyAuthDisabled: true,
         authenticationRoute: "subscription-oauth",
@@ -187,7 +191,7 @@ test("Grok operation usage is recorded on the completed Operation Evidence Event
     runner: completingGrokRunner(),
   });
 
-  await confirmInvestigate(runtime, taskId);
+  await confirmGrokTask(runtime, taskId);
   const record = await runtime.getTask(taskId);
   const completed = record?.evidence.find(
     (event) => event.kind === "administrative.operation.completed",
@@ -195,7 +199,7 @@ test("Grok operation usage is recorded on the completed Operation Evidence Event
 
   expect(completed).toMatchObject({
     details: {
-      kind: "production.observe",
+      kind: "delegated-worktree.change",
       result: {
         providerRun: {
           apiKeyAuthDisabled: true,
@@ -244,8 +248,8 @@ test("a pinned Grok Administrative Execution Manifest lets a confirmed Durable T
     adapter: composed.adapter,
   });
   const prepared = await runtime.prepareTaskConfirmation({
-    intendedState: "The production application health is understood.",
-    outcome: "investigate",
+    intendedState: "The isolated branch contains the requested change.",
+    outcome: "propose",
     ownerId: "owner",
     requestId: "grok-composed-task",
     target,
@@ -298,25 +302,346 @@ test("Grok planning output that is not a typed plan fails rather than widening k
   });
 });
 
+test("a named Grok planning failure fails the Durable Task instead of retrying", async () => {
+  const { runtime, taskId } = await createGrokAdministrativeWorld({
+    runner: {
+      async runOperation() {
+        throw new Error("Grok must not execute after a named planning failure");
+      },
+      async runPlan() {
+        return {
+          detail:
+            "The provider returned a final result that does not match the reviewed structured schema.",
+          reason: "malformed-output",
+          state: "failed",
+        };
+      },
+    },
+  });
+
+  const admission = await confirmGrokTask(runtime, taskId);
+  await runtime.reconcileOperations();
+  const record = await runtime.getTask(taskId);
+
+  expect({
+    admission,
+    denied: record?.evidence.find(
+      (event) => event.kind === "administrative.task.denied",
+    ),
+    status: record?.task.status,
+  }).toMatchObject({
+    admission: { decision: "denied", reason: "malformed-output" },
+    denied: { details: { reason: "malformed-output" } },
+    status: "denied",
+  });
+
+  await runtime.close();
+});
+
+test("a named Grok planning stop Stops the Durable Task instead of retrying", async () => {
+  const { runtime, taskId } = await createGrokAdministrativeWorld({
+    runner: {
+      async runOperation() {
+        throw new Error("Grok must not execute after a named planning stop");
+      },
+      async runPlan() {
+        return {
+          detail:
+            "Execution stopped at the owner's request; completed commits and unfinished work were left in place.",
+          state: "stopped",
+        };
+      },
+    },
+  });
+
+  const admission = await confirmGrokTask(runtime, taskId);
+  await runtime.reconcileOperations();
+  const record = await runtime.getTask(taskId);
+
+  expect({
+    admission: admission.decision,
+    status: record?.task.status,
+    stopped: record?.evidence.find(
+      (event) => event.kind === "administrative.task.stopped",
+    ),
+  }).toMatchObject({
+    admission: "admitted",
+    status: "stopped",
+    stopped: {
+      kind: "administrative.task.stopped",
+      summary:
+        "Execution stopped at the owner's request; completed commits and unfinished work were left in place.",
+    },
+  });
+
+  await runtime.close();
+});
+
+test("a named Grok operation failure fails the Durable Task instead of retrying", async () => {
+  const { runtime, taskId } = await createGrokAdministrativeWorld({
+    runner: {
+      async runOperation() {
+        return {
+          detail: "The run passed its time bound and its process group was stopped.",
+          reason: "timeout",
+          state: "failed",
+        };
+      },
+      async runPlan() {
+        return {
+          plan: [{ kind: "delegated-worktree.change" }],
+          providerRun: grokEvidence,
+          state: "completed",
+        };
+      },
+    },
+  });
+
+  const admission = await confirmGrokTask(runtime, taskId);
+  await runtime.reconcileOperations();
+  const record = await runtime.getTask(taskId);
+
+  expect({
+    admission,
+    denied: record?.evidence.find(
+      (event) => event.kind === "administrative.task.denied",
+    ),
+    failedOperation: record?.evidence.find(
+      (event) => event.kind === "administrative.operation.failed",
+    ),
+    status: record?.task.status,
+  }).toMatchObject({
+    admission: { decision: "denied", reason: "timeout" },
+    denied: { details: { reason: "timeout" } },
+    failedOperation: { details: { reason: "timeout" } },
+    status: "denied",
+  });
+
+  await runtime.close();
+});
+
+test("a named Grok operation stop Stops the Durable Task instead of retrying", async () => {
+  const { runtime, taskId } = await createGrokAdministrativeWorld({
+    runner: {
+      async runOperation() {
+        return {
+          detail:
+            "Execution stopped at the owner's request; completed commits and unfinished work were left in place.",
+          state: "stopped",
+        };
+      },
+      async runPlan() {
+        return {
+          plan: [{ kind: "delegated-worktree.change" }],
+          providerRun: grokEvidence,
+          state: "completed",
+        };
+      },
+    },
+  });
+
+  const admission = await confirmGrokTask(runtime, taskId);
+  await runtime.reconcileOperations();
+  const record = await runtime.getTask(taskId);
+
+  expect({
+    admission: admission.decision,
+    status: record?.task.status,
+    stopped: record?.evidence.find(
+      (event) => event.kind === "administrative.task.stopped",
+    ),
+    stoppedOperation: record?.evidence.find(
+      (event) => event.kind === "administrative.operation.failed",
+    ),
+  }).toMatchObject({
+    admission: "admitted",
+    status: "stopped",
+    stopped: {
+      kind: "administrative.task.stopped",
+      summary:
+        "Execution stopped at the owner's request; completed commits and unfinished work were left in place.",
+    },
+    stoppedOperation: {
+      summary:
+        "The outstanding delegated-worktree.change Operation stopped with its Task.",
+    },
+  });
+
+  await runtime.close();
+});
+
+test("the host runner pauses a missing voice-grok identity rather than as contract-drift", async () => {
+  const runner = createHostGrokAdministrativeRunner({
+    executorIdentity: "voice-agent",
+  });
+  const plan = await runner.runPlan(unusedGrokPlanInput());
+  const operation = await runner.runOperation(unusedGrokOperationInput());
+
+  expect({ operation, plan }).toEqual({
+    operation: { reason: "runner-identity-crossing", state: "paused" },
+    plan: { reason: "runner-identity-crossing", state: "paused" },
+  });
+});
+
+test("the host runner invokes the reviewed Grok contract path as voice-grok", async () => {
+  const runner = createHostGrokAdministrativeRunner({
+    executorIdentity: grokExecutorIdentity,
+    runContract: completingGrokRunner(),
+  });
+  const plan = await runner.runPlan(unusedGrokPlanInput());
+
+  expect(plan).toMatchObject({
+    plan: [{ kind: "delegated-worktree.change" }],
+    state: "completed",
+  });
+});
+
+test("an accepted enrollment with the API identity still pauses as provider-paused", async () => {
+  const { runtime, taskId } = await createGrokAdministrativeWorld({
+    runner: createHostGrokAdministrativeRunner({
+      executorIdentity: "voice-agent",
+    }),
+  });
+
+  const admission = await confirmGrokTask(runtime, taskId);
+  const record = await runtime.getTask(taskId);
+
+  expect({
+    admission,
+    pause: record?.task.executionPause,
+    task: record?.task.status,
+  }).toMatchObject({
+    admission: { decision: "admitted" },
+    pause: { reason: "provider-paused" },
+    task: "planning",
+  });
+
+  await runtime.close();
+});
+
+test("Grok enrollment binds delegated-worktree.change and not production.observe", async () => {
+  const adapter = createGrokAdministrativeAdapter({
+    enrollmentCampaignId: "grok-enrollment",
+    implementationDigest: "1".repeat(64),
+    runner: completingGrokRunner(),
+    runnerPin: grokPin,
+  });
+
+  expect(adapter.executionManifest.operationAdapters).toEqual([
+    {
+      implementationDigest: "1".repeat(64),
+      kind: "delegated-worktree.change",
+    },
+  ]);
+});
+
+test("a Grok plan that names production.observe is refused rather than observed", async () => {
+  const { runtime, taskId } = await createGrokAdministrativeWorld({
+    runner: {
+      async runOperation() {
+        throw new Error("Grok must not observe production");
+      },
+      async runPlan() {
+        return {
+          plan: [{ kind: "production.observe" }],
+          providerRun: grokEvidence,
+          state: "completed",
+        };
+      },
+    },
+  });
+
+  const admission = await confirmGrokTask(runtime, taskId);
+  const record = await runtime.getTask(taskId);
+
+  expect({
+    admission,
+    denied: record?.evidence.find(
+      (event) => event.kind === "administrative.task.denied",
+    ),
+    status: record?.task.status,
+  }).toMatchObject({
+    admission: {
+      decision: "denied",
+      reason:
+        "production.observe is not present in the activated execution manifest",
+    },
+    denied: {
+      details: {
+        reason:
+          "production.observe is not present in the activated execution manifest",
+      },
+    },
+    status: "denied",
+  });
+
+  await runtime.close();
+});
+
 function completingGrokRunner(): GrokAdministrativeRunner {
   return {
     async runOperation(execution) {
+      if (execution.request.kind !== "delegated-worktree.change") {
+        throw new Error(
+          `Grok enrollment does not bind ${execution.request.kind}`,
+        );
+      }
+      const request = execution.request;
+      const completedAt = execution.fence.attemptStartedAt;
+      const headCommit = "a".repeat(40);
+      const worktree = {
+        ...request.delegation.worktree,
+        dirty: false,
+        state: "completed" as const,
+      };
       return {
         providerRun: grokEvidence,
         result: {
-          completedAt: execution.fence.attemptStartedAt,
+          completedAt,
+          delegation: {
+            branch: worktree.branch,
+            changedFiles: ["src/administrative-change.ts"],
+            commits: [headCommit],
+            completedAt,
+            delegationId: delegationIdSchema.parse(
+              request.delegation.brief.delegationId,
+            ),
+            failure: null,
+            risks: [],
+            status: "completed",
+            termination: null,
+            verification: {
+              automated:
+                request.delegation.brief.acceptanceCriteria.automaticVerification.commands.map(
+                  (command) => ({
+                    command,
+                    outcome: "passed" as const,
+                    summary: `${command} completed in the restricted Delegated Worktree.`,
+                  }),
+                ),
+              candidate: {
+                branch: worktree.branch,
+                commit: headCommit,
+                worktreeId: worktree.id,
+              },
+            },
+            worktree,
+          },
           effect: {
             kind: "effect-performed",
-            startedAt: execution.fence.attemptStartedAt,
+            startedAt: completedAt,
           },
-          kind: "production.observe",
-          observation: {
-            kind: "registered-application-health",
-            status: "healthy",
-          },
-          operationId: execution.request.operationId,
+          kind: "delegated-worktree.change",
+          operationId: request.operationId,
           providerRun: grokEvidence,
-          summary: "The production.observe Operation completed through Grok.",
+          publication: {
+            branch: worktree.branch,
+            headCommit,
+            kind: "isolated-branch-prepared",
+            productionMutation: false,
+          },
+          summary:
+            "The delegated-worktree.change Operation completed through Grok.",
           usage: grokEvidence.usage,
         },
         state: "completed",
@@ -324,7 +649,7 @@ function completingGrokRunner(): GrokAdministrativeRunner {
     },
     async runPlan() {
       return {
-        plan: [{ kind: "production.observe" }],
+        plan: [{ kind: "delegated-worktree.change" }],
         providerRun: grokEvidence,
         state: "completed",
       };
@@ -332,13 +657,33 @@ function completingGrokRunner(): GrokAdministrativeRunner {
   };
 }
 
-async function confirmInvestigate(
+function unusedGrokPlanInput(): Parameters<GrokAdministrativeRunner["runPlan"]>[0] {
+  return {
+    activeExecutionDeadline: "2026-10-02T16:00:00.000Z",
+    intendedState: "The isolated branch contains the requested change.",
+    outcome: "proposal",
+    signal: new AbortController().signal,
+    target: {
+      environment: "production",
+      registeredCodebaseId: "voice-agent",
+    },
+    taskId: administrativeTaskIdSchema.parse("grok-administrative-task-1"),
+  } as Parameters<GrokAdministrativeRunner["runPlan"]>[0];
+}
+
+function unusedGrokOperationInput(): Parameters<
+  GrokAdministrativeRunner["runOperation"]
+>[0] {
+  return {} as Parameters<GrokAdministrativeRunner["runOperation"]>[0];
+}
+
+async function confirmGrokTask(
   runtime: ReturnType<typeof createAdministrativeAutonomyRuntime>,
   taskId: ReturnType<typeof administrativeTaskIdSchema.parse>,
 ) {
   const prepared = await runtime.prepareTaskConfirmation({
-    intendedState: "The production application health is understood.",
-    outcome: "investigate",
+    intendedState: "The isolated branch contains the requested change.",
+    outcome: "propose",
     ownerId: "owner",
     requestId: `grok-${taskId}`,
     target,

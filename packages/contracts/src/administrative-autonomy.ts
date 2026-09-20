@@ -82,9 +82,10 @@ export type AdministrativeExecutionPauseReason = z.infer<
 /**
  * Map a Grok pause onto this system's closed pause enum.
  *
- * The provider names five refusals; Administrative Autonomy records three
- * reasons and does not let a provider invent a fourth. Quota is the one
- * refusal that is not a paused provider: the subscription is exhausted.
+ * Grok names six pauses; Administrative Autonomy records three reasons and
+ * does not let a provider invent a fourth. Quota is the one refusal that is
+ * not a paused provider: the subscription is exhausted. A missing
+ * `voice-grok` identity crossing is a paused provider, not contract-drift.
  */
 export function administrativePauseReasonFromGrok(
   reason: GrokPauseReason,

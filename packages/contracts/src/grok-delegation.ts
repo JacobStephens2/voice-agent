@@ -202,16 +202,20 @@ export type GrokRunEvidence = z.infer<typeof grokRunEvidenceSchema>;
 /**
  * Why a run stopped in a state an attended action can resume.
  *
- * Each of these is the provider declining to serve this subscription right
- * now. None of them is a reason to select another route: the Durable Task,
+ * Five of these are the provider declining to serve this subscription right
+ * now. `runner-identity-crossing` is this process not being `voice-grok`, the
+ * identity that may invoke the reviewed contract path; it is not configuration
+ * drift. None of them is a reason to select another route: the Durable Task,
  * its worktrees, and its completed commits are preserved and the work resumes
- * after quota, entitlement, or a fresh device authorization returns.
+ * after quota, entitlement, a fresh device authorization, or the identity
+ * crossing returns.
  */
 export const grokPauseReasonSchema = z.enum([
   "provider-authentication",
   "provider-contract-drift",
   "provider-entitlement",
   "provider-quota",
+  "runner-identity-crossing",
   "runner-pin-drift",
 ]);
 export type GrokPauseReason = z.infer<typeof grokPauseReasonSchema>;

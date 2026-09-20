@@ -30,6 +30,7 @@ import {
   livePatchRollbackActivationAttemptMilliseconds,
   isLivePatchMutationProofBoundToRequest,
   administrativeLivePatchRollbackActivatorIdentitySchema,
+  grokFailureReasonSchema,
   livePatchRollbackWindowMilliseconds,
   sameAdministrativeExecutionManifest,
   sameAdministrativeRegisteredCodebase,
@@ -279,6 +280,31 @@ export class AdministrativeExecutionPaused extends Error {
   }
 }
 
+/**
+ * Raised when Grok names a failure that must end the Durable Task: malformed
+ * output, an exhausted turn or time bound, or a runner that failed for its
+ * own reasons. This is not a retry signal.
+ */
+export class AdministrativeExecutionFailed extends Error {
+  /** Untrusted until narrowed: an executor may hold anything here. */
+  readonly reason: unknown;
+
+  constructor(reason: unknown, detail: string) {
+    super(detail);
+    this.reason = reason;
+  }
+}
+
+/**
+ * Raised when Grok names a Stop — a signal — that must Stop the Durable Task
+ * rather than fail it or retry it.
+ */
+export class AdministrativeExecutionStopped extends Error {
+  constructor(detail: string) {
+    super(detail);
+  }
+}
+
 /** The one loss reason Stop raises, shared by the abort and the settlement. */
 export const administrativeTaskStopLossReason =
   "The owner stopped the Administrative Task";
@@ -291,6 +317,18 @@ function administrativeExecutionPauseReason(
     error.reason,
   );
   return parsed.success ? parsed.data : undefined;
+}
+
+function namedGrokFailureReason(error: unknown): string | undefined {
+  if (!(error instanceof AdministrativeExecutionFailed)) return undefined;
+  const parsed = grokFailureReasonSchema.safeParse(error.reason);
+  return parsed.success ? parsed.data : "runner-execution";
+}
+
+function administrativeEventSummary(detail: string): string {
+  const trimmed = detail.trim();
+  if (trimmed.length === 0) return "The Administrative Task stopped.";
+  return trimmed.length <= 240 ? trimmed : trimmed.slice(0, 240);
 }
 
 class AdministrativeRollbackActivationError extends Error {
@@ -729,6 +767,28 @@ export function createAdministrativeAutonomyRuntime(options: {
     return outcome.decision === "applied";
   }
 
+  /**
+   * Provider Stop. A Grok signal ends the Durable Task the same way the owner
+   * does: future work is refused and worktrees stay where they are.
+   */
+  async function stopAdministrativeTaskFromProvider(
+    taskId: AdministrativeTaskId,
+    detail: string,
+  ): Promise<boolean> {
+    abortTaskExecutions(taskId, administrativeTaskStopLossReason);
+    const outcome = await options.store.stopTask({
+      event: {
+        id: options.identifiers.nextEventId(),
+        summary: administrativeEventSummary(detail),
+      },
+      stoppedAt: now(),
+      taskId,
+    });
+    if (outcome.decision !== "applied") return false;
+    await reconcileLivePatchRollbackActivations();
+    return true;
+  }
+
   async function denyClaimedOperation(
     claim: Extract<AdministrativeOperationClaim, { readonly decision: "claimed" }>,
     reason: string,
@@ -1128,6 +1188,23 @@ export function createAdministrativeAutonomyRuntime(options: {
           taskId: task.id,
         };
       }
+      const failureReason = namedGrokFailureReason(error);
+      if (failureReason !== undefined) {
+        return denyPlannedTask(task.id, failureReason);
+      }
+      if (
+        error instanceof AdministrativeExecutionStopped &&
+        (await stopAdministrativeTaskFromProvider(task.id, error.message))
+      ) {
+        return {
+          decision: "admitted",
+          policyRevision: task.authority.policyRevision,
+          taskId: task.id,
+        };
+      }
+      if (error instanceof AdministrativeExecutionStopped) {
+        return denyPlannedTask(task.id, administrativeEventSummary(error.message));
+      }
       if (
         error instanceof AdministrativePlanningDeadlineError ||
         now() >= task.activeExecutionDeadline
@@ -1513,6 +1590,26 @@ export function createAdministrativeAutonomyRuntime(options: {
           pauseReason !== undefined &&
           (await pauseAdministrativeTask(claim.request.taskId, pauseReason))
         ) {
+          return true;
+        }
+        const failureReason = namedGrokFailureReason(error);
+        if (failureReason !== undefined) {
+          await denyClaimedOperation(claim, failureReason);
+          return true;
+        }
+        if (error instanceof AdministrativeExecutionStopped) {
+          if (
+            await stopAdministrativeTaskFromProvider(
+              claim.request.taskId,
+              error.message,
+            )
+          ) {
+            return true;
+          }
+          await denyClaimedOperation(
+            claim,
+            administrativeEventSummary(error.message),
+          );
           return true;
         }
         if (error instanceof AdministrativeEffectFenceError) {
