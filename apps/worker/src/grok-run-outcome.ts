@@ -103,13 +103,48 @@ export interface GrokRunObservation {
  * ending names another provider or another billing route, because there is no
  * ending that has one: the Durable Task and its worktrees outlive all four.
  */
+export type GrokRunClassification =
+  | Extract<GrokContractRunOutcome, { state: "failed" | "paused" | "stopped" }>
+  | {
+      readonly evidence: GrokRunEvidence;
+      readonly exitCode: number | null;
+      readonly state: "envelope";
+      readonly structuredOutput: Record<string, unknown>;
+    };
+
 export function describeGrokRunOutcome(
   observation: GrokRunObservation,
 ): GrokContractRunOutcome {
-  return grokContractRunOutcomeSchema.parse(classify(observation));
+  const classified = classifyGrokRun(observation);
+  if (classified.state !== "envelope") {
+    return grokContractRunOutcomeSchema.parse(classified);
+  }
+  const report = readReport(classified.structuredOutput);
+  if (report === null) {
+    return grokContractRunOutcomeSchema.parse({
+      detail:
+        "The provider returned a final result that does not match the reviewed structured schema.",
+      evidence: classified.evidence,
+      reason: "malformed-output",
+      state: "failed",
+    });
+  }
+  return grokContractRunOutcomeSchema.parse({
+    evidence: classified.evidence,
+    report,
+    state: "completed",
+  });
 }
 
-function classify(observation: GrokRunObservation): GrokContractRunOutcome {
+/**
+ * Name the run before the model report is parsed.
+ *
+ * Planning uses a different structured schema than the contract test. The
+ * envelope, usage, and identity are the same; only the report differs.
+ */
+export function classifyGrokRun(
+  observation: GrokRunObservation,
+): GrokRunClassification {
   if (observation.signalled) {
     return {
       detail:
@@ -186,16 +221,6 @@ function classify(observation: GrokRunObservation): GrokContractRunOutcome {
       state: "failed",
     };
   }
-  const report = readReport(envelope.structuredOutput);
-  if (report === null) {
-    return {
-      detail:
-        "The provider returned a final result that does not match the reviewed structured schema.",
-      evidence,
-      reason: "malformed-output",
-      state: "failed",
-    };
-  }
   if (observation.exitCode !== 0) {
     return {
       detail: `The runner exited with code ${observation.exitCode ?? "unknown"} after returning a structured result.`,
@@ -204,7 +229,12 @@ function classify(observation: GrokRunObservation): GrokContractRunOutcome {
       state: "failed",
     };
   }
-  return { evidence, report, state: "completed" };
+  return {
+    evidence,
+    exitCode: observation.exitCode,
+    state: "envelope",
+    structuredOutput: envelope.structuredOutput,
+  };
 }
 
 function readEnvelope(
@@ -239,7 +269,9 @@ function readReport(
   return report.success ? report.data : null;
 }
 
-function pausedByProvider(stderr: string): GrokContractRunOutcome | null {
+function pausedByProvider(
+  stderr: string,
+): Extract<GrokContractRunOutcome, { state: "paused" }> | null {
   for (const signal of pauseSignals) {
     if (signal.pattern.test(stderr)) {
       return {
@@ -263,9 +295,12 @@ function buildEvidence(
   const served = Object.keys(envelope.modelUsage);
   return {
     // Not reported in the envelope at any spelling. The route is established
-    // where the credential is: the enrolled credential's own `auth_mode`, and
-    // the runner policy that disables API key authentication outright.
+    // where the credential is: the run's minted `auth_mode: "external"` and
+    // runner policy `loginPolicy.apiKeyAuthDisabled`, both required by
+    // preflight before this evidence is built.
+    apiKeyAuthDisabled: true,
     authenticationRoute: grokAuthenticationRoute,
+    credentialAuthMode: "external",
     model: {
       providerReported: served.length === 1 ? (served[0] ?? grokModelSelector) : served.join(", "),
       selector: grokModelSelector,

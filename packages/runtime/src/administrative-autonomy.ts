@@ -13,6 +13,7 @@ import {
   administrativeOperationClaimIdSchema,
   administrativeOperationExecutorIdentitySchema,
   administrativeOperationIdSchema,
+  administrativePlanChoiceSchema,
   administrativePlanProviderIdentitySchema,
   administrativeProviderPlanSchema,
   administrativeIntendedStateSchema,
@@ -1151,8 +1152,25 @@ export function createAdministrativeAutonomyRuntime(options: {
     } finally {
       cancelPlanningDeadline();
     }
-    const parsedPlan = administrativeProviderPlanSchema.safeParse(untrustedPlan);
-    if (!parsedPlan.success) {
+    const parsedChoice = administrativePlanChoiceSchema.safeParse(untrustedPlan);
+    const parsedPlan = parsedChoice.success
+      ? parsedChoice.data
+      : (() => {
+          const legacy = administrativeProviderPlanSchema.safeParse(untrustedPlan);
+          return legacy.success
+            ? administrativePlanChoiceSchema.parse({
+                plan: legacy.data,
+                providerRun: null,
+                usage: {
+                  cost: "unknown",
+                  incomplete: true,
+                  inputTokens: null,
+                  outputTokens: null,
+                },
+              })
+            : undefined;
+        })();
+    if (parsedPlan === undefined) {
       return denyPlannedTask(
         task.id,
         "Provider instructions did not describe a permitted typed Operation plan",
@@ -1161,12 +1179,12 @@ export function createAdministrativeAutonomyRuntime(options: {
     const planAuthorization = authorizeAdministrativePlan({
       definition: policy.definition,
       outcome: task.outcome,
-      plan: parsedPlan.data,
+      plan: parsedPlan.plan,
     });
     if (planAuthorization.decision === "deny") {
       return denyPlannedTask(task.id, planAuthorization.reason);
     }
-    const unavailableKind = parsedPlan.data.find(
+    const unavailableKind = parsedPlan.plan.find(
       (operation) =>
         !executionManifest.operationAdapters.some(
           (adapter) => adapter.kind === operation.kind,
@@ -1180,7 +1198,7 @@ export function createAdministrativeAutonomyRuntime(options: {
     }
     const plannedAt = now();
     const authority = administrativeTaskAuthoritySnapshot(task);
-    const operations = parsedPlan.data.map((operation) => {
+    const operations = parsedPlan.plan.map((operation) => {
       const request = operationRequest({
         authority,
         intendedState: task.intendedState,
@@ -1212,9 +1230,11 @@ export function createAdministrativeAutonomyRuntime(options: {
       operations,
       planEvent: {
         details: {
-          operations: parsedPlan.data.map((operation) => operation.kind),
+          operations: parsedPlan.plan.map((operation) => operation.kind),
           policyRevision: policy.revision,
+          providerRun: parsedPlan.providerRun,
           stateVersion: task.authority.policyStateVersion,
+          usage: parsedPlan.usage,
         },
         id: options.identifiers.nextEventId(),
         kind: "administrative.plan.accepted",

@@ -9,6 +9,9 @@ const identifierSchema = z.string().min(1).max(120);
 export const grokEnrollmentCampaignIdSchema = identifierSchema.brand<
   "GrokEnrollmentCampaignId"
 >();
+export type GrokEnrollmentCampaignId = z.infer<
+  typeof grokEnrollmentCampaignIdSchema
+>;
 const timestampSchema = z.iso.datetime();
 const absolutePathSchema = z.string().min(1).max(500).startsWith("/");
 const digestSchema = z.string().regex(/^[0-9a-f]{64}$/u);

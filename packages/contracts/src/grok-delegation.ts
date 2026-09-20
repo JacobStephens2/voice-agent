@@ -38,8 +38,11 @@ export const grokAuthenticationRoute = "subscription-oauth" as const;
  * and recorded in the Runner Pin, because a provider release may move its own
  * system configuration location. This constant is what the Agent Host installs
  * and what the runbook pins by default, not an assumption checked at runtime.
+ *
+ * grok 1.0.13 reads the host-wide `requirements` layer from `/etc/grok`, not
+ * from `/etc/voice-agent/grok/config.toml`.
  */
-export const grokRootConfigurationPath = "/etc/voice-agent/grok/config.toml";
+export const grokRootConfigurationPath = "/etc/grok/requirements.toml";
 
 /** The reviewed sandbox profile a model process is confined to. */
 export const grokSandboxProfile = "voice-agent-task";
@@ -148,6 +151,18 @@ export const grokUsageSchema = z
     outputTokens: z.number().int().nonnegative().nullable(),
   })
   .strict();
+export type GrokUsage = z.infer<typeof grokUsageSchema>;
+
+/**
+ * Subscription-backed usage the provider did not account for. An omitted cost
+ * is unknown rather than zero; missing token counts are incomplete.
+ */
+export const unknownGrokUsage: GrokUsage = grokUsageSchema.parse({
+  cost: "unknown",
+  incomplete: true,
+  inputTokens: null,
+  outputTokens: null,
+});
 
 /**
  * The durable account of one provider execution.
@@ -156,10 +171,18 @@ export const grokUsageSchema = z
  * provider's own headless envelope. No credential, prompt, transcript, tool
  * event, or raw output reaches it, which is what makes it safe to keep for as
  * long as the Durable Task lives.
+ *
+ * The headless envelope reports no authentication route at any spelling. The
+ * claim that a run used the subscription is the enrolled credential's
+ * `auth_mode` together with runner policy `loginPolicy.apiKeyAuthDisabled`,
+ * established where the credential is used rather than where the provider
+ * chooses to describe it.
  */
 export const grokRunEvidenceSchema = z
   .object({
+    apiKeyAuthDisabled: z.literal(true),
     authenticationRoute: z.literal(grokAuthenticationRoute),
+    credentialAuthMode: z.literal("external"),
     model: z
       .object({
         providerReported: providerIdentifierSchema,

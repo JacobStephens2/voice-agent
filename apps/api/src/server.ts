@@ -25,7 +25,6 @@ import {
   administrativeRestartWitnessChallengeSchema,
   type AdministrativeRestartWitnessApiServiceInstanceFingerprint,
   administrativeTaskIdSchema,
-  administrativeUnavailableExecutionManifest,
 } from "@voice-agent/contracts";
 
 import {
@@ -57,6 +56,7 @@ import {
   registerNodeAdministrativeRestartWitnessServiceInstance,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
+  composeDeployedAdministrativeGrokExecution,
   formatTelephoneBoundaryPrometheusMetrics,
 } from "@voice-agent/runtime";
 
@@ -77,15 +77,25 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
-// Issue #83's acceptance gate uses a fake provider, executor, and independent
-// rollback activator at the scenario seam. ADR-0048 keeps real planning and
-// effects behind Grok enrollment (#80),
-// the Administrative Publisher App (#82), typed observation brokers (#90), and
-// the Live Patch broker (#92). Production therefore binds activation to the
-// unavailable manifest and reports that exact prerequisite through status.
+// The Grok adapter is the executable Administrative Execution Manifest. Until
+// the reviewed Runner Pin is on this host, composition stays unavailable so
+// policy activation cannot pretend Grok is enrolled. After the pin is present,
+// a confirmed Durable Task can exist; work still pauses until the enrollment
+// record is accepted for that pin.
+const grokExecution = await composeDeployedAdministrativeGrokExecution();
 const administrativeStore = createSqliteAdministrativeAutonomyStore(databasePath);
 const administrativeRuntime = createAdministrativeAutonomyRuntime({
-  executionManifest: administrativeUnavailableExecutionManifest,
+  executionManifest: grokExecution.executionManifest,
+  ...(grokExecution.kind === "grok-build"
+    ? {
+        executor: grokExecution.executor,
+        implementationCatalog: grokExecution.catalog,
+        provider: grokExecution.provider,
+        registeredCodebasePathAuthority:
+          grokExecution.registeredCodebasePathAuthority,
+        registeredCodebases: grokExecution.registeredCodebases,
+      }
+    : {}),
   identifiers: {
     nextCapability: randomUUID,
     nextClaimId: () =>
