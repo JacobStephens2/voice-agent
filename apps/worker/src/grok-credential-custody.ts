@@ -95,10 +95,7 @@ export function describeAuthProviderDrift(input: {
   readonly brokerPath: string;
   readonly layerText: string;
 }): string | null {
-  const lines = input.layerText
-    .split("\n")
-    .map((line) => line.replace(/#.*$/u, "").trim())
-    .filter((line) => line.length > 0);
+  const lines = significantLines(input.layerText);
   if (lines[0] !== "[auth]") {
     return "The staged auth layer does not open with the auth table";
   }
@@ -109,4 +106,67 @@ export function describeAuthProviderDrift(input: {
     return "The staged auth layer declares settings outside the token crossing";
   }
   return null;
+}
+
+/**
+ * Say whether the host-wide requirements layer still holds the API-key refusal.
+ *
+ * `loginPolicy.apiKeyAuthDisabled` is the one boundary in this contract the
+ * runner itself reports rather than one this repository asserts about its own
+ * process, and it is resolved from this file: `disable_api_key_auth` is a
+ * `pin`-scoped key, so no user layer, environment variable, or Delegation root
+ * can turn it back off. Issue #167 established that it is host-configurable
+ * and not an account setting; `docs/research/grok-login-policy-api-key-auth.md`
+ * records how.
+ *
+ * The second claim is the one that was previously held by the absence of the
+ * whole `[auth]` table. That table is an alias of `[grok_com_config]`, which
+ * this layer now carries for the refusal above, so a host-wide
+ * `auth_provider_command` would reach the runner under a heading the old check
+ * read as safe - and it would bind the custody identity too, sending the one
+ * identity that can renew the six-hour login to the broker that reads it.
+ * ADR-0069 stages that crossing into each run's own home instead, and this
+ * refuses it here by name rather than by table.
+ */
+export function describeSystemRequirementsDrift(
+  layerText: string,
+): string | null {
+  const lines = significantLines(layerText);
+  // Refused by name anywhere in the file rather than by where the key sits,
+  // because TOML has more spellings for a key than a line-oriented reader has:
+  // an inline table, a quoted key, a sub-table. The word has no legitimate use
+  // in this layer at all, so its presence is the whole test.
+  if (lines.join("\n").includes("auth_provider_command")) {
+    return "The pinned requirements layer names an auth provider command";
+  }
+  let table = "";
+  let refusalPinned = false;
+  for (const line of lines) {
+    const heading = /^\[([^\]]+)\]$/u.exec(line);
+    if (heading !== null) {
+      table = heading[1]?.trim() ?? "";
+      continue;
+    }
+    const [key = "", ...rest] = line.split("=");
+    // Qualified so a dotted key written at the top level reads the same as one
+    // written under its table heading; both reach the runner.
+    const name = [table, key.trim()].filter((part) => part.length > 0).join(".");
+    if (/^(?:auth|grok_com_config)\.disable_api_key_auth$/u.test(name)) {
+      // Last write wins, as the runner resolves it. A file that turns the
+      // refusal on and then off again has not pinned it.
+      refusalPinned = rest.join("=").trim() === "true";
+    }
+  }
+  if (!refusalPinned) {
+    return "The pinned requirements layer does not pin disable_api_key_auth";
+  }
+  return null;
+}
+
+/** A configuration layer's lines, without comments, blanks, or indentation. */
+function significantLines(layerText: string): readonly string[] {
+  return layerText
+    .split("\n")
+    .map((line) => line.replace(/#.*$/u, "").trim())
+    .filter((line) => line.length > 0);
 }

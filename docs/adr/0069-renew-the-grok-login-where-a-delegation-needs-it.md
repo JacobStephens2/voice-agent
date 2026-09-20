@@ -138,11 +138,24 @@ login at about half a second - and a Delegation that has to wait out the last
 half hour of a six-hour credential rather than spending it.
 
 The enrollment wizard asserts what this decision depends on: that both broker
-crossings answer, and that `/etc/grok/requirements.toml` declares no `[auth]`
-table. A host that reintroduces one would not fail visibly - Delegations would
-keep working until the next expiry, and then stop - which is exactly the kind of
-silence this repository refuses to ship, so it is checked at the one attended
-moment where it can be.
+crossings answer, and that `/etc/grok/requirements.toml` names no
+`auth_provider_command`. A host that reintroduced one would not fail visibly -
+Delegations would keep working until the next expiry, and then stop - which is
+exactly the kind of silence this repository refuses to ship, so it is checked at
+the one attended moment where it can be, and again before every run: the
+executor reads the pinned layer back rather than inferring it from `inspect`,
+which reports the policy the layer produced and not the keys that produced it.
+
+The check is written against the key rather than the table, and issue #167 is
+why. That layer now carries `[grok_com_config] disable_api_key_auth = true`,
+which is what makes `loginPolicy.apiKeyAuthDisabled` true; `[auth]` is an alias
+of `[grok_com_config]`, so a check on the table name would have read one
+spelling and missed the other. The key is refused by name anywhere in the file
+rather than by the heading it sits under, because TOML has more spellings for a
+key - an inline table, a quoted key, a sub-table - than a line-oriented reader
+has, and the word has no legitimate use in this layer at all. Adding the refusal
+does not reopen the hazard above: it configures no provider and starts no
+command, so the custody identity's own renewal is untouched.
 
 Nothing here extends what a Delegation may reach. The refresh token is not
 disclosed to `voice-grok`, to a model-selected command, or to any durable
