@@ -283,7 +283,8 @@ for unit in "${voice_agent_authority_units[@]}"; do
   show_difference "$unit" "$REPOSITORY_ROOT/ops/systemd/$unit" \
     "$ROOT_ORCHESTRATOR/systemd/$unit"
 done
-for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}" \
+  "${voice_agent_authority_apparmor_local_overlays[@]}"; do
   source_path=${mapping%%:*}
   target_path=${mapping#*:}
   reviewed_authority_paths+=("apparmor/$target_path")
@@ -354,7 +355,8 @@ sudo cmp -s "$REPOSITORY_ROOT/ops/release/promote-release.sh" \
   "$ROOT_ORCHESTRATOR/promote-release.sh"
 sudo cmp -s "$REPOSITORY_ROOT/ops/systemd/voice-agent-subagent.service" \
   "$ROOT_ORCHESTRATOR/systemd/voice-agent-subagent.service"
-for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}" \
+  "${voice_agent_authority_apparmor_local_overlays[@]}"; do
   source_path=${mapping%%:*}
   profile=${mapping#*:}
   sudo cmp -s "$REPOSITORY_ROOT/$source_path" \

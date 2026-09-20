@@ -298,6 +298,18 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
   ).resolves.toBe(fixture.reviewedBwrapProfile);
   await expect(
     readFile(
+      join(fixture.authority, "apparmor/local/unpriv_bwrap"),
+      "utf8",
+    ),
+  ).resolves.toMatch(/deny \/usr\/local\/libexec\/voice-agent\/ r,/u);
+  await expect(
+    readFile(
+      join(fixture.root, "etc/apparmor.d/local/unpriv_bwrap"),
+      "utf8",
+    ),
+  ).resolves.toMatch(/deny \/usr\/local\/libexec\/voice-agent\/ r,/u);
+  await expect(
+    readFile(
       join(
         fixture.root,
         "var/lib/voice-agent-deployment-authority/activated",

@@ -1,0 +1,11 @@
+# Site-specific additions for unpriv_bwrap. Included by
+# /etc/apparmor.d/bwrap-userns-restrict via
+# `include if exists <local/unpriv_bwrap>`.
+#
+# Deny listing and executing the Auth Crossing to model-selected Bubblewrap
+# children. The parent Grok runner is not confined by this profile; it must
+# still execute the reviewed broker. This is not a Grok sandbox deny list.
+
+deny /usr/local/libexec/voice-agent r,
+deny /usr/local/libexec/voice-agent/ r,
+deny /usr/local/libexec/voice-agent/** rwlkmx,

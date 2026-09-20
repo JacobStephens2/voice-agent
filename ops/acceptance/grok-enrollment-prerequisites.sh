@@ -59,6 +59,9 @@ verify_grok_enrollment_boundary() {
     sudo test "$(sudo stat -c %U /var/lib/voice-grok 2>/dev/null)" = voice-grok
   require "the custody state directory belongs to voice-grok-auth" "$SETUP_REMEDY" \
     sudo test "$(sudo stat -c %U /var/lib/voice-grok-auth 2>/dev/null)" = voice-grok-auth
+  require "the Bubblewrap child overlay denies the Auth Crossing" "$AUTHORITY_REMEDY" \
+    sudo grep -Fq 'deny /usr/local/libexec/voice-agent/' \
+      /etc/apparmor.d/local/unpriv_bwrap
   if (( REQUIREMENTS_MISSING > 0 )); then
     printf '\n'
     warn "$REQUIREMENTS_MISSING prerequisite(s) are missing. Nothing has been changed; install them and run this wizard again."
@@ -74,6 +77,7 @@ verify_grok_enrollment_boundary() {
     return 1
   fi
   sudo systemd-analyze security "voice-agent-grok-contract@enrollment.service" --no-pager || true
-  step "Confirm the contract unit has no sudo capabilities, Docker socket, production directory, or broker access."
+  step "Confirm the contract unit grants only CAP_SETUID and CAP_SETGID for the sudoers crossing, and has no Docker socket or production directory. Child AppArmor, not this unit, denies the Auth Crossing to model-selected Bubblewrap children."
+  step "Under the real contract unit, confirm the parent broker probe answers and a Bubblewrap child cannot list or execute /usr/local/libexec/voice-agent. Run ops/grok/auth-crossing-child-canary.sh from a Grok Delegation; an attended shell is not this witness. If the unit probe fails for want of one more capability, record that cap rather than granting a kitchen-sink set."
   pause "Review the boundary report, then press Enter."
 }

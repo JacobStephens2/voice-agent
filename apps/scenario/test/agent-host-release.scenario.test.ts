@@ -184,8 +184,10 @@ test("the Agent Host narrowly enables Bubblewrap user namespaces for Codex", asy
   expect(profile).toContain("profile bwrap /usr/bin/bwrap");
   expect(profile).toContain("profile unpriv_bwrap");
   expect(profile).toContain("audit deny capability");
+  expect(profile).toContain("include if exists <local/unpriv_bwrap>");
   expect(manifest).toContain("voice_agent_authority_apparmor_profiles");
   expect(manifest).toContain("bwrap-userns-restrict");
+  expect(manifest).toContain("local/unpriv_bwrap");
   expect(upgrader).toContain('"$stage/apparmor"');
   expect(upgrader).toContain("restore_apparmor_profiles");
   expect(upgrader).toContain('/usr/sbin/apparmor_parser -r "$target_path"');
@@ -223,6 +225,34 @@ test("the Agent Host narrowly enables Bubblewrap user namespaces for Codex", asy
       "kernel.apparmor_restrict_unprivileged_userns=0",
     );
   }
+});
+
+/**
+ * Model-selected Bubblewrap children share the runner's identity, so the
+ * independently enforced unpriv_bwrap overlay is what denies the Auth
+ * Crossing. The stock profile already includes local/unpriv_bwrap; this is
+ * that overlay, not a Grok sandbox deny list.
+ */
+test("the Bubblewrap child overlay denies listing and executing the Auth Crossing", async () => {
+  const [profile, overlay, manifest, upgrader, setup, preflight] =
+    await Promise.all(
+      [
+        "ops/apparmor/bwrap-userns-restrict",
+        "ops/apparmor/local/unpriv_bwrap",
+        "ops/release/deployment-authority-manifest.sh",
+        "ops/release/upgrade-deployment-authority.sh",
+        "ops/setup-agent-host.sh",
+        "ops/release/candidate-preflight.sh",
+      ].map((path) => readFile(join(repositoryRoot, path), "utf8")),
+    );
+
+  expect(profile).toContain("include if exists <local/unpriv_bwrap>");
+  expect(overlay).toMatch(/deny \/usr\/local\/libexec\/voice-agent\/ r,/u);
+  expect(overlay).toMatch(/deny \/usr\/local\/libexec\/voice-agent\/\*\*.*x/u);
+  expect(manifest).toContain("ops/apparmor/local/unpriv_bwrap:local/unpriv_bwrap");
+  expect(upgrader).toContain("voice_agent_authority_apparmor_local_overlays");
+  expect(setup).toContain("/etc/apparmor.d/local");
+  expect(preflight).toContain("voice_agent_authority_apparmor_local_overlays");
 });
 
 test("the Subagent unit lets restricted Codex open its Bubblewrap sandbox", async () => {

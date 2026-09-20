@@ -134,58 +134,35 @@ unit's `InaccessiblePaths` would protect it from the model and make it
 unavailable to the runner. The present one-identity, one-unit boundary cannot
 express the distinction ADR-0068 requires.
 
-## Decisions held for the owner
+## Decisions accepted
 
-No hardening or boundary should change until these choices are recorded for
-#168/#76 (and, because they revise the implemented claims, in a follow-up to
-ADR-0068/ADR-0069):
+The owner accepted the split Auth Crossing boundary on 2026-09-19 for
+[#168](https://github.com/JacobStephens2/voice-agent/issues/168) and
+[#76](https://github.com/JacobStephens2/voice-agent/issues/76), and ADR-0068
+records the enforcement:
 
-1. **Where the trusted-parent/model-child split is enforced.** The leading
-   candidate is an independently enforced Bubblewrap-child profile, such as a
-   reviewed AppArmor rule on `unpriv_bwrap`, that denies the crossing
-   directory and auth store only after the fixed runner has crossed. It needs
-   a canary under the real contract unit proving that the parent can cross
-   while a model-selected child cannot list or execute the broker or helper.
-   Grok's own `deny` setting is not this control; it is known not to start on
-   the host.
-
-2. **Where privilege lives.** Two viable shapes need explicit comparison:
-
-   - retain sudo inside the contract unit, disable only the hardening that the
-     exact transition requires, determine and pin the minimum capability set
-     against the Agent Host's sudo build, make the auth store readable and
-     renewable only where needed, and prove the child profile strips that
-     privilege and denies both crossing files; or
-   - keep `NoNewPrivileges`, the empty capability set, and the hidden auth
-     store on the Grok unit, and move the crossing into a separately confined
-     broker service/IPC boundary. systemd documents that `NoNewPrivileges`
-     does not extend to processes requested through a separate IPC service
-     ([systemd source](https://github.com/systemd/systemd/blob/d0fcc5a9ecbd01305eb6a7629643c892a58bd5ea/man/systemd.exec.xml#L939-L957)),
-     but that service must authenticate and authorize only the two reviewed
-     operations, and the model child must be independently denied its socket
-     or activation interface.
-
-   Running the Grok unit as root, granting a broad capability set, or merely
-   deleting `NoNewPrivileges` are not acceptable alternatives.
-
-3. **What the custody acceptance proves after the split.** The current direct
-   identity probe cannot both require zero readable boundary paths and permit
-   the same identity to traverse a `0755` boundary directory. The owner must
-   choose whether the canonical proof moves inside the independently enforced
-   model-child profile, whether parent and child receive distinct identities,
-   or whether the crossing becomes a separately tested capability while the
-   path remains in the Credential Custody Boundary. Until that compensating
-   boundary and canary are approved, do not remove the path, weaken the probe,
-   or count an attended-shell result as the service witness. Changing the
-   directory to `0711` would only make `readdir` fail while known executable
-   paths remain callable, so it is not a custody fix.
-
+1. **Where the trusted-parent/model-child split is enforced.** An independently
+   enforced Bubblewrap-child AppArmor overlay on `unpriv_bwrap`
+   (`/etc/apparmor.d/local/unpriv_bwrap`) denies listing and executing the
+   Auth Crossing directory. The Grok sandbox `deny` setting is not this
+   control; `describeSandboxProfileDrift` still rejects one.
+2. **Where privilege lives.** The sudoers crossing stays inside the contract
+   unit. `NoNewPrivileges` is false, the capability bound is `CAP_SETUID` and
+   `CAP_SETGID`, the unit still runs as `voice-grok`, and
+   `/var/lib/voice-grok-auth` is on `ReadWritePaths` so ADR-0069 renewal can
+   write. Identity mode 0700 still hides the store from `voice-grok`. Child
+   AppArmor, not the unit's `InaccessiblePaths`, denies the crossing to model
+   children.
+3. **What the custody acceptance proves after the split.** Credential stores
+   stay in `credentialCustodyBoundaryPaths` and unreadable to `voice-grok`.
+   `/usr/local/libexec/voice-agent` is crossing code, not a store; a `0755`
+   listing of it is not disclosure. The child overlay and
+   `ops/grok/auth-crossing-child-canary.sh` are the compensating canary.
 4. **Which real-host witnesses close enrollment.** After Human Merge and the
-   Fresh-Passkey deployment-authority upgrade, acceptance must exercise the
-   exact contract unit, the successful broker probe and renewal path, the
-   failed child attempts against both crossing files and the auth store, and
-   the custody canary selected above. An attended shell invocation alone is
-   insufficient.
+   Fresh-Passkey deployment-authority upgrade, acceptance still has to exercise
+   the exact contract unit, the successful broker probe and renewal path, the
+   failed child attempts against the crossing, and the store probe. An attended
+   shell invocation alone is insufficient; that ceremony remains attended.
 
 ## Current host status remains partial
 
@@ -195,5 +172,5 @@ only host witness: `/usr/local/libexec/voice-agent` was restored to
 `0755 root:root` and `voice-grok` traversal was independently verified, but the
 broker/helper binaries remain absent. No broker installation, contract-unit
 crossing, or wizard-past-prerequisites witness is claimed. Those actions remain
-attended after Human Merge, and this finding shows that they must wait for the
-architectural decision above rather than merely installing the files.
+attended after Human Merge. The architectural decision above is accepted; the
+live unit and enrollment ceremony are still the attended trap.

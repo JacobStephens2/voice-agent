@@ -18,6 +18,19 @@ const operations = await readFile(
 const prerequisitesPath = fileURLToPath(
   new URL("../../../ops/acceptance/grok-enrollment-prerequisites.sh", import.meta.url),
 );
+const prerequisites = await readFile(prerequisitesPath, "utf8");
+const contractUnit = await readFile(
+  fileURLToPath(
+    new URL("../../../ops/systemd/voice-agent-grok-contract@.service", import.meta.url),
+  ),
+  "utf8",
+);
+const childCanary = await readFile(
+  fileURLToPath(
+    new URL("../../../ops/grok/auth-crossing-child-canary.sh", import.meta.url),
+  ),
+  "utf8",
+);
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -157,4 +170,47 @@ stage "Run the contract Delegation"`,
   );
   expect(result.stdout).not.toContain("STAGE: Pin the runner");
   expect(result.stdout).not.toContain("STAGE: Run the contract Delegation");
+});
+
+/**
+ * The sudoers crossing needs CAP_SETUID/CAP_SETGID and must be able to gain
+ * euid 0 through setuid sudo. Telling the operator the unit has "no sudo
+ * capabilities" would certify the configuration that cannot cross.
+ */
+test("enrollment does not tell the operator the contract unit has no sudo capabilities", () => {
+  expect(prerequisites).not.toContain("no sudo capabilities");
+  expect(wizard).not.toContain("no sudo capabilities");
+  expect(operations).not.toContain("no sudo capabilities");
+  expect(prerequisites).toContain("CAP_SETUID");
+  expect(prerequisites).toContain("CAP_SETGID");
+});
+
+test("the contract unit grants only the sudoers crossing capabilities", () => {
+  expect(contractUnit).toMatch(/^User=voice-grok$/mu);
+  expect(contractUnit).not.toMatch(/^User=root$/mu);
+  expect(contractUnit).toMatch(/^NoNewPrivileges=false$/mu);
+  expect(contractUnit).toMatch(/^CapabilityBoundingSet=CAP_SETUID CAP_SETGID$/mu);
+  expect(contractUnit).toMatch(/^AmbientCapabilities=$/mu);
+  expect(contractUnit).toMatch(/^ReadWritePaths=.*\/var\/lib\/voice-grok-auth/mu);
+  const inaccessible =
+    contractUnit.match(/^InaccessiblePaths=(.*)$/mu)?.[1]?.split(" ") ?? [];
+  expect(inaccessible).not.toContain("/var/lib/voice-grok-auth");
+  expect(inaccessible).not.toContain("/usr/local/libexec/voice-agent");
+});
+
+/**
+ * Child AppArmor, not the Grok sandbox deny list, holds the parent/child
+ * split. The mechanical gate is the overlay, the canary fixture, and the
+ * wizard step; the live unit is an attended trap.
+ */
+test("enrollment canaries a Bubblewrap child that cannot list or execute the Auth Crossing", () => {
+  expect(childCanary).toContain("bwrap");
+  expect(childCanary).toContain("ls");
+  expect(childCanary).toContain("/usr/local/libexec/voice-agent");
+  expect(childCanary).toContain("grok-token-broker");
+  expect(childCanary).toContain("unpriv_bwrap");
+  for (const copy of [prerequisites, wizard, operations]) {
+    expect(copy).toContain("auth-crossing-child-canary.sh");
+    expect(copy).toContain("/etc/apparmor.d/local/unpriv_bwrap");
+  }
 });

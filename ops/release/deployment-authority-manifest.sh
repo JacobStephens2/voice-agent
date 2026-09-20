@@ -43,6 +43,12 @@ voice_agent_authority_apparmor_profiles=(
   "ops/apparmor/bwrap-userns-restrict:bwrap-userns-restrict"
 )
 
+# Included by unpriv_bwrap. Not a standalone profile: install the file, then
+# reload the parent. apparmor_parser -r on the overlay itself would fail.
+voice_agent_authority_apparmor_local_overlays=(
+  "ops/apparmor/local/unpriv_bwrap:local/unpriv_bwrap"
+)
+
 voice_agent_authority_programs=(
   # source path : pinned path : published mode. Unlike the category-level
   # arrays above, these programs do not share one mode: data read by Node stays
@@ -127,6 +133,9 @@ voice_agent_authority_pinned_paths() {
     printf 'ops/systemd/%s\tsystemd/%s\t0644\n' "$entry" "$entry"
   done
   for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+    printf '%s\tapparmor/%s\t0644\n' "${mapping%%:*}" "${mapping#*:}"
+  done
+  for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
     printf '%s\tapparmor/%s\t0644\n' "${mapping%%:*}" "${mapping#*:}"
   done
   for mapping in "${voice_agent_authority_programs[@]}"; do

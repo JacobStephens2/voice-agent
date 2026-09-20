@@ -8,13 +8,14 @@
 # Both were tried on this host and both make the runner refuse to start: after
 # entering Bubblewrap it re-opens every read-deny path to confirm the mask is
 # in effect, and a path the executor identity cannot open at all reports
-# `Permission denied`, which it reads as an unenforced deny list. That premise
-# does not hold for the required 0755 Auth Crossing directory, so this profile
-# does not currently enforce the full Credential Custody Boundary.
+# `Permission denied`, which it reads as an unenforced deny list. A Grok deny
+# of the Auth Crossing would fail the same way; describeSandboxProfileDrift
+# refuses any deny list.
 #
-# This profile holds workspace confinement. A separately enforced child custody
-# profile and child-process network restriction are held decisions; see
-# docs/research/grok-auth-crossing-and-custody-boundary.md and issue #161.
+# This profile holds workspace confinement. Credential stores stay unreadable
+# to voice-grok by identity mode and the contract unit. Model-selected
+# Bubblewrap children are denied the Auth Crossing by the unpriv_bwrap
+# AppArmor overlay. Child-process network restriction remains issue #161.
 
 [profiles.voice-agent-task]
 extends = "workspace"

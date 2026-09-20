@@ -7,15 +7,16 @@
 # Delegation has one before it spawns a model.
 #
 # Installed at /usr/local/libexec/voice-agent/grok-token-broker, owned by root,
-# mode 0755, inside a root-owned /usr/local/libexec/voice-agent directory with
-# mode 0755 so the voice-grok executor can traverse it. The runner cannot read
-# the credential itself; this is the only crossing, and the sudoers rules
-# beside it permit exactly these two commands and no other argument.
+# mode 0755, inside a root-owned /usr/local/libexec/voice-agent Auth Crossing
+# directory with mode 0755 so the voice-grok executor can traverse it. That
+# directory is crossing code, not a Credential Custody Boundary store. The
+# runner cannot read the credential itself; this is the only crossing, and the
+# sudoers rules beside it permit exactly these two commands and no other
+# argument.
 #
-# The current model sandbox does not deny /usr/local/libexec/voice-agent, and
-# model-selected commands share the runner's voice-grok identity. ADR-0068's
-# intended parent/child split is therefore held for a compensating boundary;
-# installing this crossing alone is not a Credential Custody Boundary witness.
+# Model-selected Bubblewrap children share the runner's voice-grok identity.
+# The independently enforced unpriv_bwrap AppArmor overlay denies listing and
+# executing this directory; the Grok sandbox deny list is not this control.
 set -euo pipefail
 
 readonly HELPER=/usr/local/libexec/voice-agent/grok-token-helper

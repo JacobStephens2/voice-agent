@@ -21,6 +21,12 @@ test -f "$release/ops/grafana/voice-agent-slice-one.json"
 script_directory=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=deployment-authority-manifest.sh
 source "$script_directory/deployment-authority-manifest.sh"
+for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
+  overlay=${mapping#*:}
+  target_path="/etc/apparmor.d/$overlay"
+  test -f "$target_path"
+  cmp -s "$script_directory/apparmor/$overlay" "$target_path"
+done
 for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
   profile=${mapping#*:}
   target_path="/etc/apparmor.d/$profile"

@@ -6,29 +6,13 @@ import {
 export { credentialCustodyBoundaryPaths } from "@voice-agent/contracts";
 
 /**
- * The host stores a model process may never read.
- *
- * ADR-0048 broadened what a Code Subagent may see - every repository on the
- * Agent Host, including repository-contained secrets - without broadening
- * this. These are the stores whose contents are reusable host authority
- * rather than source: the provider's own OAuth refresh credential, the token
- * helper's socket, the brokers, the publisher, the evidence store, and root's
- * and the Voice Agent's own state. The intended contract is that reusable
- * authority crosses only through a typed broker; the executable crossing path
- * is the currently held exception described below.
- *
- * The fixed executor refuses to stage a run inside these paths, and the direct
- * custody probe enumerates the same list. The current sandbox does not deny the
- * list to model-selected tools; the required parent/child split is held for a
- * compensating boundary and canary rather than claimed by this inventory.
- */
-/**
  * Refuse to place a run's own files inside a store the model may not read.
  *
  * A prompt file, ephemeral home, or Delegation root staged inside the boundary
  * would either be unreadable to the model or would drag the boundary open to
  * reach it. Both are defects in the executor, so this throws before a process
- * is spawned rather than relying on the sandbox to catch it.
+ * is spawned rather than relying on the sandbox to catch it. The Auth Crossing
+ * directory is not in this list: it is crossing code, not a store.
  */
 export function assertOutsideCredentialCustody(
   path: string,
@@ -44,18 +28,17 @@ export function assertOutsideCredentialCustody(
 /**
  * Say whether the reviewed sandbox profile is the one that will be in force.
  *
- * This deliberately does not require the profile to deny the boundary stores
- * above. Denying them was tried on the Agent Host and makes the runner refuse
- * to start: after entering Bubblewrap it re-opens every read-deny path to
- * confirm the mask took effect, and a path the executor identity cannot open
- * at all answers `Permission denied`, which it reads as an unenforced deny
- * list. That experiment preceded the crossing directory's required 0755 mode:
- * the executor can now list that member, so identity permissions do not hold
- * the full boundary and this function is not a custody proof.
+ * This deliberately does not require the profile to deny credential stores or
+ * the Auth Crossing. Denying paths was tried on the Agent Host and makes the
+ * runner refuse to start: after entering Bubblewrap it re-opens every
+ * read-deny path to confirm the mask took effect, and a path the executor
+ * identity cannot open at all answers `Permission denied`, which it reads as
+ * an unenforced deny list. A Grok `deny` list is therefore not the
+ * parent/child split: Bubblewrap children are denied the crossing by the
+ * unpriv_bwrap AppArmor overlay instead.
  *
- * This profile currently holds workspace confinement only. A child-specific
- * custody control and `restrict_network` remain held decisions; see issue #161
- * and docs/research/grok-auth-crossing-and-custody-boundary.md.
+ * This profile holds workspace confinement. Child-process network restriction
+ * remains tracked by issue #161.
  */
 export function describeSandboxProfileDrift(
   profileText: string,
