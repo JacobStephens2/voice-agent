@@ -1,6 +1,13 @@
 import { z } from "zod";
 
-import { grokRunnerPinSchema } from "./grok-delegation.ts";
+import {
+  grokPauseReasonSchema,
+  grokRunEvidenceSchema,
+  grokRunnerPinSchema,
+  grokUsageSchema,
+  unknownGrokUsage,
+  type GrokPauseReason,
+} from "./grok-delegation.ts";
 import { grokEnrollmentCampaignIdSchema } from "./grok-enrollment.ts";
 import {
   delegationCommitSchema,
@@ -71,6 +78,22 @@ export const administrativeExecutionPauseReasonSchema = z.enum([
 export type AdministrativeExecutionPauseReason = z.infer<
   typeof administrativeExecutionPauseReasonSchema
 >;
+
+/**
+ * Map a Grok pause onto this system's closed pause enum.
+ *
+ * Grok names six pauses; Administrative Autonomy records three reasons and
+ * does not let a provider invent a fourth. Quota is the one refusal that is
+ * not a paused provider: the subscription is exhausted. A missing
+ * `voice-grok` identity crossing is a paused provider, not contract-drift.
+ */
+export function administrativePauseReasonFromGrok(
+  reason: GrokPauseReason,
+): AdministrativeExecutionPauseReason {
+  return grokPauseReasonSchema.parse(reason) === "provider-quota"
+    ? "quota-blocked"
+    : "provider-paused";
+}
 
 export const administrativeExecutionPauseSchema = z
   .object({
@@ -900,6 +923,43 @@ export type AdministrativeProviderPlan = z.infer<
   typeof administrativeProviderPlanSchema
 >;
 
+/**
+ * Planning spends tokens too. The plan is untrusted provider output; usage
+ * and the rest of the provider run are the trusted executor's account of
+ * that same request, without credentials or a raw event stream.
+ */
+export const administrativePlanChoiceSchema = z
+  .object({
+    plan: administrativeProviderPlanSchema,
+    providerRun: grokRunEvidenceSchema.nullable(),
+    usage: grokUsageSchema,
+  })
+  .strict();
+export type AdministrativePlanChoice = z.infer<
+  typeof administrativePlanChoiceSchema
+>;
+
+export const unknownAdministrativeProviderUsage = unknownGrokUsage;
+
+/**
+ * The structured result Grok returns when it is choosing an Operation plan.
+ *
+ * It is the plan plus the small model report the contract test already
+ * uses. The trusted executor copies usage and identity from the headless
+ * envelope; the model is not asked for those.
+ */
+export const grokAdministrativePlanReportSchema = z
+  .object({
+    plan: administrativeProviderPlanSchema,
+    risks: z.array(z.string().min(1).max(300)).max(20),
+    status: z.enum(["completed", "declined"]),
+    summary: z.string().min(1).max(1_000),
+  })
+  .strict();
+export type GrokAdministrativePlanReport = z.infer<
+  typeof grokAdministrativePlanReportSchema
+>;
+
 const administrativeOperationRequestFields = {
   authority: administrativeAuthoritySnapshotSchema,
   operationId: administrativeOperationIdSchema,
@@ -1127,7 +1187,13 @@ const administrativeOperationResultFields = {
       .strict(),
   ]),
   operationId: administrativeOperationIdSchema,
+  /**
+   * The Grok run that produced this result, or null when the Operation did
+   * not spend a provider request (a typed broker with no model).
+   */
+  providerRun: grokRunEvidenceSchema.nullable(),
   summary: z.string().min(1).max(240),
+  usage: grokUsageSchema,
 };
 
 const livePatchTargetProofFields = {
@@ -1667,7 +1733,9 @@ export const administrativeEvidenceEventSchema = z.discriminatedUnion("kind", [
     details: z.object({
       operations: z.array(administrativeOperationKindSchema).min(1).max(12),
       policyRevision: z.number().int().positive(),
+      providerRun: grokRunEvidenceSchema.nullable(),
       stateVersion: z.number().int().positive(),
+      usage: grokUsageSchema,
     }),
     kind: z.literal("administrative.plan.accepted"),
   }),

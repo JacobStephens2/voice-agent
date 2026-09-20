@@ -34,6 +34,8 @@ export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-delegation.ts";
 export * from "./administrative-autonomy.ts";
+export * from "./grok-administrative-adapter.ts";
+export * from "./grok-administrative-composition.ts";
 export * from "./administrative-restart-witness.ts";
 
 export interface TelephoneBountywellHealthInquiry {

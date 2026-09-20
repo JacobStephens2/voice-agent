@@ -57,7 +57,9 @@ function outcomeOf(overrides: Partial<Parameters<typeof describeGrokRunOutcome>[
 test("a completed run records the provider's own account of itself", () => {
   expect(outcomeOf({})).toEqual({
     evidence: {
+      apiKeyAuthDisabled: true,
       authenticationRoute: "subscription-oauth",
+      credentialAuthMode: "external",
       model: { providerReported: "grok-4.6-build", selector: "grok-4.6" },
       provider: "grok",
       requestId: "b8574042-7e9e-4bde-b987-9a01d9d791ea",

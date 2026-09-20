@@ -13,6 +13,7 @@ import {
   administrativeTimestampSchema,
   administrativeUnavailableExecutionManifest,
   credentialCustodyBoundaryPaths,
+  unknownAdministrativeProviderUsage,
   delegationIdSchema,
   livePatchMutationProofSchema,
   livePatchCaptureBranch,
@@ -157,7 +158,12 @@ export type ScenarioAdministrativeAuthorization =
 interface ScenarioOperationResultContext {
   readonly common: Pick<
     AdministrativeOperationResult,
-    "completedAt" | "effect" | "operationId" | "summary"
+    | "completedAt"
+    | "effect"
+    | "operationId"
+    | "providerRun"
+    | "summary"
+    | "usage"
   >;
   readonly delegatedWorktreeProof:
     | "failed"
@@ -866,7 +872,9 @@ export async function createAdministrativeAutonomyScenario(options: {
                 startedAt: livePatchProof?.mutationStartedAt ?? effectPerformedAt,
               },
               operationId: request.operationId,
+              providerRun: null,
               summary: `The ${request.kind} Operation completed through the fake executor.`,
+              usage: unknownAdministrativeProviderUsage,
             },
             delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
             livePatchProof,
@@ -913,7 +921,9 @@ export async function createAdministrativeAutonomyScenario(options: {
               replayedAt: attemptStartedAt,
             },
             operationId: request.operationId,
+            providerRun: null,
             summary: `The ${request.kind} Operation completed through the fake executor.`,
+            usage: unknownAdministrativeProviderUsage,
           },
           delegatedWorktreeProof: options.delegatedWorktreeProof ?? "valid",
           livePatchProof,
