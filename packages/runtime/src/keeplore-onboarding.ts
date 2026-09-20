@@ -1,5 +1,6 @@
 import {
   keeploreDeploymentContractSchema,
+  keeploreRegisteredCodebaseId,
   type KeeploreBranchProtection,
   type KeeploreDeploymentContract,
   type KeeploreEnrollmentSource,
@@ -108,10 +109,10 @@ export function createKeeploreOnboardingControls(options: {
       const contract = keeploreDeploymentContractSchema.parse({
         activatedAt: options.now(),
         activatedBy: "fresh-passkey-action",
-        applicationId: "keeplore-production",
         buildCommand: input.buildCommand,
         health: input.health,
         preflightCommand: input.preflightCommand,
+        registeredCodebaseId: keeploreRegisteredCodebaseId,
         releaseRoot: input.releaseRoot,
         retainedReleases: input.retainedReleases,
         revision: input.revision,

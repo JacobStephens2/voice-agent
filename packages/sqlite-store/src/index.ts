@@ -29,6 +29,8 @@ import {
 import { createDurableTaskTable, ensureColumn } from "./durable-task-table.ts";
 
 export { createSqliteAuthenticationStore } from "./authentication.ts";
+export { createSqliteAdministrativeAutonomyStore } from "./administrative-autonomy.ts";
+export { createSqliteAdministrativeRestartWitnessStore } from "./administrative-restart-witness.ts";
 export {
   createSqliteKeeploreOnboardingStore,
   type SqliteKeeploreOnboardingStore,

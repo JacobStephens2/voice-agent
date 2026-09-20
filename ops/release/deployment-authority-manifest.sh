@@ -23,6 +23,7 @@ voice_agent_authority_units=(
   voice-agent-api.service
   voice-agent-worker.service
   voice-agent-keeplore-publisher.service
+  voice-agent-repository-administration.service
   voice-agent-subagent.service
   voice-agent-broker.service
   voice-agent-probes.service
@@ -48,6 +49,15 @@ voice_agent_authority_programs=(
   # non-executable, while an Auth Crossing invoked by exec must be executable.
   "ops/release/deployment-authority-authorization-verifier.mjs:deployment-authority-authorization-verifier.mjs:0644"
   "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts:0644"
+  # The Repository Administration Broker holds the owner credential that may
+  # create a repository and write its production-branch rules — the one
+  # authority the Administrative Publisher App is deliberately denied. A host
+  # running an
+  # unreviewed copy at this path would hold that credential behind whatever
+  # operations that copy happened to expose. Its unit is pinned above, and the
+  # promoter, the health reading, and the host wizard all name the service, so
+  # installed authority is authority something actually starts and observes.
+  "ops/release/repository-administration-broker.ts:repository-administration-broker.ts:0644"
   # The Grok token crossing. The broker is what the runner invokes as its
   # configured auth provider and the helper is the only thing that may read the
   # refresh credential, so both are reviewed root authority rather than release

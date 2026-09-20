@@ -7,6 +7,7 @@ import {
   promotionReleaseProjectionSchema,
   promotionRollbackProjectionSchema,
   promotionVerificationProjectionSchema,
+  registeredCodebaseIdSchema,
 } from "./promotion.ts";
 
 const identifierSchema = z.string().min(1).max(120);
@@ -15,7 +16,14 @@ const absolutePathSchema = z.string().min(1).max(500).startsWith("/");
 const commandSchema = z.string().min(1).max(200);
 const commitSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 
-export const keeploreApplicationId = "keeplore-production" as const;
+export const keeploreRegisteredCodebaseId =
+  registeredCodebaseIdSchema.parse("keeplore-production");
+export const keeploreRegisteredCodebaseIdSchema =
+  registeredCodebaseIdSchema.refine(
+    (registeredCodebaseId) =>
+      registeredCodebaseId === keeploreRegisteredCodebaseId,
+    "Expected Keeplore Registered Codebase ID",
+  );
 /**
  * Keeplore's canonical repository. It was renamed from `artifact-manager`, and
  * GitHub still redirects the old name, so a live checkout can carry a stale
@@ -81,7 +89,7 @@ export const keeploreEnrollmentSourceSchema = z.enum([
 
 export const keeploreRegistrationSchema = z
   .object({
-    applicationId: z.literal(keeploreApplicationId),
+    registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
     deploymentBoundaries: z
       .object({
         liveCheckoutPath: absolutePathSchema,
@@ -147,7 +155,7 @@ export const keeploreGitHubAppInstallationSchema = z
 /** The shared Deployment Contract, fixed to Keeplore and its Release retention. */
 export const keeploreDeploymentContractSchema = deploymentContractSchema
   .extend({
-    applicationId: z.literal(keeploreApplicationId),
+    registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
     retainedReleases: z.number().int().min(1).max(20),
   })
   .strict();

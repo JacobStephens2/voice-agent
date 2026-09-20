@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { keeploreRegisteredCodebaseIdSchema } from "./keeplore-onboarding.ts";
+
 const timestampSchema = z.iso.datetime();
 
 /**
@@ -14,7 +16,7 @@ export const keeploreBranchRulesObservationSchema = z
   .object({
     /** Rule types GitHub reports as active on the production branch. */
     activeRules: z.array(z.string().regex(/^[a-z_]+$/u).max(60)).max(40),
-    application: z.literal("keeplore-production"),
+    registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
     branch: z.string().min(1).max(120),
     kind: z.literal("branch-rules"),
     observedAt: timestampSchema,
@@ -36,7 +38,7 @@ export const keeploreBranchRulesObservationSchema = z
  */
 export const keeploreBranchBypassAttestationSchema = z
   .object({
-    application: z.literal("keeplore-production"),
+    registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
     attestedAt: timestampSchema,
     attestedBy: z.literal("owner"),
     branch: z.string().min(1).max(120),
@@ -60,7 +62,7 @@ export const keeploreGitHubAppObservationSchema = z
   .object({
     appId: z.number().int().positive(),
     appSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/u),
-    application: z.literal("keeplore-production"),
+    registeredCodebaseId: keeploreRegisteredCodebaseIdSchema,
     installationId: z.number().int().positive(),
     kind: z.literal("github-app"),
     observedAt: timestampSchema,

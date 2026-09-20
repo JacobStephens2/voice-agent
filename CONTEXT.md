@@ -84,6 +84,10 @@ _Avoid_: Delegation, code edit, repository dump
 A repository enrolled explicitly or through policy-authorized discovery for Code Inquiry and Delegation with a fixed path, remote, production branch, isolated-worktree location, verification commands, and, when deployed, a Deployment Contract.
 _Avoid_: Application directory, discovered repository, arbitrary path
 
+**Registered Codebase ID**:
+The durable identity used to look up one complete Registered Codebase registration; the ID never stands in for the registration snapshot whose paths, remote, branch, revision, verification scope, and lifetime carry authority.
+_Avoid_: Repository slug, generic identifier
+
 **Configuration Repository**:
 The private Registered Codebase that represents reproducible Agent Host packages, services, network policy, device setup, recovery inventory, and other Host Patch targets.
 _Avoid_: Server notes, live host configuration, backup
@@ -133,9 +137,29 @@ A Fresh-Passkey-activated Standing Autonomy Policy that permits broad multi-code
 Its authenticated revision remains active until Administrative Suspension or another Fresh Passkey Action revises it.
 _Avoid_: YOLO mode, always approve, unrestricted root
 
+**Administrative Execution Manifest**:
+The exact reviewed Grok provider pin and typed Operation-adapter implementations bound into an Administrative Autonomy Policy revision by its Fresh Passkey Action; a different configured manifest has no authority until another Fresh Passkey Action activates a new revision.
+_Avoid_: Adapters configured, latent authority, install-time authority
+
+**Agent Host Restart Witness**:
+An attended, append-only, server-recorded acceptance campaign, executed only from the exact active immutable Release, proving that one exact active Administrative Autonomy Policy revision, state version, Administrative Execution Manifest, and Release remain observable through the deployed authenticated API after both the Voice Agent API/worker services restart and the Agent Host acquires a new real boot identity. Each service appends a Release-bound comparison fingerprint only after its fixed deployment health seam is live: a same-boot restart rotates it, while the first startup on a new boot carries the accepted post-service fingerprint forward so the campaign can prove both the intended service restart and the later host reboot. The bounded comparison projection retains only recent startup fingerprints for the current Release and prunes inactive-Release fingerprints; accepted phase observations remain append-only evidence. At every observation the API requires the live worker-owned Unix-socket response to match the exact registered worker fingerprint and active Release. Raw service-instance and boot identities remain transient composition inputs and never enter the durable store or exported record; earlier witness versions remain immutable evidence but cannot satisfy the current worker-bound ceremony.
+_Avoid_: SQLite reopen test, simulated process recovery, simulated reboot
+
 **Administrative Suspension**:
 An owner-triggered state that refuses new administrative Operations, activates every armed Live Patch and Host Patch rollback, and preserves Delegated Worktrees and Evidence Records until a Fresh Passkey Action reactivates Administrative Autonomy.
 _Avoid_: Task stop, service shutdown, rollback deletion
+
+**Active Execution Budget**:
+The six hours of working time one confirmed Durable Task may spend without further approval, carried in its execution deadline and consumed only while the Task is actually executing; an Execution Pause banks the remainder instead of spending it, so paused, quota-blocked, and owner-waiting time is unlimited.
+_Avoid_: Six-hour deadline, wall-clock timeout, task TTL
+
+**Execution Pause**:
+An indefinite hold on a running Durable Task's Active Execution Budget, entered for one of three recorded reasons — a paused provider, exhausted provider quota, or work that now waits on the owner — during which no Operation may start and the deadline is absent rather than elapsed.
+_Avoid_: Provider retry, task timeout, cancellation
+
+**Task Stop**:
+An owner-triggered end to one Durable Task that refuses its future work, settles its outstanding Operations as stopped, activates the armed rollback of the live mutation it interrupts, and preserves that Task's Delegated Worktrees, commits, branches, and Evidence Record; it needs no Fresh Passkey Action because it spends no authority.
+_Avoid_: Administrative Suspension, cancel, kill, revert
 
 **Task Confirmation**:
 A concise spoken readback of the target application, environment, and intended state-changing outcome—not the eventual Operation plan—that remains pending until the user affirmatively confirms or declines it, before the Voice Agent accepts a Durable Task or Delegation.

@@ -157,7 +157,7 @@ function attempt(fields: {
   result?: string;
 }): string {
   return JSON.stringify({
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     attemptedAt: "2026-08-25T15:05:00Z",
     commit: fields.commit,
     previous: fields.previous,

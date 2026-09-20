@@ -488,7 +488,8 @@ sudo "$ROOT_ORCHESTRATOR/install-prometheus-scrape.sh"
 sudo "$ROOT_ORCHESTRATOR/install-grafana-dashboard.sh" "$REPOSITORY_ROOT"
 sudo systemd-analyze security \
   voice-agent-api.service voice-agent-worker.service \
-  voice-agent-keeplore-publisher.service voice-agent-subagent.service \
+  voice-agent-keeplore-publisher.service \
+  voice-agent-repository-administration.service voice-agent-subagent.service \
   voice-agent-broker.service \
   voice-agent-probes.service \
   voice-agent-promotion-resume.service \

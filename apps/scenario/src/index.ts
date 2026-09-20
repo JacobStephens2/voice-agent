@@ -30,6 +30,7 @@ export * from "./task-continuity.ts";
 export * from "./bountywell-outage.ts";
 export * from "./keeplore-onboarding.ts";
 export * from "./keeplore-button-trial.ts";
+export * from "./administrative-autonomy.ts";
 import { createTaskApi, trustedSessionCookieName } from "@voice-agent/api";
 import {
   createAuthenticationLifecycle,
@@ -656,11 +657,16 @@ class DeterministicBountywellHealthBroker implements BountywellHealthObserver {
 }
 
 export interface AuthenticationScenario {
+  authenticatedOwnerId(sessionToken: string): Promise<string | undefined>;
   beginFreshPasskeyAction(input: {
     readonly csrfToken: string;
     readonly sessionToken: string;
   }): Promise<string>;
   beginLogin(): Promise<string>;
+  canChangeState(input: {
+    readonly csrfToken: string;
+    readonly sessionToken: string;
+  }): Promise<boolean>;
   canViewEvidence(sessionToken: string): Promise<boolean>;
   close(): Promise<void>;
   enrollBootstrapPasskey(input: {
@@ -861,8 +867,11 @@ export async function createAuthenticationScenario(
   }
 
   return {
+    authenticatedOwnerId: (sessionToken) =>
+      authentication.authenticatedOwnerId(sessionToken),
     beginFreshPasskeyAction,
     beginLogin,
+    canChangeState: (input) => authentication.canChangeState(input),
     canViewEvidence: (sessionToken) =>
       authentication.canViewEvidence(sessionToken),
     close: () => store.close(),

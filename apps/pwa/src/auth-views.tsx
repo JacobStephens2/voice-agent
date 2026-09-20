@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 
 import type {
+  AdministrativeAutonomyStatus,
+  AdministrativeRestartWitnessObservationIdentity,
   BountywellRegistration,
   EvidenceRecordSummary,
   KeeploreLiveInspection,
@@ -189,6 +191,7 @@ export function RecoveryCodesView(props: {
 }
 
 export function TaskList(props: {
+  administrativeAutonomy?: AdministrativeAutonomyStatus | undefined;
   bountywellRegistration?: BountywellRegistration | undefined;
   keeploreInspection?: KeeploreLiveInspection | undefined;
   keeploreRegistration?: KeeploreRegistration | undefined;
@@ -205,6 +208,9 @@ export function TaskList(props: {
   message?: string | undefined;
   busy: boolean;
   onAuthorizeDeploymentAuthorityUpgrade(): Promise<void>;
+  onActivateAdministrativeAutonomy(): Promise<void>;
+  onSuspendAdministrativeAutonomy(): Promise<void>;
+  onRecordRestartWitnessObservation(): Promise<void>;
   onFresh(): Promise<void>;
   onApplyEvidenceRetention(): Promise<void>;
   onResumePromotions(): Promise<void>;
@@ -218,6 +224,9 @@ export function TaskList(props: {
   onChangeSpendingCeiling(ceilingMicrousd: number): Promise<void>;
   onUpdateNotificationPreference(input: NotificationPreferenceInput): Promise<void>;
   onRunBountywell(): Promise<void>;
+  restartWitnessObservation?:
+    | AdministrativeRestartWitnessObservationIdentity
+    | undefined;
 }) {
   return (
     <main className="task-page">
@@ -245,6 +254,102 @@ export function TaskList(props: {
         onUpdate={props.onUpdateNotificationPreference}
         preference={props.notificationPreference}
       />
+      <section
+        className="bountywell-control"
+        aria-labelledby="administrative-autonomy-heading"
+      >
+        <p className="eyebrow">Standing authority</p>
+        <h2 id="administrative-autonomy-heading">Administrative Autonomy</h2>
+        {props.administrativeAutonomy?.policy.status === "active" ? (
+          <p>
+            Policy revision {props.administrativeAutonomy.policy.revision} is
+            active.
+          </p>
+        ) : props.administrativeAutonomy?.policy.status === "suspended" ? (
+          <p>
+            Policy revision {props.administrativeAutonomy.policy.revision} is
+            suspended. A new Fresh Passkey Action is required before reactivation.
+          </p>
+        ) : (
+          <p>
+            Administrative Autonomy is inactive. Activation requires a Fresh
+            Passkey Action and does not grant arbitrary shell, credential,
+            merge, or deployment authority.
+          </p>
+        )}
+        {props.administrativeAutonomy?.taskExecution.status ===
+          "execution-manifest-present" &&
+        props.administrativeAutonomy.policy.status === "active" ? (
+          <p>
+            Confirmed Durable Tasks may choose only the typed Operations allowed
+            by their intended resulting state and policy.
+          </p>
+        ) : props.administrativeAutonomy?.taskExecution.status ===
+          "execution-manifest-present" ? (
+          <p>
+            An Administrative Execution Manifest is present, but administrative
+            effects remain blocked while the policy is not active.
+          </p>
+        ) : props.administrativeAutonomy?.taskExecution.status ===
+          "activation-required" ? (
+          <p>
+            The runtime Administrative Execution Manifest differs from the
+            active policy revision. A new Fresh Passkey Action is required
+            before task execution.
+          </p>
+        ) : (
+          <p>
+            Task execution is unavailable because an executable Administrative
+            Execution Manifest is not present. Policy activation alone does not
+            grant executable administrative authority.
+          </p>
+        )}
+        <button
+          disabled={props.busy}
+          onClick={() => void props.onActivateAdministrativeAutonomy()}
+        >
+          {props.administrativeAutonomy?.policy.status === "active"
+            ? "Activate a new policy revision"
+            : "Activate Administrative Autonomy"}
+        </button>
+        {props.administrativeAutonomy?.policy.status === "active" ? (
+          <>
+            <p>
+              Administrative Suspension blocks every new administrative effect
+              and activates every armed rollback. It preserves Delegated
+              Worktrees and evidence, and reactivation needs a new Fresh Passkey
+              Action.
+            </p>
+            <button
+              disabled={props.busy}
+              onClick={() => void props.onSuspendAdministrativeAutonomy()}
+            >
+              Suspend Administrative Autonomy
+            </button>
+          </>
+        ) : null}
+      </section>
+      {props.restartWitnessObservation === undefined ? null : (
+        <section
+          className="bountywell-control"
+          aria-labelledby="restart-witness-heading"
+        >
+          <p className="eyebrow">Attended acceptance</p>
+          <h2 id="restart-witness-heading">Agent Host Restart Witness</h2>
+          <p>
+            Record the <strong>{props.restartWitnessObservation.phase}</strong>{" "}
+            observation. The server reads the active policy, Administrative
+            Execution Manifest, immutable Release, API service instance, and
+            Linux boot identity from its fixed composition boundary.
+          </p>
+          <button
+            disabled={props.busy}
+            onClick={() => void props.onRecordRestartWitnessObservation()}
+          >
+            Record server observation
+          </button>
+        </section>
+      )}
       <section className="bountywell-control" aria-labelledby="retention-heading">
         <p className="eyebrow">Lifecycle policy</p>
         <h2 id="retention-heading">Evidence retention</h2>

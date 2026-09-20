@@ -1,0 +1,68 @@
+---
+name: implement-spec
+description: Orchestrate a spec issue to done - inherit this session's CLI or name the invocation, one agent per ticket, each in its own worktree, landed one branch at a time as the blocking graph unblocks them.
+disable-model-invocation: true
+argument-hint: "<spec> [use [<launcher>] <cli>]"
+---
+
+This is the loop `/ask-matt` describes after `/to-tickets`: `/implement` per ticket, a fresh context each time, worked from the **frontier**. A spec arrives as tickets with blocking edges. The **frontier** is the open `ready-for-agent` tickets whose blockers are all closed. This skill drives those to closed; `ready-for-human` tickets stay on the chart until the human closes them. The unit of work is a **round**: one detached headless CLI process of the **invocation** running `/implement` in the ticket's own worktree. Bare `/implement-spec <spec>` inherits this session's CLI with launcher none. `use [<launcher>] <cli>` names the invocation. The invocation sticks on the spec's chart; a later orchestrator copies that line rather than re-inheriting. A finished branch clears a **gate** before it **lands**. After every landing, you recompute the frontier. You orchestrate. The agents implement and answer review. You land.
+
+The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`. `docs/agents/issue-tracker.md` holds the forms for sub-issues and blocking edges. [`ROUNDS.md`](ROUNDS.md) is the shell for rounds - launching, resuming, reviewing, and watching - with the scripts beside it in `scripts/`. Read it before the first launch. When a ticket's land base isn't the default branch, read [`LAND-BASE.md`](LAND-BASE.md). The chart is a filled copy of [`CHART.md`](CHART.md).
+
+## Chart the spec
+
+Resolve the **invocation** first. After the spec ref, `use [<launcher>] <cli>` names it: launcher `va` or omitted, then a CLI; extra words after the CLI are ignored. `use` with no CLI fails closed (`use va` names the launcher and still needs a CLI). A named `use` rewrites the chart line. With no `use`, copy an existing `invocation:` line. With no `use` and no line, inherit this session's CLI and launcher none. If you cannot name this session's CLI, fail closed and ask for `use <cli>`. Write `invocation: <cli>` when the launcher is none, `invocation: va <cli>` when it is `va`. On that line, one token is launcher none and that CLI; `va` then a CLI is launcher `va`. Launch, resume, and review spawn that pair.
+
+1. Read the spec, every ticket with its comments, its triage label, and the blocking edges. The tracker's edges are the gate (native `blocked_by` on a real tracker; `Blocked by` lines in local files). A "Blocked by" line in a body is the author's intent at writing time. When a body names a dependency the tracker lacks, add it as a tracker edge before launch, so that you compute the frontier from one source.
+2. For every ticket, write the **land base**: the branch its merge targets. The default is the repo's default branch. A ticket that names an integration branch, or says not to merge it independently to that default, names a different base.
+3. Read the last few landings and fix the convention: title in the repo's voice, the tracker's close-on-merge line as the body's first line, a merge commit, and the remote branch deleted afterward.
+4. Write down the spec's own traps: the things it says a green suite doesn't prove (a visual check, a byte-identical artifact, a test committed red before its fix). Each is a gate item for the ticket it names. A criterion only a human can witness is a trap on the ticket that owns the witness. The `ready-for-agent` ticket's gate is the mechanical inspection that makes that witness possible.
+5. Read extra gate commands from the environment: CI config, a test README, anything under `docs/agents/`. Write each on the ticket it gates.
+6. Resolve every path a ticket names against the land base with `git cat-file -e <base>:<path>`. A path that isn't there is someone's untracked draft, and the ticket lands without it. Settle any mismatch with the ticket body in a comment before launch.
+7. Find the **suite command** that covers the tickets' code, from the environment (`package.json` `test`/`check`, a Makefile target, CI, a test README), what a worktree needs to run it (a `.venv`, `node_modules`), and its exclusive shared resources (fixed ports, named simulators or emulators, databases). A repo with more than one suite gets the suite the tickets change. Write all three in the table. If the environment has no suite, chart that, capture the last landing's check or `true`, and name which ticket adds the suite.
+8. **Probe** every claim the spec makes about what production does or lacks, on the land base, before the first launch: feed the shape through the production path and read the result. For a CLI or script, invoke the land-base command (or read the argv it would run) and record it. A claim that fails the probe is a spec finding. Raise it under `Raise, hold, continue` before a round writes a test to it.
+9. Name the other specs in flight on the same land base - their `worktrees/agent-logs/spec-*-chart.md`, their running agents - and the files their open tickets change. Each of their landings costs this spec a merge before its next landing.
+10. Write the **standing rules**: the repo's documented coding standards that apply to every ticket. If the tickets edit a skill, `SKILL.md`, or `AGENTS.md`, those rules include writing-for-agents: one home per fact, user-invoked stays user-invoked.
+
+Done when `worktrees/agent-logs/spec-<id>-chart.md` is a filled copy of [`CHART.md`](CHART.md): every slot has a value. `<id>` is the spec issue number, or the file stem for a local spec.
+
+## Prepare worktrees
+
+Fast-forward the primary checkout onto the land base. Make one worktree per open `ready-for-agent` ticket, `worktrees/issue-<n>-<slug>`, off that tip. Add `worktrees/` to the primary checkout's `.gitignore` so git leaves the directory untracked. Install what the suite needs in each worktree, copied from a land-base checkout when cheaper than reinstalling. An install copied from before a dependency landed isn't that file. Capture the suite once at that tip with the charted command; captures that name the same exclusive resource run serially. If the chart has no suite, capture the last landing's check or `true`. Done when each worktree is clean at the land base's tip and one captured suite (or that stand-in) at that tip is green.
+
+## Launch the frontier
+
+Comment the standing rules on every open ticket before the first launch: the implementer's review sub-agent reads the ticket's comments before the implementer commits. Launch each frontier ticket with the skill's `scripts/launch.sh` by absolute path, passing the charted launcher and CLI, and arm a watch. Run three or four at a time across every session on the box. The limit is the box's memory, not the graph. The prompt is exactly `/implement <ticket>`. The ticket is the brief, and a prompt that restates it becomes a second spec the agent has to reconcile. Done when every frontier ticket has a round running or finished.
+
+## Gate a finished branch
+
+1. **Check every acceptance criterion, mechanically where a command can.** Capture the suite with `scripts/suite-capture.sh` and the charted command into `worktrees/agent-logs/`. The implementer's reported count isn't the gate. Run the extra gate commands from the table. Read each test the ticket asked for against the criterion's words: a filter that admits what the criterion forbids is a weakened rule, not a passing test. Put the checks a spec repeats at every gate into one script at the first gate, diffed against the merge-base. The agent's report covers what no command can. Read it against the ticket's criteria, one by one.
+2. **Check the spec's traps for this ticket**, from your table.
+3. **Run one initial review** as a fresh agent of the invocation, with `scripts/review.sh` and the charted launcher and CLI, against the merge-base of the ticket branch and its land base - the commit the worktree held at launch. The implementer ran one and answered it. The second still finds real things: a check that lost one of its two directions, a rule weakened to keep a test green.
+4. **Adjudicate the report into a blocker ledger** at `worktrees/agent-logs/findings-<n>.md`, beginning with `reviewed-head: <full commit sha>`. A blocker names its authority - a ticket criterion, spec trap, documented repository rule, or concrete correctness, security, data-loss, or external-side-effect failure - then the evidence on the reviewed head and the outcome that closes it. A different reasonable mechanism is a suggestion unless the authority fixes that mechanism. Record suggestions separately; they do not hold the branch.
+5. **Send the ledger back to the branch's own agent** with `scripts/resume.sh` and the charted launcher and CLI. The agent holds the context, and the ledger holds the fixed approval bar. Arm a new watch.
+6. **Converge after correction.** Re-run the mechanical gate. Then run `scripts/review.sh` from the ledger's `reviewed-head`, with the ledger path. The correction verification checks the recorded blockers on current HEAD and reviews only the correction diff for concrete regressions. A pre-existing architectural alternative discovered late is a suggestion. Record blocker outcomes in the same ledger without changing `reviewed-head`; it remains the approval bar through correction.
+
+A branch clears the gate when every mechanical criterion is true, every ledger blocker is closed, and correction verification finds no introduced regression. A human-witness trap stays on its ticket. If the same blocker survives two correction rounds, or the implementer and verifier disagree about the authority rather than the evidence, use `Raise, hold, continue`: give the human the evidence and a one-word recommendation instead of starting a third correction round.
+
+## Land
+
+On a GitHub tracker, open the PR from the branch in the landing convention through `scripts/land.sh`. It pushes and opens the PR from the ticket worktree, merges from the primary checkout, deletes the remote branch, and fast-forwards the land-base ref. On another real tracker, the same steps with that tracker's merge-request CLI. On a local tracker, merge the branch into the land base in the primary checkout and set the ticket resolved. Land within the hour the gate clears, on a tip that has the land base as an ancestor, so that the tree that merges is the tree you captured the suite on. `Recompute the frontier` is how a tip gets there. Close the issue if close-on-merge didn't fire. If the repo has a documented post-merge gate (CI, a publish unit), watch it; a red gate is yours to fix forward the same hour. Done when the issue has closed.
+
+## Recompute the frontier
+
+After every landing, re-read the blocking edges. A newly unblocked `ready-for-agent` ticket's worktree predates the landings it depends on: rebase it onto the land base before its launch. When the land base moves under the next branch to land, **converge** before its merge. An **automatic merge** is yours to make when the dry run is clean, no generated file changes, and nothing the landing brought in needs migrating: `scripts/automerge.sh` makes it in a scratch worktree and proves the tree equals the one `git merge-tree` produces. You capture the suite there and adopt it. Anything else is a **merge round** by the branch's own agent, from [`MERGE-ROUND.md`](MERGE-ROUND.md): union the source, regenerate generated files, migrate what the landing brought in, run the suite, and loop until the base is an ancestor at the moment it commits. You gate the result. Regenerate generated files rather than hand-merge them.
+
+## Settle rules once
+
+When the **gate** settles something every remaining ticket must follow, comment it on the open tickets. An implementer's review sub-agent re-reads the ticket with its comments before the implementer commits, so a comment reaches a round already running. A rule taken from the first implementer's report, before the second review, isn't settled.
+
+## Raise, hold, continue
+
+A finding about the spec rather than a ticket - a mechanism the spec argued against, a meaning it got wrong, a rule it assumed - goes on the spec issue for the human, as the evidence and a recommendation the human can accept in one word. **Hold** the branches it affects: leave them in their worktrees, not merged. Land everything it doesn't affect. The decision is the human's: merging is the one act that changes what the repository means, and a held branch costs nothing. When the ruling comes, record it on the spec, amend the bodies it changes, and release the hold in the same comment.
+
+## Finish
+
+Reached when every `ready-for-agent` ticket has closed and no branch is on hold. Comment on the spec with what landed, merge by ticket, what you settled on the way, and what's still open for the human. Close the spec in that comment when every ticket has closed and no branch is on hold. An open `ready-for-human` ticket leaves the spec open the same way a hold does. Name suggestions for new tickets and a PR to this skill in the same comment. They hold nothing open. A hold leaves the spec open, pointing at the branch. Report the same to the user, with your own mistakes named.
+
+The merge authority belongs to the Land step and ends with the last ticket. Everything after this - a follow-up the spec surfaced, a correction, a change to this skill - goes up as a PR and stops there, for the human to merge.

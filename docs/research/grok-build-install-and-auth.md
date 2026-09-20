@@ -887,15 +887,37 @@ environment:
 | headless run | `end_turn`, `total_cost_usd` 0.00122978 |
 | broker invocations across all four | **1**, by the login |
 
-**One boundary this build will not report.** `loginPolicy.apiKeyAuthDisabled`
-is `false` for both identities with the reviewed `/etc/grok/requirements.toml`
-installed, and adding a `[login_policy] disable_api_key_auth` table to that
-layer does not move it - `disableApiKeyAuth` stays `null`. It is not a
-host-configurable setting on 1.0.13. Both the enrollment wizard's second stage
-and `describeGrokConfigurationDrift` require it to be true, so neither can pass
-on this host today. Issue #167 carries it. It is recorded here because it was
-observed in the same session and because the checks that read it are
-load-bearing.
+**One boundary this build did not report** - _corrected 2026-09-02; the
+observation stands, the conclusion drawn from it does not._
+`loginPolicy.apiKeyAuthDisabled` was `false` for both identities with the
+reviewed `/etc/grok/requirements.toml` installed, and adding a
+`[login_policy] disable_api_key_auth` table to that layer did not move it -
+`disableApiKeyAuth` stayed `null`. That is reproducible, and it is a spelling
+failure rather than a build limitation: `[login_policy]` is not a table the CLI
+reads at all. The key is `disable_api_key_auth` under **`[grok_com_config]`**,
+or under its alias **`[auth]`**, and at that spelling the field moves in the
+`requirements` layer on a personal login, with no team and no enterprise plan
+involved. It is `pin`-scoped, so no user layer, environment variable, or
+Delegation root can turn it off.
+
+So the field is host-configurable, it is not an account or team setting, and
+both the enrollment wizard's second stage and `describeGrokConfigurationDrift`
+keep the check unchanged - `grok-runner-pin.ts` already reads
+`apiKeyAuthDisabled`, the effective policy, rather than `disableApiKeyAuth`, the
+knob, which is the correct one of the two. `ops/grok/requirements.toml` now
+pins the key. `forceLoginTeamUuid` is the same kind of setting - same table,
+same `pin` scope - but is deliberately not set: it is matched against a team
+principal a personal login does not carry, so it would refuse every login on
+this host.
+
+The full derivation, the layer matrix it was established from, and what could
+not be established - runtime refusal of a real API key was not demonstrated, and
+the effect of the pin on an existing cached OIDC session was not tested - are in
+[`grok-login-policy-api-key-auth.md`](grok-login-policy-api-key-auth.md), whose
+matrix was re-confirmed on this host's own Linux `[alpha]` 1.0.13 in a throwaway
+`GROK_HOME` on 2026-09-02. Issue #167 carries it. The order that follows from
+the untested part: install the key, then re-observe the enrolled credential
+before relying on it.
 
 **`/usr/local/libexec/voice-agent` is mode 0700 on this host, and the crossing
 needs 0755.** The broker is invoked by `voice-grok`, which cannot traverse a

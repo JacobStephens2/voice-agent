@@ -1,20 +1,18 @@
 import { z } from "zod";
 
-import type { GrokRunnerPin } from "./grok-delegation.ts";
+import {
+  grokRunnerPinSchema,
+  type GrokRunnerPin,
+} from "./grok-delegation.ts";
 
 const identifierSchema = z.string().min(1).max(120);
+export const grokEnrollmentCampaignIdSchema = identifierSchema.brand<
+  "GrokEnrollmentCampaignId"
+>();
 const timestampSchema = z.iso.datetime();
 const absolutePathSchema = z.string().min(1).max(500).startsWith("/");
 const digestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 const versionSchema = z.string().regex(/^\d+\.\d+\.\d+$/u);
-
-const runnerSchema = z
-  .object({
-    configurationPath: absolutePathSchema,
-    digest: digestSchema,
-    version: versionSchema,
-  })
-  .strict();
 
 /**
  * Every ending this provider must demonstrate before it is used for work.
@@ -82,7 +80,7 @@ const contractRunEventSchema = z
     kind: z.literal("contract-run"),
     model: z.string().min(1).max(200),
     recordedAt: timestampSchema,
-    runner: runnerSchema,
+    runner: grokRunnerPinSchema,
     sessionId: z.string().min(1).max(200),
     stopReason: z.string().min(1).max(120),
     usageIncomplete: z.boolean(),
@@ -138,7 +136,7 @@ const grokEnrollmentEventSchema = z.discriminatedUnion("kind", [
 
 const grokEnrollmentRecordSchema = z
   .object({
-    campaignId: identifierSchema,
+    campaignId: grokEnrollmentCampaignIdSchema,
     events: z.array(grokEnrollmentEventSchema).max(1_000),
     schemaVersion: z.literal(1),
   })

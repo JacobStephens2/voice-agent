@@ -8,6 +8,7 @@ import {
   credentialCustodyBoundaryPaths,
   describeAuthProviderDrift,
   describeSandboxProfileDrift,
+  describeSystemRequirementsDrift,
 } from "../src/grok-credential-custody.ts";
 
 test("the boundary covers the provider auth store, the brokers, the evidence store, and host keys", () => {
@@ -98,6 +99,75 @@ test("an auth layer naming another provider command is refused", () => {
       layerText: '[auth]\nauth_provider_command = "/tmp/mint"\n',
     }),
   ).toBe("The staged auth layer does not name the reviewed token broker");
+});
+
+test("the pinned layer shipped with this repository pins the API-key refusal", async () => {
+  const layer = await readFile(
+    fileURLToPath(new URL("../../../ops/grok/requirements.toml", import.meta.url)),
+    "utf8",
+  );
+
+  expect(describeSystemRequirementsDrift(layer)).toBeNull();
+});
+
+test("a pinned layer that does not pin the API-key refusal is refused", () => {
+  expect(
+    describeSystemRequirementsDrift("[cli]\nauto_update = false\n"),
+  ).toBe("The pinned requirements layer does not pin disable_api_key_auth");
+});
+
+test("a pinned layer that turns the API-key refusal off is refused", () => {
+  expect(
+    describeSystemRequirementsDrift(
+      "[grok_com_config]\ndisable_api_key_auth = false\n",
+    ),
+  ).toBe("The pinned requirements layer does not pin disable_api_key_auth");
+});
+
+/**
+ * `[auth]` is an alias of `[grok_com_config]`, so the refusal is accepted at
+ * either spelling and the provider command is refused at both. A guard written
+ * against the table name alone would read one spelling and miss the other.
+ */
+test("the API-key refusal is accepted under the auth alias", () => {
+  expect(
+    describeSystemRequirementsDrift("[auth]\ndisable_api_key_auth = true\n"),
+  ).toBeNull();
+});
+
+test("a pinned layer naming an auth provider command is refused at either spelling", () => {
+  for (const table of ["auth", "grok_com_config"]) {
+    expect(
+      describeSystemRequirementsDrift(
+        `[${table}]\ndisable_api_key_auth = true\nauth_provider_command = "/usr/local/libexec/voice-agent/grok-token-broker"\n`,
+      ),
+    ).toBe("The pinned requirements layer names an auth provider command");
+  }
+});
+
+/**
+ * A file that turns the refusal on and then off again has not pinned it: the
+ * runner resolves the last write, so this reads the same way round.
+ */
+test("a pinned layer that sets the refusal and then clears it is refused", () => {
+  expect(
+    describeSystemRequirementsDrift(
+      "[auth]\ndisable_api_key_auth = true\n\n[grok_com_config]\ndisable_api_key_auth = false\n",
+    ),
+  ).toBe("The pinned requirements layer does not pin disable_api_key_auth");
+});
+
+/**
+ * TOML has more spellings for a key than a line-oriented reader has, so the
+ * provider command is refused by name anywhere in the layer rather than by the
+ * heading it sits under.
+ */
+test("an auth provider command written as an inline table is refused", () => {
+  expect(
+    describeSystemRequirementsDrift(
+      'disable_api_key_auth = true\ngrok_com_config = { auth_provider_command = "/tmp/mint" }\n',
+    ),
+  ).toBe("The pinned requirements layer names an auth provider command");
 });
 
 test("an auth layer that names no provider command at all is refused", () => {

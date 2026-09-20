@@ -37,7 +37,7 @@ test("an idle Self-Promotion closes admission, switches, and reopens against the
   const registration = await scenario.getRegistration();
   const contract = await scenario.getActiveContract();
   expect(registration).toMatchObject({
-    applicationId: "voice-agent",
+    registeredCodebaseId: "voice-agent",
     liveCheckoutPath: "/opt/voice-agent/current",
     productionBranch: "main",
     repository: voiceAgentRepository,

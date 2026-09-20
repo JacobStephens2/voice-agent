@@ -5,6 +5,8 @@ import {
 } from "@voice-agent/auth";
 import {
   createSqliteAuthenticationStore,
+  createSqliteAdministrativeAutonomyStore,
+  createSqliteAdministrativeRestartWitnessStore,
   createSqliteCallbackHandshakeStore,
   createSqliteDurableTaskStore,
   createSqliteKeeploreOnboardingStore,
@@ -16,6 +18,15 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+
+import {
+  administrativeOperationClaimIdSchema,
+  administrativeOperationIdSchema,
+  administrativeRestartWitnessChallengeSchema,
+  type AdministrativeRestartWitnessApiServiceInstanceFingerprint,
+  administrativeTaskIdSchema,
+  administrativeUnavailableExecutionManifest,
+} from "@voice-agent/contracts";
 
 import {
   createUnixSocketBountywellController,
@@ -30,6 +41,8 @@ import {
 } from "./deployment-authority-challenge.ts";
 import {
   createCallbackHandshakeRuntime,
+  createAdministrativeAutonomyRuntime,
+  createAdministrativeRestartWitnessRuntime,
   createDurableTaskRuntime,
   createKeeploreOnboardingControls,
   createNodeKeeploreLiveInspector,
@@ -38,6 +51,10 @@ import {
   projectKeeplorePromotionEvidence,
   readKeeploreRegistrationFile,
   createNodeRawAudioArtifactRemover,
+  createNodeAdministrativeRestartWitnessHost,
+  createNodeAdministrativeRestartWitnessWorkerHealth,
+  administrativeRestartWitnessWorkerIdentitySocketPath,
+  registerNodeAdministrativeRestartWitnessServiceInstance,
   createTelephoneBoundaryRuntime,
   createTaskContinuityRuntime,
   formatTelephoneBoundaryPrometheusMetrics,
@@ -60,6 +77,58 @@ const origin = testMode
 const rpId = testMode ? new URL(origin).hostname : "voice.stephens.page";
 const authenticationStore = createSqliteAuthenticationStore(databasePath);
 const taskStore = createSqliteDurableTaskStore(databasePath);
+// Issue #83's acceptance gate uses a fake provider, executor, and independent
+// rollback activator at the scenario seam. ADR-0048 keeps real planning and
+// effects behind Grok enrollment (#80),
+// the Administrative Publisher App (#82), typed observation brokers (#90), and
+// the Live Patch broker (#92). Production therefore binds activation to the
+// unavailable manifest and reports that exact prerequisite through status.
+const administrativeStore = createSqliteAdministrativeAutonomyStore(databasePath);
+const administrativeRuntime = createAdministrativeAutonomyRuntime({
+  executionManifest: administrativeUnavailableExecutionManifest,
+  identifiers: {
+    nextCapability: randomUUID,
+    nextClaimId: () =>
+      administrativeOperationClaimIdSchema.parse(
+        `administrative-claim-${randomUUID()}`,
+      ),
+    nextEventId: randomUUID,
+    nextOperationId: () =>
+      administrativeOperationIdSchema.parse(
+        `administrative-operation-${randomUUID()}`,
+      ),
+    nextTaskId: () =>
+      administrativeTaskIdSchema.parse(`administrative-task-${randomUUID()}`),
+  },
+  now: () => new Date().toISOString(),
+  store: administrativeStore,
+});
+await administrativeRuntime.reconcileOperations();
+const administrativeRestartWitnessStore =
+  createSqliteAdministrativeRestartWitnessStore(databasePath);
+let apiServiceInstanceFingerprint:
+  | AdministrativeRestartWitnessApiServiceInstanceFingerprint
+  | undefined;
+const administrativeRestartWitnessRuntime = testMode
+  ? undefined
+  : createAdministrativeRestartWitnessRuntime({
+      host: createNodeAdministrativeRestartWitnessHost({
+        readApiServiceInstanceFingerprint: () =>
+          apiServiceInstanceFingerprint,
+        services: administrativeRestartWitnessStore,
+        workerHealth: createNodeAdministrativeRestartWitnessWorkerHealth({
+          socketPath: administrativeRestartWitnessWorkerIdentitySocketPath,
+        }),
+      }),
+      identifiers: {
+        nextChallenge: () =>
+          administrativeRestartWitnessChallengeSchema.parse(
+            `administrative-restart-challenge-${randomUUID()}`,
+          ),
+      },
+      now: () => new Date().toISOString(),
+      store: administrativeRestartWitnessStore,
+    });
 const telephoneBoundaryStore = createSqliteTelephoneBoundaryStore(databasePath);
 const brokerSocketPath = process.env.VOICE_AGENT_BROKER_SOCKET_PATH;
 const runtime = createDurableTaskRuntime({
@@ -106,6 +175,7 @@ const boundaries = createTelephoneBoundaryRuntime({
 });
 await boundaries.cleanupExpiredRawAudio();
 const continuityRuntime = createTaskContinuityRuntime({
+  administrativeEvidenceRetention: administrativeRuntime,
   callbackEvidenceRetention: callbackStore,
   evidenceOrigin: origin,
   nextId: randomUUID,
@@ -207,6 +277,7 @@ const deploymentAuthorityChallengePaths = {
 };
 
 const api = createVoiceApi({
+  administrativeControls: administrativeRuntime,
   additionalMetrics: async () => {
     const [promotionMetrics, probeMetrics, boundaryMetrics] = await Promise.all([
       readAdditionalMetrics(
@@ -272,13 +343,18 @@ const api = createVoiceApi({
         const records = await readKeeploreEvidenceRecords();
         return records.find((record) => record.task.id === taskId);
       }
+      const administrativeTaskId = administrativeTaskIdSchema.safeParse(taskId);
       return (
         (await callbackRuntime.readEvidenceRecord(taskId)) ??
+        (administrativeTaskId.success
+          ? await administrativeRuntime.getTask(administrativeTaskId.data)
+          : undefined) ??
         (await runtime.getEvidenceRecord(taskId))
       );
     },
     listEvidenceRecords: async () => {
       const records = [
+        ...(await administrativeRuntime.listTasks()),
         ...(await runtime.listEvidenceRecords()),
         ...(await callbackRuntime.listEvidenceRecords()),
         ...(await readKeeploreEvidenceRecords()).map((record) => record.task),
@@ -306,6 +382,9 @@ const api = createVoiceApi({
     },
     recordPolicyDenial: () => runtime.recordPolicyDenial(),
   },
+  ...(administrativeRestartWitnessRuntime === undefined
+    ? {}
+    : { restartWitnessControls: administrativeRestartWitnessRuntime }),
   telephoneControls: callbackRuntime,
 });
 await api.register(staticFiles, {
@@ -315,6 +394,8 @@ await api.register(staticFiles, {
 const shutdown = async () => {
   await api.close();
   await authenticationStore.close();
+  await administrativeRuntime.close();
+  await administrativeRestartWitnessStore.close();
   await boundaries.close();
   await callbackRuntime.close();
   await continuityRuntime.close();
@@ -328,6 +409,17 @@ await api.listen({
   host: "127.0.0.1",
   port: Number(process.env.VOICE_AGENT_PORT ?? "3472"),
 });
+if (!testMode) {
+  apiServiceInstanceFingerprint = (
+    await registerNodeAdministrativeRestartWitnessServiceInstance({
+      nextServiceInstanceId: () =>
+        `administrative-api-service-instance-${randomUUID()}`,
+      now: () => new Date().toISOString(),
+      service: "api",
+      store: administrativeRestartWitnessStore,
+    })
+  ).serviceInstanceFingerprint;
+}
 
 async function requestPromotionResume(
   path: string,

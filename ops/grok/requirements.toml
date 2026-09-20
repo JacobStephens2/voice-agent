@@ -24,12 +24,33 @@ auto_update = false
 # grok-4.6 is answered by grok-4.6-build.
 default = "grok-4.6"
 
-# There is deliberately no [auth] table here. This layer binds every identity
-# on the host, and an auth provider configured for all of them would preempt
-# the custody identity's own credential refresh - the runner prefers a provider
-# command over renewing an expired cached login. The crossing to the broker is
-# staged into each run's own Grok home instead; see ops/grok/run-requirements.toml
-# and ADR-0069.
+[grok_com_config]
+# The subscription is the only route this MVP may use, and this is the one
+# place the runner enforces that itself rather than this system asserting it
+# about its own process: with the key pinned here, `inspect` reports
+# loginPolicy.apiKeyAuthDisabled true, the xai.api_key method is no longer
+# offered or accepted, and a first-party key is replaced with the session token
+# at request time - so a per-model api_key in a Delegation root's own config,
+# which the executor's environment check cannot see, is closed too. `pin` scope
+# means no user layer, environment variable, or project directory can turn it
+# back off. This is not an account or team setting; issue #167 and
+# docs/research/grok-login-policy-api-key-auth.md record where it lives and how
+# that was established. `[auth]` is an accepted alias for this table.
+disable_api_key_auth = true
+#
+# What this table still must not carry is auth_provider_command, under any
+# heading. This layer binds every identity on the host, and an auth provider
+# configured for all of them would preempt the custody identity's own
+# credential refresh - the runner prefers a provider command over renewing an
+# expired cached login. That crossing is staged into each run's own Grok home
+# instead; see ops/grok/run-requirements.toml and ADR-0069. Configuring no
+# provider and starting no command, disable_api_key_auth does not re-create
+# that hazard. describeSystemRequirementsDrift holds both halves of this
+# paragraph.
+#
+# force_login_team_uuid is the same kind of key and is deliberately absent: it
+# is matched against a team principal a personal login does not carry, so
+# setting it would refuse every login on this host.
 
 [shell_environment_policy]
 # The default inherits the whole environment, including anything matching

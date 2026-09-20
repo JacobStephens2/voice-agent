@@ -8,12 +8,13 @@ import {
   createKeeploreButtonTrialScenario,
   type KeeploreButtonTrialScenario,
 } from "@voice-agent/scenario";
-import type {
-  KeeploreDelegationBrief,
-  KeeploreDelegationFailure,
-  KeeploreDelegationResult,
-  KeeploreRegistration,
-  KeeploreWorktree,
+import {
+  registeredCodebaseIdSchema,
+  type KeeploreDelegationBrief,
+  type KeeploreDelegationFailure,
+  type KeeploreDelegationResult,
+  type KeeploreRegistration,
+  type KeeploreWorktree,
 } from "@voice-agent/contracts";
 import { createSqliteKeeploreDelegationStore } from "@voice-agent/sqlite-store";
 
@@ -373,7 +374,9 @@ test("an authenticated confirmed Keeplore Button Trial produces a bounded verifi
     goal:
       "Make Keeplore's table-view Get Rid Of control match the row-level Remove control without changing card view.",
     registeredCodebase: {
-      applicationId: "keeplore-production",
+      registeredCodebaseId: registeredCodebaseIdSchema.parse(
+        "keeplore-production",
+      ),
       productionBranch: "main",
       provider: "codex",
       repository: "JacobStephens2/keeplore",
@@ -472,9 +475,44 @@ test("a running Delegation resumes after worker restart with append-only evidenc
   await confirmTrial(acceptedScenario, "restart");
   await acceptedScenario.close();
 
+  const legacyDatabase = new Database(databasePath);
+  const stored = legacyDatabase
+    .prepare(
+      "SELECT brief_json FROM keeplore_delegations WHERE task_id = ?",
+    )
+    .get("task-button-trial") as { readonly brief_json: string };
+  const legacyBrief = JSON.parse(stored.brief_json) as {
+    readonly registeredCodebase: Readonly<Record<string, unknown>>;
+  };
+  const {
+    registeredCodebaseId,
+    ...legacyRegisteredCodebase
+  } = legacyBrief.registeredCodebase;
+  legacyDatabase
+    .prepare(
+      "UPDATE keeplore_delegations SET brief_json = ? WHERE task_id = ?",
+    )
+    .run(
+      JSON.stringify({
+        ...legacyBrief,
+        registeredCodebase: {
+          ...legacyRegisteredCodebase,
+          applicationId: registeredCodebaseId,
+        },
+      }),
+      "task-button-trial",
+    );
+  legacyDatabase.close();
+
   const claimingStore = createSqliteKeeploreDelegationStore(databasePath);
   const claimed = await claimingStore.claimNext({ claimedAt: now });
   expect(claimed?.worktree.state).toBe("running");
+  expect(claimed?.brief.registeredCodebase).toMatchObject({
+    registeredCodebaseId: "keeplore-production",
+  });
+  expect(claimed?.brief.registeredCodebase).not.toHaveProperty(
+    "applicationId",
+  );
   claimingStore.close();
 
   const resumedScenario = await createKeeploreButtonTrialScenario({
@@ -1172,7 +1210,9 @@ async function confirmTrial(
 
 function keeploreRegistration(): KeeploreRegistration {
   return {
-    applicationId: "keeplore-production",
+    registeredCodebaseId: registeredCodebaseIdSchema.parse(
+      "keeplore-production",
+    ),
     deploymentBoundaries: {
       liveCheckoutPath: "/var/www/keeplore.app",
       releaseRoot: "/opt/keeplore/releases",

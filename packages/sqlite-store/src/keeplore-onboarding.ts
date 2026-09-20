@@ -4,6 +4,7 @@ import {
   keeploreDeploymentContractSchema,
   keeplorePolicyAssessmentSchema,
   keeploreRegistrationSchema,
+  normalizeStoredRegisteredCodebaseIdentity,
 } from "@voice-agent/contracts";
 import type {
   KeeploreAssessmentKind,
@@ -60,7 +61,11 @@ export function createSqliteKeeploreOnboardingStore(
         .get() as { readonly definition_json: string } | undefined;
       return row === undefined
         ? undefined
-        : keeploreDeploymentContractSchema.parse(JSON.parse(row.definition_json));
+        : keeploreDeploymentContractSchema.parse(
+            normalizeStoredRegisteredCodebaseIdentity(
+              JSON.parse(row.definition_json),
+            ),
+          );
     },
     async findAssessment(kind) {
       const row = database
@@ -78,7 +83,11 @@ export function createSqliteKeeploreOnboardingStore(
         .get() as { readonly definition_json: string } | undefined;
       return row === undefined
         ? undefined
-        : keeploreRegistrationSchema.parse(JSON.parse(row.definition_json));
+        : keeploreRegistrationSchema.parse(
+            normalizeStoredRegisteredCodebaseIdentity(
+              JSON.parse(row.definition_json),
+            ),
+          );
     },
     async saveAssessment(kind: KeeploreAssessmentKind, assessment) {
       database

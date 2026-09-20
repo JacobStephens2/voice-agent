@@ -68,7 +68,7 @@ jq -cn \
   --arg repository "$keeplore_repository" \
   --argjson rulesetsRead "$rulesets_read" \
   '{
-    application: "keeplore-production",
+    registeredCodebaseId: "keeplore-production",
     attestedAt: $observedAt,
     attestedBy: "owner",
     branch: $branch,

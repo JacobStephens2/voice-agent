@@ -29,6 +29,7 @@ import {
 import {
   describeAuthProviderDrift,
   describeSandboxProfileDrift,
+  describeSystemRequirementsDrift,
 } from "./grok-credential-custody.ts";
 import {
   describeCredentialRefusal,
@@ -274,6 +275,7 @@ async function describePreflightDrift(): Promise<GrokContractRunOutcome | null> 
           pin,
           runRequirementsPath: `${ephemeralHome}/requirements.toml`,
         }) ??
+        (await describePinnedRequirementsDrift()) ??
         (await describeStagedSandboxDrift()) ??
         (await describeStagedAuthLayerDrift()))
       : "The runner did not report its effective configuration";
@@ -415,6 +417,26 @@ async function readSeededCredential(): Promise<
     authenticationMode: entry.auth_mode,
     remainingSeconds: Math.floor((expiresAt - Date.now()) / 1_000),
   };
+}
+
+/**
+ * Check the requirements layer the pin names.
+ *
+ * `inspect` reports which layer is in force and the policy that came out of
+ * it, not the keys that went in. Two of this contract's boundaries live in
+ * those keys: the API-key refusal the runner enforces, and the absence of a
+ * host-wide auth provider that would preempt the custody identity's own
+ * credential renewal. The second has no counterpart in the inspection at all,
+ * so the file is read back here.
+ */
+async function describePinnedRequirementsDrift(): Promise<string | null> {
+  try {
+    return describeSystemRequirementsDrift(
+      await readFile(pin.configurationPath, "utf8"),
+    );
+  } catch {
+    return `The pinned configuration at ${pin.configurationPath} could not be read`;
+  }
 }
 
 /**

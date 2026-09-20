@@ -177,6 +177,26 @@ test("a sandbox profile the runner could not enforce pauses", async () => {
   });
 });
 
+/**
+ * The pinned layer is read back rather than inferred from the inspection. A
+ * host-wide `auth_provider_command` would bind the custody identity too and
+ * preempt the one renewal the six-hour login has, and `inspect` reports the
+ * policy the layer produced, not the keys it used to produce it.
+ */
+test("a host-wide layer carrying an auth provider command pauses", async () => {
+  const host = await stageHost({
+    inspection: "reviewed",
+    systemLayer: "provider-command",
+  });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining("names an auth provider command"),
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
+});
+
 test("every run asks the custody identity for a credential before it spawns a model", async () => {
   const host = await stageHost({ credential: "renewed", inspection: "reviewed" });
 
@@ -330,6 +350,7 @@ async function stageHost(options: {
   readonly credential?: "expired" | "renewed" | "too-short";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
+  readonly systemLayer?: "provider-command";
   readonly unenforceableProfile?: boolean;
   readonly pinnedDigest?: string;
   readonly runFailure?: "quota";
@@ -338,7 +359,15 @@ async function stageHost(options: {
   const root = await mkdtemp(join(tmpdir(), "grok-contract-"));
   temporaryDirectories.push(root);
   const configurationPath = `${root}/requirements.toml`;
-  await writeFile(configurationPath, "[cli]\nauto_update = false\n");
+  await writeFile(
+    configurationPath,
+    options.systemLayer === "provider-command"
+      ? '[grok_com_config]\ndisable_api_key_auth = true\nauth_provider_command = "/tmp/mint"\n'
+      : await readFile(
+          fileURLToPath(new URL("../../../ops/grok/requirements.toml", import.meta.url)),
+          "utf8",
+        ),
+  );
   const sandboxProfilePath = `${root}/sandbox.toml`;
   await writeFile(
     sandboxProfilePath,
