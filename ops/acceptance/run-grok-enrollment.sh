@@ -340,13 +340,12 @@ if [[ "$(printf '%s' "$GROK_INSPECT" | /usr/bin/jq -r '.loginPolicy.apiKeyAuthDi
   exit 1
 fi
 printf '  %s✓%s the runner refuses API-key authentication by policy\n' "$GREEN" "$RESET"
-# Login policy is enforced every time a session is issued or reused, and a
-# session that no longer complies is cleared. That is documented of
-# force_login_team_uuid rather than of disable_api_key_auth, and it was not
-# observed either way - so a host that has just gained the pin is treated as one
-# whose enrolled credential may have to be authorized again. The stage below is
-# where that surfaces, and it is cheaper to expect it than to read it as a fault.
-say "If this host gained the API-key refusal since its last enrollment, the enrolled login may have been cleared by it. The next stage re-authorizes if so."
+# Whether disable_api_key_auth clears a non-complying session is untested: that
+# clearing is documented of force_login_team_uuid. The authorize stage still
+# runs grok login only when auth.json is absent, so a leftover file after a
+# cleared session is not signed in again here. The broker probe in that stage
+# is what surfaces it.
+say "Whether the API-key refusal clears an enrolled session is untested. The next stage runs grok login only when auth.json is absent; a leftover file after a cleared session is a failure the broker probe will surface."
 step "Confirm grokVersion matches, no MCP servers, plugins, skills, hooks, or marketplaces are declared, no third-party vendor surface is enabled, and configSources names exactly one non-empty layer - the system-requirements one. A run's own requirements layer carrying the auth crossing appears beside it only inside a Delegation's own Grok home."
 ask GROK_CONFIG_PATH "Which path does the system-requirements layer in configSources name?"
 if [[ "$GROK_CONFIG_PATH" != /* ]]; then
@@ -381,6 +380,9 @@ warn "Pinning a build discards the previous build's acceptance. Every stage belo
 
 stage "Authorize the subscription"
 say "Device authorization belongs to voice-grok-auth only. There is no API key step: provisioning one anywhere on this host makes the executor refuse to run."
+# grok login runs only when auth.json is absent. A leftover file after a
+# session the pin might have cleared is a failure the broker probe below
+# surfaces, not a sign-in this stage repeats.
 if ! sudo test -e /var/lib/voice-grok-auth/.grok/auth.json; then
   step "Complete the device flow as the subscription owner, on a machine with a browser."
   sudo -u voice-grok-auth -H "$GROK" login --device-auth
@@ -412,10 +414,11 @@ fi
 # prefers a provider command over renewing an expired cached login - so the one
 # identity that can renew this credential would be sent to the broker that
 # reads it. The crossing belongs in each run's own home. See ADR-0069. The key
-# is refused rather than the table, because `[auth]` is an alias of
-# `[grok_com_config]` - which this layer now carries for the API-key refusal -
-# and a check on the table name would read one spelling and miss the other.
-if sudo grep -Eq '^[[:space:]]*(auth\.|grok_com_config\.)?auth_provider_command[[:space:]]*=' "$GROK_REQUIREMENTS"; then
+# is refused by name anywhere in the comment-stripped layer, matching
+# describeSystemRequirementsDrift: a start-of-line `key =` grep misses
+# grok_com_config = { auth_provider_command = "…" }, and `[auth]` is an alias
+# of `[grok_com_config]` which this layer now carries for the API-key refusal.
+if sudo sed 's/#.*$//' "$GROK_REQUIREMENTS" | grep -Fq 'auth_provider_command'; then
   warn "$GROK_REQUIREMENTS names an auth provider command. That layer binds voice-grok-auth as well and would preempt its own credential renewal. Install the reviewed ops/grok/requirements.toml and re-run."
   exit 1
 fi

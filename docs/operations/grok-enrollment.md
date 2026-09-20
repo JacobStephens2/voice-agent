@@ -61,11 +61,11 @@ each run's home is created fresh, so the executor stages
 
 That layer is also where the API-key refusal is pinned. On a host that already
 holds an enrolled login, install it and then re-observe the credential before
-relying on it: login policy is enforced every time a session is issued or
-reused, and a non-complying session is cleared. That is documented of
-`force_login_team_uuid` rather than of `disable_api_key_auth`, and it was not
-observed either way, so a login that has to be authorized again after this
-change is expected rather than a fault.
+relying on it. Login-policy enforcement that clears a non-complying session is
+documented of `force_login_team_uuid` rather than of `disable_api_key_auth`,
+and it was not observed either way. Device authorization still runs only when
+`auth.json` is absent; a leftover file after a cleared session is a failure the
+broker probe will surface.
 `[grok_com_config] disable_api_key_auth = true` is what makes
 `loginPolicy.apiKeyAuthDisabled` true - the one boundary in this contract the
 runner enforces itself rather than this system asserting it about its own
@@ -75,14 +75,15 @@ Delegation root can turn it off, and it is not an account or team setting;
 that was established.
 
 The auth crossing is not installed here. `/etc/grok/requirements.toml` carries
-no `auth_provider_command`, at either spelling, on purpose: it binds every
-identity on this host, and an auth provider configured for all of them would
-also bind `voice-grok-auth`, whose own `grok` is the only thing that can renew
-the six-hour login. The runner prefers a provider command over renewing an
-expired cached login, so a host-wide `auth_provider_command` sends the custody
-identity to the broker that reads the credential instead of to the issuer that
-renews it. `[auth]` is an alias of `[grok_com_config]`, so it is the key that is
-refused rather than the table. The executor stages
+no `auth_provider_command` anywhere in the comment-stripped layer, on purpose:
+it binds every identity on this host, and an auth provider configured for all
+of them would also bind `voice-grok-auth`, whose own `grok` is the only thing
+that can renew the six-hour login. The runner prefers a provider command over
+renewing an expired cached login, so a host-wide `auth_provider_command` sends
+the custody identity to the broker that reads the credential instead of to the
+issuer that renews it. The key is refused by name rather than by heading,
+because TOML spells it as an inline table, a quoted key, or a sub-table, and
+`[auth]` is an alias of `[grok_com_config]`. The executor stages
 `ops/grok/run-requirements.toml` into each run's own home instead, as a
 `requirements` layer so that a Delegation root's `.grok/config.toml` still
 cannot override it. That layer sits beside the system one rather than replacing
@@ -256,8 +257,9 @@ observed. Confirm the executor identity holds no credential of its own:
 ```bash
 sudo -u voice-grok test ! -e /var/lib/voice-grok/.grok/auth.json && echo "no executor credential"
 sudo -u voice-grok env | grep -c XAI_API_KEY   # must print 0
-grep -cE '^[[:space:]]*(auth\.|grok_com_config\.)?auth_provider_command[[:space:]]*=' \
-  /etc/grok/requirements.toml   # must print 0
+sed 's/#.*$//' /etc/grok/requirements.toml | grep -cF 'auth_provider_command'
+# must print 0: the key is refused by name anywhere after comments are stripped,
+# including grok_com_config = { auth_provider_command = "…" }
 ```
 
 ## 3. Run the contract Delegation
