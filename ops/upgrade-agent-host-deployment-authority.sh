@@ -189,17 +189,33 @@ REPOSITORY_ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 ROOT_ORCHESTRATOR=/usr/local/libexec/voice-agent
 
 show_difference() {
-  local label=$1 reviewed=$2 pinned=$3
+  local label=$1 reviewed=$2 pinned=$3 expected_mode=${4:-}
+  local actual_mode= content_matches=false mode_matches=true
   if ! sudo test -e "$pinned"; then
     warn "$label is absent from the pinned authority."
     sudo diff -u --label "pinned/$label" --label "reviewed/$label" \
       /dev/null "$reviewed" || true
-  elif sudo cmp -s "$reviewed" "$pinned"; then
-    note "$label is already pinned at the reviewed version."
   else
+    if sudo cmp -s "$reviewed" "$pinned"; then
+      content_matches=true
+    fi
+    if [[ -n $expected_mode ]]; then
+      actual_mode=$(sudo stat -c %a "$pinned" 2>/dev/null) || actual_mode=
+      actual_mode="0$actual_mode"
+      if [[ $actual_mode != "$expected_mode" ]]; then mode_matches=false; fi
+    fi
+    if [[ $content_matches == true && $mode_matches == true ]]; then
+      note "$label is already pinned at the reviewed version."
+      return
+    fi
     printf '\n  %s%s%s\n' "$BOLD" "$label" "$RESET"
-    sudo diff -u --label "pinned/$label" --label "reviewed/$label" \
-      "$pinned" "$reviewed" || true
+    if [[ $content_matches != true ]]; then
+      sudo diff -u --label "pinned/$label" --label "reviewed/$label" \
+        "$pinned" "$reviewed" || true
+    fi
+    if [[ $mode_matches != true ]]; then
+      warn "$label has pinned mode $actual_mode; the reviewed manifest publishes $expected_mode."
+    fi
   fi
 }
 
@@ -267,7 +283,8 @@ for unit in "${voice_agent_authority_units[@]}"; do
   show_difference "$unit" "$REPOSITORY_ROOT/ops/systemd/$unit" \
     "$ROOT_ORCHESTRATOR/systemd/$unit"
 done
-for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}" \
+  "${voice_agent_authority_apparmor_local_overlays[@]}"; do
   source_path=${mapping%%:*}
   target_path=${mapping#*:}
   reviewed_authority_paths+=("apparmor/$target_path")
@@ -278,9 +295,11 @@ done
 for mapping in "${voice_agent_authority_programs[@]}"; do
   source_path=${mapping%%:*}
   target_path=${mapping#*:}
+  published_mode=${mapping##*:}
+  target_path=${target_path%%:*}
   reviewed_authority_paths+=("$target_path")
   show_difference "$target_path" "$REPOSITORY_ROOT/$source_path" \
-    "$ROOT_ORCHESTRATOR/$target_path"
+    "$ROOT_ORCHESTRATOR/$target_path" "$published_mode"
 done
 for mapping in "${voice_agent_authority_extras[@]}"; do
   source_path=${mapping%%:*}
@@ -336,7 +355,8 @@ sudo cmp -s "$REPOSITORY_ROOT/ops/release/promote-release.sh" \
   "$ROOT_ORCHESTRATOR/promote-release.sh"
 sudo cmp -s "$REPOSITORY_ROOT/ops/systemd/voice-agent-subagent.service" \
   "$ROOT_ORCHESTRATOR/systemd/voice-agent-subagent.service"
-for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}" \
+  "${voice_agent_authority_apparmor_local_overlays[@]}"; do
   source_path=${mapping%%:*}
   profile=${mapping#*:}
   sudo cmp -s "$REPOSITORY_ROOT/$source_path" \

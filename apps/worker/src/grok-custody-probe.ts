@@ -8,10 +8,10 @@ import { credentialCustodyBoundaryPaths } from "./grok-credential-custody.ts";
  * Try to read every Credential Custody Boundary store, and report what opened.
  *
  * The enrollment ceremony records a count of boundary stores the model process
- * reached. Deriving that count from the same list the executor and the sandbox
- * profile use is the point: a hand-counted probe proves whatever the operator
- * remembered to try, and a store added to the boundary later would never be
- * probed at all.
+ * reached. Deriving that count from the same list the executor uses is the
+ * point: a hand-counted probe proves whatever the operator remembered to try,
+ * and a store added to the boundary later would never be probed at all. The
+ * Auth Crossing directory is not on that list.
  *
  * Run it as the identity under test. Reading a directory listing counts as
  * reaching the store: the question is not whether a credential was exfiltrated

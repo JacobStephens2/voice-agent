@@ -161,6 +161,13 @@ for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
     /usr/sbin/apparmor_parser -Q "$release/$source_path"
   fi
 done
+for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
+  source_path=${mapping%%:*}
+  if [[ ! -f $release/$source_path ]]; then
+    printf 'Reviewed deployment authority is missing %s.\n' "$source_path" >&2
+    exit 1
+  fi
+done
 for mapping in "${voice_agent_authority_programs[@]}"; do
   source_path=${mapping%%:*}
   if [[ ! -f $release/$source_path ]]; then
@@ -335,8 +342,19 @@ restore_keeplore_tools() {
 }
 
 restore_apparmor_profiles() {
-  local mapping profile target_path backup_path
+  local mapping profile overlay target_path backup_path
   if [[ $apparmor_changed != true ]]; then return 0; fi
+  for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
+    overlay=${mapping#*:}
+    target_path="$apparmor_directory/$overlay"
+    backup_path="$apparmor_previous/$overlay"
+    if [[ -f $backup_path ]]; then
+      mkdir -p "$(dirname "$target_path")"
+      install_reviewed_file 0644 "$backup_path" "$target_path"
+    else
+      rm -f -- "$target_path"
+    fi
+  done
   for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
     profile=${mapping#*:}
     target_path="$apparmor_directory/$profile"
@@ -495,7 +513,8 @@ else
   current_backup=
 fi
 
-mkdir -p "$stage/systemd" "$stage/apparmor" "$stage/keeplore"
+mkdir -p "$stage/systemd" "$stage/apparmor" "$stage/apparmor/local" \
+  "$stage/keeplore"
 
 install_reviewed_file() {
   local mode=$1 source_path=$2 target_path=$3
@@ -519,10 +538,20 @@ for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
   install_reviewed_file 0644 "$release/$source_path" \
     "$stage/apparmor/$target_path"
 done
+for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
+  source_path=${mapping%%:*}
+  target_path=${mapping#*:}
+  mkdir -p "$(dirname "$stage/apparmor/$target_path")"
+  install_reviewed_file 0644 "$release/$source_path" \
+    "$stage/apparmor/$target_path"
+done
 for mapping in "${voice_agent_authority_programs[@]}"; do
   source_path=${mapping%%:*}
   target_path=${mapping#*:}
-  install_reviewed_file 0644 "$release/$source_path" "$stage/$target_path"
+  published_mode=${mapping##*:}
+  target_path=${target_path%%:*}
+  install_reviewed_file \
+    "$published_mode" "$release/$source_path" "$stage/$target_path"
 done
 for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
   source_path=${mapping%%:*}
@@ -535,6 +564,50 @@ for mapping in "${voice_agent_authority_extras[@]}"; do
   target_path=${mapping#*:}
   install_reviewed_file 0755 "$release/$source_path" "$stage/$target_path"
 done
+
+# `mktemp -d` deliberately creates the replacement as 0700 while it is being
+# assembled. Publish the reviewed libexec boundary, not that staging default:
+# the voice-grok executor has to traverse it to reach the Auth Crossing.
+for staged_directory in \
+  "$stage" "$stage/systemd" "$stage/apparmor" "$stage/apparmor/local" \
+  "$stage/keeplore"; do
+  if [[ $test_mode == false ]]; then chown root:root "$staged_directory"; fi
+  chmod 0755 "$staged_directory"
+done
+if [[ $(voice_agent_authority_path_mode "$stage") != 0755 ]]; then
+  printf 'Staged deployment authority has the wrong directory mode.\n' >&2
+  exit 1
+fi
+if [[ $test_mode == false ]] && {
+  [[ $(stat -c %U "$stage") != root ]] ||
+  [[ $(stat -c %G "$stage") != root ]];
+}; then
+  printf 'Staged deployment authority is not root-owned.\n' >&2
+  exit 1
+fi
+
+# Installation is only half of the manifest contract. Refuse the atomic rename
+# unless every staged pin still has its declared mode and, on the real host,
+# root ownership. This catches a new publication loop before it can recreate a
+# non-executable crossing or executable data program.
+while IFS=$'\t' read -r source_path target_path expected_mode; do
+  staged_path="$stage/$target_path"
+  actual_mode=$(voice_agent_authority_path_mode "$staged_path" 2>/dev/null) ||
+    actual_mode=
+  if [[ ! -f $staged_path || $actual_mode != "$expected_mode" ]]; then
+    printf 'Staged deployment authority has invalid mode at %s.\n' \
+      "$target_path" >&2
+    exit 1
+  fi
+  if [[ $test_mode == false ]] && {
+    [[ $(stat -c %U "$staged_path") != root ]] ||
+    [[ $(stat -c %G "$staged_path") != root ]];
+  }; then
+    printf 'Staged deployment authority is not root-owned at %s.\n' \
+      "$target_path" >&2
+    exit 1
+  fi
+done < <(voice_agent_authority_pinned_paths)
 
 if [[ -d $authority ]]; then
   mv "$authority" "$previous"
@@ -570,18 +643,28 @@ done
 
 apparmor_previous=$(mktemp -d \
   "$authority_parent/.voice-agent.apparmor.previous.XXXXXX")
-mkdir -p "$apparmor_directory" "$backup/system-apparmor"
-for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
+mkdir -p "$apparmor_directory" "$apparmor_directory/local" \
+  "$apparmor_previous/local" "$backup/system-apparmor/local"
+for mapping in "${voice_agent_authority_apparmor_profiles[@]}" \
+  "${voice_agent_authority_apparmor_local_overlays[@]}"; do
   profile=${mapping#*:}
   target_path="$apparmor_directory/$profile"
+  mkdir -p "$(dirname "$apparmor_previous/$profile")" \
+    "$(dirname "$backup/system-apparmor/$profile")"
   if [[ -f $target_path ]]; then
     cp -p "$target_path" "$apparmor_previous/$profile"
     cp -p "$target_path" "$backup/system-apparmor/$profile"
   else
-    touch "$backup/system-apparmor/.absent-$profile"
+    touch "$backup/system-apparmor/.absent-${profile//\//-}"
   fi
 done
 apparmor_changed=true
+for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
+  overlay=${mapping#*:}
+  target_path="$apparmor_directory/$overlay"
+  mkdir -p "$(dirname "$target_path")"
+  install_reviewed_file 0644 "$authority/apparmor/$overlay" "$target_path"
+done
 for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
   profile=${mapping#*:}
   target_path="$apparmor_directory/$profile"

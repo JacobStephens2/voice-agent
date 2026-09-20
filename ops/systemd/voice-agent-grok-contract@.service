@@ -16,8 +16,12 @@ TimeoutStopSec=30s
 KillMode=mixed
 KillSignal=SIGTERM
 UMask=0077
-NoNewPrivileges=true
-CapabilityBoundingSet=
+# The sudoers Auth Crossing needs setuid sudo to become euid 0, then CAP_SETUID
+# and CAP_SETGID to become voice-grok-auth. NoNewPrivileges would stop that
+# before sudoers is evaluated. Do not run this unit as root; if sudo/PAM on the
+# host needs one more cap, the attended canary records it.
+NoNewPrivileges=false
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 AmbientCapabilities=
 PrivateDevices=true
 PrivateTmp=true
@@ -32,22 +36,18 @@ ProtectKernelTunables=true
 # the access token the runner holds.
 ProtectProc=invisible
 ProtectSystem=strict
-ReadWritePaths=/var/lib/voice-grok /var/lib/voice-agent-evidence
-# The Credential Custody Boundary, held by the host as well as by the sandbox.
-# Losing one of these paths from the reviewed sandbox profile must not be
-# enough to disclose a credential.
-#
-# Two boundary stores are absent here on purpose. The executor itself reads
-# /etc/voice-agent/grok for the reviewed runner pin and root-managed
-# configuration, and writes its durable record under /var/lib/voice-agent-
-# evidence. Neither is readable by the model: the reviewed sandbox profile
-# denies both to model-selected tools, and ProtectSystem=strict keeps /etc
-# read-only for the executor.
-InaccessiblePaths=/root /run/voice-agent-broker /run/voice-agent-grok-auth /run/voice-agent-keeplore-publisher /run/voice-agent-subagent /var/lib/voice-agent /var/lib/voice-agent-broker /var/lib/voice-codex /var/lib/voice-grok-auth /var/www /opt/keeplore /run/docker.sock /var/run/docker.sock
-# AF_NETLINK is Bubblewrap's, not the runner's: with the model sandbox's
-# network restricted, bwrap unshares the network namespace and brings up
-# loopback inside it, which needs a NETLINK_ROUTE socket. The sandbox still has
-# no child-process network.
+# /var/lib/voice-grok-auth stays 0700 voice-grok-auth, so voice-grok still
+# cannot read the store. The helper must write it on renewal (ADR-0069), and a
+# UID change cannot escape InaccessiblePaths, so the path is writable here
+# rather than hidden from the whole unit.
+ReadWritePaths=/var/lib/voice-grok /var/lib/voice-agent-evidence /var/lib/voice-grok-auth
+# Credential Custody Boundary stores this unit can hide from every process in
+# its namespace. The Auth Crossing directory is not among them: the parent
+# runner must execute the broker. Child AppArmor, not this list, denies the
+# crossing to model-selected Bubblewrap children.
+InaccessiblePaths=/root /run/voice-agent-broker /run/voice-agent-grok-auth /run/voice-agent-keeplore-publisher /run/voice-agent-subagent /var/lib/voice-agent /var/lib/voice-agent-broker /var/lib/voice-codex /var/www /opt/keeplore /run/docker.sock /var/run/docker.sock
+# AF_NETLINK remains available for Bubblewrap. AF_INET and AF_INET6 also mean
+# this unit does not supply the unresolved child-process network restriction.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 # Bubblewrap asks the kernel for CLONE_NEWUSER|CLONE_NEWNS in one clone call,
 # which systemd's namespace filter matches as a whole. The namespace boundary

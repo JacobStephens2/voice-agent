@@ -43,9 +43,18 @@ voice_agent_authority_apparmor_profiles=(
   "ops/apparmor/bwrap-userns-restrict:bwrap-userns-restrict"
 )
 
+# Included by unpriv_bwrap. Not a standalone profile: install the file, then
+# reload the parent. apparmor_parser -r on the overlay itself would fail.
+voice_agent_authority_apparmor_local_overlays=(
+  "ops/apparmor/local/unpriv_bwrap:local/unpriv_bwrap"
+)
+
 voice_agent_authority_programs=(
-  "ops/release/deployment-authority-authorization-verifier.mjs:deployment-authority-authorization-verifier.mjs"
-  "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts"
+  # source path : pinned path : published mode. Unlike the category-level
+  # arrays above, these programs do not share one mode: data read by Node stays
+  # non-executable, while an Auth Crossing invoked by exec must be executable.
+  "ops/release/deployment-authority-authorization-verifier.mjs:deployment-authority-authorization-verifier.mjs:0644"
+  "ops/release/keeplore-github-app-publisher.ts:keeplore-github-app-publisher.ts:0644"
   # The Repository Administration Broker holds the owner credential that may
   # create a repository and write its production-branch rules — the one
   # authority the Administrative Publisher App is deliberately denied. A host
@@ -54,15 +63,15 @@ voice_agent_authority_programs=(
   # operations that copy happened to expose. Its unit is pinned above, and the
   # promoter, the health reading, and the host wizard all name the service, so
   # installed authority is authority something actually starts and observes.
-  "ops/release/repository-administration-broker.ts:repository-administration-broker.ts"
+  "ops/release/repository-administration-broker.ts:repository-administration-broker.ts:0644"
   # The Grok token crossing. The broker is what the runner invokes as its
   # configured auth provider and the helper is the only thing that may read the
   # refresh credential, so both are reviewed root authority rather than release
   # content: the sudoers rule and the root-managed provider configuration name
   # these exact pinned paths, and a host running an unreviewed copy at either
   # path would have moved the custody boundary without an attended action.
-  "ops/grok/grok-token-broker:grok-token-broker"
-  "ops/grok/grok-token-helper:grok-token-helper"
+  "ops/grok/grok-token-broker:grok-token-broker:0755"
+  "ops/grok/grok-token-helper:grok-token-helper:0755"
 )
 
 # The Keeplore programs that write the repository-policy journal the pinned
@@ -94,34 +103,54 @@ voice_agent_authority_extras=(
   "ops/grafana/install-dashboard.sh:install-grafana-dashboard.sh"
 )
 
+# Print one file's mode as the four-digit octal form used by this manifest.
+# GNU stat is present on the Agent Host; BSD stat keeps the same contract
+# exercisable by the isolated macOS scenario harness.
+voice_agent_authority_path_mode() {
+  local path=$1 raw_mode
+  if raw_mode=$(stat -c %a -- "$path" 2>/dev/null); then
+    :
+  else
+    raw_mode=$(stat -f %Lp -- "$path") || return 1
+  fi
+  if [[ ! $raw_mode =~ ^[0-7]{3,4}$ ]]; then return 1; fi
+  printf '%04o\n' "$((8#$raw_mode))"
+}
+
 # voice_agent_authority_pinned_paths
 #
 # Print, one per line in manifest order, the reviewed file's Release-relative
-# source path and the pinned-relative path the attended upgrade installs it at,
-# separated by a tab. The pinned layout is decided here rather than at each
-# reader, so a comparison of what a host is running cannot look for a path no
-# upgrade has ever written.
+# source path, the pinned-relative path the attended upgrade installs it at,
+# and its published mode, separated by tabs. Layout and mode are decided here
+# rather than at each reader, so installation and drift cannot disagree about
+# what a pinned path means.
 voice_agent_authority_pinned_paths() {
-  local entry mapping
+  local entry mapping pinned published_mode
   for entry in "${voice_agent_authority_scripts[@]}"; do
-    printf 'ops/release/%s\t%s\n' "$entry" "$entry"
+    printf 'ops/release/%s\t%s\t0755\n' "$entry" "$entry"
   done
   for entry in "${voice_agent_authority_units[@]}"; do
-    printf 'ops/systemd/%s\tsystemd/%s\n' "$entry" "$entry"
+    printf 'ops/systemd/%s\tsystemd/%s\t0644\n' "$entry" "$entry"
   done
   for mapping in "${voice_agent_authority_apparmor_profiles[@]}"; do
-    printf '%s\tapparmor/%s\n' "${mapping%%:*}" "${mapping#*:}"
+    printf '%s\tapparmor/%s\t0644\n' "${mapping%%:*}" "${mapping#*:}"
+  done
+  for mapping in "${voice_agent_authority_apparmor_local_overlays[@]}"; do
+    printf '%s\tapparmor/%s\t0644\n' "${mapping%%:*}" "${mapping#*:}"
   done
   for mapping in "${voice_agent_authority_programs[@]}"; do
-    printf '%s\t%s\n' "${mapping%%:*}" "${mapping#*:}"
+    pinned=${mapping#*:}
+    published_mode=${mapping##*:}
+    printf '%s\t%s\t%s\n' \
+      "${mapping%%:*}" "${pinned%%:*}" "$published_mode"
   done
   # The Keeplore tools are staged in their own subdirectory of the authority
   # root by `upgrade-deployment-authority.sh`, which reads the bare right-hand
   # sides above to install a second copy under `/usr/local/libexec/keeplore/`.
   for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
-    printf '%s\tkeeplore/%s\n' "${mapping%%:*}" "${mapping#*:}"
+    printf '%s\tkeeplore/%s\t0755\n' "${mapping%%:*}" "${mapping#*:}"
   done
   for mapping in "${voice_agent_authority_extras[@]}"; do
-    printf '%s\t%s\n' "${mapping%%:*}" "${mapping#*:}"
+    printf '%s\t%s\t0755\n' "${mapping%%:*}" "${mapping#*:}"
   done
 }

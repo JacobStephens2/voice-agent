@@ -90,7 +90,9 @@ const contractRunEventSchema = z
 const custodyProbeEventSchema = z
   .object({
     canarySecretsFound: z.number().int().nonnegative(),
+    childCouldNotListOrExecute: z.boolean(),
     kind: z.literal("custody-probe"),
+    parentUnitProbeAnswered: z.boolean(),
     readableBoundaryPaths: z.number().int().nonnegative(),
     recordedAt: timestampSchema,
   })
@@ -246,8 +248,20 @@ export function evaluateGrokEnrollment(
   const probe = events.findLast((event) => event.kind === "custody-probe");
   if (probe === undefined) {
     errors.push("The Credential Custody Boundary has not been probed.");
-  } else if (probe.readableBoundaryPaths > 0 || probe.canarySecretsFound > 0) {
-    errors.push("The model process reached the Credential Custody Boundary.");
+  } else {
+    if (probe.readableBoundaryPaths > 0 || probe.canarySecretsFound > 0) {
+      errors.push("The model process reached the Credential Custody Boundary.");
+    }
+    if (!probe.childCouldNotListOrExecute) {
+      errors.push(
+        "A model-selected Bubblewrap child listed or executed the Auth Crossing.",
+      );
+    }
+    if (!probe.parentUnitProbeAnswered) {
+      errors.push(
+        "The parent broker probe under the contract unit did not answer.",
+      );
+    }
   }
   const drilled = new Set(
     events

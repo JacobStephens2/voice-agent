@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import {
   describeCredentialRefusal,
   describeCredentialSeedingRefusal,
+  describeUnreachableAuthCrossing,
   grokCredentialProbeExitCodes,
 } from "../src/grok-credential-lifetime.ts";
 
@@ -109,16 +110,38 @@ test("an exit code this contract does not recognise still pauses", () => {
   });
 });
 
+test("an unexecutable broker is crossing drift, not a custody refusal", () => {
+  expect(describeUnreachableAuthCrossing()).toEqual({
+    detail:
+      "The executor identity could not execute the token broker; the task waits for the Auth Crossing's executable and parent-directory modes to be restored.",
+    evidence: null,
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+});
+
 /**
- * The exit codes are a contract across two languages, and the half that
- * produces them cannot import the half that reads them. Nothing else would
- * notice a renumbering until a Delegation paused for the wrong reason.
+ * The exit codes are a contract across two languages and the enrollment
+ * prerequisite. The halves cannot import one another, so bind all three here:
+ * otherwise a renumbering could make enrollment reject a reachable crossing
+ * and make a Delegation pause for the wrong reason.
  */
-test("the helper that produces these codes agrees with the module that reads them", async () => {
-  const helper = await readFile(
-    fileURLToPath(new URL("../../../ops/grok/grok-token-helper", import.meta.url)),
-    "utf8",
-  );
+test("the helper, executor, and enrollment prerequisite agree on probe exit codes", async () => {
+  const [helper, prerequisites] = await Promise.all([
+    readFile(
+      fileURLToPath(new URL("../../../ops/grok/grok-token-helper", import.meta.url)),
+      "utf8",
+    ),
+    readFile(
+      fileURLToPath(
+        new URL(
+          "../../../ops/acceptance/grok-enrollment-prerequisites.sh",
+          import.meta.url,
+        ),
+      ),
+      "utf8",
+    ),
+  ]);
 
   expect(
     Object.fromEntries(
@@ -133,6 +156,16 @@ test("the helper that produces these codes agrees with the module that reads the
     EXIT_OTHER_ROUTE: grokCredentialProbeExitCodes.otherRoutePresent,
     EXIT_WRONG_IDENTITY: grokCredentialProbeExitCodes.wrongIdentity,
   });
+
+  const reachablePattern = prerequisites.match(
+    /^\s*((?:\d+\|)*\d+)\) return 0 ;;$/mu,
+  );
+  expect(reachablePattern).not.toBeNull();
+  expect(reachablePattern?.[1]?.split("|").map(Number)).toEqual(
+    [0, ...Object.values(grokCredentialProbeExitCodes)].sort((left, right) =>
+      left - right,
+    ),
+  );
 });
 
 /**

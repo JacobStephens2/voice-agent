@@ -44,7 +44,13 @@ export const grokRootConfigurationPath = "/etc/voice-agent/grok/config.toml";
 /** The reviewed sandbox profile a model process is confined to. */
 export const grokSandboxProfile = "voice-agent-task";
 
-/** Host stores that remain broker-only under ADR-0048. */
+/**
+ * Host stores that remain broker-only under ADR-0048.
+ *
+ * The Auth Crossing directory `/usr/local/libexec/voice-agent` is crossing
+ * code, not a store: a 0755 listing of it is not disclosure. Model-selected
+ * Bubblewrap children are denied that directory by the unpriv_bwrap overlay.
+ */
 export const credentialCustodyBoundaryPaths = [
   "/etc/ssh",
   "/etc/voice-agent",
@@ -54,7 +60,6 @@ export const credentialCustodyBoundaryPaths = [
   "/run/voice-agent-grok-auth",
   "/run/voice-agent-keeplore-publisher",
   "/run/voice-agent-subagent",
-  "/usr/local/libexec/voice-agent",
   "/var/lib/voice-agent",
   "/var/lib/voice-agent-broker",
   "/var/lib/voice-agent-evidence",

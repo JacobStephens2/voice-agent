@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  chown,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +30,7 @@ import { reviewedGrokInspection } from "../src/grok-runner-pin.ts";
 const executorPath = fileURLToPath(
   new URL("../src/grok-contract-executor.ts", import.meta.url),
 );
+const restrictedDirectories: string[] = [];
 const temporaryDirectories: string[] = [];
 
 const brief: GrokContractDelegationBrief = {
@@ -52,6 +62,11 @@ const envelope = {
 };
 
 afterEach(async () => {
+  await Promise.all(
+    restrictedDirectories
+      .splice(0)
+      .map((directory) => chmod(directory, 0o700)),
+  );
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -202,6 +217,22 @@ test("a login the runner could not renew pauses before the model is spawned", as
   await expect(readFile(`${host.root}/invocation`, "utf8")).rejects.toThrow();
 });
 
+test("a token broker the executor cannot execute pauses as crossing drift", async () => {
+  const host = await stageHost({
+    brokerReachability: "blocked-parent",
+    inspection: "reviewed",
+  });
+
+  expect(runExecutor(host).outcome).toMatchObject({
+    detail: expect.stringContaining(
+      "executor identity could not execute the token broker",
+    ),
+    reason: "provider-contract-drift",
+    state: "paused",
+  });
+  await expect(readFile(`${host.root}/login`, "utf8")).rejects.toThrow();
+});
+
 test("an auth crossing that is not the reviewed one pauses before any request", async () => {
   const host = await stageHost({ authLayer: "another-broker", inspection: "reviewed" });
 
@@ -299,6 +330,10 @@ test("a provider that refused the subscription's usage pauses the task", async (
 interface StagedHost {
   readonly authLayerPath: string;
   readonly enrollmentPath: string;
+  readonly executorIdentity: {
+    readonly gid: number;
+    readonly uid: number;
+  } | null;
   readonly tokenBrokerPath: string;
   readonly evidenceRoot: string;
   readonly grokExecutable: string;
@@ -311,6 +346,7 @@ interface StagedHost {
 
 async function stageHost(options: {
   readonly authLayer?: "another-broker";
+  readonly brokerReachability?: "blocked-parent";
   readonly credential?: "expired" | "renewed" | "too-short";
   readonly enrollment?: "accepted" | "for-another-build";
   readonly inspection: "reviewed" | "api-key-permitted";
@@ -424,7 +460,9 @@ async function stageHost(options: {
   }
   // The broker answers with a status, never a token: this stands in for the
   // crossing to the custody identity, which the executor cannot make in a test.
-  const tokenBrokerPath = `${root}/grok-token-broker`;
+  const tokenBrokerDirectory = `${root}/broker-bin`;
+  await mkdir(tokenBrokerDirectory);
+  const tokenBrokerPath = `${tokenBrokerDirectory}/grok-token-broker`;
   await writeFile(
     tokenBrokerPath,
     [
@@ -439,6 +477,13 @@ async function stageHost(options: {
     ].join("\n"),
   );
   await chmod(tokenBrokerPath, 0o755);
+  if (options.brokerReachability === "blocked-parent") {
+    // Model the Agent Host fault itself: the broker remains executable, but
+    // the executor cannot traverse the directory that contains it. Restore
+    // access in afterEach before recursively removing the staged host.
+    await chmod(tokenBrokerDirectory, 0o600);
+    restrictedDirectories.push(tokenBrokerDirectory);
+  }
   const authLayerPath = `${root}/run-requirements.toml`;
   await writeFile(
     authLayerPath,
@@ -449,9 +494,25 @@ async function stageHost(options: {
   const evidenceRoot = `${root}/evidence`;
   await mkdir(runRoot, { recursive: true });
   await mkdir(evidenceRoot, { recursive: true });
+  // A root-run test process would otherwise traverse a 0600 directory through
+  // DAC override and turn the security scenario into a false success. Drop the
+  // executor child to a fixed unprivileged identity and give that identity the
+  // rest of its staged host. This stays local rather than sharing the wizard's
+  // fixture: that one tests shell-stage output through a sudo boundary, while
+  // this one tests the executor's durable outcome and writable run lifecycle.
+  const executorIdentity =
+    process.getuid?.() === 0 ? { gid: 65_534, uid: 65_534 } : null;
+  if (executorIdentity !== null) {
+    await changeTreeOwnership(
+      root,
+      executorIdentity.uid,
+      executorIdentity.gid,
+    );
+  }
   return {
     authLayerPath,
     enrollmentPath,
+    executorIdentity,
     evidenceRoot,
     grokExecutable,
     pin: installedPin,
@@ -481,6 +542,7 @@ function runExecutor(host: StagedHost, override: Partial<GrokContractDelegationB
         VOICE_AGENT_GROK_TOKEN_BROKER: host.tokenBrokerPath,
       },
       input: JSON.stringify({ ...brief, ...override }),
+      ...(host.executorIdentity ?? {}),
     },
   );
   expect(spawned.stderr).toBe("");
@@ -512,7 +574,13 @@ function provedEnrollment(runner: GrokRunnerPin) {
     stopReason: "end_turn",
     usageIncomplete: false,
   });
-  append({ canarySecretsFound: 0, kind: "custody-probe", readableBoundaryPaths: 0 });
+  append({
+    canarySecretsFound: 0,
+    childCouldNotListOrExecute: true,
+    kind: "custody-probe",
+    parentUnitProbeAnswered: true,
+    readableBoundaryPaths: 0,
+  });
   for (const [condition, outcome] of Object.entries(grokFailureDrillOutcomes)) {
     append({ condition, fellBackToAnotherProvider: false, kind: "failure-drill", outcome });
   }
@@ -527,4 +595,20 @@ function provedEnrollment(runner: GrokRunnerPin) {
 
 async function digestOf(path: string): Promise<string> {
   return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+async function changeTreeOwnership(
+  path: string,
+  uid: number,
+  gid: number,
+): Promise<void> {
+  const entries = await readdir(path, { withFileTypes: true });
+  await Promise.all(
+    entries.map(async (entry) => {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) await changeTreeOwnership(child, uid, gid);
+      await chown(child, uid, gid);
+    }),
+  );
+  await chown(path, uid, gid);
 }

@@ -92,6 +92,8 @@ if (command === "init") {
 } else if (command === "record-custody-probe") {
   requireOnlyOptions(options, [
     "canary-secrets-found",
+    "child-could-not-list-or-execute",
+    "parent-unit-probe-answered",
     "readable-boundary-paths",
     "record",
     "recorded-at",
@@ -99,7 +101,15 @@ if (command === "init") {
   await updateRecord(requiredOption(options, "record"), (record) =>
     appendGrokEnrollmentEvent(record, {
       canarySecretsFound: requiredIntegerOption(options, "canary-secrets-found"),
+      childCouldNotListOrExecute: requiredBooleanOption(
+        options,
+        "child-could-not-list-or-execute",
+      ),
       kind: "custody-probe",
+      parentUnitProbeAnswered: requiredBooleanOption(
+        options,
+        "parent-unit-probe-answered",
+      ),
       readableBoundaryPaths: requiredIntegerOption(
         options,
         "readable-boundary-paths",

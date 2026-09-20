@@ -14,6 +14,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -224,6 +225,24 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
     },
   });
 
+  expect((await stat(fixture.authority)).mode & 0o777).toBe(0o755);
+  await expect(
+    Promise.all(
+      ["grok-token-broker", "grok-token-helper"].map(async (program) =>
+        (await stat(join(fixture.authority, program))).mode & 0o777
+      ),
+    ),
+  ).resolves.toEqual([0o755, 0o755]);
+  await expect(
+    Promise.all(
+      [
+        "deployment-authority-authorization-verifier.mjs",
+        "keeplore-github-app-publisher.ts",
+      ].map(async (program) =>
+        (await stat(join(fixture.authority, program))).mode & 0o777
+      ),
+    ),
+  ).resolves.toEqual([0o644, 0o644]);
   await expect(
     readFile(join(fixture.authority, "promote-release.sh"), "utf8"),
   ).resolves.toBe(fixture.reviewedPromoter);
@@ -277,6 +296,18 @@ test("an attended upgrade activates reviewed Subagent authority from existing pr
       "utf8",
     ),
   ).resolves.toBe(fixture.reviewedBwrapProfile);
+  await expect(
+    readFile(
+      join(fixture.authority, "apparmor/local/unpriv_bwrap"),
+      "utf8",
+    ),
+  ).resolves.toMatch(/deny \/usr\/local\/libexec\/voice-agent\/ r,/u);
+  await expect(
+    readFile(
+      join(fixture.root, "etc/apparmor.d/local/unpriv_bwrap"),
+      "utf8",
+    ),
+  ).resolves.toMatch(/deny \/usr\/local\/libexec\/voice-agent\/ r,/u);
   await expect(
     readFile(
       join(

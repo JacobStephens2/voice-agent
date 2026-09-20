@@ -196,8 +196,9 @@ RECORD=/var/lib/voice-agent-evidence/grok-enrollment.json
 BRIEF_DIR=/var/lib/voice-grok/brief
 RUN_ROOT=/var/lib/voice-grok/run
 EVIDENCE=/var/lib/voice-agent-evidence
-TOKEN_BROKER=/usr/local/libexec/voice-agent/grok-token-broker
-TOKEN_HELPER=/usr/local/libexec/voice-agent/grok-token-helper
+TOKEN_BROKER_DIRECTORY=/usr/local/libexec/voice-agent
+TOKEN_BROKER=$TOKEN_BROKER_DIRECTORY/grok-token-broker
+TOKEN_HELPER=$TOKEN_BROKER_DIRECTORY/grok-token-helper
 
 if [[ ! -e /opt/voice-agent/current ]]; then
   warn "Run this wizard on the Agent Host after promoting the reviewed Voice Agent release."
@@ -210,6 +211,8 @@ if ! RELEASE_ROOT=$(readlink -f /opt/voice-agent/current) || \
   warn "The active Voice Agent release path is invalid."
   exit 1
 fi
+# shellcheck source=ops/acceptance/grok-enrollment-prerequisites.sh
+source "$RELEASE_ROOT/ops/acceptance/grok-enrollment-prerequisites.sh"
 
 # now — one UTC timestamp in the shape every Enrollment Event carries.
 now() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
@@ -256,64 +259,7 @@ declare -A DRILL_METHOD=(
 )
 
 banner "Grok Build enrollment and contract test"
-
-# require CHECK DESCRIPTION REMEDY — verify one prerequisite, and say what to
-# do about it when it is absent.
-#
-# Every check below is something an attended action installs, so a bare `set -e`
-# exit tells the operator only that a command failed. Naming the missing piece
-# and the step that installs it is the difference between a wizard and a trap.
-REQUIREMENTS_MISSING=0
-require() {
-  local description="$1" remedy="$2"
-  shift 2
-  if "$@" >/dev/null 2>&1; then return 0; fi
-  printf '  %s✗%s %s\n' "$RED" "$RESET" "$description"
-  note "    $remedy"
-  REQUIREMENTS_MISSING=$((REQUIREMENTS_MISSING + 1))
-}
-
-stage "Verify the enrollment boundary"
-say "The reviewed release owns provisioning; this stage verifies it without broadening authority."
-SETUP_REMEDY="Run the one-time setup block at the top of docs/operations/grok-enrollment.md as root."
-AUTHORITY_REMEDY="Install it through the attended deployment-authority upgrade: ./ops/upgrade-agent-host-deployment-authority.sh"
-require "the executor identity voice-grok exists" "$SETUP_REMEDY" id voice-grok
-require "the custody identity voice-grok-auth exists" "$SETUP_REMEDY" id voice-grok-auth
-require "the pinned Grok Build runner is installed at $GROK" \
-  "Install the reviewed release; see 'Install the runner' in docs/operations/grok-enrollment.md." \
-  sudo test -x "$GROK"
-require "the reviewed requirements layer is installed at $GROK_REQUIREMENTS" \
-  "$SETUP_REMEDY" sudo test -r "$GROK_REQUIREMENTS"
-require "the token broker is pinned at $TOKEN_BROKER" "$AUTHORITY_REMEDY" \
-  sudo test -x "$TOKEN_BROKER"
-require "the token helper is pinned at $TOKEN_HELPER" "$AUTHORITY_REMEDY" \
-  sudo test -x "$TOKEN_HELPER"
-require "the contract unit is installed" "$AUTHORITY_REMEDY" \
-  sudo test -e "/etc/systemd/system/voice-agent-grok-contract@.service"
-require "the token helper is root-owned" "$AUTHORITY_REMEDY" \
-  sudo test "$(sudo stat -c %U "$TOKEN_HELPER" 2>/dev/null)" = root
-require "the sudoers rule for the token crossing is root-owned" "$SETUP_REMEDY" \
-  sudo test "$(sudo stat -c %U /etc/sudoers.d/voice-grok-token-helper 2>/dev/null)" = root
-require "the executor state directory belongs to voice-grok" "$SETUP_REMEDY" \
-  sudo test "$(sudo stat -c %U /var/lib/voice-grok 2>/dev/null)" = voice-grok
-require "the custody state directory belongs to voice-grok-auth" "$SETUP_REMEDY" \
-  sudo test "$(sudo stat -c %U /var/lib/voice-grok-auth 2>/dev/null)" = voice-grok-auth
-if (( REQUIREMENTS_MISSING > 0 )); then
-  printf '\n'
-  warn "$REQUIREMENTS_MISSING prerequisite(s) are missing. Nothing has been changed; install them and run this wizard again."
-  exit 1
-fi
-sudo visudo -c >/dev/null
-# The refresh credential's custody is the whole point of the two identities.
-# Prove the executor cannot reach it before anything is authorized into it.
-sudo -u voice-grok test ! -r /var/lib/voice-grok-auth
-if [[ "$(sudo sysctl -n kernel.yama.ptrace_scope)" == "0" ]]; then
-  warn "kernel.yama.ptrace_scope is 0: a model-selected command could read the access token out of the runner's memory. Install ops/grok/sysctl-voice-grok-ptrace.conf and run sysctl --system."
-  exit 1
-fi
-sudo systemd-analyze security "voice-agent-grok-contract@enrollment.service" --no-pager || true
-step "Confirm the contract unit has no sudo capabilities, Docker socket, production directory, or broker access."
-pause "Review the boundary report, then press Enter."
+verify_grok_enrollment_boundary
 
 stage "Pin the runner"
 say "The version is the runner's claim about itself; the digest is the only statement about the bytes that will execute."
@@ -477,11 +423,11 @@ enrollment record-contract-run --record "$RECORD" \
   --recorded-at "$(now)"
 
 stage "Probe the Credential Custody Boundary"
-say "The probe enumerates the boundary from the same list the executor and the sandbox profile use, so a store added later is probed without anyone remembering to."
+say "The probe enumerates credential stores from the same list the executor uses. The Auth Crossing directory is crossing code, not a store; a 0755 listing of /usr/local/libexec/voice-agent is not disclosure."
 # Run as voice-grok without the sandbox: model-selected commands share this
-# identity and are additionally confined, so a store this identity cannot reach
-# is a store the model cannot reach either. The weaker boundary is the one
-# worth proving.
+# identity, and stores this identity cannot read stay unread. The crossing is
+# denied to Bubblewrap children by /etc/apparmor.d/local/unpriv_bwrap, not by
+# a Grok sandbox deny list.
 PROBE=$(sudo -u voice-grok /usr/bin/node --experimental-strip-types \
   "$RELEASE_ROOT/apps/worker/src/grok-custody-probe.ts")
 printf '%s\n' "$PROBE" | /usr/bin/jq .
@@ -492,13 +438,26 @@ fi
 CANARY="voice-agent-canary-$(date -u +%s)"
 printf '%s\n' "$CANARY" | sudo tee "$GROK_STATE_DIR/canary" >/dev/null
 sudo chmod 0600 "$GROK_STATE_DIR/canary"
-step "Give Grok a Delegation that tries to read every boundary store, the token broker, and $GROK_STATE_DIR/canary."
+step "Give Grok a Delegation that tries to read every boundary store and $GROK_STATE_DIR/canary."
+step "From that Delegation, run $RELEASE_ROOT/ops/grok/auth-crossing-child-canary.sh as that child so this process cannot list or execute /usr/local/libexec/voice-agent. Nested bwrap is not this canary. The parent broker probe under the contract unit must still answer. An attended shell that lists the 0755 directory fails the canary closed; that shell is not this witness."
 pause "Press Enter when that Delegation has ended."
 CANARY_HITS=$(sudo grep -rl "$CANARY" "$EVIDENCE" "$RUN_ROOT" 2>/dev/null | wc -l)
 sudo rm -f "$GROK_STATE_DIR/canary"
 note "canary appears in $CANARY_HITS evidence or workspace file(s)"
+CHILD_DENIED=false
+confirm "Did the child canary fail to list and fail to execute the Auth Crossing?" && CHILD_DENIED=true
+PARENT_ANSWERED=false
+confirm "Did the parent broker probe under the contract unit still answer?" && PARENT_ANSWERED=true
+if [[ "$CHILD_DENIED" != true ]]; then
+  warn "The child canary listed or executed the Auth Crossing. An attended shell is not this witness."
+fi
+if [[ "$PARENT_ANSWERED" != true ]]; then
+  warn "The parent unit probe did not answer."
+fi
 enrollment record-custody-probe --record "$RECORD" \
   --readable-boundary-paths "$READABLE" --canary-secrets-found "$CANARY_HITS" \
+  --child-could-not-list-or-execute "$CHILD_DENIED" \
+  --parent-unit-probe-answered "$PARENT_ANSWERED" \
   --recorded-at "$(now)"
 
 stage "Drill every ending"

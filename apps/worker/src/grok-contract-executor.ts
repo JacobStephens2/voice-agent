@@ -34,6 +34,7 @@ import {
 import {
   describeCredentialRefusal,
   describeCredentialSeedingRefusal,
+  describeUnreachableAuthCrossing,
 } from "./grok-credential-lifetime.ts";
 import { describeGrokRunOutcome } from "./grok-run-outcome.ts";
 import { assertNonDestructiveGitArguments } from "./worktree-safety.ts";
@@ -319,13 +320,9 @@ async function probeCredentialBeforeSpawn(): Promise<GrokContractRunOutcome | nu
     });
   } catch {
     // A broker that cannot be executed is a crossing that is not there. That
-    // is a pause an operator clears, not a run made without a credential.
-    return describeCredentialRefusal({
-      exitCode: null,
-      remainingSeconds: null,
-      requiredSeconds: runTimeoutSeconds,
-      timedOut: false,
-    });
+    // installed-path fault is distinct from the custody identity refusing to
+    // mint, because the operator clears them differently.
+    return describeUnreachableAuthCrossing();
   }
   return describeCredentialRefusal({
     exitCode: probe.exitCode,

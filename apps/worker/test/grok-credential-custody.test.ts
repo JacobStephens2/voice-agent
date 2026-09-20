@@ -11,7 +11,7 @@ import {
   describeSystemRequirementsDrift,
 } from "../src/grok-credential-custody.ts";
 
-test("the boundary covers the provider auth store, the brokers, the evidence store, and host keys", () => {
+test("the boundary covers the provider auth store, the evidence store, and host keys", () => {
   expect(credentialCustodyBoundaryPaths).toContain("/etc/ssh");
   expect(credentialCustodyBoundaryPaths).toContain("/home");
   expect(credentialCustodyBoundaryPaths).toContain("/var/lib/voice-grok-auth");
@@ -19,6 +19,16 @@ test("the boundary covers the provider auth store, the brokers, the evidence sto
   expect(credentialCustodyBoundaryPaths).toContain("/var/lib/voice-agent-evidence");
   expect(credentialCustodyBoundaryPaths).toContain("/etc/voice-agent");
   expect(credentialCustodyBoundaryPaths).toContain("/root");
+});
+
+/**
+ * A 0755 Auth Crossing directory is crossing code the parent runner must
+ * traverse, not a credential store. Listing it is not store disclosure.
+ */
+test("the Auth Crossing directory is not a Credential Custody Boundary store", () => {
+  expect(credentialCustodyBoundaryPaths).not.toContain(
+    "/usr/local/libexec/voice-agent",
+  );
 });
 
 test("a path inside a boundary store is refused by the name of what it is", () => {

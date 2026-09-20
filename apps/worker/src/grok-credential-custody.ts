@@ -6,28 +6,13 @@ import {
 export { credentialCustodyBoundaryPaths } from "@voice-agent/contracts";
 
 /**
- * The host stores a model process may never read.
- *
- * ADR-0048 broadened what a Code Subagent may see - every repository on the
- * Agent Host, including repository-contained secrets - without broadening
- * this. These are the stores whose contents are reusable host authority
- * rather than source: the provider's own OAuth refresh credential, the token
- * helper's socket, the brokers, the publisher, the evidence store, and root's
- * and the Voice Agent's own state. Everything here is reachable only through
- * a typed broker.
- *
- * The list is used twice: the fixed executor refuses to stage a run inside any
- * of these, and the reviewed sandbox profile denies them to model-selected
- * tools. The parent runner still reads its own root-managed configuration
- * before the sandbox exists; the deny rules apply to what the model runs.
- */
-/**
  * Refuse to place a run's own files inside a store the model may not read.
  *
  * A prompt file, ephemeral home, or Delegation root staged inside the boundary
  * would either be unreadable to the model or would drag the boundary open to
  * reach it. Both are defects in the executor, so this throws before a process
- * is spawned rather than relying on the sandbox to catch it.
+ * is spawned rather than relying on the sandbox to catch it. The Auth Crossing
+ * directory is not in this list: it is crossing code, not a store.
  */
 export function assertOutsideCredentialCustody(
   path: string,
@@ -43,19 +28,17 @@ export function assertOutsideCredentialCustody(
 /**
  * Say whether the reviewed sandbox profile is the one that will be in force.
  *
- * This deliberately does not require the profile to deny the boundary stores
- * above. Denying them was tried on the Agent Host and makes the runner refuse
- * to start: after entering Bubblewrap it re-opens every read-deny path to
- * confirm the mask took effect, and a path the executor identity cannot open
- * at all answers `Permission denied`, which it reads as an unenforced deny
- * list. Every store in the boundary is root-owned or 0700 for exactly the
- * reason it is in the boundary, so listing them turns a defence-in-depth layer
- * into a runner that never runs.
+ * This deliberately does not require the profile to deny credential stores or
+ * the Auth Crossing. Denying paths was tried on the Agent Host and makes the
+ * runner refuse to start: after entering Bubblewrap it re-opens every
+ * read-deny path to confirm the mask took effect, and a path the executor
+ * identity cannot open at all answers `Permission denied`, which it reads as
+ * an unenforced deny list. A Grok `deny` list is therefore not the
+ * parent/child split: Bubblewrap children are denied the crossing by the
+ * unpriv_bwrap AppArmor overlay instead.
  *
- * Custody is therefore held where it is enforceable - the executor identity's
- * own permissions, and the systemd unit's InaccessiblePaths - and this profile
- * holds workspace confinement. `restrict_network` is unavailable on this host
- * for the same reason; see issue #161.
+ * This profile holds workspace confinement. Child-process network restriction
+ * remains tracked by issue #161.
  */
 export function describeSandboxProfileDrift(
   profileText: string,

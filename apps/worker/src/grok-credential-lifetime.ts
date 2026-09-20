@@ -110,6 +110,20 @@ export function describeCredentialRefusal(
 }
 
 /**
+ * Name an Auth Crossing the executor could not start at all.
+ *
+ * This is a fault in the crossing's installed path, not a refusal from the
+ * custody identity behind it. Keeping those endings separate tells the
+ * operator whether to restore the executable path or the enrolled login.
+ */
+export function describeUnreachableAuthCrossing(): GrokContractRunOutcome {
+  return paused(
+    "provider-contract-drift",
+    "The executor identity could not execute the token broker; the task waits for the Auth Crossing's executable and parent-directory modes to be restored.",
+  );
+}
+
+/**
  * Refuse a run the credential cannot outlast.
  *
  * The runner spends the token it was handed until it fails: a headless run
