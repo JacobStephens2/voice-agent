@@ -174,7 +174,16 @@ for mapping in "${voice_agent_authority_programs[@]}"; do
     printf 'Reviewed deployment authority is missing %s.\n' "$source_path" >&2
     exit 1
   fi
-  "$node_bin" --experimental-strip-types --check "$release/$source_path"
+  # Programs do not share an interpreter. The Auth Crossing is bash; the
+  # verifier and publishers are Node. `node --check` on a shell script is the
+  # SyntaxError that blocked enrollment on the Agent Host.
+  first_line=$(head -n 1 "$release/$source_path")
+  case "$first_line" in
+    *bash*|*'/bin/sh'*) bash -n "$release/$source_path" ;;
+    *)
+      "$node_bin" --experimental-strip-types --check "$release/$source_path"
+      ;;
+  esac
 done
 for mapping in "${voice_agent_authority_keeplore_tools[@]}"; do
   source_path=${mapping%%:*}

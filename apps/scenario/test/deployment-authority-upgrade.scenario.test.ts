@@ -830,7 +830,7 @@ process.stdout.write("{}\\n");
   for (const program of ["grok-token-broker", "grok-token-helper"]) {
     await writeExecutable(
       join(release, "ops/grok", program),
-      "#!/usr/bin/env node\n",
+      "#!/usr/bin/env bash\nprintf 'crossing\\n'\n",
     );
   }
   for (const tool of keeploreAuthorityTools) {
