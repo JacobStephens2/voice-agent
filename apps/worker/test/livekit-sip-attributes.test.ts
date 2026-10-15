@@ -3,11 +3,11 @@ import { expect, test } from "vitest";
 import { normalizeTelnyxSipTelephoneNumber } from "../src/livekit-sip-attributes.ts";
 
 test("Telnyx SIP numbers preserve E.164 and expand the observed NANP format", () => {
-  expect(normalizeTelnyxSipTelephoneNumber("4843567773")).toBe(
-    "+14843567773",
+  expect(normalizeTelnyxSipTelephoneNumber("2155550147")).toBe(
+    "+12155550147",
   );
-  expect(normalizeTelnyxSipTelephoneNumber("17325062244")).toBe(
-    "+17325062244",
+  expect(normalizeTelnyxSipTelephoneNumber("12675550188")).toBe(
+    "+12675550188",
   );
   expect(normalizeTelnyxSipTelephoneNumber("+12155550123")).toBe(
     "+12155550123",
